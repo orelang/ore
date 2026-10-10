@@ -24,7 +24,8 @@ Status: early development, see [docs/PLAN.md](docs/PLAN.md) and the draft
 
 ## Usage
 
-Requirements: [Bun](https://bun.sh) and clang.
+Requirements: [Bun](https://bun.sh) and clang. The Boehm GC is a submodule:
+clone with `--recursive` or run `git submodule update --init`.
 
 ```sh
 bun install
@@ -70,7 +71,7 @@ ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
 | `packages/cli` | The `ore` command |
 | `packages/lsp` | Language server |
 | `editors/zed` | Zed extension |
-| `runtime/` | C runtime |
+| `runtime/` | C runtime; Boehm GC in `runtime/third_party/bdwgc` |
 | `std/` | Standard library, `builtin.d.ore` |
 | `tests/run` | Programs with expected output |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`) |
