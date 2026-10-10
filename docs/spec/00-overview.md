@@ -68,14 +68,42 @@ const c: f64 = f64(b) / 3.0
 const d: u8 = u8(c)        // float -> int truncates toward zero
 ```
 
-Integer to narrower integer conversion truncates (keeps low bits).
+- Integer to narrower integer conversion keeps the low bits (`u8(300) === 44`).
+- Float to integer conversion truncates toward zero and saturates at the
+  bounds of the target type; NaN converts to 0.
+- Converting an untyped float constant to an integer type truncates it at
+  compile time and range-checks the result: `i32(2.7)` is `2`, `u8(256.5)` is
+  an error.
 
 ### 3.4 Arithmetic
 
-- Binary arithmetic requires both operands to have the same type.
+- Binary arithmetic requires both operands to have the same type. The right
+  operand of `<<` and `>>` may be any integer type.
 - Integer overflow wraps around.
-- Integer division and remainder by zero panic.
+- Integer `/` truncates toward zero, including untyped constants: `7 / 2` is
+  `3`. Write `7.0 / 2` for a float result.
+- Integer division and remainder by zero panic; `MIN / -1` wraps to `MIN`.
+- Shifting by the bit width or more gives `0` (`-1` for `>>` of a negative
+  value). A negative shift count panics.
+- `>>` is arithmetic for signed and logical for unsigned types. `>>>` is
+  rejected.
+- `%` on floats is the C `fmod`.
 - Comparison uses `===` / `!==`. `==` and `!=` are rejected.
+
+### 3.5 Variables
+
+- `let` declares a mutable variable, `const` an immutable one.
+- A variable needs a type annotation or an initializer. `let x: i32` without
+  an initializer starts at the zero value (`0`, `false`, `""`).
+- `const N = 10` with an untyped constant initializer declares a named
+  untyped constant, usable as any numeric type it fits.
+- At the top level only `const` with a constant initializer is allowed.
+
+### 3.6 Printing
+
+`println(...)` and `print(...)` accept numbers, `bool` and `string`, separated
+by spaces. Floats are printed in the shortest form that round-trips, like
+JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`.
 
 ## 4. Errors
 
@@ -122,7 +150,8 @@ use.
 |---|---|---|
 | `"abc".length` | UTF-16 code units | bytes |
 | `for (const c of s)` | code points as strings | runes (`i32`) |
-| `1 / 0` | `Infinity` | panic for integers, `+Inf` for floats |
+| `7 / 2` | `3.5` | `3` (integer division) |
+| `1 / 0` | `Infinity` | compile error for constants, panic for integers, `Infinity` for floats |
 | `2 ** 63` in `int` | float | wraps |
 | `===` on objects | identity | identity |
 | `===` on strings | value | value |
