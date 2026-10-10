@@ -54,3 +54,60 @@ test("go to definition", () => {
   expect(builtin?.path).toBe("std/builtin.d.ore")
   expect(builtin?.text).toContain("declare function println")
 })
+
+const classes = `interface Shape {
+  area(): f64
+}
+
+class Circle {
+  private cache = 0.0
+  constructor(public r: f64) {}
+
+  area(): f64 {
+    return this.r
+  }
+}
+
+export function main() {
+  const c = new Circle(1)
+  const s: Shape = c
+  println(c.area(), s.area(), c.r)
+}
+`
+
+function pos(text: string, line: string, needle: string, after = false) {
+  const lines = text.split("\n")
+  const index = lines.findIndex((l) => l.includes(line))
+  return { line: index, character: lines[index]!.indexOf(needle) + (after ? needle.length : 1) }
+}
+
+test("completion lists public members after a dot", () => {
+  const text = classes.replace("  println(c.area(), s.area(), c.r)", "  c.")
+  const analysis = analyze("main.ore", text)
+  expect(analysis.diagnostics.length).toBeGreaterThan(0)
+  const ofCircle = analysis.completions(pos(text, "  c.", "c.", true))
+  expect(ofCircle.map((c) => `${c.kind} ${c.label}: ${c.detail}`)).toEqual(["field r: f64", "method area: () => f64"])
+  const shape = classes.replace("  println(c.area(), s.area(), c.r)", "  s.")
+  const ofShape = analyze("main.ore", shape).completions(pos(shape, "  s.", "s.", true))
+  expect(ofShape.map((c) => c.label)).toEqual(["area"])
+})
+
+test("completion inside a class includes private members", () => {
+  const analysis = analyze("main.ore", classes)
+  const labels = analysis.completions(pos(classes, "return this.r", "this.", true)).map((c) => c.label)
+  expect(labels).toEqual(["cache", "r", "area"])
+})
+
+test("completion for arrays and strings", () => {
+  const text = `export function main() {\n  const xs = [1]\n  xs.length\n}\n`
+  const labels = analyze("main.ore", text).completions(pos(text, "xs.length", "xs.", true)).map((c) => c.label)
+  expect(labels).toEqual(["length", "push", "pop", "slice"])
+})
+
+test("hover on classes, methods and properties", () => {
+  const analysis = analyze("main.ore", classes)
+  expect(analysis.hover(pos(classes, "new Circle", "Circle"))?.contents).toBe("```ore\nclass Circle\n```")
+  expect(analysis.hover(pos(classes, "println", "area"))?.contents).toBe("```ore\n(method) Circle.area(): f64\n```")
+  expect(analysis.hover(pos(classes, "println", "c.r", true))?.contents).toBe("```ore\n(property) Circle.r: f64\n```")
+  expect(analysis.hover(pos(classes, "const s: Shape", "Shape"))?.contents).toBe("```ore\ninterface Shape {\n  area(): f64\n}\n```")
+})

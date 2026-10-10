@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { TextDocument } from "vscode-languageserver-textdocument"
 import {
+  CompletionItemKind,
   DiagnosticSeverity,
   TextDocuments,
   TextDocumentSyncKind,
@@ -22,6 +23,7 @@ export function serve(connection: Connection, version: string) {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       hoverProvider: true,
       definitionProvider: true,
+      completionProvider: { triggerCharacters: ["."] },
     },
     serverInfo: { name: "ore", version },
   }))
@@ -54,6 +56,23 @@ export function serve(connection: Connection, version: string) {
   connection.onHover(({ textDocument, position }) => {
     const hover = analyses.get(textDocument.uri)?.hover(position)
     return hover ? { contents: { kind: "markdown", value: hover.contents }, range: hover.range } : null
+  })
+
+  connection.onCompletion(({ textDocument, position }) => {
+    // Analyze the current text: completion is requested right after typing.
+    const document = documents.get(textDocument.uri)
+    if (!document) return []
+    let analysis: Analysis
+    try {
+      analysis = analyze(uriToPath(document.uri), document.getText())
+    } catch {
+      return []
+    }
+    return analysis.completions(position).map((c) => ({
+      label: c.label,
+      kind: c.kind === "method" ? CompletionItemKind.Method : CompletionItemKind.Field,
+      detail: c.detail,
+    }))
   })
 
   connection.onDefinition(({ textDocument, position }) => {
