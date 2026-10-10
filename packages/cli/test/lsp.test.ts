@@ -77,3 +77,29 @@ test("ore lsp publishes diagnostics and answers hover", async () => {
     client.kill()
   }
 }, 10_000)
+
+test("ore lsp renames a symbol across the files of the workspace", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const { pathToFileURL } = await import("node:url")
+  const dir = mkdtempSync(join(tmpdir(), "ore-rename-"))
+  writeFileSync(join(dir, "lib.ore"), "export function twice(x: int): int {\n    return x * 2\n}\n")
+  writeFileSync(join(dir, "main.ore"), 'import { twice } from "./lib"\n\nconsole.log(twice(1))\n')
+  const client = new Client()
+  try {
+    const init = await client.request(1, "initialize", { processId: null, rootUri: pathToFileURL(dir).href, capabilities: {} })
+    expect(init.result.capabilities.renameProvider).toEqual({ prepareProvider: true })
+    client.send({ method: "initialized", params: {} })
+    const lib = pathToFileURL(join(dir, "lib.ore")).href
+    const main = pathToFileURL(join(dir, "main.ore")).href
+    // Renamed from the declaration: main.ore is found by scanning the workspace.
+    const rename = await client.request(2, "textDocument/rename", { textDocument: { uri: lib }, position: { line: 0, character: 17 }, newName: "double" })
+    const edits = (uri: string) => (rename.result.changes[uri] ?? []).map((e: any) => `${e.range.start.line}:${e.range.start.character} ${e.newText}`).sort()
+    expect(edits(lib)).toEqual(["0:16 double"])
+    expect(edits(main)).toEqual(["0:9 double", "2:12 double"])
+    const refs = await client.request(3, "textDocument/references", { textDocument: { uri: main }, position: { line: 2, character: 13 }, context: { includeDeclaration: false } })
+    expect(refs.result.length).toBe(2)
+  } finally {
+    client.kill()
+  }
+}, 10_000)

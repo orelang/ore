@@ -2,7 +2,7 @@ import { check, type CheckInfo } from "@ore/checker"
 import { typeToString, type Type } from "@ore/ir"
 import { loadProgram } from "@ore/project"
 import { type Diagnostic, type Source } from "@ore/syntax"
-import { resolve } from "node:path"
+import { isAbsolute, resolve } from "node:path"
 import ts from "typescript"
 
 export interface Position {
@@ -23,6 +23,25 @@ export interface Location {
   range: Range
 }
 
+/** A use or the declaration of a symbol, with how to rename it there. */
+export interface Reference {
+  path: string
+  range: Range
+  /** Text kept before and after the new name, for shorthand `{ x }` that must become `x: y` or `y: x`. */
+  prefix: string
+  suffix: string
+  declaration: boolean
+}
+
+/** A symbol declared in source code, identified across analyses by where its name is. */
+export interface SymbolAt {
+  key: string
+  name: string
+  range: Range
+  /** Declared in the standard library, which cannot be renamed. */
+  builtin: boolean
+}
+
 export interface Completion {
   label: string
   kind: "field" | "method"
@@ -35,9 +54,67 @@ export class Analysis {
   readonly diagnostics: Diagnostic[]
   private readonly info: CheckInfo | undefined
 
-  constructor(readonly source: Source, diagnostics: Diagnostic[], info: CheckInfo | undefined) {
+  constructor(
+    readonly source: Source,
+    diagnostics: Diagnostic[],
+    info: CheckInfo | undefined,
+    /** Every module of the program, the document's included. */
+    private readonly modules: readonly Source[] = [source],
+  ) {
     this.diagnostics = diagnostics
     this.info = info
+  }
+
+  /** The symbol named by the identifier at a position: used or declared there. */
+  symbolAt(position: Position): SymbolAt | undefined {
+    const node = this.identifierAt(position)
+    if (!node || !this.info) return undefined
+    const decl = this.info.definitions.get(node) ?? (isDeclarationName(node) ? node.parent : undefined)
+    if (!decl) return undefined
+    const file = decl.getSourceFile().fileName
+    return {
+      key: declarationKey(decl),
+      name: node.text,
+      range: this.range(this.source, node.getStart(this.source.ast), node.getEnd()),
+      builtin: !isAbsolute(file),
+    }
+  }
+
+  /** The uses and the declaration of a symbol in the modules of this program. */
+  references(key: string): Reference[] {
+    if (!this.info) return []
+    const found: Reference[] = []
+    const seen = new Set<ts.Identifier>()
+    const add = (id: ts.Identifier, declaration: boolean) => {
+      if (seen.has(id)) return
+      seen.add(id)
+      const file = id.getSourceFile()
+      const a = file.getLineAndCharacterOfPosition(id.getStart(file))
+      const b = file.getLineAndCharacterOfPosition(id.getEnd())
+      let prefix = ""
+      let suffix = ""
+      // `{ x }` is both a property and a variable: renaming one keeps the other.
+      const parent = id.parent
+      if (ts.isShorthandPropertyAssignment(parent)) prefix = `${id.text}: `
+      if (ts.isBindingElement(parent) && !parent.propertyName && parent.name === id && ts.isObjectBindingPattern(parent.parent)) {
+        if (declaration) prefix = `${id.text}: `
+        else suffix = `: ${id.text}`
+      }
+      found.push({ path: file.fileName, range: { start: { line: a.line, character: a.character }, end: { line: b.line, character: b.character } }, prefix, suffix, declaration })
+    }
+    const at = key.lastIndexOf(":")
+    const path = key.slice(0, at)
+    const offset = Number(key.slice(at + 1))
+    for (const module of this.modules) {
+      if (module.ast.fileName !== path) continue
+      const visit = (node: ts.Node): void => {
+        if (ts.isIdentifier(node) && node.getStart(module.ast) === offset) add(node, true)
+        else if (node.pos <= offset && offset < node.end) ts.forEachChild(node, visit)
+      }
+      visit(module.ast)
+    }
+    for (const [id, decl] of this.info.definitions) if (declarationKey(decl) === key) add(id, false)
+    return found
   }
 
   range(source: Source, start: number, end: number): Range {
@@ -140,7 +217,7 @@ export function analyze(path: string, text: string): Analysis {
   const own = (ds: Diagnostic[]) => ds.filter((d) => d.source === entry)
   if (!program.syntaxErrors) {
     const checked = check(program)
-    return new Analysis(entry, own([...program.diagnostics, ...checked.diagnostics]), checked.info)
+    return new Analysis(entry, own([...program.diagnostics, ...checked.diagnostics]), checked.info, program.modules)
   }
   // With syntax errors, such as while typing `obj.`, only syntax errors are
   // reported, but types are still collected for completion where possible.
@@ -150,7 +227,14 @@ export function analyze(path: string, text: string): Analysis {
   } catch {
     info = undefined
   }
-  return new Analysis(entry, own(program.diagnostics), info)
+  return new Analysis(entry, own(program.diagnostics), info, program.modules)
+}
+
+/** Identifies a declaration across analyses: its file and the offset of its name. */
+function declarationKey(decl: ts.Node): string {
+  const file = decl.getSourceFile()
+  const name = (decl as ts.NamedDeclaration).name ?? decl
+  return `${file.fileName}:${name.getStart(file)}`
 }
 
 function members(type: Type, inside: string | undefined): Completion[] {
@@ -279,7 +363,10 @@ function isDeclarationName(node: ts.Identifier): boolean {
       ts.isMethodDeclaration(parent) ||
       ts.isMethodSignature(parent) ||
       ts.isPropertyDeclaration(parent) ||
-      ts.isPropertySignature(parent)) &&
+      ts.isPropertySignature(parent) ||
+      ts.isBindingElement(parent) ||
+      ts.isGetAccessor(parent) ||
+      ts.isSetAccessor(parent)) &&
     parent.name === node
   )
 }

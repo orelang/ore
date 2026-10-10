@@ -139,3 +139,27 @@ test("analysis follows imports from the disk and reports only the document's err
   expect(def?.text).toBeUndefined()
   expect(analysis.hover(pos(text, "const x", "twice"))?.contents).toBe("```ore\nfunction twice(x: int): int\n```")
 })
+
+test("references cover uses, the declaration and imports in other modules", () => {
+  const { mkdtempSync, writeFileSync } = require("node:fs") as typeof import("node:fs")
+  const { join } = require("node:path") as typeof import("node:path")
+  const dir = mkdtempSync(join(require("node:os").tmpdir(), "ore-lsp-"))
+  const lib = "export function twice(x: int): int {\n  return x * 2\n}\n"
+  writeFileSync(join(dir, "lib.ore"), lib)
+  const text = 'import { twice } from "./lib"\n\nconsole.log(twice(1), twice(2))\n'
+  const analysis = analyze(join(dir, "main.ore"), text)
+  const symbol = analysis.symbolAt(pos(text, "console", "twice"))!
+  expect(symbol.name).toBe("twice")
+  expect(symbol.builtin).toBe(false)
+  const refs = analysis.references(symbol.key).map((r) => `${r.path === join(dir, "lib.ore") ? "lib" : "main"}:${r.range.start.line}:${r.range.start.character}${r.declaration ? " decl" : ""}`)
+  expect(refs.sort()).toEqual(["lib:0:16 decl", "main:0:9", "main:2:12", "main:2:22"])
+  expect(analysis.symbolAt(pos(text, "console", "console"))?.builtin).toBe(true)
+})
+
+test("renaming one side of a shorthand keeps the other", () => {
+  const text = "type P = { x: int }\nconst x = 1\nconst p: P = { x }\nconst { x: y } = p\nconsole.log(y)\n"
+  const analysis = analyze("main.ore", text)
+  const local = analysis.symbolAt(pos(text, "const x", "x"))!
+  const edits = analysis.references(local.key).map((r) => `${r.range.start.line}:${r.prefix}*${r.suffix}`)
+  expect(edits.sort()).toEqual(["1:*", "2:x: *"])
+})

@@ -192,6 +192,8 @@ class Checker {
   private readonly itabs = new Map<string, ir.Itab>()
   /** Declarations of fields and methods, for tooling. */
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
+  /** Records the declarations that import specifiers refer to, once all are declared. */
+  private readonly specifiers: (() => void)[] = []
   /** Getters and setters of classes by property name. */
   private readonly accessors = new Map<StructType, Map<string, Accessor>>()
   /** Generic methods of classes by name, instantiated per call like generic functions. */
@@ -400,12 +402,27 @@ class Checker {
       if (!module.scope.declareAlias(element.name.text, () => this.exportOf(target, imported))) {
         this.error(element.name, `Duplicate declaration '${element.name.text}'.`)
       }
+      this.specifiers.push(() => {
+        const exported = this.exportOf(target, imported)
+        const decl = exported?.value?.decl ?? exported?.type?.decl
+        if (decl) this.info.definitions.set(element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName : element.name, decl)
+      })
     }
   }
 
   /** Reports exports of names that a module does not declare. */
   private checkExports(modules: ModuleInfo[]) {
+    for (const resolve of this.specifiers) resolve()
     for (const module of modules) {
+      // `export { a, b as c }` refers to declarations of the module.
+      for (const stmt of module.source.ast.statements) {
+        if (!ts.isExportDeclaration(stmt) || stmt.moduleSpecifier || !stmt.exportClause || !ts.isNamedExports(stmt.exportClause)) continue
+        for (const e of stmt.exportClause.elements) {
+          const local = e.propertyName ?? e.name
+          const symbol = ts.isIdentifier(local) ? module.scope.lookupValue(local.text) ?? module.scope.lookupType(local.text) : undefined
+          if (symbol && ts.isIdentifier(local)) this.info.definitions.set(local, symbol.decl)
+        }
+      }
       for (const [name, entry] of module.exports) {
         if (!entry.from && !this.exportOf(module, name)) {
           const node = module.source.ast.statements.find(ts.isExportDeclaration)
