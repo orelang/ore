@@ -1,0 +1,35 @@
+class Thing {
+    private n = 0
+
+    get readOnly(): int {
+        return this.n
+    }
+
+    set writeOnly(v: int) {
+        this.n = v
+    }
+
+    get mismatched(): int {
+        return 1
+    }
+
+    set mismatched(v: string) {} // error: The getter and setter of 'mismatched' must have the same type
+
+    get untyped() {
+        // error: Getter 'untyped' must have a return type annotation.
+        return 1
+    }
+
+    set twice(a: int, b: int) {} // error: Setter 'twice' must take one parameter with a type annotation.
+
+    get readOnly(): int {
+        // error: Duplicate member 'readOnly'.
+        return 2
+    }
+}
+
+const t = new Thing()
+t.readOnly = 1 // error: Cannot assign to 'readOnly' because it has a getter but no setter.
+console.log(t.writeOnly) // error: Property 'writeOnly' has a setter but no getter.
+t.writeOnly += 1 // error: Property 'writeOnly' has a setter but no getter.
+t.writeOnly = 2

@@ -205,8 +205,13 @@ functions.
   interfaces.
 - Members: fields (with a type annotation, an initializer, or both), one
   constructor, and methods. Constructor parameters with `public`, `private`
-  or `readonly` declare fields. Static members, getters and setters are not
-  supported yet.
+  or `readonly` declare fields. Static members are not supported yet.
+- Getters and setters (`get celsius(): f64`, `set celsius(v: f64)`) define a
+  property read and written like a field, by calling them; a getter needs a
+  return type annotation, and both must have the same type. A property with
+  only a getter is read-only. `p.x op= v` and `p.x++` call the getter, then
+  the setter, evaluating `p` once. Accessors do not implement interface
+  fields.
 - `new C(...)` allocates an instance, assigns parameter properties, runs
   field initializers in order, then the constructor body. Field initializers
   cannot use `this`.
@@ -215,8 +220,8 @@ functions.
   top level of the constructor.
 - `private` members are accessible only inside the class. `readonly` fields
   can be assigned only by the constructor of the class.
-- Methods are called on instances; method values (`obj.method` without a
-  call) are not supported yet.
+- Methods are called on instances; `obj.method` without a call is a
+  function value bound to `obj`.
 - `class C implements I` checks that `C` has the members of `I`.
 
 ### 3.11 Interfaces

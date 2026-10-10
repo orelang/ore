@@ -1,0 +1,60 @@
+// Getters and setters.
+
+class Temperature {
+    private kelvin = 273.15
+    writes = 0
+
+    get celsius(): f64 {
+        return this.kelvin - 273.15
+    }
+
+    set celsius(value: f64) {
+        this.writes++
+        this.kelvin = value + 273.15
+    }
+
+    get fahrenheit(): f64 {
+        return (this.celsius * 9) / 5 + 32
+    }
+}
+
+class Counter {
+    private n = 0
+
+    get value(): int {
+        return this.n
+    }
+
+    set value(v: int) {
+        if (v < 0) process.panic("negative")
+        this.n = v
+    }
+}
+
+const t = new Temperature()
+console.log(t.celsius, t.fahrenheit)
+t.celsius = 100
+console.log(t.celsius, t.fahrenheit, t.writes)
+t.celsius += 5
+console.log(t.celsius, t.writes)
+const assigned = (t.celsius = 20)
+console.log(assigned, t.writes)
+
+const c = new Counter()
+c.value++
+c.value++
+const before = c.value++
+const after = ++c.value
+console.log(before, after, c.value)
+let x = 0
+;[c.value, x] = [10, 11]
+console.log(c.value, x)
+
+// The object is evaluated once.
+let made = 0
+function counter(): Counter {
+    made++
+    return c
+}
+counter().value += 1
+console.log(c.value, made)

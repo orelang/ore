@@ -118,8 +118,19 @@ interface ClassInfo {
   paramProps: ir.Local[]
   ctorDecl?: ts.ConstructorDeclaration
   ctorThis: ir.Local
-  methods: [ts.MethodDeclaration, ir.Func][]
+  methods: [ts.MethodDeclaration | ts.AccessorDeclaration, ir.Func][]
 }
+
+/** A property defined by a getter, a setter, or both. */
+interface Accessor {
+  type: Type
+  get?: ir.Func
+  set?: ir.Func
+  private: boolean
+}
+
+/** Where an assignment stores: a place, or the setter of an accessor property. */
+type AssignTarget = { lvalue: ir.LValue; type: Type; accessor?: undefined } | { accessor: { object: ir.Expr; property: Accessor; name: string }; type: Type; lvalue?: undefined }
 
 /** A narrowed type of a variable or a field path, keyed by `refKey`. */
 interface Fact {
@@ -181,6 +192,8 @@ class Checker {
   private readonly itabs = new Map<string, ir.Itab>()
   /** Declarations of fields and methods, for tooling. */
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
+  /** Getters and setters of classes by property name. */
+  private readonly accessors = new Map<StructType, Map<string, Accessor>>()
   /** Generic methods of classes by name, instantiated per call like generic functions. */
   private readonly genericMethods = new Map<StructType, Map<string, { generic: Generic; info: ClassInfo; private: boolean }>>()
   /** Optional and rest parameters of functions, by their parameter list. */
@@ -933,7 +946,7 @@ class Checker {
         })
         type.ctor = this.ctorFunc(info, params, member)
       } else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
-        this.error(member, "Getters and setters are not supported yet.")
+        this.declareAccessor(member, info, scope, flags.private)
       } else {
         this.error(member, "This class member is not supported.")
       }
@@ -1046,8 +1059,40 @@ class Checker {
     for (const [decl, func] of info.methods) this.checkMethodBody(decl, func, type, outer)
   }
 
+  /** A getter or setter: a method named `get_x` or `set_x`, called by reads and writes of property `x`. */
+  private declareAccessor(member: ts.AccessorDeclaration, info: ClassInfo, scope: Scope, isPrivate: boolean) {
+    const name = this.memberName(member.name)
+    if (name === undefined) return
+    const { type } = info
+    const decls = this.memberDecls.get(type)!
+    const accessors = this.accessors.get(type) ?? new Map<string, Accessor>()
+    this.accessors.set(type, accessors)
+    const existing = accessors.get(name)
+    const getter = ts.isGetAccessor(member)
+    if ((decls.has(name) && !existing) || (existing && (getter ? existing.get : existing.set))) return this.error(member.name, `Duplicate member '${name}'.`)
+    decls.set(name, member)
+    if (!member.body) return this.error(member.name, "A getter or setter must have a body.")
+    if (getter && !member.type) return this.error(member.name, `Getter '${name}' must have a return type annotation.`)
+    if (!getter && (member.parameters.length !== 1 || !member.parameters[0]!.type)) return this.error(member.name, `Setter '${name}' must take one parameter with a type annotation.`)
+    const kind = getter ? "get" : "set"
+    const func = this.makeMethod(member, info, scope, `${type.name}.${kind} ${name}`, `ore_m_${info.cname}_${kind}_${cIdent(name)}`)
+    info.methods.push([member, func])
+    const propertyType = getter ? func.type.result : func.type.params[0]!
+    if (existing && !sameType(existing.type, propertyType)) {
+      return this.error(member.name, `The getter and setter of '${name}' must have the same type, got '${typeToString(existing.type)}' and '${typeToString(propertyType)}'.`)
+    }
+    const property = existing ?? { type: propertyType, private: isPrivate }
+    property[kind] = func
+    accessors.set(name, property)
+  }
+
+  /** The accessor property `name` of a struct, if any. */
+  private accessor(type: Type, name: string): Accessor | undefined {
+    return type.kind === "struct" ? this.accessors.get(type)?.get(name) : undefined
+  }
+
   /** A method with the signature of a declaration, resolved in `scope`; the body is checked later. */
-  private makeMethod(decl: ts.MethodDeclaration, info: ClassInfo, scope: Scope, sourceName: string, cname: string): ir.Func {
+  private makeMethod(decl: ts.MethodDeclaration | ts.AccessorDeclaration, info: ClassInfo, scope: Scope, sourceName: string, cname: string): ir.Func {
     const params = this.resolveParams(decl.parameters, scope)
     const result = decl.type ? this.resolveType(decl.type, scope) ?? types.void : types.void
     const func: ir.Func = {
@@ -1064,7 +1109,7 @@ class Checker {
     return func
   }
 
-  private checkMethodBody(decl: ts.MethodDeclaration, func: ir.Func, type: StructType, outer: Scope) {
+  private checkMethodBody(decl: ts.MethodDeclaration | ts.AccessorDeclaration, func: ir.Func, type: StructType, outer: Scope) {
     const prologue: ir.Stmt[] = []
     const scope = this.paramScope(decl.parameters, func.params, outer, prologue)
     this.facts = [new Map()]
@@ -1828,6 +1873,11 @@ class Checker {
       if (!lvalue) return
       const key = this.refKey(target, scope)
       if (key) this.invalidate(key)
+      if (lvalue.accessor) {
+        const write = this.writeAccessor(lvalue, target, () => this.coerce(typed(part), lvalue.type, target), false)
+        if (write.k === "typed") assigns.push(write.expr)
+        return
+      }
       assigns.push({ k: "assign", type: lvalue.type, target: lvalue.lvalue, value: this.coerce(typed(part), lvalue.type, target) })
     }
     assign(node.left, value)
@@ -2507,6 +2557,32 @@ class Checker {
     return result
   }
 
+  /**
+   * Writes an accessor property: evaluates the object once, computes the new
+   * value from the old one (read by the getter, when `next` uses it), calls
+   * the setter, and evaluates to the new value, or the old one for `x++`.
+   */
+  private writeAccessor(target: AssignTarget, node: ts.Node, next: (old: () => ir.Expr) => ir.Expr | undefined, yieldOld: boolean): Operand {
+    const { object, property, name } = target.accessor!
+    const type = property.type
+    const locals: ir.Bind["locals"] = []
+    const hold = (value: ir.Expr): ir.Expr => {
+      const local = this.newLocal("tmp", value.type, false)
+      locals.push({ local, init: value })
+      return { k: "local", type: value.type, local }
+    }
+    const self = hold(object)
+    let old: ir.Expr | undefined
+    const getOld = (): ir.Expr => (old ??= hold({ k: "method-call", type, func: property.get!, receiver: self, args: [] }))
+    if ((yieldOld || next.length > 0) && !property.get) return this.fail(node, `Property '${name}' has a setter but no getter.`)
+    if (yieldOld) getOld()
+    const value = next(getOld)
+    if (!value) return errorOperand
+    const result = hold(value)
+    const set: ir.Expr = { k: "method-call", type: types.void, func: property.set!, receiver: self, args: [result] }
+    return typed({ k: "bind", type, locals, body: { k: "seq", type, exprs: [set, yieldOld ? old! : result] } })
+  }
+
   /** Adds a fact that a reference of a union type holds a value of a narrower type. */
   private narrowTo(key: string, declared: Type, actual: Type) {
     if (declared.kind !== "union" || sameType(declared, actual) || actual.kind === "null") return
@@ -2518,6 +2594,14 @@ class Checker {
     const target = this.assignTarget(node.left, scope)
     const value = this.checkExpr(node.right, scope, op ? undefined : target?.type)
     if (!target) return errorOperand
+    if (target.accessor) {
+      if (value.k === "error") return value
+      if (!op) return this.writeAccessor(target, node, () => this.coerce(value, target.type, node.right), false)
+      return this.writeAccessor(target, node, (old) => {
+        const combined = this.arith(op, typed(old()), value, node)
+        return combined.k === "typed" ? this.coerce(combined, target.type, node) : undefined
+      }, false)
+    }
     const { lvalue, type } = target
     if (!op) return typed({ k: "assign", type, target: lvalue, value: this.coerce(value, type, node.right) })
 
@@ -2542,10 +2626,14 @@ class Checker {
     const op = operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"
     const type = target.type
     if (!isNumeric(type)) return this.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
+    if (target.accessor) {
+      const one: ir.Expr = type.kind === "int" ? { k: "int", type, value: 1n } : { k: "float", type: type as ir.FloatLit["type"], value: 1 }
+      return this.writeAccessor(target, node, (old) => ({ k: "arith", type: type as ir.Arith["type"], op: op === "++" ? "+" : "-", left: old(), right: one }), !prefix)
+    }
     return typed({ k: "incdec", type, target: target.lvalue, op, prefix })
   }
 
-  private assignTarget(node: ts.Expression, scope: Scope): { lvalue: ir.LValue; type: Type } | undefined {
+  private assignTarget(node: ts.Expression, scope: Scope): AssignTarget | undefined {
     if (ts.isParenthesizedExpression(node)) return this.assignTarget(node.expression, scope)
     if (ts.isElementAccessExpression(node)) {
       const target = this.checkExpr(node.expression, scope)
@@ -2571,6 +2659,14 @@ class Checker {
         if (member.readonly) return this.error(node.name, `Cannot assign to '${name}' because it is a read-only property.`), undefined
         this.info.types.set(node, member.type)
         return { lvalue: { k: "iface-field", value: object, index }, type: member.type }
+      }
+      const property = this.accessor(object.type, name)
+      if (property) {
+        this.defineMember(node.name, object.type as StructType, name)
+        if (!this.checkAccess(object.type as StructType, property, name, node.name)) return undefined
+        if (!property.set) return this.error(node.name, `Cannot assign to '${name}' because it has a getter but no setter.`), undefined
+        this.info.types.set(node, property.type)
+        return { accessor: { object, property, name }, type: property.type }
       }
       const struct = object.type.kind === "struct" ? object.type : undefined
       const field = struct && findField(struct, name)
@@ -3192,6 +3288,13 @@ class Checker {
       return typed({ k: "len", type: types.i64, value: { k: "recast", type: types.string, value } })
     }
     if (name === "size" && value.type.kind === "map") return typed({ k: "map", op: "size", type: types.i64, mapType: value.type, map: value })
+    const property = this.accessor(value.type, name)
+    if (property) {
+      this.defineMember(nameNode, value.type as StructType, name)
+      if (!this.checkAccess(value.type as StructType, property, name, nameNode)) return errorOperand
+      if (!property.get) return this.fail(nameNode, `Property '${name}' has a setter but no getter.`)
+      return typed({ k: "method-call", type: property.type, func: property.get, receiver: value, args: [] })
+    }
     if (value.type.kind === "struct") {
       const struct = value.type
       const field = findField(struct, name)
