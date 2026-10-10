@@ -105,6 +105,62 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
 by spaces. Floats are printed in the shortest form that round-trips, like
 JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`.
 
+### 3.7 Strings
+
+- A `string` is an immutable sequence of UTF-8 bytes.
+- `a + b` and `+=` concatenate two strings. A string and a non-string cannot
+  be added: use a template literal, `` `${a}${b}` ``, which formats numbers
+  and `bool` like `print`.
+- `s.length` is the length in bytes. `s[i]` is the byte at `i` as `u8`;
+  an index out of range panics.
+- `s.slice(start, end?)` takes byte offsets with JavaScript rules: negative
+  offsets count from the end, out-of-range offsets are clamped.
+- `<`, `<=`, `>`, `>=` compare strings byte-wise; `===` compares contents.
+- `for (const r of s)` iterates runes as `i32`. Invalid UTF-8 yields
+  U+FFFD (65533) for each invalid byte.
+
+### 3.8 Arrays
+
+- `T[]` (or `Array<T>`) is a reference to a growable array, as in
+  TypeScript: assigning an array or passing it to a function shares it.
+  `===` compares identity.
+- An array literal takes its element type from the context
+  (`let a: u8[] = [1, 2]`), else from its first typed element, else from the
+  default type of its constants (`[1, 2]` is `int[]`). `[]` requires a
+  context type.
+- `a[i]` reads and writes elements; an index of any integer type is allowed
+  and an index out of range panics. Compound assignments (`a[i] += 1`,
+  `a[i]++`) evaluate `a` and `i` once.
+- `a.push(...values)` appends and returns the new length. `a.pop()` removes
+  and returns the last element and panics on an empty array.
+  `a.slice(start?, end?)` returns a copy with JavaScript offsets.
+- `let a: T[]` without an initializer is a new empty array.
+- `for (const x of a)` iterates elements; the length is re-read on every
+  iteration, so elements pushed during the loop are visited.
+
+### 3.9 Statements
+
+- `if`, `while`, `do...while`, `for`, `for...of`, `break`, `continue` and
+  `return` work as in TypeScript. `for...in` is rejected.
+- Loops may be labeled for `break label` and `continue label`; labels on
+  other statements are rejected.
+- A function with a return type must return a value on every path. A path
+  ending in an infinite loop or a `panic(...)` call needs no return.
+
+### 3.10 Panics
+
+A panic prints its message and exits with status 2. Debug builds (the default)
+print the Ore call stack with source lines:
+
+```
+panic: integer divide by zero
+
+  div at main.ore:9
+  main at main.ore:14
+```
+
+Release builds (`--release`) keep no call stack information.
+
 ## 4. Errors
 
 Errors are values. A fallible function returns a union with an error type:
