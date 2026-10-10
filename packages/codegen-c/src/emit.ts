@@ -35,6 +35,8 @@ const frame = "ore_frame_"
 function emitFunction(ctx: Context): string {
   const { func } = ctx
   const lines = func.body.body.map((s) => emitLine(s, 0, ctx))
+  // Methods take `this` untyped so that interface tables can call them uniformly.
+  if (func.receiver) lines.unshift(`  ${cType(func.receiver.type)} ${localName(func.receiver)} = self_;`)
   if (ctx.debug) {
     lines.unshift(
       `  ore_frame ${frame} = {ore_rt_top, ${JSON.stringify(func.sourceName)}, ${ctx.file}, ${func.line}};`,
@@ -47,7 +49,7 @@ function emitFunction(ctx: Context): string {
 }
 
 function structName(s: ir.StructType): string {
-  return `ore_obj_${s.id}`
+  return s.nominal ? `ore_C_${sanitize(s.name!)}` : `ore_obj_${s.id}`
 }
 
 function fieldName(name: string): string {
@@ -61,7 +63,9 @@ function emitStruct(s: ir.StructType): string {
 }
 
 function signature(func: ir.Func): string {
-  const params = func.params.length === 0 ? "void" : func.params.map((p) => `${cType(p.type)} ${localName(p)}`).join(", ")
+  const list = func.params.map((p) => `${cType(p.type)} ${localName(p)}`)
+  if (func.receiver) list.unshift("void *self_")
+  const params = list.length === 0 ? "void" : list.join(", ")
   return `${cType(func.type.result)} ${func.name}(${params})`
 }
 
@@ -295,6 +299,10 @@ function emitExpr(expr: ir.Expr): string {
     }
     case "field":
       return `(${emitExpr(expr.object)})->${fieldName(expr.name)}`
+    case "alloc":
+      return `((${structName(expr.type)} *)ore_rt_alloc(sizeof(${structName(expr.type)})))`
+    case "method-call":
+      return `${expr.func.name}(${[expr.receiver, ...expr.args].map(emitExpr).join(", ")})`
   }
 }
 

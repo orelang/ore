@@ -1,0 +1,98 @@
+const ORIGIN_NAME = "origin"
+
+class Vec {
+  constructor(public x: f64, public y: f64) {}
+
+  add(other: Vec): Vec {
+    return new Vec(this.x + other.x, this.y + other.y)
+  }
+
+  scale(k: f64): void {
+    this.x *= k
+    this.y *= k
+  }
+
+  length2(): f64 {
+    return this.dot(this)
+  }
+
+  private dot(other: Vec): f64 {
+    return this.x * other.x + this.y * other.y
+  }
+}
+
+class Counter {
+  private count = 0
+  readonly name: string
+  step: int = 1
+  history: int[] = []
+
+  constructor(name: string) {
+    this.name = name
+  }
+
+  tick(): int {
+    this.count += this.step
+    this.history.push(this.count)
+    return this.count
+  }
+
+  get(): int {
+    return this.count
+  }
+}
+
+class Named {
+  label = ORIGIN_NAME
+  at: Vec
+
+  constructor() {
+    this.at = new Vec(0, 0)
+    if (this.label.length > 3) return
+    this.label = "short"
+  }
+}
+
+class Node {
+  value: int
+  children: Node[] = []
+
+  constructor(value: int) {
+    this.value = value
+  }
+
+  add(child: Node): Node {
+    this.children.push(child)
+    return this
+  }
+
+  sum(): int {
+    let total = this.value
+    for (const c of this.children) total += c.sum()
+    return total
+  }
+}
+
+export function main() {
+  const a = new Vec(1, 2)
+  const b = a.add(new Vec(3, 4))
+  b.scale(2)
+  println(b.x, b.y, b.length2(), a.x)
+
+  const c = new Counter("clicks")
+  c.tick()
+  c.step = 5
+  c.tick()
+  println(c.name, c.get(), c.history.length, c.history[1])
+
+  const n = new Named()
+  println(n.label, n.at.x)
+
+  const tree = new Node(1).add(new Node(2).add(new Node(3))).add(new Node(4))
+  println(tree.sum(), tree.children.length)
+
+  // Instances are references; === is identity.
+  const same = a
+  same.x = 100
+  println(a.x, same === a, new Vec(1, 1) === new Vec(1, 1))
+}

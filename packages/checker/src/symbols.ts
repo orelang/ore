@@ -1,4 +1,4 @@
-import type { Func, Local, Type } from "@ore/ir"
+import type { Func, Local, StructType, Type } from "@ore/ir"
 import type ts from "typescript"
 import type { Operand } from "./operand"
 
@@ -10,6 +10,7 @@ export type ValueSymbol =
   | { k: "func"; func: Func; decl: ts.Node }
   | { k: "conversion"; type: Type; decl: ts.Node }
   | { k: "builtin"; name: BuiltinFunc; decl: ts.Node }
+  | { k: "class"; type: StructType; decl: ts.Node }
 
 export interface TypeSymbol {
   type: Type

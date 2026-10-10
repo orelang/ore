@@ -1,5 +1,5 @@
 import * as ir from "@ore/ir"
-import { arrayOf, findField, intRange, isNumeric, sameType, types, typeToString, type Field, type FuncType, type StructType, type Type } from "@ore/ir"
+import { arrayOf, findField, findMethod, intRange, isNumeric, sameType, types, typeToString, type Field, type FuncType, type StructType, type Type } from "@ore/ir"
 import { diagnosticAt, type Diagnostic, type Source } from "@ore/syntax"
 import ts from "typescript"
 import { builtinScope } from "./builtins"
@@ -33,11 +33,31 @@ export function check(source: Source, options: CheckOptions = { entry: true }): 
 
 interface FuncContext {
   result: Type
+  /** `this` inside a method or constructor. */
+  this?: ir.Local
+  /** The class whose method or constructor is being checked. */
+  cls?: StructType
+  ctor?: boolean
+  /** Checking field initializers, which cannot use `this`. */
+  fieldInit?: boolean
   /** Enclosing loops, innermost last. */
   loops: LoopContext[]
   nextLoopId: number
   /** Label of a labeled statement whose loop has not been entered yet. */
   pendingLabel?: string
+}
+
+/** A class declaration between the passes of checking. */
+interface ClassInfo {
+  decl: ts.ClassDeclaration
+  type: StructType
+  /** Field initializers by field name, checked before constructor bodies. */
+  inits: { name: string; node: ts.Expression; value?: ir.Expr }[]
+  /** Constructor parameters that declare fields. */
+  paramProps: ir.Local[]
+  ctorDecl?: ts.ConstructorDeclaration
+  ctorThis: ir.Local
+  methods: [ts.MethodDeclaration, ir.Func][]
 }
 
 interface LoopContext {
@@ -56,6 +76,9 @@ class Checker {
   /** Anonymous struct types by shape key. */
   private readonly shapes = new Map<string, StructType>()
   private nextStructId = 0
+  private readonly classes: ClassInfo[] = []
+  /** Declarations of fields and methods, for tooling. */
+  private readonly memberDecls = new Map<StructType, Map<string, ts.Node>>()
 
   constructor(private readonly source: Source) {
     this.module = { file: source.path, functions: [], structs: [] }
@@ -64,25 +87,32 @@ class Checker {
   run(options: CheckOptions): CheckResult {
     const scope = new Scope(builtinScope())
     const bodies: [ts.FunctionDeclaration, ir.Func][] = []
+    const statements = this.source.ast.statements
 
-    // Pass 1: type aliases and function signatures, so that functions can be
-    // called before their declaration and recursively.
-    for (const stmt of this.source.ast.statements) {
-      if (ts.isTypeAliasDeclaration(stmt)) this.declareTypeAlias(stmt, scope)
-      else if (ts.isFunctionDeclaration(stmt)) {
+    // Pass 1: names of classes, so that types can refer to them in any order.
+    for (const stmt of statements) if (ts.isClassDeclaration(stmt)) this.declareClass(stmt, scope)
+
+    // Pass 2: type aliases, then signatures of functions and class members,
+    // so that they can be used before their declaration and recursively.
+    for (const stmt of statements) if (ts.isTypeAliasDeclaration(stmt)) this.declareTypeAlias(stmt, scope)
+    for (const stmt of statements) {
+      if (ts.isFunctionDeclaration(stmt)) {
         const func = this.declareFunction(stmt, scope)
         if (func) bodies.push([stmt, func])
       }
     }
+    for (const info of this.classes) this.declareClassMembers(info, scope)
 
-    // Pass 2: top-level constants in source order, then function bodies.
-    for (const stmt of this.source.ast.statements) {
-      if (ts.isTypeAliasDeclaration(stmt) || ts.isFunctionDeclaration(stmt)) continue
+    // Pass 3: top-level constants in source order, field initializers, then bodies.
+    for (const stmt of statements) {
+      if (ts.isTypeAliasDeclaration(stmt) || ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt)) continue
       if (ts.isVariableStatement(stmt)) this.checkTopLevelVariables(stmt, scope)
       else if (ts.isEmptyStatement(stmt)) continue
       else this.error(stmt, this.unsupportedTopLevel(stmt))
     }
+    for (const info of this.classes) this.checkFieldInitializers(info, scope)
     for (const [decl, func] of bodies) this.checkFunctionBody(decl, func, scope)
+    for (const info of this.classes) this.checkClassBodies(info, scope)
 
     if (options.entry) this.checkEntry(scope)
 
@@ -113,22 +143,7 @@ class Checker {
       else if (mod.kind !== ts.SyntaxKind.ExportKeyword) this.error(mod, `Modifier '${mod.getText()}' is not allowed here.`)
     }
 
-    const params: ir.Local[] = []
-    for (const p of decl.parameters) {
-      if (!ts.isIdentifier(p.name)) {
-        this.error(p.name, "Destructuring parameters are not supported yet.")
-        continue
-      }
-      if (p.dotDotDotToken) this.error(p, "Rest parameters are not supported yet.")
-      if (p.questionToken) this.error(p, "Optional parameters are not supported yet.")
-      if (p.initializer) this.error(p.initializer, "Default parameter values are not supported yet.")
-      let type: Type | undefined
-      if (!p.type) this.error(p.name, `Parameter '${p.name.text}' must have a type annotation.`)
-      else type = this.resolveValueType(p.type, scope)
-      if (type) this.info.types.set(p.name, type)
-      params.push(this.newLocal(p.name.text, type ?? types.i64, true))
-    }
-
+    const params = this.resolveParams(decl.parameters, scope)
     const result = decl.type ? this.resolveType(decl.type, scope) ?? types.void : types.void
     const type: FuncType = { kind: "func", params: params.map((p) => p.type), result }
     const exported = decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false
@@ -149,22 +164,272 @@ class Checker {
     return func
   }
 
-  private checkFunctionBody(decl: ts.FunctionDeclaration, func: ir.Func, outer: Scope) {
+  /** Resolves parameters into locals; parameter properties are allowed only by the caller. */
+  private resolveParams(parameters: readonly ts.ParameterDeclaration[], scope: Scope): ir.Local[] {
+    const params: ir.Local[] = []
+    for (const p of parameters) {
+      if (!ts.isIdentifier(p.name)) {
+        this.error(p.name, "Destructuring parameters are not supported yet.")
+        continue
+      }
+      if (p.dotDotDotToken) this.error(p, "Rest parameters are not supported yet.")
+      if (p.questionToken) this.error(p, "Optional parameters are not supported yet.")
+      if (p.initializer) this.error(p.initializer, "Default parameter values are not supported yet.")
+      let type: Type | undefined
+      if (!p.type) this.error(p.name, `Parameter '${p.name.text}' must have a type annotation.`)
+      else type = this.resolveValueType(p.type, scope)
+      if (type) this.info.types.set(p.name, type)
+      params.push(this.newLocal(p.name.text, type ?? types.i64, true))
+    }
+    return params
+  }
+
+  /** A scope with the parameters of a function declared. */
+  private paramScope(parameters: readonly ts.ParameterDeclaration[], locals: ir.Local[], outer: Scope): Scope {
     const scope = new Scope(outer)
-    decl.parameters.forEach((p, i) => {
-      const local = func.params[i]
+    parameters.forEach((p, i) => {
+      const local = locals[i]
       if (local && ts.isIdentifier(p.name)) {
         if (!scope.declareValue(local.name, { k: "local", local, decl: p })) this.error(p.name, `Duplicate parameter '${local.name}'.`)
       }
     })
+    return scope
+  }
+
+  private checkFunctionBody(decl: ts.FunctionDeclaration, func: ir.Func, outer: Scope) {
+    const scope = this.paramScope(decl.parameters, func.params, outer)
     this.fn = { result: func.type.result, loops: [], nextLoopId: 0 }
     func.body = this.checkBlock(decl.body!, scope)
     this.fn = undefined
+    this.checkReturns(func, decl.type ?? decl.name!)
+  }
 
+  private checkReturns(func: ir.Func, node: ts.Node) {
     const result = func.type.result
     if (result.kind !== "void" && !terminates(func.body)) {
-      this.error(decl.type ?? decl.name!, `Function '${func.sourceName}' must return a value of type '${typeToString(result)}' on every path.`)
+      this.error(node, `Function '${func.sourceName}' must return a value of type '${typeToString(result)}' on every path.`)
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Classes
+
+  private declareClass(decl: ts.ClassDeclaration, scope: Scope) {
+    if (!decl.name) return this.error(decl, "A class declaration must have a name.")
+    const name = decl.name.text
+    if (decl.typeParameters) this.error(decl.typeParameters[0]!, "Generic classes are not supported yet.")
+    for (const clause of decl.heritageClauses ?? []) {
+      if (clause.token === ts.SyntaxKind.ExtendsKeyword) this.error(clause, "Class inheritance is not supported in Ore. Use composition and interfaces.")
+      else this.error(clause, "'implements' is not supported yet.")
+    }
+    for (const mod of decl.modifiers ?? []) {
+      if (mod.kind !== ts.SyntaxKind.ExportKeyword) this.error(mod, `Modifier '${mod.getText()}' is not allowed on classes.`)
+    }
+    const type: StructType = { kind: "struct", id: this.nextStructId++, name, nominal: true, fields: [], methods: [] }
+    if (!scope.declareType(name, { type, decl }) || !scope.declareValue(name, { k: "class", type, decl })) {
+      return this.error(decl.name, `Duplicate declaration '${name}'.`)
+    }
+    this.module.structs.push(type)
+    this.memberDecls.set(type, new Map())
+    const ctorThis = this.newLocal("this", type, false)
+    this.classes.push({ decl, type, inits: [], paramProps: [], ctorThis, methods: [] })
+  }
+
+  private declareClassMembers(info: ClassInfo, scope: Scope) {
+    const { decl, type } = info
+    const className = type.name!
+    const decls = this.memberDecls.get(type)!
+    const declare = (name: string, node: ts.Node, nameNode: ts.Node): boolean => {
+      if (decls.has(name)) {
+        this.error(nameNode, `Duplicate member '${name}'.`)
+        return false
+      }
+      decls.set(name, node)
+      return true
+    }
+
+    for (const member of decl.members) {
+      if (ts.isSemicolonClassElement(member)) continue
+      const flags = this.memberModifiers(member)
+      if (ts.isPropertyDeclaration(member)) {
+        const name = this.memberName(member.name)
+        if (name === undefined || !declare(name, member, member.name)) continue
+        if (member.questionToken || member.exclamationToken) this.error(member.questionToken ?? member.exclamationToken!, "Optional and definitely-assigned fields are not supported.")
+        let fieldType: Type | undefined
+        if (member.type) fieldType = this.resolveValueType(member.type, scope)
+        else if (!member.initializer) this.error(member.name, `Field '${name}' needs a type annotation or an initializer.`)
+        if (member.initializer) info.inits.push({ name, node: member.initializer })
+        // A field without an annotation gets its type from the initializer later.
+        type.fields.push({ name, type: fieldType ?? types.void, readonly: flags.readonly, private: flags.private })
+        if (fieldType) this.info.types.set(member.name, fieldType)
+      } else if (ts.isMethodDeclaration(member)) {
+        const name = this.memberName(member.name)
+        if (name === undefined || !declare(name, member, member.name)) continue
+        if (flags.readonly) this.error(member, "Methods cannot be 'readonly'.")
+        if (member.asteriskToken) this.error(member.asteriskToken, "Generators are not supported in Ore.")
+        if (member.questionToken) this.error(member.questionToken, "Optional methods are not supported.")
+        if (member.typeParameters) this.error(member.typeParameters[0]!, "Generic methods are not supported yet.")
+        if (!member.body) {
+          this.error(member.name, "A method must have a body.")
+          continue
+        }
+        const params = this.resolveParams(member.parameters, scope)
+        const result = member.type ? this.resolveType(member.type, scope) ?? types.void : types.void
+        const func: ir.Func = {
+          name: `ore_m_${className}_${name}`,
+          sourceName: `${className}.${name}`,
+          line: this.line(member.name),
+          type: { kind: "func", params: params.map((p) => p.type), result },
+          params,
+          receiver: this.newLocal("this", type, false),
+          body: { k: "block", body: [] },
+          exported: false,
+        }
+        type.methods.push({ name, func, private: flags.private })
+        info.methods.push([member, func])
+        this.module.functions.push(func)
+      } else if (ts.isConstructorDeclaration(member)) {
+        if (info.ctorDecl) {
+          this.error(member, "A class can have only one constructor.")
+          continue
+        }
+        if (!member.body) {
+          this.error(member, "A constructor must have a body.")
+          continue
+        }
+        info.ctorDecl = member
+        // Parameters with modifiers declare fields: `constructor(private x: f64)`.
+        const params = this.resolveParams(member.parameters, scope)
+        member.parameters.forEach((p, i) => {
+          const pflags = this.memberModifiers(p)
+          if (!pflags.any || !ts.isIdentifier(p.name) || !params[i]) return
+          if (!declare(p.name.text, p, p.name)) return
+          type.fields.push({ name: p.name.text, type: params[i]!.type, readonly: pflags.readonly, private: pflags.private })
+          info.paramProps.push(params[i]!)
+        })
+        type.ctor = this.ctorFunc(info, params, member)
+      } else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
+        this.error(member, "Getters and setters are not supported yet.")
+      } else {
+        this.error(member, "This class member is not supported.")
+      }
+    }
+    type.ctor ??= this.ctorFunc(info, [], decl.name!)
+  }
+
+  private ctorFunc(info: ClassInfo, params: ir.Local[], node: ts.Node): ir.Func {
+    const func: ir.Func = {
+      name: `ore_new_${info.type.name}`,
+      sourceName: `${info.type.name}.constructor`,
+      line: this.line(node),
+      type: { kind: "func", params: params.map((p) => p.type), result: info.type },
+      params,
+      body: { k: "block", body: [] },
+      exported: false,
+    }
+    this.module.functions.push(func)
+    return func
+  }
+
+  private memberModifiers(node: ts.Node): { private: boolean; readonly: boolean; any: boolean } {
+    const flags = { private: false, readonly: false, any: false }
+    for (const mod of (ts.canHaveModifiers(node) && ts.getModifiers(node)) || []) {
+      flags.any = true
+      switch (mod.kind) {
+        case ts.SyntaxKind.PrivateKeyword:
+          flags.private = true
+          break
+        case ts.SyntaxKind.ReadonlyKeyword:
+          flags.readonly = true
+          break
+        case ts.SyntaxKind.PublicKeyword:
+          break
+        case ts.SyntaxKind.ProtectedKeyword:
+          this.error(mod, "'protected' is not supported in Ore, which has no inheritance. Use 'private'.")
+          break
+        case ts.SyntaxKind.StaticKeyword:
+          this.error(mod, "Static members are not supported yet. Use top-level functions and constants.")
+          break
+        default:
+          this.error(mod, `Modifier '${mod.getText()}' is not allowed here.`)
+      }
+    }
+    return flags
+  }
+
+  /** Checks field initializers and infers the types of fields without annotations. */
+  private checkFieldInitializers(info: ClassInfo, scope: Scope) {
+    // Initializers run before the constructor body but cannot use `this`.
+    this.fn = { result: types.void, loops: [], nextLoopId: 0, fieldInit: true }
+    for (const init of info.inits) {
+      const index = info.type.fields.findIndex((f) => f.name === init.name)
+      const field = info.type.fields[index]!
+      const declared = field.type.kind === "void" ? undefined : field.type
+      const value = this.checkExpr(init.node, scope, declared)
+      if (declared) init.value = this.coerce(value, declared, init.node)
+      else if (value.k !== "error") {
+        init.value = this.toDefault(value, init.node)
+        info.type.fields[index] = { ...field, type: init.value.type }
+        const decl = this.memberDecls.get(info.type)!.get(init.name) as ts.PropertyDeclaration
+        this.info.types.set(decl.name, init.value.type)
+      }
+    }
+    this.fn = undefined
+  }
+
+  private checkClassBodies(info: ClassInfo, outer: Scope) {
+    const { type } = info
+    const ctor = type.ctor!
+    const self = info.ctorThis
+    const thisRef: ir.Expr = { k: "local", type, local: self }
+    const setField = (name: string, value: ir.Expr): ir.Stmt => ({
+      k: "expr",
+      expr: { k: "assign", type: value.type, target: { k: "field", object: thisRef, name }, value },
+    })
+
+    // Constructor: allocate, assign parameter properties, run field initializers, then the body.
+    const body: ir.Stmt[] = [{ k: "let", local: self, init: { k: "alloc", type } }]
+    for (const p of info.paramProps) body.push(setField(p.name, { k: "local", type: p.type, local: p }))
+    for (const init of info.inits) if (init.value) body.push(setField(init.name, init.value))
+    if (info.ctorDecl) {
+      const scope = this.paramScope(info.ctorDecl.parameters, ctor.params, outer)
+      this.fn = { result: types.void, loops: [], nextLoopId: 0, this: self, cls: type, ctor: true }
+      body.push(...this.checkBlock(info.ctorDecl.body!, scope).body)
+      this.fn = undefined
+    }
+    body.push({ k: "return", value: thisRef })
+    ctor.body = { k: "block", body }
+
+    // Fields of reference types have no zero value and must be set in the constructor.
+    const assigned = new Set([...info.paramProps.map((p) => p.name), ...info.inits.map((i) => i.name)])
+    for (const stmt of info.ctorDecl?.body?.statements ?? []) {
+      if (!ts.isExpressionStatement(stmt) || !ts.isBinaryExpression(stmt.expression)) continue
+      const { left, operatorToken } = stmt.expression
+      if (operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(left) && left.expression.kind === ts.SyntaxKind.ThisKeyword) {
+        assigned.add(left.name.text)
+      }
+    }
+    for (const field of type.fields) {
+      if (!hasZeroValue(field.type) && !assigned.has(field.name)) {
+        const decl = this.memberDecls.get(type)!.get(field.name) as ts.PropertyDeclaration
+        this.error(decl.name, `Field '${field.name}' of type '${typeToString(field.type)}' must be initialized in its declaration or at the top level of the constructor.`)
+      }
+    }
+
+    for (const [decl, func] of info.methods) {
+      const scope = this.paramScope(decl.parameters, func.params, outer)
+      this.fn = { result: func.type.result, loops: [], nextLoopId: 0, this: func.receiver, cls: type }
+      func.body = this.checkBlock(decl.body!, scope)
+      this.fn = undefined
+      this.checkReturns(func, decl.type ?? decl.name)
+    }
+  }
+
+  /** Reports access to a private member from outside its class. */
+  private checkAccess(struct: StructType, member: { private?: boolean }, name: string, node: ts.Node): boolean {
+    if (!member.private || this.fn?.cls === struct) return true
+    this.error(node, `'${name}' is private and only accessible inside class '${struct.name}'.`)
+    return false
   }
 
   private checkTopLevelVariables(stmt: ts.VariableStatement, scope: Scope) {
@@ -212,7 +477,6 @@ class Checker {
 
   private unsupportedTopLevel(stmt: ts.Statement): string {
     if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) return "Imports and re-exports are not supported yet."
-    if (ts.isClassDeclaration(stmt)) return "Classes are not supported yet."
     if (ts.isInterfaceDeclaration(stmt)) return "Interfaces are not supported yet."
     if (ts.isEnumDeclaration(stmt)) return "Enums are not supported in Ore. Use a union of literal types."
     if (ts.isModuleDeclaration(stmt)) return "Namespaces are not supported in Ore. Use modules."
@@ -279,8 +543,14 @@ class Checker {
       const type = this.resolveValueType(member.type, scope)
       const readonly = member.modifiers?.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword) ?? false
       if (type) fields.push({ name, type, readonly })
+      if (type) this.info.types.set(member.name, type)
     }
-    return this.shape(fields)
+    const shape = this.shape(fields)
+    // The first declaration of a shape is where its fields are defined.
+    if (!this.memberDecls.has(shape)) {
+      this.memberDecls.set(shape, new Map(node.members.flatMap((m) => (m.name && ts.isIdentifier(m.name) ? [[m.name.text, m] as const] : []))))
+    }
+    return shape
   }
 
   /** The interned anonymous struct type with these fields. */
@@ -289,7 +559,7 @@ class Checker {
     const key = sorted.map((f) => `${f.readonly ? "readonly " : ""}${f.name}:${typeKey(f.type)}`).join(";")
     let struct = this.shapes.get(key)
     if (!struct) {
-      struct = { kind: "struct", id: this.nextStructId++, name: undefined, fields: sorted }
+      struct = { kind: "struct", id: this.nextStructId++, name: undefined, nominal: false, fields: sorted, methods: [] }
       this.shapes.set(key, struct)
       this.module.structs.push(struct)
     }
@@ -518,7 +788,12 @@ class Checker {
   }
 
   private checkReturn(stmt: ts.ReturnStatement, scope: Scope): ir.ReturnStmt {
-    const result = this.fn!.result
+    const fn = this.fn!
+    if (fn.ctor) {
+      if (stmt.expression) this.error(stmt.expression, "A constructor cannot return a value.")
+      return { k: "return", value: { k: "local", type: fn.this!.type, local: fn.this! } }
+    }
+    const result = fn.result
     if (!stmt.expression) {
       if (result.kind !== "void") this.error(stmt, `A return value of type '${typeToString(result)}' is required.`)
       return { k: "return" }
@@ -562,6 +837,12 @@ class Checker {
       return typed({ k: "bool", type: types.bool, value: node.kind === ts.SyntaxKind.TrueKeyword })
     }
     if (ts.isIdentifier(node)) return this.checkIdentifier(node, scope)
+    if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      const self = this.fn?.this
+      if (!self) return this.fail(node, this.fn?.fieldInit ? "Field initializers cannot use 'this'." : "'this' can only be used inside a class.")
+      return typed({ k: "local", type: self.type, local: self })
+    }
+    if (ts.isNewExpression(node)) return this.checkNew(node, scope)
     if (ts.isBinaryExpression(node)) return this.checkBinary(node, scope)
     if (ts.isPrefixUnaryExpression(node)) return this.checkPrefixUnary(node, scope)
     if (ts.isPostfixUnaryExpression(node)) return this.checkIncDec(node.operand, node.operator, false, scope)
@@ -588,6 +869,8 @@ class Checker {
         return typed({ k: "local", type: symbol.local.type, local: symbol.local })
       case "const":
         return symbol.value
+      case "class":
+        return this.fail(node, `'${node.text}' is a class. Create an instance with 'new ${node.text}(...)'.`)
       default:
         return this.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)
     }
@@ -735,9 +1018,14 @@ class Checker {
       if (target.k !== "typed") return undefined
       const object = target.expr
       const name = node.name.text
-      const field = object.type.kind === "struct" ? findField(object.type, name) : undefined
-      if (!field) return this.error(node.name, `Property '${name}' does not exist on type '${typeToString(object.type)}'.`), undefined
-      if (field.readonly) return this.error(node.name, `Cannot assign to '${name}' because it is a read-only property.`), undefined
+      const struct = object.type.kind === "struct" ? object.type : undefined
+      const field = struct && findField(struct, name)
+      if (!struct || !field) return this.error(node.name, `Property '${name}' does not exist on type '${typeToString(object.type)}'.`), undefined
+      this.defineMember(node.name, struct, name)
+      if (!this.checkAccess(struct, field, name, node.name)) return undefined
+      // A constructor may initialize the read-only fields of its own instance.
+      const initializing = this.fn?.ctor && this.fn.cls === struct && object.k === "local" && object.local === this.fn.this
+      if (field.readonly && !initializing) return this.error(node.name, `Cannot assign to '${name}' because it is a read-only property.`), undefined
       this.info.types.set(node, field.type)
       return { lvalue: { k: "field", object, name }, type: field.type }
     }
@@ -831,17 +1119,36 @@ class Checker {
         }
         return typed({ k: "builtin", type: types.void, name: symbol.name, args: values })
       }
-      case "func": {
-        const func = symbol.func
-        if (args.length !== func.params.length) {
-          return this.fail(node, `Function '${func.sourceName}' expects ${func.params.length} argument(s), got ${args.length}.`)
-        }
-        const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope, func.type.params[i]), func.type.params[i]!, arg))
-        return typed({ k: "call", type: func.type.result, func, args: values })
-      }
+      case "func":
+        return this.callFunc(symbol.func, args, node, scope, `Function '${symbol.func.sourceName}'`)
+      case "class":
+        return this.fail(callee, `Class '${callee.text}' must be instantiated with 'new ${callee.text}(...)'.`)
       default:
         return this.fail(callee, `'${callee.text}' is not a function.`)
     }
+  }
+
+  private checkNew(node: ts.NewExpression, scope: Scope): Operand {
+    if (node.typeArguments) return this.fail(node.typeArguments[0]!, "Type arguments are not supported yet.")
+    if (!ts.isIdentifier(node.expression)) return this.fail(node.expression, "Only named classes can be instantiated.")
+    const name = node.expression.text
+    const symbol = scope.lookupType(name)
+    const type = symbol?.type
+    if (!type || type.kind !== "struct" || !type.nominal) return this.fail(node.expression, `'${name}' is not a class.`)
+    this.info.definitions.set(node.expression, symbol.decl)
+    return this.callFunc(type.ctor!, node.arguments ?? [], node, scope, `Constructor of '${name}'`)
+  }
+
+  /** A checked call of a function or method with arguments converted to its parameters. */
+  private callFunc(func: ir.Func, args: readonly ts.Expression[], node: ts.Node, scope: Scope, what: string, receiver?: ir.Expr): Operand {
+    for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
+    if (args.length !== func.params.length) {
+      return this.fail(node, `${what} expects ${func.params.length} argument(s), got ${args.length}.`)
+    }
+    const params = func.type.params
+    const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope, params[i]), params[i]!, arg))
+    if (receiver) return typed({ k: "method-call", type: func.type.result, func, receiver, args: values })
+    return typed({ k: "call", type: func.type.result, func, args: values })
   }
 
   private checkArrayLiteral(node: ts.ArrayLiteralExpression, scope: Scope, expected: Type | undefined): Operand {
@@ -950,8 +1257,14 @@ class Checker {
     const name = node.name.text
     if (name === "length" && (value.type.kind === "string" || value.type.kind === "array")) return typed({ k: "len", type: types.i64, value })
     if (value.type.kind === "struct") {
-      const field = findField(value.type, name)
-      if (field) return typed({ k: "field", type: field.type, object: value, name })
+      const struct = value.type
+      const field = findField(struct, name)
+      this.defineMember(node.name, struct, name)
+      if (field) {
+        if (!this.checkAccess(struct, field, name, node.name)) return errorOperand
+        return typed({ k: "field", type: field.type, object: value, name })
+      }
+      if (findMethod(struct, name)) return this.fail(node.name, `Method '${name}' must be called; method values are not supported yet.`)
     }
     return this.fail(node.name, `Property '${name}' does not exist on type '${typeToString(value.type)}'.`)
   }
@@ -987,6 +1300,15 @@ class Checker {
     const args = node.arguments
     const type = value.type
 
+    if (type.kind === "struct") {
+      const method = findMethod(type, name)
+      if (method) {
+        this.defineMember(callee.name, type, name)
+        if (!this.checkAccess(type, method, name, callee.name)) return errorOperand
+        return this.callFunc(method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
+      }
+      if (findField(type, name)) return this.fail(callee.name, `Field '${name}' is not a method.`)
+    }
     if (type.kind === "array" && name === "push") {
       const values: ir.Expr[] = []
       for (const arg of args) {
@@ -1006,6 +1328,12 @@ class Checker {
       return typed({ k: "slice", type, value, start: offsets[0], end: offsets[1] })
     }
     return this.fail(callee.name, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+  }
+
+  /** Records the declaration of a field or method for go to definition. */
+  private defineMember(node: ts.MemberName, struct: StructType, name: string) {
+    const decl = this.memberDecls.get(struct)?.get(name)
+    if (decl && ts.isIdentifier(node)) this.info.definitions.set(node, decl)
   }
 
   // ---------------------------------------------------------------------------

@@ -25,6 +25,8 @@ export interface Func {
   line: number
   type: FuncType
   params: Local[]
+  /** `this` of a method, passed before the parameters. */
+  receiver?: Local
   body: Block
   exported: boolean
 }
@@ -142,6 +144,8 @@ export type Expr =
   | Pop
   | ObjectLit
   | FieldGet
+  | Alloc
+  | MethodCall
 
 export interface IntLit {
   k: "int"
@@ -338,4 +342,19 @@ export interface FieldGet {
   type: Type
   object: Expr
   name: string
+}
+
+/** A new zeroed instance of a struct; used at the start of constructors. */
+export interface Alloc {
+  k: "alloc"
+  type: StructType
+}
+
+/** A direct call of a class method. */
+export interface MethodCall {
+  k: "method-call"
+  type: Type
+  func: Func
+  receiver: Expr
+  args: Expr[]
 }
