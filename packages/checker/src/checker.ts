@@ -618,7 +618,12 @@ class Checker {
       case "conversion": {
         if (args.length !== 1) return this.fail(node, `Conversion '${callee.text}' expects exactly 1 argument, got ${args.length}.`)
         const target = symbol.type
-        const value = this.checkExpr(args[0]!, scope)
+        let value = this.checkExpr(args[0]!, scope)
+        if (value.k === "untyped-float" && target.kind === "int") {
+          // Converting a float constant to an integer truncates toward zero, then range-checks.
+          if (!Number.isFinite(value.value)) return this.fail(args[0]!, `Cannot convert ${value.value} to '${target.name}'.`)
+          value = { k: "untyped-int", value: BigInt(Math.trunc(value.value)) }
+        }
         if (value.k !== "typed") return typed(this.coerce(value, target, args[0]!))
         const from = typeOf(value.expr)
         if (!isNumeric(from) || !isNumeric(target)) {

@@ -66,6 +66,11 @@ describe("conversions", () => {
     expect(errors("let a = u8(300)")).toEqual(["Constant 300 overflows 'u8' (range 0..255)."])
   })
 
+  test("float constants are truncated by integer conversions", () => {
+    ok("let a: i32 = i32(2.7); let b: i8 = i8(-128.9)")
+    expect(errors("let a = u8(256.5)")).toEqual(["Constant 256 overflows 'u8' (range 0..255)."])
+  })
+
   test("number is f64", () => {
     ok("let a: number = 1.5; let b: f64 = a")
   })
