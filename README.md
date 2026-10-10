@@ -105,9 +105,11 @@ memory.
 **Generics.** Functions, classes, interfaces and type aliases, with inferred
 type arguments and `extends` constraints, compiled per instance.
 
-**Functions.** Closures capture by reference as in JavaScript, methods can be
-used as values, nested functions are hoisted, and `using` disposes resources
-at the end of a block, like Go's `defer`:
+**Functions.** Default, optional and rest parameters, destructuring
+(`function f({ x, y }: Point)`, `[a, b] = [b, a]`), closures that capture by
+reference as in JavaScript, methods as values, getters and setters, generic
+methods, and `using`, which disposes resources at the end of a block, like
+Go's `defer`:
 
 ```ts
 function copy(from: string, to: string): Error | null {
@@ -120,6 +122,10 @@ function copy(from: string, to: string): Error | null {
 **Scripts.** A program is the top-level code of its files, run in import
 order; there is no `main`. Top-level variables that functions use are
 globals.
+
+**Typed JSON.** `JSON.stringify(value)` works on any data type, and
+`JSON.parse<Config>(text)` returns a `Config` or an `Error` that says what is
+wrong and where (`expected a string, got a number at .tags[1]`).
 
 **Built-ins in namespaces.** `console.log`, `process.args`, `Math.sqrt`,
 `Number.parseInt`, `fs.readFile`, `Date.now`. No bare globals.
@@ -227,7 +233,7 @@ member completion. Another binary can be set in Zed settings:
 | 7. Concurrency: tasks, `Chan<T>`, `select` on green threads | done |
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis and inlining (done); precise GC, LLVM backend | in progress |
-| 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | in progress |
+| 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
 | 9. Self-hosting | planned |
 
 ### Known limitations
@@ -238,9 +244,8 @@ member completion. Another binary can be set in Zed settings:
   whole OS thread while it runs.
 - A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
   recursion in a task can overflow it.
-- No destructuring, default or rest parameters, generic methods, getters and
-  setters or `JSON` yet (being addressed in 8.5); no numeric literal types
-  (`1 | 2`); case mapping of strings covers ASCII only.
+- No numeric literal types (`1 | 2`), static members or class inheritance;
+  case mapping of strings covers ASCII only.
 - A generic function or class that is never used is parsed but not checked.
 - The language server has no rename or find references yet; only Zed has an
   extension.

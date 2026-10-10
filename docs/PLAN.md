@@ -179,7 +179,7 @@ work.**
 - LLVM or Cranelift backend.
 - `try` / `catch` if it turns out to be needed.
 
-### Phase 8.5: Language completeness
+### Phase 8.5: Language completeness (done)
 - Destructuring of objects and arrays in declarations, parameters, `for-of`
   and assignments.
 - Default and rest parameters.
