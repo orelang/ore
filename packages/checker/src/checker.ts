@@ -1090,6 +1090,7 @@ class Checker {
   /** The name of a property; computed and private names are rejected. */
   private memberName(name: ts.PropertyName): string | undefined {
     if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text
+    if (ts.isComputedPropertyName(name) && isSymbolDispose(name.expression)) return disposeName
     if (ts.isPrivateIdentifier(name)) this.error(name, "'#' private names are not supported. Use the 'private' modifier.")
     else this.error(name, "Computed property names are not supported.")
     return undefined
@@ -1118,7 +1119,7 @@ class Checker {
       const nested = block.statements.filter(ts.isFunctionDeclaration)
       const locals = nested.map((decl) => this.declareNestedFunction(decl, inner))
       const statements: ir.Stmt[] = []
-      for (const stmt of block.statements) if (!ts.isFunctionDeclaration(stmt)) this.checkStmt(stmt, inner, statements)
+      this.checkStatements(block.statements.filter((s) => !ts.isFunctionDeclaration(s)), inner, statements)
 
       const creations: ir.Stmt[] = []
       const captured = new Set<ir.Local>()
@@ -1144,6 +1145,69 @@ class Checker {
       body.push(...boxes, ...creations, ...statements)
     })
     return { k: "block", body }
+  }
+
+  /**
+   * Checks statements of a block. A `using` declaration takes the statements
+   * after it as its body, so that its resource is disposed when they end.
+   */
+  private checkStatements(stmts: readonly ts.Statement[], scope: Scope, out: ir.Stmt[]) {
+    for (const [i, stmt] of stmts.entries()) {
+      if (ts.isVariableStatement(stmt) && stmt.declarationList.flags & ts.NodeFlags.Using) {
+        this.checkUsing(stmt, stmts.slice(i + 1), scope, out)
+        return
+      }
+      this.checkStmt(stmt, scope, out)
+    }
+  }
+
+  private checkUsing(stmt: ts.VariableStatement, rest: readonly ts.Statement[], scope: Scope, out: ir.Stmt[]) {
+    // After an error, the rest of the block is still checked.
+    const fail = (node: ts.Node, message: string) => {
+      this.error(node, message)
+      this.checkStatements(rest, scope, out)
+    }
+    const decls = stmt.declarationList.declarations
+    if ((stmt.declarationList.flags & ts.NodeFlags.AwaitUsing) === ts.NodeFlags.AwaitUsing) return fail(stmt, "'await using' is not supported in Ore.")
+    if (decls.length !== 1) return fail(stmt, "Declare one resource per 'using'.")
+    const decl = decls[0]!
+    if (!ts.isIdentifier(decl.name) || !decl.initializer) return fail(decl, "'using' needs a name and an initializer.")
+    const declared = decl.type ? this.resolveValueType(decl.type, scope) : undefined
+    const value = this.checkExpr(decl.initializer, scope, declared)
+    if (value.k === "error") return this.checkStatements(rest, scope, out)
+    const init = declared ? this.coerce(value, declared, decl.initializer) : this.toDefault(value, decl.initializer)
+    const local = this.newLocal(decl.name.text, init.type, false)
+    if (!scope.declareValue(local.name, { k: "local", local, decl })) this.error(decl.name, `Cannot redeclare '${local.name}' in the same scope.`)
+    this.info.types.set(decl.name, local.type)
+
+    // The resource, or null, must have `[Symbol.dispose](): void`.
+    const resource = this.without(local.type, (m) => m.kind === "null")
+    const ref: ir.Expr = { k: "local", type: local.type, local }
+    const target: ir.Expr = sameType(resource, local.type) ? ref : { k: "recast", type: resource, value: ref }
+    const call = this.disposeCall(target)
+    if (!call) return fail(decl.initializer, `Type '${typeToString(resource)}' is not disposable: it needs a '[Symbol.dispose](): void' method.`)
+    const callStmt: ir.Stmt = { k: "expr", expr: call }
+    const dispose: ir.Stmt = sameType(resource, local.type)
+      ? callStmt
+      : { k: "if", cond: { k: "not", type: types.bool, operand: { k: "is-null", type: types.bool, value: ref } }, then: callStmt }
+    const body: ir.Stmt[] = []
+    this.checkStatements(rest, scope, body)
+    out.push({ k: "using", local, init, dispose, body, line: this.line(stmt) })
+  }
+
+  /** A call of `[Symbol.dispose]()` on a value, if its type has that method. */
+  private disposeCall(value: ir.Expr): ir.Expr | undefined {
+    const type = value.type
+    if (type.kind === "struct") {
+      const method = findMethod(type, disposeName)
+      if (method && method.func.params.length === 0) return { k: "method-call", type: method.func.type.result, func: method.func, receiver: value, args: [] }
+    }
+    if (type.kind === "interface") {
+      const index = type.members.findIndex((m) => m.name === disposeName)
+      const member = type.members[index]
+      if (member?.k === "method" && member.type.params.length === 0) return { k: "iface-call", type: member.type.result, value, index, method: member.type, args: [] }
+    }
+    return undefined
   }
 
   /** Declares a local for a nested function declaration, typed by its annotations. */
@@ -1267,7 +1331,7 @@ class Checker {
   private checkVariables(list: ts.VariableDeclarationList, scope: Scope, out: ir.Stmt[]) {
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0
     if (!isConst && !(list.flags & ts.NodeFlags.Let)) {
-      if (list.flags & (ts.NodeFlags.Using | ts.NodeFlags.AwaitUsing)) return this.error(list, "'using' is not supported yet.")
+      if (list.flags & (ts.NodeFlags.Using | ts.NodeFlags.AwaitUsing)) return this.error(list, "'using' must be a statement directly in a block.")
       return this.error(list, "'var' is not supported in Ore. Use 'let' or 'const'.")
     }
     for (const decl of list.declarations) {
@@ -2113,6 +2177,13 @@ class Checker {
     let symbol: ValueSymbol | undefined
     let name: string
     let nameNode: ts.Node
+    if (ts.isElementAccessExpression(callee) && isSymbolDispose(callee.argumentExpression)) {
+      if (node.arguments.length > 0) return this.fail(node, "'[Symbol.dispose]' takes no arguments.")
+      const target = this.checkExpr(callee.expression, scope)
+      if (target.k !== "typed") return target.k === "error" ? target : this.fail(callee.expression, "A constant is not disposable.")
+      const call = this.disposeCall(target.expr)
+      return call ? typed(call) : this.fail(callee, `Type '${typeToString(target.expr.type)}' has no '[Symbol.dispose]' method.`)
+    }
     if (ts.isPropertyAccessExpression(callee)) {
       // `console.log(...)`: a member of a namespace, or else a method call.
       const ns = ts.isIdentifier(callee.expression) ? scope.lookupValue(callee.expression.text) : undefined
@@ -2914,6 +2985,13 @@ const compareOps = new Map<ts.SyntaxKind, ir.CompareOp>([
 /** `null` before it gets a union type from the context. */
 const nullOperand = { k: "null", type: types.null } as unknown as ir.Expr
 
+/** The member name of `[Symbol.dispose]`. */
+const disposeName = "[Symbol.dispose]"
+
+function isSymbolDispose(node: ts.Expression): boolean {
+  return ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Symbol" && node.name.text === "dispose"
+}
+
 /** Built-in functions that moved into namespaces. */
 const renamed: Record<string, string> = { println: "console.log", print: "console.write", panic: "process.panic" }
 
@@ -3062,6 +3140,8 @@ function terminates(stmt: ir.Stmt): boolean {
       return stmt.cond === undefined && !breaks(stmt.body, stmt.id, false)
     case "expr":
       return stmt.expr.type.kind === "never"
+    case "using":
+      return stmt.body.some(terminates)
     case "switch": {
       // Without a default, no clause may run. Otherwise execution ends at the
       // end of the last clause, unless a break exits the switch.
@@ -3092,6 +3172,8 @@ function breaks(stmt: ir.Stmt, loopId: number, nested: boolean): boolean {
       return breaks(stmt.body, loopId, true)
     case "switch":
       return stmt.clauses.some((c) => c.body.some((s) => breaks(s, loopId, true)))
+    case "using":
+      return stmt.body.some((s) => breaks(s, loopId, nested))
     default:
       return false
   }

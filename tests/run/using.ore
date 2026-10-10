@@ -1,0 +1,46 @@
+class Resource {
+  constructor(public name: string) {
+    console.log(`open ${name}`)
+  }
+
+  [Symbol.dispose](): void {
+    console.log(`close ${this.name}`)
+  }
+}
+
+function work(fail: bool): int {
+  using a = new Resource("a")
+  using b = new Resource("b")
+  if (fail) return -1
+  console.log("working")
+  return 1
+}
+
+function loop(): void {
+  for (let i = 0; i < 3; i++) {
+    using r = new Resource(`loop ${i}`)
+    if (i === 0) continue
+    if (i === 1) break
+  }
+  console.log("after loop")
+}
+
+function maybe(r: Resource | null): void {
+  using x = r
+  console.log("maybe")
+}
+
+function viaInterface(d: Disposable): void {
+  using x = d
+}
+
+export function main() {
+  console.log(work(false))
+  console.log(work(true))
+  loop()
+  maybe(null)
+  maybe(new Resource("m"))
+  viaInterface(new Resource("i"))
+  const manual = new Resource("manual")
+  manual[Symbol.dispose]()
+}

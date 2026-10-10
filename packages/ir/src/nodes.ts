@@ -63,7 +63,7 @@ interface StmtBase {
   line?: number
 }
 
-export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | SwitchStmt | BreakStmt | ContinueStmt | ReturnStmt
+export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | SwitchStmt | UsingStmt | BreakStmt | ContinueStmt | ReturnStmt
 
 export interface Block extends StmtBase {
   k: "block"
@@ -142,6 +142,19 @@ export interface SwitchStmt extends StmtBase {
   local: Local
   value: Expr
   clauses: { test?: Expr; body: Stmt[] }[]
+}
+
+/**
+ * `using local = init` followed by the rest of its block in `body`: `dispose`
+ * runs whenever control leaves `body`, by its end, `return`, `break` or
+ * `continue`.
+ */
+export interface UsingStmt extends StmtBase {
+  k: "using"
+  local: Local
+  init: Expr
+  dispose: Stmt
+  body: Stmt[]
 }
 
 /** Exits the innermost loop or switch, or the one with id `target` for a labeled break. */

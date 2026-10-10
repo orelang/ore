@@ -43,6 +43,31 @@ const frame = "ore_frame_"
 /** The function being emitted; decides how locals are accessed. */
 let current: ir.Func | undefined
 
+/** Loops and switches being emitted, innermost last, for `break` and `continue`. */
+let breakables: { id: number; isSwitch: boolean }[] = []
+
+/** `using` resources whose bodies are being emitted, with the breakables open at their declaration. */
+let disposals: { stmt: ir.Stmt; depth: number; ctx: Context; indent: number }[] = []
+
+/** Runs while emitting the body of a loop or switch. */
+function inBreakable<T>(id: number, isSwitch: boolean, emit: () => T): T {
+  breakables.push({ id, isSwitch })
+  try {
+    return emit()
+  } finally {
+    breakables.pop()
+  }
+}
+
+/** C disposing the `using` resources declared inside breakable `index` (all of them for -1), innermost first. */
+function disposeFrom(index: number): string {
+  return disposals
+    .filter((d) => d.depth > index)
+    .reverse()
+    .map((d) => emitStmt(d.stmt, d.indent, d.ctx))
+    .join(" ")
+}
+
 /** Whether a local lives in a heap box: captured by a closure and assigned after its declaration. */
 function boxed(local: ir.Local): boolean {
   return local.captured === true && local.assigned === true
@@ -81,6 +106,8 @@ function emitEnv(func: ir.Func): string {
 function emitFunction(ctx: Context): string {
   const { func } = ctx
   current = func
+  breakables = []
+  disposals = []
   const lines = func.body.body.map((s) => emitLine(s, 0, ctx))
   // Parameters captured and assigned by closures move into boxes.
   for (const p of [...func.params].reverse()) if (boxed(p)) lines.unshift(`  ${declare(p, `${localName(p)}_arg`)}`)
@@ -388,7 +415,7 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
     case "loop": {
       // A labeled continue jumps to the end of the body, so the update and
       // condition still run; a labeled break jumps past the loop.
-      const lines = (stmt.body.k === "block" ? stmt.body.body : [stmt.body]).map((s) => emitLine(s, depth, ctx))
+      const lines = inBreakable(stmt.id, false, () => (stmt.body.k === "block" ? stmt.body.body : [stmt.body]).map((s) => emitLine(s, depth, ctx)))
       if (stmt.labeled) lines.push(`${indent(depth + 1)}continue_${stmt.id}:;`)
       const body = lines.length === 0 ? "{}" : `{\n${lines.join("\n")}\n${indent(depth)}}`
       const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
@@ -400,7 +427,7 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       return `for (; ${cond}; ${update}) ${body}${after}`
     }
     case "for-of": {
-      const lines = (stmt.body.k === "block" ? stmt.body.body : [stmt.body]).map((s) => emitLine(s, depth + 1, ctx))
+      const lines = inBreakable(stmt.id, false, () => (stmt.body.k === "block" ? stmt.body.body : [stmt.body]).map((s) => emitLine(s, depth + 1, ctx)))
       if (stmt.labeled) lines.push(`${indent(depth + 2)}continue_${stmt.id}:;`)
       const elem = cType(stmt.local.type)
       const it = temp()
@@ -431,7 +458,7 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       const fallback = stmt.clauses.findIndex((c) => !c.test)
       const select = [...tests, `${index} = ${fallback};`].join(" else ")
       const pad = indent(depth + 1)
-      const cases = stmt.clauses.flatMap((c, i) => [`${pad}case ${i}: {}`, ...c.body.map((s) => emitLine(s, depth, ctx))])
+      const cases = inBreakable(stmt.id, true, () => stmt.clauses.flatMap((c, i) => [`${pad}case ${i}: {}`, ...c.body.map((s) => emitLine(s, depth, ctx))]))
       const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
       return [
         "{",
@@ -445,14 +472,35 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       ].join("\n")
     }
     case "break":
-      return stmt.target === undefined ? "break;" : `goto break_${stmt.target};`
-    case "continue":
-      return stmt.target === undefined ? "continue;" : `goto continue_${stmt.target};`
+    case "continue": {
+      // Resources declared inside the loop or switch being left are disposed first.
+      const index =
+        stmt.target !== undefined
+          ? breakables.findIndex((b) => b.id === stmt.target)
+          : stmt.k === "break"
+            ? breakables.length - 1
+            : breakables.findLastIndex((b) => !b.isSwitch)
+      const jump = stmt.target === undefined ? `${stmt.k};` : `goto ${stmt.k}_${stmt.target};`
+      const cleanup = disposeFrom(index)
+      return cleanup ? `{ ${cleanup} ${jump} }` : jump
+    }
     case "return": {
-      if (!ctx.debug) return stmt.value ? `return ${emitExpr(stmt.value)};` : "return;"
-      // Pop the frame after evaluating the value, which may call other functions.
-      if (!stmt.value) return `{ ore_rt_top = ${frame}.prev; return; }`
-      return `{ ${cType(stmt.value.type)} ore_ret_ = ${emitExpr(stmt.value)}; ore_rt_top = ${frame}.prev; return ore_ret_; }`
+      // The value is computed before resources are disposed and the frame is popped.
+      const cleanup = [disposeFrom(-1), ctx.debug ? `ore_rt_top = ${frame}.prev;` : ""].filter(Boolean).join(" ")
+      if (!stmt.value) return cleanup ? `{ ${cleanup} return; }` : "return;"
+      if (!cleanup) return `return ${emitExpr(stmt.value)};`
+      return `{ ${cType(stmt.value.type)} ore_ret_ = ${emitExpr(stmt.value)}; ${cleanup} return ore_ret_; }`
+    }
+    case "using": {
+      const pad = indent(depth + 1)
+      disposals.push({ stmt: stmt.dispose, depth: breakables.length, ctx, indent: depth + 1 })
+      let body: string[]
+      try {
+        body = stmt.body.map((s) => emitLine(s, depth, ctx))
+      } finally {
+        disposals.pop()
+      }
+      return ["{", `${pad}${declare(stmt.local, emitExpr(stmt.init))}`, ...body, `${pad}${emitStmt(stmt.dispose, depth + 1, ctx)}`, `${indent(depth)}}`].join("\n")
     }
   }
 }
