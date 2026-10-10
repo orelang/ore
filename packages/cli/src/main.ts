@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 import { check } from "@ore/checker"
 import { build, ToolError } from "@ore/driver"
+import { serve } from "@ore/lsp"
 import { formatDiagnostic, parse, type Diagnostic } from "@ore/syntax"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { parseArgs } from "node:util"
+import { createConnection } from "vscode-languageserver/node"
 import pkg from "../package.json" with { type: "json" }
 
 const usage = `Ore ${pkg.version}
@@ -17,6 +19,7 @@ Usage:
       --release                  Optimize instead of building with debug info
       --emit-c <path>            Also write the generated C
   ore check <file.ore>           Report errors without building
+  ore lsp                        Start the language server on stdio
   ore version                    Print the version
   ore help                       Print this help
 `
@@ -30,6 +33,9 @@ async function main(argv: string[]): Promise<number> {
       return buildCommand(rest)
     case "check":
       return checkCommand(rest)
+    case "lsp":
+      serve(createConnection(process.stdin, process.stdout), pkg.version)
+      return new Promise(() => {})
     case "version":
     case "--version":
       console.log(pkg.version)
