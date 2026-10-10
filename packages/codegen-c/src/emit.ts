@@ -1101,9 +1101,24 @@ function emitConvert(expr: ir.Convert): string {
   return `((${expr.type.name})${value})`
 }
 
+/** C for built-in functions other than printing, by name, given C for their arguments. */
+const builtins: Record<string, (a: string[], expr: ir.BuiltinCall) => string> = {
+  "process.panic": (a) => `ore_rt_panic(${a[0]})`,
+  "process.exit": (a) => `ore_rt_exit(${a[0]})`,
+  "Math.abs": (a, e) => (e.type.kind === "float" ? `fabs(${a[0]})` : `({ ${cType(e.type)} x_ = ${a[0]}; (${cType(e.type)})(x_ < 0 ? -x_ : x_); })`),
+  "Math.min": (a, e) => `({ ${cType(e.type)} a_ = ${a[0]}, b_ = ${a[1]}; ${e.type.kind === "float" ? "a_ != a_ || b_ != b_ ? NAN : " : ""}(b_ < a_ ? b_ : a_); })`,
+  "Math.max": (a, e) => `({ ${cType(e.type)} a_ = ${a[0]}, b_ = ${a[1]}; ${e.type.kind === "float" ? "a_ != a_ || b_ != b_ ? NAN : " : ""}(b_ > a_ ? b_ : a_); })`,
+  "Math.round": (a) => `ore_rt_round(${a[0]})`,
+  "Math.sign": (a) => `({ f64 x_ = ${a[0]}; x_ > 0 ? 1.0 : x_ < 0 ? -1.0 : x_; })`,
+  "Math.random": () => "ore_rt_random()",
+}
+for (const f of ["sqrt", "cbrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot", "floor", "ceil", "trunc"]) {
+  builtins[`Math.${f}`] = (a) => `${f}(${a.join(", ")})`
+}
+
 function emitBuiltin(expr: ir.BuiltinCall): string {
-  if (expr.name === "process.panic") return `ore_rt_panic(${emitExpr(expr.args[0]!)})`
-  if (expr.name === "process.exit") return `ore_rt_exit(${emitExpr(expr.args[0]!)})`
+  const special = builtins[expr.name]
+  if (special) return inOrder(expr.args, (a) => special(a, expr))
   const parts: string[] = []
   if (expr.name === "console.error") parts.push("ore_rt_print_to(2)")
   expr.args.forEach((arg, i) => {

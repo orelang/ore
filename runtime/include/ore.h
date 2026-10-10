@@ -6,6 +6,7 @@
 #ifndef ORE_H
 #define ORE_H
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -37,6 +38,11 @@ typedef struct {
   void *fn;
   void *env;
 } ore_closure;
+
+/** Math.round: half up, toward +Infinity, as in JavaScript. */
+f64 ore_rt_round(f64 x);
+/** A pseudo-random number in [0, 1). */
+f64 ore_rt_random(void);
 
 /** A new heap box holding a copy of the `size` bytes at `p`; used for per-iteration loop variables. */
 void *ore_rt_box_copy(void *p, i64 size);

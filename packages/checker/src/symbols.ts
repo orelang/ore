@@ -2,7 +2,8 @@ import type { Func, InterfaceType, Local, StructType, Type } from "@ore/ir"
 import type ts from "typescript"
 import type { Operand } from "./operand"
 
-export type BuiltinFunc = "console.log" | "console.write" | "console.error" | "process.panic" | "process.exit"
+/** A built-in function by its qualified name, such as `Math.sqrt`. */
+export type BuiltinFunc = string
 
 /** A declaration with type parameters, and its instances by type arguments. */
 export interface Generic {

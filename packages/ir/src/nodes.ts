@@ -342,7 +342,8 @@ export interface Call {
   args: Expr[]
 }
 
-export type BuiltinName = "console.log" | "console.write" | "console.error" | "process.panic" | "process.exit"
+/** A built-in function by its qualified name, such as `console.log` or `Math.sqrt`. */
+export type BuiltinName = string
 
 export interface BuiltinCall {
   k: "builtin"

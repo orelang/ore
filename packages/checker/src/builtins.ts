@@ -2,9 +2,10 @@ import { types, type Type } from "@ore/ir"
 import { parse, type Source } from "@ore/syntax"
 import ts from "typescript"
 import builtinText from "../../../std/builtin.d.ore" with { type: "text" }
-import { Scope, type BuiltinFunc, type ValueSymbol } from "./symbols"
+import { Scope, type ValueSymbol } from "./symbols"
 
-const builtinFuncs = new Set<string>(["console.log", "console.write", "console.error", "process.panic", "process.exit"])
+/** Values of built-in constants, declared without values in builtin.d.ore. */
+const constants: Record<string, number> = { "Math.PI": Math.PI, "Math.E": Math.E }
 
 /**
  * Builds the root scope from the type aliases and functions of
@@ -29,10 +30,17 @@ export function builtinScope(): { scope: Scope; source: Source } {
       const ns = stmt.name.text
       const members = new Map<string, ValueSymbol>()
       for (const member of stmt.body.statements) {
-        if (!ts.isFunctionDeclaration(member) || !member.name) continue
-        const name = `${ns}.${member.name.text}`
-        if (!builtinFuncs.has(name)) throw new Error(`unknown builtin function ${name}`)
-        members.set(member.name.text, { k: "builtin", name: name as BuiltinFunc, decl: member })
+        if (ts.isFunctionDeclaration(member) && member.name) {
+          members.set(member.name.text, { k: "builtin", name: `${ns}.${member.name.text}`, decl: member })
+        } else if (ts.isVariableStatement(member)) {
+          for (const d of member.declarationList.declarations) {
+            const name = `${ns}.${(d.name as ts.Identifier).text}`
+            const value = constants[name]
+            if (value === undefined) throw new Error(`unknown builtin constant ${name}`)
+            const expr = { k: "float", type: types.f64, value } as const
+            members.set((d.name as ts.Identifier).text, { k: "const", value: { k: "typed", expr }, type: types.f64, decl: d })
+          }
+        }
       }
       scope.declareValue(ns, { k: "namespace", name: ns, members, decl: stmt })
     }

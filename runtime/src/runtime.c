@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // Boehm GC, linked from runtime/third_party/bdwgc. Declared here so that the
 // runtime builds without the GC headers.
@@ -57,6 +58,22 @@ void *ore_rt_alloc(i64 size) {
   void *p = GC_malloc(size > 0 ? (size_t)size : 1);
   if (!p) ore_rt_panic_cstr("out of memory");
   return p;
+}
+
+f64 ore_rt_round(f64 x) {
+  f64 r = floor(x);
+  return x - r >= 0.5 ? r + 1 : r;
+}
+
+// xorshift64*, seeded from the time at startup.
+static u64 random_state;
+
+f64 ore_rt_random(void) {
+  if (random_state == 0) random_state = (u64)time(NULL) * 0x9e3779b97f4a7c15ull | 1;
+  random_state ^= random_state >> 12;
+  random_state ^= random_state << 25;
+  random_state ^= random_state >> 27;
+  return (f64)((random_state * 0x2545f4914f6cdd1dull) >> 11) / 9007199254740992.0;
 }
 
 void *ore_rt_box_copy(void *p, i64 size) {

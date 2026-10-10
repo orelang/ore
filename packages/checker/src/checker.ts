@@ -171,6 +171,8 @@ class Checker {
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
 
   private readonly sources = new Map<ts.SourceFile, Source>()
+  /** The scope of built-in declarations, for resolving their signatures. */
+  private builtins: Scope | undefined
   private readonly modules = new Map<Source, ModuleInfo>()
   /** The C name prefix of the module whose declarations are being declared. */
   private prefix = ""
@@ -182,6 +184,7 @@ class Checker {
 
   run(options: CheckOptions): CheckResult {
     const builtins = builtinScope()
+    this.builtins = builtins.scope
     this.sources.set(builtins.source.ast, builtins.source)
     for (const stmt of builtins.source.ast.statements) if (ts.isInterfaceDeclaration(stmt)) this.declareInterface(stmt, builtins.scope)
     const error = builtins.scope.lookupType("Error")?.type
@@ -2384,6 +2387,7 @@ class Checker {
         return typed({ k: "convert", type: target, value: value.expr })
       }
       case "builtin": {
+        if (!symbol.name.startsWith("console.")) return this.builtinCall(symbol.name, symbol.decl as ts.FunctionDeclaration, node, scope)
         if (symbol.name === "process.panic" || symbol.name === "process.exit") {
           if (args.length !== 1) return this.fail(node, `'${name}' expects exactly 1 argument, got ${args.length}.`)
           const type = symbol.name === "process.panic" ? types.string : types.i32
@@ -2495,6 +2499,28 @@ class Checker {
       return this.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`), undefined
     }
     return { expr: value.expr, arity: type.params.length, result: type.result }
+  }
+
+  /**
+   * Checks a call of a built-in function by its declaration in builtin.d.ore;
+   * `Math.abs`, `min` and `max` take and return any one numeric type.
+   */
+  private builtinCall(name: string, decl: ts.FunctionDeclaration, node: ts.CallExpression, scope: Scope): Operand {
+    const args = node.arguments
+    if (args.length !== decl.parameters.length) return this.fail(node, `'${name}' expects ${decl.parameters.length} argument(s), got ${args.length}.`)
+    if (decl.typeParameters) {
+      const operands = args.map((a) => this.checkExpr(a, scope))
+      if (operands.some((o) => o.k === "error")) return errorOperand
+      // The type of the first typed argument, or the default type of the constants.
+      const first = operands.find((o) => o.k === "typed")
+      const type = first?.k === "typed" ? first.expr.type : this.defaultType(operands.find((o) => o.k === "untyped-float") ?? operands[0]!)
+      if (!isNumeric(type)) return this.fail(args[0]!, `'${name}' needs numbers, got '${typeToString(type)}'.`)
+      return typed({ k: "builtin", type, name, args: operands.map((o, i) => this.coerce(o, type, args[i]!)) })
+    }
+    const types_ = decl.parameters.map((p) => this.resolveType(p.type!, this.builtins!)!)
+    const values = args.map((a, i) => this.coerce(this.checkExpr(a, scope, types_[i]), types_[i]!, a))
+    const result = this.resolveType(decl.type!, this.builtins!)!
+    return typed({ k: "builtin", type: result, name, args: values })
   }
 
   /** Calls a function value with arguments converted to its parameters. */
@@ -2722,6 +2748,14 @@ class Checker {
   private moduleMember(node: ts.Expression, scope: Scope): ValueSymbol | undefined {
     if (!ts.isPropertyAccessExpression(node) || !ts.isIdentifier(node.expression)) return undefined
     const module = scope.lookupValue(node.expression.text)
+    if (module?.k === "namespace") {
+      // A constant of a built-in namespace, such as `Math.PI`.
+      const member = module.members.get(node.name.text)
+      if (member?.k !== "const") return undefined
+      this.info.definitions.set(node.expression, module.decl)
+      if (ts.isIdentifier(node.name)) this.info.definitions.set(node.name, member.decl)
+      return member
+    }
     if (module?.k !== "module") return undefined
     this.info.definitions.set(node.expression, module.decl)
     const value = module.exports(node.name.text)?.value
