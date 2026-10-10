@@ -1,0 +1,1 @@
+export { emitModule } from "./emit"
