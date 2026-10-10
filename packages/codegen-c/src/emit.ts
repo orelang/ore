@@ -233,15 +233,14 @@ function emitExpr(expr: ir.Expr): string {
     }
     case "arith":
       return emitArith(expr)
-    case "compare": {
-      const l = emitExpr(expr.left)
-      const r = emitExpr(expr.right)
-      if (expr.left.type.kind === "string") {
-        if (expr.op === "===" || expr.op === "!==") return `(${expr.op === "===" ? "" : "!"}ore_rt_str_eq(${l}, ${r}))`
-        return `(ore_rt_str_cmp(${l}, ${r}) ${expr.op} 0)`
-      }
-      return `(${l} ${cCompare[expr.op]} ${r})`
-    }
+    case "compare":
+      return inOrder([expr.left, expr.right], ([l, r]) => {
+        if (expr.left.type.kind === "string") {
+          if (expr.op === "===" || expr.op === "!==") return `(${expr.op === "===" ? "" : "!"}ore_rt_str_eq(${l}, ${r}))`
+          return `(ore_rt_str_cmp(${l}, ${r}) ${expr.op} 0)`
+        }
+        return `(${l} ${cCompare[expr.op]} ${r})`
+      })
     case "logical":
       return `(${emitExpr(expr.left)} ${expr.op} ${emitExpr(expr.right)})`
     case "unary":
@@ -251,7 +250,7 @@ function emitExpr(expr: ir.Expr): string {
     case "convert":
       return emitConvert(expr)
     case "call":
-      return `${expr.func.name}(${expr.args.map(emitExpr).join(", ")})`
+      return inOrder(expr.args, (args) => `${expr.func.name}(${args.join(", ")})`)
     case "builtin":
       return emitBuiltin(expr)
     case "cond":
@@ -259,18 +258,25 @@ function emitExpr(expr: ir.Expr): string {
     case "concat":
       if (expr.parts.length === 0) return `ORE_STR("")`
       if (expr.parts.length === 1) return toString(expr.parts[0]!)
-      return `ore_rt_str_concat(${expr.parts.length}, (ore_string[]){${expr.parts.map(toString).join(", ")}})`
+      return inOrder(expr.parts, (parts) => {
+        const strings = parts.map((code, i) => toString(raw(code, expr.parts[i]!.type)))
+        return `ore_rt_str_concat(${parts.length}, (ore_string[]){${strings.join(", ")}})`
+      })
     case "index":
-      if (expr.target.type.kind === "string") return `ore_rt_str_at(${emitExpr(expr.target)}, (i64)${emitExpr(expr.index)})`
-      return `(*(${cType(expr.type)} *)ore_rt_array_at(${emitExpr(expr.target)}, (i64)${emitExpr(expr.index)}, sizeof(${cType(expr.type)})))`
+      return inOrder([expr.target, expr.index], ([target, index]) => {
+        if (expr.target.type.kind === "string") return `ore_rt_str_at(${target}, (i64)${index})`
+        return `(*(${cType(expr.type)} *)ore_rt_array_at(${target}, (i64)${index}, sizeof(${cType(expr.type)})))`
+      })
     case "len":
       return expr.value.type.kind === "string" ? `(${emitExpr(expr.value)}).len` : `(${emitExpr(expr.value)})->len`
     case "slice": {
-      const start = expr.start ? `(i64)${emitExpr(expr.start)}` : "0"
-      const end = expr.end ? `(i64)${emitExpr(expr.end)}` : "ORE_SLICE_END"
-      if (expr.type.kind === "string") return `ore_rt_str_slice(${emitExpr(expr.value)}, ${start}, ${end})`
-      const elem = cType((expr.type as ir.ArrayType).elem)
-      return `ore_rt_array_slice(${emitExpr(expr.value)}, sizeof(${elem}), ${start}, ${end})`
+      const parts = [expr.value, ...(expr.start ? [expr.start] : []), ...(expr.end ? [expr.end] : [])]
+      return inOrder(parts, ([value, start, end]) => {
+        const s = start ? `(i64)${start}` : "0"
+        const e = end ? `(i64)${end}` : "ORE_SLICE_END"
+        if (expr.type.kind === "string") return `ore_rt_str_slice(${value}, ${s}, ${e})`
+        return `ore_rt_array_slice(${value}, sizeof(${cType((expr.type as ir.ArrayType).elem)}), ${s}, ${e})`
+      })
     }
     case "array": {
       const elem = cType(expr.type.elem)
@@ -302,7 +308,7 @@ function emitExpr(expr: ir.Expr): string {
     case "alloc":
       return `((${structName(expr.type)} *)ore_rt_alloc(sizeof(${structName(expr.type)})))`
     case "method-call":
-      return `${expr.func.name}(${[expr.receiver, ...expr.args].map(emitExpr).join(", ")})`
+      return inOrder([expr.receiver, ...expr.args], (args) => `${expr.func.name}(${args.join(", ")})`)
   }
 }
 
@@ -359,7 +365,80 @@ function emitAssign(expr: ir.Assign): string {
   return `({ ${place} *${p} = ${emitExpr(combined)}; })`
 }
 
+/**
+ * Emits operands left to right, as Ore requires and C does not guarantee for
+ * arguments and binary operators. When an operand has effects and another
+ * operand is not a literal, every operand but the last is evaluated into a
+ * temporary first.
+ */
+function inOrder(exprs: ir.Expr[], build: (codes: string[]) => string): string {
+  const needsOrder = exprs.some(effects) && exprs.filter((e) => !isLiteral(e)).length >= 2
+  if (!needsOrder) return build(exprs.map(emitExpr))
+  const decls: string[] = []
+  const codes = exprs.map((e, i) => {
+    const code = emitExpr(e)
+    if (i === exprs.length - 1 || isLiteral(e) || e.type.kind === "never") return code
+    const t = temp()
+    decls.push(`${cType(e.type)} ${t} = ${code};`)
+    return t
+  })
+  return `({ ${decls.join(" ")} ${build(codes)}; })`
+}
+
+function isLiteral(e: ir.Expr): boolean {
+  return e.k === "int" || e.k === "float" || e.k === "bool" || e.k === "string"
+}
+
+/** Whether evaluating an expression may have an observable effect, including a panic. */
+function effects(e: ir.Expr): boolean {
+  switch (e.k) {
+    case "int":
+    case "float":
+    case "bool":
+    case "string":
+    case "local":
+    case "alloc":
+      return false
+    case "call":
+    case "method-call":
+    case "builtin":
+    case "assign":
+    case "incdec":
+    case "push":
+    case "pop":
+    case "index":
+      return true
+    case "arith":
+      return e.op === "/" || e.op === "%" || e.op === "<<" || e.op === ">>" || effects(e.left) || effects(e.right)
+    case "compare":
+    case "logical":
+      return effects(e.left) || effects(e.right)
+    case "unary":
+    case "not":
+      return effects(e.operand)
+    case "convert":
+      return effects(e.value)
+    case "cond":
+      return effects(e.cond) || effects(e.then) || effects(e.else)
+    case "concat":
+      return e.parts.some(effects)
+    case "len":
+      return effects(e.value)
+    case "slice":
+      return effects(e.value) || (e.start !== undefined && effects(e.start)) || (e.end !== undefined && effects(e.end))
+    case "array":
+      return e.elems.some(effects)
+    case "object":
+      return e.fields.some((f) => effects(f.value))
+    case "field":
+      return effects(e.object)
+  }
+}
+
 function emitArith(expr: ir.Arith): string {
+  if (effects(expr.left) || effects(expr.right)) {
+    return inOrder([expr.left, expr.right], ([l, r]) => emitArith({ ...expr, left: raw(l!, expr.left.type), right: raw(r!, expr.right.type) }))
+  }
   const t = expr.type
   const l = emitExpr(expr.left)
   const r = emitExpr(expr.right)
