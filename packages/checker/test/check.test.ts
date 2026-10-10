@@ -94,7 +94,7 @@ describe("statements", () => {
   })
 
   test("break outside a loop", () => {
-    expect(errors("break")).toEqual(["'break' must be inside a loop."])
+    expect(errors("break")).toEqual(["'break' must be inside a loop or switch."])
   })
 
   test("var and == are rejected", () => {
