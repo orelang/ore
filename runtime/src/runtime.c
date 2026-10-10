@@ -159,6 +159,144 @@ ore_iface ore_rt_iface_project(ore_iface v, i64 count, const i32 *indices) {
 }
 
 // ---------------------------------------------------------------------------
+// Hashing
+
+u64 ore_rt_hash_u64(u64 x) {
+  // splitmix64 finalizer
+  x += 0x9e3779b97f4a7c15ull;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+  return x ^ (x >> 31);
+}
+
+u64 ore_rt_hash_bytes(const u8 *p, i64 n) {
+  // FNV-1a, then mixed
+  u64 h = 0xcbf29ce484222325ull;
+  for (i64 i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001b3ull;
+  return ore_rt_hash_u64(h);
+}
+
+u64 ore_rt_hash_f64(f64 x) {
+  if (x != x) return 0x7ff8000000000000ull;
+  if (x == 0) x = 0;
+  u64 bits;
+  memcpy(&bits, &x, sizeof bits);
+  return ore_rt_hash_u64(bits);
+}
+
+// ---------------------------------------------------------------------------
+// Maps
+
+static i64 round8(i64 n) { return (n + 7) & ~7; }
+
+ore_map *ore_rt_map_new(i64 key_size, i64 value_size, ore_hash_fn hash, ore_eq_fn eq) {
+  ore_map *m = ore_rt_alloc(sizeof(ore_map));
+  m->key_size = key_size;
+  m->value_size = value_size;
+  m->entry_size = 16 + round8(key_size) + round8(value_size);
+  m->hash = hash;
+  m->eq = eq;
+  return m;
+}
+
+/** The slot of `key` in the index, or the empty slot where it would go. */
+static i64 map_slot(ore_map *m, const void *key, u64 hash) {
+  i64 mask = m->index_cap - 1;
+  for (i64 slot = (i64)(hash & (u64)mask);; slot = (slot + 1) & mask) {
+    i64 e = m->index[slot];
+    if (e == 0) return slot;
+    u8 *entry = ore_rt_map_entry(m, e - 1);
+    // Deleted entries keep their slot so that probing continues past them.
+    if (*(i64 *)entry && *(u64 *)(entry + 8) == hash && m->eq(entry + 16, key)) return slot;
+  }
+}
+
+/** Rebuilds the entries without holes and the index with room for `cap` entries. */
+static void map_rebuild(ore_map *m, i64 cap) {
+  u8 *entries = ore_rt_alloc(cap * m->entry_size);
+  i64 count = 0;
+  for (i64 i = 0; i < m->count; i++) {
+    if (!ore_rt_map_live(m, i)) continue;
+    memcpy(entries + count * m->entry_size, ore_rt_map_entry(m, i), (size_t)m->entry_size);
+    count++;
+  }
+  m->entries = entries;
+  m->count = count;
+  m->cap = cap;
+  m->index_cap = 8;
+  while (m->index_cap < cap * 2) m->index_cap *= 2;
+  m->index = ore_rt_alloc(m->index_cap * (i64)sizeof(i64));
+  i64 mask = m->index_cap - 1;
+  for (i64 i = 0; i < count; i++) {
+    u64 hash = *(u64 *)(ore_rt_map_entry(m, i) + 8);
+    i64 slot = (i64)(hash & (u64)mask);
+    while (m->index[slot] != 0) slot = (slot + 1) & mask;
+    m->index[slot] = i + 1;
+  }
+}
+
+void *ore_rt_map_get(ore_map *m, const void *key) {
+  if (m->size == 0) return NULL;
+  i64 e = m->index[map_slot(m, key, m->hash(key))];
+  return e == 0 ? NULL : ore_rt_map_value(m, e - 1);
+}
+
+void ore_rt_map_set(ore_map *m, const void *key, const void *value) {
+  u64 hash = m->hash(key);
+  if (m->index) {
+    i64 e = m->index[map_slot(m, key, hash)];
+    if (e != 0) {
+      memcpy(ore_rt_map_value(m, e - 1), value, (size_t)m->value_size);
+      return;
+    }
+  }
+  if (m->count == m->cap) {
+    // Full: drop the holes of deleted entries if they are many, else grow.
+    bool compact = m->cap > 0 && m->size < m->cap / 2;
+    map_rebuild(m, compact ? m->cap : m->cap < 8 ? 8 : m->cap * 2);
+  }
+  i64 i = m->count++;
+  u8 *entry = ore_rt_map_entry(m, i);
+  *(i64 *)entry = 1;
+  *(u64 *)(entry + 8) = hash;
+  memcpy(entry + 16, key, (size_t)m->key_size);
+  memcpy(ore_rt_map_value(m, i), value, (size_t)m->value_size);
+  m->index[map_slot(m, key, hash)] = i + 1;
+  m->size++;
+}
+
+bool ore_rt_map_delete(ore_map *m, const void *key) {
+  if (m->size == 0) return false;
+  i64 e = m->index[map_slot(m, key, m->hash(key))];
+  if (e == 0) return false;
+  *(i64 *)ore_rt_map_entry(m, e - 1) = 0;
+  m->size--;
+  return true;
+}
+
+void ore_rt_map_clear(ore_map *m) {
+  m->entries = NULL;
+  m->index = NULL;
+  m->count = m->cap = m->size = m->index_cap = 0;
+}
+
+ore_array *ore_rt_map_keys(ore_map *m) {
+  ore_array *a = ore_rt_array_new(m->key_size, 0);
+  for (i64 i = 0; i < m->count; i++) {
+    if (ore_rt_map_live(m, i)) memcpy(ore_rt_array_push(a, m->key_size), ore_rt_map_key(m, i), (size_t)m->key_size);
+  }
+  return a;
+}
+
+ore_array *ore_rt_map_values(ore_map *m) {
+  ore_array *a = ore_rt_array_new(m->value_size, 0);
+  for (i64 i = 0; i < m->count; i++) {
+    if (ore_rt_map_live(m, i)) memcpy(ore_rt_array_push(a, m->value_size), ore_rt_map_value(m, i), (size_t)m->value_size);
+  }
+  return a;
+}
+
+// ---------------------------------------------------------------------------
 // Arrays
 
 ore_array *ore_rt_array_new(i64 elem_size, i64 len) {

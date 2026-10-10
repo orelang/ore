@@ -119,6 +119,47 @@ static inline bool ore_iface_is(ore_iface v, uintptr_t id) { return v.itab && (u
 /** Converts to a narrower interface: member `k` of the new table is member `indices[k]` of the old one. */
 ore_iface ore_rt_iface_project(ore_iface v, i64 count, const i32 *indices);
 
+// Maps: hash tables that keep insertion order, like JavaScript's Map. Entries
+// are stored densely in insertion order; deleted entries stay as holes until
+// the table is rebuilt. An open-addressing index maps hashes to entries.
+
+typedef u64 (*ore_hash_fn)(const void *key);
+typedef bool (*ore_eq_fn)(const void *a, const void *b);
+
+typedef struct {
+  i64 key_size, value_size, entry_size;
+  ore_hash_fn hash;
+  ore_eq_fn eq;
+  /** Entries in insertion order, each a header {i64 live; u64 hash}, key, value. */
+  u8 *entries;
+  i64 count, cap, size;
+  /** Entry index + 1 per slot; 0 for an empty slot. Power-of-two capacity. */
+  i64 *index;
+  i64 index_cap;
+} ore_map;
+
+ore_map *ore_rt_map_new(i64 key_size, i64 value_size, ore_hash_fn hash, ore_eq_fn eq);
+/** Pointer to the value of `key`, or NULL. */
+void *ore_rt_map_get(ore_map *m, const void *key);
+void ore_rt_map_set(ore_map *m, const void *key, const void *value);
+bool ore_rt_map_delete(ore_map *m, const void *key);
+void ore_rt_map_clear(ore_map *m);
+ore_array *ore_rt_map_keys(ore_map *m);
+ore_array *ore_rt_map_values(ore_map *m);
+
+static inline u8 *ore_rt_map_entry(ore_map *m, i64 i) { return m->entries + i * m->entry_size; }
+static inline bool ore_rt_map_live(ore_map *m, i64 i) { return *(i64 *)ore_rt_map_entry(m, i) != 0; }
+static inline void *ore_rt_map_key(ore_map *m, i64 i) { return ore_rt_map_entry(m, i) + 16; }
+static inline void *ore_rt_map_value(ore_map *m, i64 i) {
+  return ore_rt_map_entry(m, i) + 16 + ((m->key_size + 7) & ~7);
+}
+
+u64 ore_rt_hash_u64(u64 x);
+u64 ore_rt_hash_bytes(const u8 *p, i64 n);
+u64 ore_rt_hash_f64(f64 x);
+/** SameValueZero for floats: NaN equals NaN, and -0 equals 0. */
+static inline bool ore_rt_same_f64(f64 a, f64 b) { return a == b || (a != a && b != b); }
+
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 
