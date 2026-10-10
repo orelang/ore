@@ -138,7 +138,63 @@ JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`.
 - `for (const x of a)` iterates elements; the length is re-read on every
   iteration, so elements pushed during the loop are visited.
 
-### 3.9 Statements
+### 3.9 Object types
+
+- An object type `{ x: f64; readonly id: int }` describes a record on the
+  heap, used through references: assignment shares the object and `===`
+  compares identity.
+- Object types are structural: two object types with the same fields (names,
+  types and `readonly`) are the same type, regardless of field order.
+- An object literal for a known object type must have exactly its fields.
+  Without a context type, the literal's type is inferred from its values;
+  shorthand properties (`{ name }`) are allowed.
+- Variables of object, class and interface types must be initialized: there
+  is no `null` yet.
+
+### 3.10 Classes
+
+- A class declares a nominal type: two classes are different types even with
+  the same members. There is no inheritance (`extends`); use composition and
+  interfaces.
+- Members: fields (with a type annotation, an initializer, or both), one
+  constructor, and methods. Constructor parameters with `public`, `private`
+  or `readonly` declare fields. Static members, getters and setters are not
+  supported yet.
+- `new C(...)` allocates an instance, assigns parameter properties, runs
+  field initializers in order, then the constructor body. Field initializers
+  cannot use `this`.
+- A field without an initializer starts at its zero value. A field of a type
+  without a zero value (class, object or interface) must be assigned at the
+  top level of the constructor.
+- `private` members are accessible only inside the class. `readonly` fields
+  can be assigned only by the constructor of the class.
+- Methods are called on instances; method values (`obj.method` without a
+  call) are not supported yet.
+- `class C implements I` checks that `C` has the members of `I`.
+
+### 3.11 Interfaces
+
+- An interface lists fields and methods. Any class or object type that has
+  them, with the same types, converts implicitly to the interface: at
+  assignments, arguments, returns and array elements. Private members do not
+  count, and a `readonly` field cannot satisfy a writable one.
+- Interfaces are structural: interfaces with the same members are the same
+  type. An interface converts implicitly to an interface with a subset of its
+  members. `interface A extends B` includes the members of `B`.
+- An interface value refers to the original object: fields read and written
+  through the interface are the object's fields, and `===` compares the
+  objects.
+- An object literal for an interface may only have fields of the interface.
+- Object types (`type P = { ... }`) and interfaces differ on purpose: an
+  object type is an exact record, an interface accepts any record or class
+  with the members.
+
+### 3.12 Evaluation order
+
+Operands, arguments and the receiver of a method call are evaluated left to
+right, as in TypeScript.
+
+### 3.13 Statements
 
 - `if`, `while`, `do...while`, `for`, `for...of`, `break`, `continue` and
   `return` work as in TypeScript. `for...in` is rejected.
@@ -147,7 +203,7 @@ JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`.
 - A function with a return type must return a value on every path. A path
   ending in an infinite loop or a `panic(...)` call needs no return.
 
-### 3.10 Panics
+### 3.14 Panics
 
 A panic prints its message and exits with status 2. Debug builds (the default)
 print the Ore call stack with source lines:
@@ -210,5 +266,7 @@ use.
 | `1 / 0` | `Infinity` | compile error for constants, panic for integers, `Infinity` for floats |
 | `2 ** 63` in `int` | float | wraps |
 | `===` on objects | identity | identity |
+| `class B extends A` | inheritance | rejected; use composition and interfaces |
+| class compatibility | structural | nominal; convert to an interface instead |
 | `===` on strings | value | value |
 | integer literal `5` | `number` | `int` |
