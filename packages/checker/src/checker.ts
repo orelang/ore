@@ -26,7 +26,7 @@ import ts from "typescript"
 import { builtinScope } from "./builtins"
 import { foldBinary, foldUnary } from "./fold"
 import { errorOperand, type Operand } from "./operand"
-import { Scope, type Generic, type ValueSymbol } from "./symbols"
+import { Scope, type Exported, type Generic, type TypeSymbol, type ValueSymbol } from "./symbols"
 
 export interface CheckResult {
   /** Present only when there are no errors. */
@@ -48,8 +48,29 @@ export interface CheckOptions {
   entry: boolean
 }
 
-export function check(source: Source, options: CheckOptions = { entry: true }): CheckResult {
-  return new Checker(source).run(options)
+/** The modules of a program, as loaded by `@ore/project`. */
+export interface ProgramInput {
+  /** Modules with each module after the modules it imports, the entry last. */
+  modules: Source[]
+  entry: Source
+  /** For each module, the module each import specifier resolves to. */
+  imports: Map<Source, Map<string, Source>>
+}
+
+/** Checks a single file, or a program of modules, into one IR module. */
+export function check(input: Source | ProgramInput, options: CheckOptions = { entry: true }): CheckResult {
+  const program = "ast" in input ? { modules: [input], entry: input, imports: new Map() } : input
+  return new Checker(program).run(options)
+}
+
+/** A module being checked. */
+interface ModuleInfo {
+  source: Source
+  scope: Scope
+  /** Prefix of C names of its functions, which must not clash with other modules. */
+  prefix: string
+  /** Exported names and the local names they refer to; `from` for re-exports. */
+  exports: Map<string, { local: string; from?: ModuleInfo }>
 }
 
 interface FuncContext {
@@ -77,6 +98,8 @@ interface FuncContext {
 interface ClassInfo {
   decl: ts.ClassDeclaration
   type: StructType
+  /** The scope of the class's module. */
+  scope: Scope
   /** Base of C names for the class's functions. */
   cname: string
   /** Field initializers by field name, checked before constructor bodies. */
@@ -104,6 +127,7 @@ interface Condition {
 interface InterfaceInfo {
   decl: ts.InterfaceDeclaration
   type: InterfaceType
+  scope: Scope
   state: "declared" | "filling" | "filled"
 }
 
@@ -146,54 +170,156 @@ class Checker {
   /** Declarations of fields and methods, for tooling. */
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
 
-  constructor(private readonly source: Source) {
-    this.module = { file: source.path, functions: [], structs: [], itabs: [], unions: [] }
+  private readonly sources = new Map<ts.SourceFile, Source>()
+  private readonly modules = new Map<Source, ModuleInfo>()
+  /** The C name prefix of the module whose declarations are being declared. */
+  private prefix = ""
+
+  constructor(private readonly program: ProgramInput) {
+    this.module = { file: program.entry.path, functions: [], structs: [], itabs: [], unions: [] }
+    for (const source of program.modules) this.sources.set(source.ast, source)
   }
 
   run(options: CheckOptions): CheckResult {
     const builtins = builtinScope()
+    this.sources.set(builtins.source.ast, builtins.source)
     for (const stmt of builtins.source.ast.statements) if (ts.isInterfaceDeclaration(stmt)) this.declareInterface(stmt, builtins.scope)
     const error = builtins.scope.lookupType("Error")?.type
     this.errorType = error?.kind === "interface" ? error : undefined
-    const scope = new Scope(builtins.scope)
-    const bodies: [ts.FunctionDeclaration, ir.Func][] = []
-    const statements = this.source.ast.statements
 
-    // Pass 1: names of classes and interfaces, so that types can refer to them in any order.
-    for (const stmt of statements) {
-      if (ts.isClassDeclaration(stmt)) this.declareClass(stmt, scope)
-      else if (ts.isInterfaceDeclaration(stmt)) this.declareInterface(stmt, scope)
+    const modules = this.program.modules.map((source, i): ModuleInfo => {
+      const info: ModuleInfo = { source, scope: new Scope(builtins.scope), prefix: source === this.program.entry ? "" : `m${i}_`, exports: new Map() }
+      this.modules.set(source, info)
+      return info
+    })
+    const bodies: [ts.FunctionDeclaration, ir.Func, Scope][] = []
+    const each = (pass: (stmt: ts.Statement, module: ModuleInfo) => void) => {
+      for (const module of modules) {
+        this.prefix = module.prefix
+        for (const stmt of module.source.ast.statements) pass(stmt, module)
+      }
+      this.prefix = ""
     }
+
+    // Pass 1: exports, imports, and names of classes and interfaces, so that
+    // types can refer to them in any order and across modules.
+    each((stmt, m) => this.declareExports(stmt, m))
+    each((stmt, m) => {
+      if (ts.isClassDeclaration(stmt)) this.declareClass(stmt, m.scope)
+      else if (ts.isInterfaceDeclaration(stmt)) this.declareInterface(stmt, m.scope)
+      else if (ts.isImportDeclaration(stmt)) this.declareImport(stmt, m)
+    })
 
     // Pass 2: type aliases, then signatures of functions and class members,
     // so that they can be used before their declaration and recursively.
-    for (const stmt of statements) if (ts.isTypeAliasDeclaration(stmt)) this.declareTypeAlias(stmt, scope)
-    for (const info of this.interfaces.values()) this.fillInterface(info, scope)
-    for (const stmt of statements) {
-      if (ts.isFunctionDeclaration(stmt)) {
-        const func = this.declareFunction(stmt, scope)
-        if (func) bodies.push([stmt, func])
-      }
-    }
-    for (const info of this.classes) this.declareClassMembers(info, scope)
+    each((stmt, m) => ts.isTypeAliasDeclaration(stmt) && this.declareTypeAlias(stmt, m.scope))
+    for (const info of this.interfaces.values()) this.fillInterface(info, info.scope)
+    each((stmt, m) => {
+      if (!ts.isFunctionDeclaration(stmt)) return
+      const func = this.declareFunction(stmt, m.scope)
+      if (func) bodies.push([stmt, func, m.scope])
+    })
+    for (const info of this.classes) this.declareClassMembers(info, info.scope)
+    this.checkExports(modules)
 
-    // Pass 3: top-level constants in source order, field initializers, then bodies.
-    for (const stmt of statements) {
-      if (ts.isTypeAliasDeclaration(stmt) || ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt) || ts.isInterfaceDeclaration(stmt)) continue
-      if (ts.isVariableStatement(stmt)) this.checkTopLevelVariables(stmt, scope)
-      else if (ts.isEmptyStatement(stmt)) continue
-      else this.error(stmt, this.unsupportedTopLevel(stmt))
-    }
-    for (const info of this.classes) this.checkFieldInitializers(info, scope)
-    for (const info of this.classes) this.checkImplements(info, scope)
-    for (const [decl, func] of bodies) this.checkFunctionBody(decl, func, scope)
-    for (const info of this.classes) this.checkClassBodies(info, scope)
+    // Pass 3: top-level constants in module and source order, field initializers, then bodies.
+    each((stmt, m) => {
+      if (ts.isVariableStatement(stmt)) this.checkTopLevelVariables(stmt, m.scope)
+      else if (!isDeclaration(stmt)) this.error(stmt, this.unsupportedTopLevel(stmt))
+    })
+    for (const info of this.classes) this.checkFieldInitializers(info, info.scope)
+    for (const info of this.classes) this.checkImplements(info, info.scope)
+    for (const [decl, func, scope] of bodies) this.checkFunctionBody(decl, func, scope)
+    for (const info of this.classes) this.checkClassBodies(info, info.scope)
     while (this.pending.length > 0) this.pending.shift()!()
 
-    if (options.entry) this.checkEntry(scope)
+    if (options.entry) this.checkEntry(this.modules.get(this.program.entry)!)
 
     const hasErrors = this.diagnostics.some((d) => d.severity === "error")
     return { module: hasErrors ? undefined : this.module, diagnostics: this.diagnostics, info: this.info }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Modules
+
+  /** Records the names a top-level statement exports. */
+  private declareExports(stmt: ts.Statement, module: ModuleInfo) {
+    const exported = (ts.canHaveModifiers(stmt) && ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) ?? false
+    const add = (name: string, local: string, node: ts.Node, from?: ModuleInfo) => {
+      if (module.exports.has(name)) this.error(node, `Duplicate export '${name}'.`)
+      else module.exports.set(name, { local, from })
+    }
+    if (exported && ts.getModifiers(stmt as ts.HasModifiers)?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword)) {
+      return this.error(stmt, "Default exports are not supported in Ore. Use named exports.")
+    }
+    if (exported && ts.isVariableStatement(stmt)) {
+      for (const d of stmt.declarationList.declarations) if (ts.isIdentifier(d.name)) add(d.name.text, d.name.text, d.name)
+    } else if (exported && (ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt) || ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) && stmt.name) {
+      add(stmt.name.text, stmt.name.text, stmt.name)
+    } else if (ts.isExportDeclaration(stmt)) {
+      // `export { a, b as c }`, or `export { x } from "./m"`.
+      const from = stmt.moduleSpecifier ? this.importedModule(stmt.moduleSpecifier, module) : undefined
+      if (stmt.moduleSpecifier && !from) return
+      if (!stmt.exportClause || !ts.isNamedExports(stmt.exportClause)) return this.error(stmt, "Use 'export { name }' to re-export; 'export *' is not supported.")
+      for (const e of stmt.exportClause.elements) add(e.name.text, (e.propertyName ?? e.name).getText(), e, from)
+    } else if (ts.isExportAssignment(stmt)) {
+      this.error(stmt, "Default exports are not supported in Ore. Use named exports.")
+    }
+  }
+
+  /** The module an import specifier resolves to; the loader already reported unresolved ones. */
+  private importedModule(specifier: ts.Expression, module: ModuleInfo): ModuleInfo | undefined {
+    if (!ts.isStringLiteral(specifier)) return undefined
+    const target = this.program.imports.get(module.source)?.get(specifier.text)
+    return target && this.modules.get(target)
+  }
+
+  /** What a module exports under a name, following re-exports. */
+  private exportOf(module: ModuleInfo, name: string, seen = new Set<ModuleInfo>()): Exported | undefined {
+    const entry = module.exports.get(name)
+    if (!entry || seen.has(module)) return undefined
+    seen.add(module)
+    if (entry.from) return this.exportOf(entry.from, entry.local, seen)
+    const value = module.scope.ownValue(entry.local)
+    const type = module.scope.ownType(entry.local)
+    return value || type ? { value, type } : undefined
+  }
+
+  private declareImport(stmt: ts.ImportDeclaration, module: ModuleInfo) {
+    const target = this.importedModule(stmt.moduleSpecifier, module)
+    const clause = stmt.importClause
+    if (!target || !clause) return
+    if (clause.name) this.error(clause.name, "Default imports are not supported in Ore. Use 'import { name } from ...'.")
+    const bindings = clause.namedBindings
+    if (!bindings) return
+    if (ts.isNamespaceImport(bindings)) {
+      const name = bindings.name.text
+      const symbol: ValueSymbol = { k: "module", name, exports: (n) => this.exportOf(target, n), decl: bindings }
+      if (!module.scope.declareValue(name, symbol)) this.error(bindings.name, `Duplicate declaration '${name}'.`)
+      return
+    }
+    for (const element of bindings.elements) {
+      const imported = (element.propertyName ?? element.name).text
+      if (!target.exports.has(imported)) {
+        this.error(element.propertyName ?? element.name, `Module '${(stmt.moduleSpecifier as ts.StringLiteral).text}' has no exported member '${imported}'.`)
+        continue
+      }
+      if (!module.scope.declareAlias(element.name.text, () => this.exportOf(target, imported))) {
+        this.error(element.name, `Duplicate declaration '${element.name.text}'.`)
+      }
+    }
+  }
+
+  /** Reports exports of names that a module does not declare. */
+  private checkExports(modules: ModuleInfo[]) {
+    for (const module of modules) {
+      for (const [name, entry] of module.exports) {
+        if (!entry.from && !this.exportOf(module, name)) {
+          const node = module.source.ast.statements.find(ts.isExportDeclaration)
+          if (node) this.error(node, `Cannot export '${entry.local}': it is not declared in this module.`)
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -220,7 +346,7 @@ class Checker {
     }
 
     const exported = decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false
-    const func = this.makeFunc(decl, scope, decl.name.text, cIdent(decl.name.text), exported)
+    const func = this.makeFunc(decl, scope, decl.name.text, this.prefix + cIdent(decl.name.text), exported)
     if (!scope.declareValue(decl.name.text, { k: "func", func, decl })) {
       this.error(decl.name, `Duplicate declaration '${decl.name.text}'.`)
       return undefined
@@ -236,6 +362,7 @@ class Checker {
       name: `ore_fn_${cname}`,
       sourceName,
       line: this.line(decl.name!),
+      file: this.sourceOf(decl).path,
       type: { kind: "func", params: params.map((p) => p.type), result },
       params,
       body: { k: "block", body: [] },
@@ -310,7 +437,7 @@ class Checker {
       generic.instances.set(key, type)
       this.instanceOf.set(type, { generic, args })
       this.memberDecls.set(type, new Map())
-      this.fillInterface({ decl, type, state: "declared" }, scope)
+      this.fillInterface({ decl, type, scope, state: "declared" }, scope)
       return type
     }
     const type: StructType = { kind: "struct", id: this.nextStructId++, name: label, nominal: true, fields: [], methods: [] }
@@ -318,7 +445,7 @@ class Checker {
     this.instanceOf.set(type, { generic, args })
     this.module.structs.push(type)
     this.memberDecls.set(type, new Map())
-    const info: ClassInfo = { decl, type, cname, inits: [], paramProps: [], ctorThis: this.newLocal("this", type, false), methods: [] }
+    const info: ClassInfo = { decl, type, scope, cname, inits: [], paramProps: [], ctorThis: this.newLocal("this", type, false), methods: [] }
     this.declareClassMembers(info, scope)
     this.pending.push(
       inContext(() => {
@@ -535,7 +662,7 @@ class Checker {
     this.module.structs.push(type)
     this.memberDecls.set(type, new Map())
     const ctorThis = this.newLocal("this", type, false)
-    this.classes.push({ decl, type, cname: cIdent(name), inits: [], paramProps: [], ctorThis, methods: [] })
+    this.classes.push({ decl, type, scope, cname: this.prefix + cIdent(name), inits: [], paramProps: [], ctorThis, methods: [] })
   }
 
   private declareClassMembers(info: ClassInfo, scope: Scope) {
@@ -756,7 +883,7 @@ class Checker {
     if (decl.typeParameters) return this.declareGeneric(decl, scope)
     const type: InterfaceType = { kind: "interface", id: this.nextStructId++, name, members: [] }
     if (!scope.declareType(name, { type, decl })) return this.error(decl.name, `Duplicate type '${name}'.`)
-    this.interfaces.set(type, { decl, type, state: "declared" })
+    this.interfaces.set(type, { decl, type, scope, state: "declared" })
     this.memberDecls.set(type, new Map())
   }
 
@@ -896,11 +1023,11 @@ class Checker {
     }
   }
 
-  private checkEntry(scope: Scope) {
-    const main = scope.lookupValue("main")
+  private checkEntry(entry: ModuleInfo) {
+    const main = entry.scope.ownValue("main")
     if (!main || main.k !== "func") {
       return this.diagnostics.push({
-        source: this.source,
+        source: entry.source,
         start: 0,
         length: 0,
         severity: "error",
@@ -914,7 +1041,6 @@ class Checker {
   }
 
   private unsupportedTopLevel(stmt: ts.Statement): string {
-    if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) return "Imports and re-exports are not supported yet."
     if (ts.isEnumDeclaration(stmt)) return "Enums are not supported in Ore. Use a union of literal types."
     if (ts.isModuleDeclaration(stmt)) return "Namespaces are not supported in Ore. Use modules."
     return "Only declarations are allowed at the top level. Put statements in 'main'."
@@ -970,10 +1096,9 @@ class Checker {
       const elem = this.resolveValueType(node.typeArguments[0]!, scope)
       return elem && arrayOf(elem)
     }
-    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
-      const symbol = scope.lookupType(node.typeName.text)
-      if (!symbol) return this.error(node.typeName, `Cannot find type '${node.typeName.text}'.`), undefined
-      this.info.definitions.set(node.typeName, symbol.decl)
+    if (ts.isTypeReferenceNode(node)) {
+      const symbol = this.typeSymbol(node.typeName, scope)
+      if (!symbol) return undefined
       if (symbol.generic) {
         if (!node.typeArguments) return this.error(node, `Generic type '${symbol.generic.name}' requires type arguments.`), undefined
         const args: Type[] = []
@@ -984,7 +1109,7 @@ class Checker {
         }
         return this.instantiate(symbol.generic, args, node) as Type | undefined
       }
-      if (node.typeArguments) return this.error(node, `Type '${node.typeName.text}' is not generic.`), undefined
+      if (node.typeArguments) return this.error(node, `Type '${node.typeName.getText()}' is not generic.`), undefined
       return symbol.type
     }
     if (ts.isParenthesizedTypeNode(node)) return this.resolveType(node.type, scope)
@@ -1003,6 +1128,25 @@ class Checker {
     }
     this.error(node, "This kind of type is not supported yet.")
     return undefined
+  }
+
+  /** The type named by `T` or `m.T` (an export of a module imported as `* as m`); reports missing names. */
+  private typeSymbol(name: ts.EntityName | ts.Expression, scope: Scope): TypeSymbol | undefined {
+    if (ts.isIdentifier(name)) {
+      const symbol = scope.lookupType(name.text)
+      if (!symbol) return this.error(name, `Cannot find type '${name.text}'.`), undefined
+      this.info.definitions.set(name, symbol.decl)
+      return symbol
+    }
+    const left = ts.isQualifiedName(name) ? name.left : ts.isPropertyAccessExpression(name) ? name.expression : undefined
+    const right = ts.isQualifiedName(name) ? name.right : ts.isPropertyAccessExpression(name) ? name.name : undefined
+    const module = left && ts.isIdentifier(left) ? scope.lookupValue(left.text) : undefined
+    if (module?.k !== "module" || !right || !ts.isIdentifier(right)) return this.error(name, "Only types of modules imported with '* as' can be qualified."), undefined
+    this.info.definitions.set(left as ts.Identifier, module.decl)
+    const symbol = module.exports(right.text)?.type
+    if (!symbol) return this.error(right, `Module '${module.name}' has no exported type '${right.text}'.`), undefined
+    this.info.definitions.set(right, symbol.decl)
+    return symbol
   }
 
   private resolveTypeLiteral(node: ts.TypeLiteralNode, scope: Scope): Type | undefined {
@@ -1605,6 +1749,7 @@ class Checker {
       name: `ore_lambda_${this.nextLambda++}`,
       sourceName: outerFn?.closure ? `${outerFn.closure.sourceName}.${name}` : name,
       line: this.line(node),
+      file: this.sourceOf(node).path,
       type: { kind: "func", params: params.map((p) => p.type), result: types.void },
       params,
       body: { k: "block", body: [] },
@@ -1837,7 +1982,7 @@ class Checker {
     if (ts.isArrayLiteralExpression(node)) return this.checkArrayLiteral(node, scope, expected)
     if (ts.isObjectLiteralExpression(node)) return this.checkObjectLiteral(node, scope, expected)
     // node.text is normalized ("5.0" becomes "5"); the source spelling decides int vs float.
-    if (ts.isNumericLiteral(node)) return numericLiteral(node.getText(this.source.ast))
+    if (ts.isNumericLiteral(node)) return numericLiteral(node.getText())
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       return typed({ k: "string", type: types.string, value: node.text })
     }
@@ -1886,6 +2031,11 @@ class Checker {
     if (!symbol && node.text === "undefined") return this.fail(node, "'undefined' is not supported in Ore. Use 'null'.")
     if (!symbol) return this.fail(node, unknownName(node.text))
     this.info.definitions.set(node, symbol.decl)
+    return this.symbolValue(symbol, node)
+  }
+
+  /** The value of a symbol named by `node`, or an error for names that are not values. */
+  private symbolValue(symbol: ValueSymbol, node: ts.Identifier | ts.MemberName): Operand {
     switch (symbol.k) {
       case "local":
         return typed(this.narrowed(`L${symbol.local.id}`, { k: "local", type: symbol.local.type, local: symbol.local }))
@@ -1897,6 +2047,8 @@ class Checker {
         return this.fail(node, `'${node.text}' is a generic function and cannot be used as a value.`)
       case "namespace":
         return this.fail(node, `'${node.text}' is a namespace; call its functions, e.g. '${node.text}.${[...symbol.members.keys()][0]}(...)'.`)
+      case "module":
+        return this.fail(node, `'${node.text}' is a module; use its exports, e.g. '${node.text}.name'.`)
       case "func":
         return typed({ k: "func-ref", type: symbol.func.type, func: symbol.func })
       default:
@@ -2157,9 +2309,9 @@ class Checker {
 
   private checkCall(node: ts.CallExpression, scope: Scope): Operand {
     const callee = node.expression
-    const symbolOfCallee = ts.isIdentifier(callee) ? scope.lookupValue(callee.text) : undefined
+    const symbolOfCallee = ts.isIdentifier(callee) ? scope.lookupValue(callee.text) : this.moduleMember(callee, scope)
     if (symbolOfCallee?.k === "generic-func") {
-      this.info.definitions.set(callee as ts.Identifier, symbolOfCallee.decl)
+      if (ts.isIdentifier(callee)) this.info.definitions.set(callee, symbolOfCallee.decl)
       const generic = symbolOfCallee.generic
       const decl = generic.decl as ts.FunctionDeclaration
       const call = this.genericCall(generic, decl.parameters, node.typeArguments, node.arguments, node, scope)
@@ -2184,7 +2336,13 @@ class Checker {
       const call = this.disposeCall(target.expr)
       return call ? typed(call) : this.fail(callee, `Type '${typeToString(target.expr.type)}' has no '[Symbol.dispose]' method.`)
     }
-    if (ts.isPropertyAccessExpression(callee)) {
+    if (ts.isPropertyAccessExpression(callee) && symbolOfCallee) {
+      // `m.f(...)`: an export of a module imported as `* as m`.
+      name = callee.getText()
+      nameNode = callee.name
+      symbol = symbolOfCallee
+      if (symbol.k === "local" || symbol.k === "const") return this.callValue(this.checkExpr(callee, scope), node, scope)
+    } else if (ts.isPropertyAccessExpression(callee)) {
       // `console.log(...)`: a member of a namespace, or else a method call.
       const ns = ts.isIdentifier(callee.expression) ? scope.lookupValue(callee.expression.text) : undefined
       if (ns?.k !== "namespace") return this.checkMethodCall(node, callee, scope)
@@ -2352,9 +2510,11 @@ class Checker {
   }
 
   private checkNew(node: ts.NewExpression, scope: Scope, expected?: Type): Operand {
-    if (!ts.isIdentifier(node.expression)) return this.fail(node.expression, "Only named classes can be instantiated.")
-    const name = node.expression.text
-    const symbol = scope.lookupType(name)
+    const qualified = ts.isPropertyAccessExpression(node.expression)
+    if (!ts.isIdentifier(node.expression) && !qualified) return this.fail(node.expression, "Only named classes can be instantiated.")
+    const name = node.expression.getText()
+    const symbol = qualified ? this.typeSymbol(node.expression, scope) : scope.lookupType(name)
+    if (qualified && !symbol) return errorOperand
     if (name === "Map" && !symbol) {
       if (node.arguments && node.arguments.length > 0) return this.fail(node.arguments[0]!, "'new Map' takes no arguments; add entries with 'set'.")
       let type: MapType | undefined
@@ -2364,12 +2524,12 @@ class Checker {
       return type ? typed({ k: "map", op: "new", type, mapType: type }) : errorOperand
     }
     if (symbol && symbol.type === this.errorType) {
-      this.info.definitions.set(node.expression, symbol.decl)
+      if (ts.isIdentifier(node.expression)) this.info.definitions.set(node.expression, symbol.decl)
       const created = this.callFunc(this.basicErrorClass().ctor!, node.arguments ?? [], node, scope, "'new Error'")
       return created.k === "typed" ? typed(this.coerce(created, this.errorType, node)) : created
     }
     if (symbol?.generic && ts.isClassDeclaration(symbol.generic.decl)) {
-      this.info.definitions.set(node.expression, symbol.decl)
+      if (ts.isIdentifier(node.expression)) this.info.definitions.set(node.expression, symbol.decl)
       const ctorDecl = symbol.generic.decl.members.find(ts.isConstructorDeclaration)
       const call = this.genericCall(symbol.generic, ctorDecl?.parameters ?? [], node.typeArguments, node.arguments ?? [], node, scope)
       if (!call) return errorOperand
@@ -2379,7 +2539,7 @@ class Checker {
     const type = symbol?.type
     if (!type || type.kind !== "struct" || !type.nominal) return this.fail(node.expression, `'${name}' is not a class.`)
     if (node.typeArguments) return this.fail(node.typeArguments[0]!, `Class '${name}' is not generic.`)
-    this.info.definitions.set(node.expression, symbol.decl)
+    if (ts.isIdentifier(node.expression)) this.info.definitions.set(node.expression, symbol.decl)
     return this.callFunc(type.ctor!, node.arguments ?? [], node, scope, `Constructor of '${name}'`)
   }
 
@@ -2555,7 +2715,27 @@ class Checker {
     return false
   }
 
+  /**
+   * The exported value `m.name` of a module imported as `* as m`, or
+   * undefined if the expression is not such an access. Reports missing exports.
+   */
+  private moduleMember(node: ts.Expression, scope: Scope): ValueSymbol | undefined {
+    if (!ts.isPropertyAccessExpression(node) || !ts.isIdentifier(node.expression)) return undefined
+    const module = scope.lookupValue(node.expression.text)
+    if (module?.k !== "module") return undefined
+    this.info.definitions.set(node.expression, module.decl)
+    const value = module.exports(node.name.text)?.value
+    if (!value) {
+      this.error(node.name, `Module '${module.name}' has no exported value '${node.name.text}'.`)
+      return { k: "const", value: errorOperand, type: undefined, decl: node }
+    }
+    if (ts.isIdentifier(node.name)) this.info.definitions.set(node.name, value.decl)
+    return value
+  }
+
   private checkProperty(node: ts.PropertyAccessExpression, scope: Scope): Operand {
+    const member = this.moduleMember(node, scope)
+    if (member) return this.symbolValue(member, node.name)
     const target = this.checkExpr(node.expression, scope)
     if (target.k === "error") return target
     const value = this.toDefault(target, node.expression)
@@ -2908,8 +3088,14 @@ class Checker {
   // ---------------------------------------------------------------------------
   // Helpers
 
+  /** The module a node belongs to. */
+  private sourceOf(node: ts.Node): Source {
+    return this.sources.get(node.getSourceFile())!
+  }
+
   private line(node: ts.Node): number {
-    return this.source.position(node.getStart(this.source.ast)).line + 1
+    const source = this.sourceOf(node)
+    return source.position(node.getStart(source.ast)).line + 1
   }
 
   private newLocal(name: string, type: Type, mutable: boolean): ir.Local {
@@ -2917,7 +3103,7 @@ class Checker {
   }
 
   private error(node: ts.Node, message: string) {
-    const d = diagnosticAt(this.source, node, this.context ? `${message} (in '${this.context}')` : message)
+    const d = diagnosticAt(this.sourceOf(node), node, this.context ? `${message} (in '${this.context}')` : message)
     // Generic instances can repeat the same error.
     if (!this.diagnostics.some((e) => e.start === d.start && e.message === d.message)) this.diagnostics.push(d)
   }
@@ -3048,6 +3234,20 @@ export function typeofName(type: Type): string {
   if (type.kind === "bool") return "boolean"
   if (isStringLike(type)) return "string"
   return "object"
+}
+
+/** Statements handled by the declaration passes. */
+function isDeclaration(stmt: ts.Statement): boolean {
+  return (
+    ts.isTypeAliasDeclaration(stmt) ||
+    ts.isFunctionDeclaration(stmt) ||
+    ts.isClassDeclaration(stmt) ||
+    ts.isInterfaceDeclaration(stmt) ||
+    ts.isImportDeclaration(stmt) ||
+    ts.isExportDeclaration(stmt) ||
+    ts.isExportAssignment(stmt) ||
+    ts.isEmptyStatement(stmt)
+  )
 }
 
 function isStringLiteralNode(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {

@@ -24,6 +24,14 @@ export type ValueSymbol =
   | { k: "generic-func"; generic: Generic; decl: ts.Node }
   /** A built-in namespace such as `console`, whose members are called as `console.log(...)`. */
   | { k: "namespace"; name: string; members: Map<string, ValueSymbol>; decl: ts.Node }
+  /** A module imported with `import * as m`, whose exports are used as `m.name`. */
+  | { k: "module"; name: string; exports: (name: string) => Exported | undefined; decl: ts.Node }
+
+/** What a module exports under a name: a value, a type, or both (a class). */
+export interface Exported {
+  value?: ValueSymbol
+  type?: TypeSymbol
+}
 
 export interface TypeSymbol {
   type: Type
@@ -36,6 +44,8 @@ export interface TypeSymbol {
 export class Scope {
   private readonly values = new Map<string, ValueSymbol>()
   private readonly types = new Map<string, TypeSymbol>()
+  /** Imported names, resolved when looked up so that modules can import each other in cycles. */
+  private readonly aliases = new Map<string, () => Exported | undefined>()
 
   /**
    * @param closure set on the outermost scope of a closure body: names found
@@ -47,14 +57,30 @@ export class Scope {
   ) {}
 
   lookupValue(name: string): ValueSymbol | undefined {
-    return this.values.get(name) ?? this.parent?.lookupValue(name)
+    return this.values.get(name) ?? this.aliases.get(name)?.()?.value ?? this.parent?.lookupValue(name)
+  }
+
+  /** A value declared in this scope itself, not in a parent. */
+  ownValue(name: string): ValueSymbol | undefined {
+    return this.values.get(name) ?? this.aliases.get(name)?.()?.value
+  }
+
+  ownType(name: string): TypeSymbol | undefined {
+    return this.types.get(name) ?? this.aliases.get(name)?.()?.type
+  }
+
+  /** Declares an imported name; returns false if the name is already declared in this scope. */
+  declareAlias(name: string, resolve: () => Exported | undefined): boolean {
+    if (this.values.has(name) || this.types.has(name) || this.aliases.has(name)) return false
+    this.aliases.set(name, resolve)
+    return true
   }
 
   /** Looks up a value and the closures between this scope and its declaration, innermost first. */
   lookupCapturing(name: string): { symbol: ValueSymbol; closures: Func[] } | undefined {
     const closures: Func[] = []
     for (let scope: Scope | undefined = this; scope; scope = scope.parent) {
-      const symbol = scope.values.get(name)
+      const symbol = scope.values.get(name) ?? scope.aliases.get(name)?.()?.value
       if (symbol) return { symbol, closures }
       if (scope.closure) closures.push(scope.closure)
     }
@@ -62,18 +88,18 @@ export class Scope {
   }
 
   lookupType(name: string): TypeSymbol | undefined {
-    return this.types.get(name) ?? this.parent?.lookupType(name)
+    return this.types.get(name) ?? this.aliases.get(name)?.()?.type ?? this.parent?.lookupType(name)
   }
 
   /** Declares a value; returns false if the name is already declared in this scope. */
   declareValue(name: string, symbol: ValueSymbol): boolean {
-    if (this.values.has(name)) return false
+    if (this.values.has(name) || this.aliases.has(name)) return false
     this.values.set(name, symbol)
     return true
   }
 
   declareType(name: string, symbol: TypeSymbol): boolean {
-    if (this.types.has(name)) return false
+    if (this.types.has(name) || this.aliases.has(name)) return false
     this.types.set(name, symbol)
     return true
   }

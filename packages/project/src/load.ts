@@ -10,7 +10,10 @@ export interface Program {
   entry: Source
   /** For each module, the module each import specifier resolves to. */
   imports: Map<Source, Map<string, Source>>
+  /** Syntax errors and unresolved imports. */
   diagnostics: Diagnostic[]
+  /** Whether any module has syntax errors, so that it cannot be checked. */
+  syntaxErrors: boolean
 }
 
 export interface LoadOptions {
@@ -24,6 +27,7 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
   const imports = new Map<Source, Map<string, Source>>()
   const diagnostics: Diagnostic[] = []
   const order: Source[] = []
+  let syntaxErrors = false
 
   const read = (path: string) => options.overrides?.get(path) ?? readFileSync(path, "utf8")
   const visit = (path: string, display: string): Source => {
@@ -33,6 +37,7 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
     const source = parsed.source
     byPath.set(path, source)
     diagnostics.push(...parsed.diagnostics)
+    if (parsed.diagnostics.length > 0) syntaxErrors = true
     const resolved = new Map<string, Source>()
     imports.set(source, resolved)
     for (const stmt of source.ast.statements) {
@@ -51,7 +56,7 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
   }
 
   const entry = visit(resolve(entryPath), entryPath)
-  return { modules: order, entry, imports, diagnostics }
+  return { modules: order, entry, imports, diagnostics, syntaxErrors }
 }
 
 function moduleSpecifier(stmt: ts.Statement): ts.StringLiteral | undefined {

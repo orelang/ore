@@ -34,6 +34,8 @@ export interface Func {
   sourceName: string
   /** 1-based source line of the declaration. */
   line: number
+  /** Path of the declaring module, when it differs from the module's `file`. */
+  file?: string
   type: FuncType
   params: Local[]
   /** `this` of a method, passed before the parameters. */

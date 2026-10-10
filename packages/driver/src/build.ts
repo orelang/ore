@@ -1,6 +1,7 @@
 import { check } from "@ore/checker"
 import { emitModule, type EmitOptions } from "@ore/codegen-c"
-import { parse, type Diagnostic } from "@ore/syntax"
+import { loadProgram } from "@ore/project"
+import { type Diagnostic } from "@ore/syntax"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -13,13 +14,14 @@ export interface CompileResult {
   diagnostics: Diagnostic[]
 }
 
-/** Parses, checks and translates an entry file to C. */
-export function compileToC(path: string, text: string, options: EmitOptions = { debug: false }): CompileResult {
-  const parsed = parse(path, text)
-  if (parsed.diagnostics.length > 0) return { diagnostics: parsed.diagnostics }
-  const checked = check(parsed.source)
-  if (!checked.module) return { diagnostics: checked.diagnostics }
-  return { c: emitModule(checked.module, options), diagnostics: checked.diagnostics }
+/** Loads, checks and translates a program, given by its entry file, to C. */
+export function compileToC(entry: string, options: EmitOptions = { debug: false }): CompileResult {
+  const program = loadProgram(entry)
+  if (program.syntaxErrors) return { diagnostics: program.diagnostics }
+  const checked = check(program)
+  const diagnostics = [...program.diagnostics, ...checked.diagnostics]
+  if (!checked.module || program.diagnostics.length > 0) return { diagnostics }
+  return { c: emitModule(checked.module, options), diagnostics }
 }
 
 export interface BuildOptions {
@@ -38,8 +40,7 @@ export interface BuildResult {
 const commonFlags = ["-std=c11", "-fwrapv", "-fno-strict-aliasing", "-w"]
 
 export async function build(path: string, options: BuildOptions): Promise<BuildResult> {
-  const text = await Bun.file(path).text()
-  const { c, diagnostics } = compileToC(path, text, { debug: !options.release })
+  const { c, diagnostics } = compileToC(path, { debug: !options.release })
   if (c === undefined) return { ok: false, diagnostics }
   if (options.emitC) writeFileSync(options.emitC, c)
 

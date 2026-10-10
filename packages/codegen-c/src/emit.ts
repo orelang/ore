@@ -29,7 +29,7 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   out.push("")
   const file = JSON.stringify(module.file)
   helpers.clear()
-  const bodies = module.functions.map((func) => emitFunction({ debug: options.debug, file, func }))
+  const bodies = module.functions.map((func) => emitFunction({ debug: options.debug, file: func.file ? JSON.stringify(func.file) : file, func }))
   // Helpers created while emitting the bodies, such as hash functions of map keys.
   out.push(...helpers.values(), "")
   for (const body of bodies) out.push(body, "")

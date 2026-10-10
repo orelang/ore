@@ -2,7 +2,8 @@
 import { check } from "@ore/checker"
 import { build, ToolError } from "@ore/driver"
 import { serve } from "@ore/lsp"
-import { formatDiagnostic, parse, type Diagnostic } from "@ore/syntax"
+import { loadProgram } from "@ore/project"
+import { formatDiagnostic, type Diagnostic } from "@ore/syntax"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
@@ -92,8 +93,8 @@ async function run(args: string[]): Promise<number> {
 async function checkCommand(args: string[]): Promise<number> {
   const file = entryFile(args)
   if (!file) return 2
-  const parsed = parse(file, await Bun.file(file).text())
-  const diagnostics = parsed.diagnostics.length > 0 ? parsed.diagnostics : check(parsed.source).diagnostics
+  const program = loadProgram(file)
+  const diagnostics = program.syntaxErrors ? program.diagnostics : [...program.diagnostics, ...check(program).diagnostics]
   report(diagnostics)
   return diagnostics.some((d) => d.severity === "error") ? 1 : 0
 }
