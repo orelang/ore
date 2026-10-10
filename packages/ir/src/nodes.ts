@@ -9,6 +9,8 @@ import type { BoolType, FloatType, FuncType, IntType, StringType, Type } from ".
  */
 
 export interface Module {
+  /** Path of the source file, as given to the compiler. */
+  file: string
   functions: Func[]
 }
 
@@ -17,6 +19,8 @@ export interface Func {
   name: string
   /** Name as written in the source. */
   sourceName: string
+  /** 1-based source line of the declaration. */
+  line: number
   type: FuncType
   params: Local[]
   body: Block
@@ -30,25 +34,30 @@ export interface Local {
   mutable: boolean
 }
 
+interface StmtBase {
+  /** 1-based source line, for debug info and stack traces. */
+  line?: number
+}
+
 export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | BreakStmt | ContinueStmt | ReturnStmt
 
-export interface Block {
+export interface Block extends StmtBase {
   k: "block"
   body: Stmt[]
 }
 
-export interface LetStmt {
+export interface LetStmt extends StmtBase {
   k: "let"
   local: Local
   init: Expr
 }
 
-export interface ExprStmt {
+export interface ExprStmt extends StmtBase {
   k: "expr"
   expr: Expr
 }
 
-export interface IfStmt {
+export interface IfStmt extends StmtBase {
   k: "if"
   cond: Expr
   then: Stmt
@@ -60,7 +69,7 @@ export interface IfStmt {
  * `do s while (c)` has `cond` and `condAfter`; a missing `cond` loops forever.
  * `continue` jumps to `update`, then to the condition check.
  */
-export interface LoopStmt {
+export interface LoopStmt extends StmtBase {
   k: "loop"
   /** Unique within the function; the target of labeled `break` / `continue`. */
   id: number
@@ -73,18 +82,18 @@ export interface LoopStmt {
 }
 
 /** Exits the innermost loop, or the loop with id `target` for a labeled break. */
-export interface BreakStmt {
+export interface BreakStmt extends StmtBase {
   k: "break"
   target?: number
 }
 
 /** Continues the innermost loop, or the loop with id `target` for a labeled continue. */
-export interface ContinueStmt {
+export interface ContinueStmt extends StmtBase {
   k: "continue"
   target?: number
 }
 
-export interface ReturnStmt {
+export interface ReturnStmt extends StmtBase {
   k: "return"
   value?: Expr
 }

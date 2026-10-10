@@ -1,5 +1,5 @@
 import { check } from "@ore/checker"
-import { emitModule } from "@ore/codegen-c"
+import { emitModule, type EmitOptions } from "@ore/codegen-c"
 import { parse, type Diagnostic } from "@ore/syntax"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -14,12 +14,12 @@ export interface CompileResult {
 }
 
 /** Parses, checks and translates an entry file to C. */
-export function compileToC(path: string, text: string): CompileResult {
+export function compileToC(path: string, text: string, options: EmitOptions = { debug: false }): CompileResult {
   const parsed = parse(path, text)
   if (parsed.diagnostics.length > 0) return { diagnostics: parsed.diagnostics }
   const checked = check(parsed.source)
   if (!checked.module) return { diagnostics: checked.diagnostics }
-  return { c: emitModule(checked.module), diagnostics: checked.diagnostics }
+  return { c: emitModule(checked.module, options), diagnostics: checked.diagnostics }
 }
 
 export interface BuildOptions {
@@ -39,7 +39,7 @@ const commonFlags = ["-std=c11", "-fwrapv", "-fno-strict-aliasing", "-w"]
 
 export async function build(path: string, options: BuildOptions): Promise<BuildResult> {
   const text = await Bun.file(path).text()
-  const { c, diagnostics } = compileToC(path, text)
+  const { c, diagnostics } = compileToC(path, text, { debug: !options.release })
   if (c === undefined) return { ok: false, diagnostics }
   if (options.emitC) writeFileSync(options.emitC, c)
 

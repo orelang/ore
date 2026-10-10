@@ -4,7 +4,7 @@
  * tests/run/NAME.ore   is built and run; stdout must equal NAME.out.
  *                      Header comments set other expectations:
  *                        // exit: 2
- *                        // stderr: panic: integer divide by zero   (substring)
+ *                        // stderr: panic: integer divide by zero   (substring, repeatable)
  * tests/diag/NAME.ore  must fail to check; every diagnostic must sit on a line
  *                      annotated with `// error: <substring of the message>`,
  *                      and every annotation must be matched.
@@ -51,8 +51,7 @@ describe("run", () => {
       if (bless) writeFileSync(outPath, stdout)
       expect(stdout).toBe(await Bun.file(outPath).text())
       expect(code).toBe(Number(header(text, "exit") ?? 0))
-      const expectedStderr = header(text, "stderr")
-      if (expectedStderr) expect(stderr).toContain(expectedStderr)
+      for (const [, line] of text.matchAll(/^\/\/ stderr: (.*)$/gm)) expect(stderr).toContain(line!.trim())
     })
   }
 })

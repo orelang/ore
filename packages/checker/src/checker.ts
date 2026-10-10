@@ -50,11 +50,13 @@ interface LoopContext {
 class Checker {
   private readonly diagnostics: Diagnostic[] = []
   private readonly info: CheckInfo = { types: new Map(), definitions: new Map() }
-  private readonly module: ir.Module = { functions: [] }
+  private readonly module: ir.Module
   private nextLocalId = 0
   private fn: FuncContext | undefined
 
-  constructor(private readonly source: Source) {}
+  constructor(private readonly source: Source) {
+    this.module = { file: source.path, functions: [] }
+  }
 
   run(options: CheckOptions): CheckResult {
     const scope = new Scope(builtinScope())
@@ -128,6 +130,7 @@ class Checker {
     const func: ir.Func = {
       name: `ore_fn_${decl.name.text}`,
       sourceName: decl.name.text,
+      line: this.line(decl.name),
       type,
       params,
       body: { k: "block", body: [] },
@@ -272,6 +275,13 @@ class Checker {
   }
 
   private checkStmt(stmt: ts.Statement, scope: Scope, out: ir.Stmt[]) {
+    const before = out.length
+    this.checkStmtInner(stmt, scope, out)
+    const line = this.line(stmt)
+    for (let i = before; i < out.length; i++) out[i]!.line ??= line
+  }
+
+  private checkStmtInner(stmt: ts.Statement, scope: Scope, out: ir.Stmt[]) {
     const fn = this.fn!
     if (ts.isBlock(stmt)) out.push(this.checkBlock(stmt, scope))
     else if (ts.isVariableStatement(stmt)) this.checkVariables(stmt.declarationList, scope, out)
@@ -774,6 +784,10 @@ class Checker {
 
   // ---------------------------------------------------------------------------
   // Helpers
+
+  private line(node: ts.Node): number {
+    return this.source.position(node.getStart(this.source.ast)).line + 1
+  }
 
   private newLocal(name: string, type: Type, mutable: boolean): ir.Local {
     return { id: this.nextLocalId++, name, type, mutable }

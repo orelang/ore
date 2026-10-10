@@ -1,1 +1,1 @@
-export { emitModule } from "./emit"
+export { emitModule, type EmitOptions } from "./emit"

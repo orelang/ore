@@ -1,6 +1,5 @@
 #include "ore.h"
 
-#include <execinfo.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,13 +18,18 @@ int main(int argc, char **argv) {
 // ---------------------------------------------------------------------------
 // Panics
 
+_Thread_local ore_frame *ore_rt_top = NULL;
+
 _Noreturn void ore_rt_panic(ore_string message) {
   fflush(stdout);
   fprintf(stderr, "panic: %.*s\n\n", (int)message.len, (const char *)message.ptr);
-  void *frames[64];
-  int count = backtrace(frames, 64);
-  // Skip ore_rt_panic itself.
-  backtrace_symbols_fd(frames + 1, count - 1, 2);
+  if (ore_rt_top) {
+    for (ore_frame *f = ore_rt_top; f; f = f->prev) fprintf(stderr, "  %s at %s:%d\n", f->func, f->file, f->line);
+  } else {
+    // Release builds keep no shadow stack, and native symbols of static
+    // functions are unreliable, so no trace is better than a wrong one.
+    fputs("  (no stack trace in release builds; rebuild without --release)\n", stderr);
+  }
   exit(2);
 }
 

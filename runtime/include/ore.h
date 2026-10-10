@@ -32,6 +32,20 @@ typedef struct {
 // Entry point emitted by the compiler; calls the user's `main`.
 void ore_entry(void);
 
+/**
+ * A call frame on the shadow stack kept by debug builds for stack traces.
+ * Each function pushes one on entry, updates `line` before each statement and
+ * pops it on return.
+ */
+typedef struct ore_frame {
+  struct ore_frame *prev;
+  const char *func;
+  const char *file;
+  i32 line;
+} ore_frame;
+
+extern _Thread_local ore_frame *ore_rt_top;
+
 _Noreturn void ore_rt_panic(ore_string message);
 _Noreturn void ore_rt_panic_cstr(const char *message);
 
