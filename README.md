@@ -5,7 +5,8 @@ A natively compiled, Go-like language with TypeScript syntax.
 Ore keeps the syntax of TypeScript and gives it native semantics: real `i32`,
 `u64` and `f32` types, untyped numeric constants, explicit conversions, nominal
 classes, structural interfaces, tagged unions with narrowing, errors as values,
-generics by monomorphization and a garbage collector. Programs compile to C and
+generics by monomorphization, green threads with channels and a garbage
+collector. Programs compile to C and
 then to a single native binary with clang.
 
 ```ts
@@ -121,6 +122,21 @@ function copy(from: string, to: string): Error | null {
 **Built-ins in namespaces.** `console.log`, `process.args`, `Math.sqrt`,
 `Number.parseInt`, `fs.readFile`, `Date.now`. No bare globals.
 
+**Concurrency, like Go.** Green threads, channels and select, without
+`async` coloring:
+
+```ts
+const results = new Chan<int>()
+for (let i = 1; i <= 3; i++) task.spawn(() => results.send(i * i))
+let sum = 0
+for (let i = 0; i < 3; i++) sum += results.receive() ?? 0
+
+task.select([
+    results.onReceive((v) => console.log("got", v)),
+    task.after(100, () => console.log("timeout")),
+])
+```
+
 **C interop.** `declare function strlen(s: string): u64` calls C directly.
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
@@ -201,7 +217,8 @@ member completion. Another binary can be set in Zed settings:
 | 4. Unions, narrowing, errors, generics, Map | done |
 | 5. Closures, array methods, `using` | done |
 | 6. Modules, packages, standard library, C interop, `ore test`, `ore fmt` | done |
-| 7. Concurrency: `spawn`, `Chan<T>`, `select` on green threads | next |
+| 7. Concurrency: tasks, `Chan<T>`, `select` on green threads (one OS thread) | done |
+| 7.5. Multi-threaded scheduler, non-blocking I/O | next |
 | 8. Precise GC, escape analysis, LLVM backend | planned |
 | 9. Self-hosting | planned |
 
