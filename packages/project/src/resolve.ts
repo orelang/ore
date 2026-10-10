@@ -7,6 +7,8 @@ export interface PackageJson {
   /** The entry file of a program, or the module imported by a package's name. */
   main?: string
   dependencies?: Record<string, string>
+  /** Native code: libraries to link (`-l`), and C sources relative to the package. */
+  ore?: { link?: string[]; sources?: string[] }
 }
 
 function isFile(path: string): boolean {

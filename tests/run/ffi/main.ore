@@ -1,0 +1,35 @@
+// Functions of the C library.
+declare function strlen(s: string): u64
+declare function abs(x: i32): i32
+declare function atoi(s: string): i32
+
+// Functions of native/counter.c.
+declare function counter_new(): ptr
+declare function counter_add(c: ptr, n: int): int
+declare function counter_free(c: ptr): void
+declare function greeting(name: string): string
+
+class Counter {
+  private handle: ptr
+
+  constructor() {
+    this.handle = counter_new()
+  }
+
+  add(n: int): int {
+    return counter_add(this.handle, n)
+  }
+
+  [Symbol.dispose](): void {
+    counter_free(this.handle)
+    console.log("freed")
+  }
+}
+
+export function main() {
+  console.log(strlen("ore"), strlen("ёж"), abs(-5), atoi("123") + 1)
+  console.log(greeting("ore"))
+  using c = new Counter()
+  c.add(2)
+  console.log(c.add(40))
+}

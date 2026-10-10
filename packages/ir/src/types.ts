@@ -105,6 +105,11 @@ export interface LiteralType {
   readonly value: string
 }
 
+/** An opaque C pointer, for handles passed to and from external C functions. */
+export interface PtrType {
+  readonly kind: "ptr"
+}
+
 /** The type of `null`; appears in unions such as `Node | null`. */
 export interface NullType {
   readonly kind: "null"
@@ -128,7 +133,7 @@ export interface MapType {
   readonly value: Type
 }
 
-export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType | LiteralType
+export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType | LiteralType | PtrType
 export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType | MapType
 
 export function findField(t: StructType, name: string): Field | undefined {
@@ -162,6 +167,7 @@ export const types = {
   void: { kind: "void" } as VoidType,
   never: { kind: "never" } as NeverType,
   null: { kind: "null" } as NullType,
+  ptr: { kind: "ptr" } as PtrType,
 } as const
 
 export function isNumeric(t: Type): t is IntType | FloatType {

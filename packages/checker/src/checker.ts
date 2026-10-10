@@ -339,6 +339,7 @@ class Checker {
 
   private declareFunction(decl: ts.FunctionDeclaration, scope: Scope): ir.Func | undefined {
     if (!decl.name) return this.error(decl, "A function declaration must have a name."), undefined
+    if (decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) return this.declareExtern(decl, scope), undefined
     if (!decl.body) return this.error(decl.name, "A function declaration must have a body."), undefined
     if (decl.typeParameters) return this.declareGeneric(decl, scope), undefined
     if (decl.asteriskToken) this.error(decl.asteriskToken, "Generators are not supported in Ore.")
@@ -355,6 +356,35 @@ class Checker {
       return undefined
     }
     return func
+  }
+
+  /** `declare function f(...)`: an external C function named `f`. */
+  private declareExtern(decl: ts.FunctionDeclaration, scope: Scope) {
+    const name = decl.name!.text
+    if (decl.body) return this.error(decl.name!, "A declared function cannot have a body.")
+    if (decl.typeParameters) return this.error(decl.typeParameters[0]!, "External functions cannot be generic.")
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return this.error(decl.name!, "An external function needs a C name.")
+    const params = this.resolveParams(decl.parameters, scope)
+    const result = decl.type ? this.resolveType(decl.type, scope) ?? types.void : types.void
+    // C can exchange numbers, booleans, strings and pointers.
+    const cCompatible = (t: Type) => isNumeric(t) || t.kind === "bool" || t.kind === "string" || t.kind === "ptr"
+    decl.parameters.forEach((p, i) => {
+      if (params[i] && !cCompatible(params[i]!.type)) this.error(p, `Type '${typeToString(params[i]!.type)}' cannot be passed to C.`)
+    })
+    if (!cCompatible(result) && result.kind !== "void") this.error(decl.type!, `Type '${typeToString(result)}' cannot be returned from C.`)
+    const func: ir.Func = {
+      name,
+      sourceName: name,
+      line: this.line(decl.name!),
+      file: this.sourceOf(decl).path,
+      type: { kind: "func", params: params.map((p) => p.type), result },
+      params,
+      body: { k: "block", body: [] },
+      exported: false,
+      extern: true,
+    }
+    this.module.functions.push(func)
+    if (!scope.declareValue(name, { k: "func", func, decl })) this.error(decl.name!, `Duplicate declaration '${name}'.`)
   }
 
   /** A function with the signature of a declaration, resolved in `scope`; the body is checked later. */
@@ -2053,6 +2083,7 @@ class Checker {
       case "module":
         return this.fail(node, `'${node.text}' is a module; use its exports, e.g. '${node.text}.name'.`)
       case "func":
+        if (symbol.func.extern) return this.fail(node, `External function '${symbol.func.name}' cannot be used as a value.`)
         return typed({ k: "func-ref", type: symbol.func.type, func: symbol.func })
       default:
         return this.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)
@@ -2161,7 +2192,7 @@ class Checker {
       return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal", "func"].includes(type.kind)
+    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal", "func", "ptr"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }

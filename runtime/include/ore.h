@@ -223,6 +223,11 @@ static inline bool ore_rt_same_f64(f64 a, f64 b) { return a == b || (a != a && b
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 
+/** A NUL-terminated copy of a string, for C. */
+const char *ore_rt_cstring(ore_string s);
+/** A copy of a NUL-terminated C string; empty for NULL. */
+ore_string ore_rt_from_cstring(const char *p);
+
 /** The command-line arguments after the program name, as an array of strings. */
 ore_array *ore_rt_args(void);
 /** An environment variable; a string without a pointer when unset. */

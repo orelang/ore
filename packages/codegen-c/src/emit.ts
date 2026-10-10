@@ -24,12 +24,12 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   for (const u of module.unions) if (unionRepr(u).k === "tagged") out.push(...emitUnion(u))
   for (const s of module.structs) out.push(emitStruct(s))
   for (const func of module.functions) if (func.captures?.length) out.push(emitEnv(func))
-  for (const func of module.functions) out.push(`static ${signature(func)};`)
+  for (const func of module.functions) out.push(func.extern ? externSignature(func) : `static ${signature(func)};`)
   for (const itab of module.itabs) out.push(emitItab(itab))
   out.push("")
   const file = JSON.stringify(module.file)
   helpers.clear()
-  const bodies = module.functions.map((func) => emitFunction({ debug: options.debug, file: func.file ? JSON.stringify(func.file) : file, func }))
+  const bodies = module.functions.filter((f) => !f.extern).map((func) => emitFunction({ debug: options.debug, file: func.file ? JSON.stringify(func.file) : file, func }))
   // Helpers created while emitting the bodies, such as hash functions of map keys.
   out.push(...helpers.values(), "")
   for (const body of bodies) out.push(body, "")
@@ -263,6 +263,17 @@ function typeId(s: ir.StructType): number {
   return s.id + 1
 }
 
+/** The C type of a value passed to or returned from C. */
+function externType(type: Type): string {
+  return type.kind === "string" ? "const char *" : cType(type)
+}
+
+/** The prototype of an external C function. */
+function externSignature(func: ir.Func): string {
+  const params = func.params.length === 0 ? "void" : func.params.map((p) => externType(p.type)).join(", ")
+  return `extern ${externType(func.type.result)} ${func.name}(${params});`
+}
+
 function signature(func: ir.Func): string {
   const list = func.params.map((p) => `${cType(p.type)} ${localName(p)}${boxed(p) ? "_arg" : ""}`)
   if (func.receiver) list.unshift("void *self_")
@@ -296,6 +307,8 @@ export function cType(type: Type): string {
     }
     case "literal":
       return "ore_string"
+    case "ptr":
+      return "void *"
     case "map":
       return "ore_map *"
     case "func":
@@ -566,6 +579,14 @@ function emitExpr(expr: ir.Expr): string {
     case "convert":
       return emitConvert(expr)
     case "call":
+      if (expr.func.extern) {
+        // Strings cross into C as NUL-terminated copies, and come back copied.
+        return inOrder(expr.args, (args) => {
+          const cArgs = args.map((a, i) => (expr.func.params[i]!.type.kind === "string" ? `ore_rt_cstring(${a})` : a))
+          const call = `${expr.func.name}(${cArgs.join(", ")})`
+          return expr.func.type.result.kind === "string" ? `ore_rt_from_cstring(${call})` : call
+        })
+      }
       return inOrder(expr.args, (args) => `${expr.func.name}(${args.join(", ")})`)
     case "builtin":
       return emitBuiltin(expr)

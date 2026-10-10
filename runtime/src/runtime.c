@@ -78,6 +78,10 @@ static char *c_string(ore_string s) {
   return p;
 }
 
+const char *ore_rt_cstring(ore_string s) { return c_string(s); }
+
+ore_string ore_rt_from_cstring(const char *p) { return p ? str_copy(p, strlen(p)) : ORE_STR(""); }
+
 ore_array *ore_rt_args(void) {
   ore_array *a = ore_rt_array_new(sizeof(ore_string), 0);
   for (int i = 1; i < arg_count; i++) {

@@ -36,6 +36,11 @@ export interface Func {
   line: number
   /** Path of the declaring module, when it differs from the module's `file`. */
   file?: string
+  /**
+   * An external C function, called by its C name `name`: strings are passed
+   * as NUL-terminated copies and returned strings are copied.
+   */
+  extern?: boolean
   type: FuncType
   params: Local[]
   /** `this` of a method, passed before the parameters. */
