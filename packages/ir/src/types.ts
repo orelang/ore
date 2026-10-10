@@ -43,8 +43,34 @@ export interface ArrayType {
   readonly elem: Type
 }
 
+export interface Field {
+  readonly name: string
+  readonly type: Type
+  readonly readonly: boolean
+}
+
+/**
+ * A heap-allocated record, used through references.
+ *
+ * Anonymous object types (`{ x: f64 }`, object literals) are interned by
+ * shape, so two of them are the same type exactly when they are the same
+ * object. Their fields are sorted by name, which is also the layout.
+ */
+export interface StructType {
+  readonly kind: "struct"
+  /** Unique per program; used for names in generated code. */
+  readonly id: number
+  /** Display name: a type alias name, or undefined for an anonymous shape. */
+  name: string | undefined
+  fields: Field[]
+}
+
 export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType
-export type Type = PrimitiveType | FuncType | ArrayType
+export type Type = PrimitiveType | FuncType | ArrayType | StructType
+
+export function findField(t: StructType, name: string): Field | undefined {
+  return t.fields.find((f) => f.name === name)
+}
 
 export function arrayOf(elem: Type): ArrayType {
   return { kind: "array", elem }
@@ -92,6 +118,8 @@ export function typeToString(t: Type): string {
       return `(${t.params.map(typeToString).join(", ")}) => ${typeToString(t.result)}`
     case "array":
       return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
+    case "struct":
+      return t.name ?? `{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${typeToString(f.type)}`).join("; ")} }`
     default:
       return t.kind
   }

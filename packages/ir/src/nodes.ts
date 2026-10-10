@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, FloatType, FuncType, IntType, StringType, Type } from "./types"
+import type { ArrayType, BoolType, FloatType, FuncType, IntType, StringType, StructType, Type } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -12,6 +12,8 @@ export interface Module {
   /** Path of the source file, as given to the compiler. */
   file: string
   functions: Func[]
+  /** Every struct type used by the module. */
+  structs: StructType[]
 }
 
 export interface Func {
@@ -138,6 +140,8 @@ export type Expr =
   | ArrayLit
   | Push
   | Pop
+  | ObjectLit
+  | FieldGet
 
 export interface IntLit {
   k: "int"
@@ -174,6 +178,8 @@ export type LValue =
   | { k: "local"; local: Local }
   /** A bounds-checked array element. */
   | { k: "element"; array: Expr; index: Expr }
+  /** A field of a struct reference. */
+  | { k: "field"; object: Expr; name: string }
 
 /**
  * Assignment. With `op` it is a compound assignment `target op= value`, where
@@ -318,4 +324,18 @@ export interface Pop {
   k: "pop"
   type: Type
   array: Expr
+}
+
+/** Allocates a struct and initializes its fields in source order. */
+export interface ObjectLit {
+  k: "object"
+  type: StructType
+  fields: { name: string; value: Expr }[]
+}
+
+export interface FieldGet {
+  k: "field"
+  type: Type
+  object: Expr
+  name: string
 }

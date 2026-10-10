@@ -1,5 +1,5 @@
 import * as ir from "@ore/ir"
-import { arrayOf, intRange, isNumeric, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
+import { arrayOf, findField, intRange, isNumeric, sameType, types, typeToString, type Field, type FuncType, type StructType, type Type } from "@ore/ir"
 import { diagnosticAt, type Diagnostic, type Source } from "@ore/syntax"
 import ts from "typescript"
 import { builtinScope } from "./builtins"
@@ -53,9 +53,12 @@ class Checker {
   private readonly module: ir.Module
   private nextLocalId = 0
   private fn: FuncContext | undefined
+  /** Anonymous struct types by shape key. */
+  private readonly shapes = new Map<string, StructType>()
+  private nextStructId = 0
 
   constructor(private readonly source: Source) {
-    this.module = { file: source.path, functions: [] }
+    this.module = { file: source.path, functions: [], structs: [] }
   }
 
   run(options: CheckOptions): CheckResult {
@@ -94,6 +97,8 @@ class Checker {
     if (decl.typeParameters) return this.error(decl.typeParameters[0]!, "Generic type aliases are not supported yet.")
     const type = this.resolveType(decl.type, scope)
     if (!type) return
+    // An anonymous object type is displayed by the first alias that names it.
+    if (type.kind === "struct" && type.name === undefined) type.name = decl.name.text
     if (!scope.declareType(decl.name.text, { type, decl })) this.error(decl.name, `Duplicate type '${decl.name.text}'.`)
   }
 
@@ -251,7 +256,51 @@ class Checker {
       return symbol.type
     }
     if (ts.isParenthesizedTypeNode(node)) return this.resolveType(node.type, scope)
+    if (ts.isTypeLiteralNode(node)) return this.resolveTypeLiteral(node, scope)
     this.error(node, "This kind of type is not supported yet.")
+    return undefined
+  }
+
+  private resolveTypeLiteral(node: ts.TypeLiteralNode, scope: Scope): Type | undefined {
+    const fields: Field[] = []
+    for (const member of node.members) {
+      if (!ts.isPropertySignature(member)) {
+        this.error(member, ts.isMethodSignature(member) ? "Methods in object types are not supported yet. Use an interface." : "Only properties are supported in object types.")
+        continue
+      }
+      const name = this.memberName(member.name)
+      if (name === undefined) continue
+      if (member.questionToken) this.error(member.questionToken, "Optional properties are not supported yet.")
+      if (!member.type) {
+        this.error(member.name, `Property '${name}' must have a type annotation.`)
+        continue
+      }
+      if (fields.some((f) => f.name === name)) this.error(member.name, `Duplicate property '${name}'.`)
+      const type = this.resolveValueType(member.type, scope)
+      const readonly = member.modifiers?.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword) ?? false
+      if (type) fields.push({ name, type, readonly })
+    }
+    return this.shape(fields)
+  }
+
+  /** The interned anonymous struct type with these fields. */
+  private shape(fields: Field[]): StructType {
+    const sorted = [...fields].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    const key = sorted.map((f) => `${f.readonly ? "readonly " : ""}${f.name}:${typeKey(f.type)}`).join(";")
+    let struct = this.shapes.get(key)
+    if (!struct) {
+      struct = { kind: "struct", id: this.nextStructId++, name: undefined, fields: sorted }
+      this.shapes.set(key, struct)
+      this.module.structs.push(struct)
+    }
+    return struct
+  }
+
+  /** The name of a property; computed and private names are rejected. */
+  private memberName(name: ts.PropertyName): string | undefined {
+    if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text
+    if (ts.isPrivateIdentifier(name)) this.error(name, "'#' private names are not supported. Use the 'private' modifier.")
+    else this.error(name, "Computed property names are not supported.")
     return undefined
   }
 
@@ -383,6 +432,7 @@ class Checker {
         let type: Type
         if (declared) {
           type = declared
+          if (!value && !hasZeroValue(declared)) this.error(decl.name, `Variable '${name}' of type '${typeToString(declared)}' must be initialized.`)
           init = value ? this.coerce(value, declared, decl.initializer!) : zeroValue(declared)
         } else if (value) {
           init = this.toDefault(value, decl.initializer!)
@@ -502,6 +552,7 @@ class Checker {
   private checkExprInner(node: ts.Expression, scope: Scope, expected: Type | undefined): Operand {
     if (ts.isParenthesizedExpression(node)) return this.checkExpr(node.expression, scope, expected)
     if (ts.isArrayLiteralExpression(node)) return this.checkArrayLiteral(node, scope, expected)
+    if (ts.isObjectLiteralExpression(node)) return this.checkObjectLiteral(node, scope, expected)
     // node.text is normalized ("5.0" becomes "5"); the source spelling decides int vs float.
     if (ts.isNumericLiteral(node)) return numericLiteral(node.getText(this.source.ast))
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -628,7 +679,7 @@ class Checker {
       return this.fail(node.operatorToken, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || type.kind === "bool" || type.kind === "string" || type.kind === "array"
+    const equatable = isNumeric(type) || type.kind === "bool" || type.kind === "string" || type.kind === "array" || type.kind === "struct"
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(node.operatorToken, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
@@ -679,7 +730,18 @@ class Checker {
       this.info.types.set(node, array.type.elem)
       return { lvalue: { k: "element", array, index }, type: array.type.elem }
     }
-    if (!ts.isIdentifier(node)) return this.error(node, "Only variables and array elements can be assigned to."), undefined
+    if (ts.isPropertyAccessExpression(node)) {
+      const target = this.checkExpr(node.expression, scope)
+      if (target.k !== "typed") return undefined
+      const object = target.expr
+      const name = node.name.text
+      const field = object.type.kind === "struct" ? findField(object.type, name) : undefined
+      if (!field) return this.error(node.name, `Property '${name}' does not exist on type '${typeToString(object.type)}'.`), undefined
+      if (field.readonly) return this.error(node.name, `Cannot assign to '${name}' because it is a read-only property.`), undefined
+      this.info.types.set(node, field.type)
+      return { lvalue: { k: "field", object, name }, type: field.type }
+    }
+    if (!ts.isIdentifier(node)) return this.error(node, "Only variables, fields and array elements can be assigned to."), undefined
     const symbol = scope.lookupValue(node.text)
     if (!symbol) return this.error(node, `Cannot find name '${node.text}'.`), undefined
     this.info.definitions.set(node, symbol.decl)
@@ -804,6 +866,57 @@ class Checker {
     return typed({ k: "array", type: arrayOf(elem), elems })
   }
 
+  private checkObjectLiteral(node: ts.ObjectLiteralExpression, scope: Scope, expected: Type | undefined): Operand {
+    const props: { name: string; node: ts.Node; value: ts.Expression }[] = []
+    for (const prop of node.properties) {
+      if (ts.isPropertyAssignment(prop)) {
+        const name = this.memberName(prop.name)
+        if (name !== undefined) props.push({ name, node: prop.name, value: prop.initializer })
+      } else if (ts.isShorthandPropertyAssignment(prop)) {
+        props.push({ name: prop.name.text, node: prop.name, value: prop.name })
+      } else if (ts.isSpreadAssignment(prop)) {
+        return this.fail(prop, "Object spread is not supported yet.")
+      } else {
+        return this.fail(prop, "Methods and accessors in object literals are not supported yet.")
+      }
+    }
+    for (let i = 0; i < props.length; i++) {
+      if (props.findIndex((p) => p.name === props[i]!.name) !== i) return this.fail(props[i]!.node, `Duplicate property '${props[i]!.name}'.`)
+    }
+
+    if (expected?.kind === "struct") {
+      // A literal for a known object type must have exactly its fields.
+      let ok = true
+      for (const p of props) {
+        if (!findField(expected, p.name)) {
+          this.error(p.node, `Property '${p.name}' does not exist in type '${typeToString(expected)}'.`)
+          ok = false
+        }
+      }
+      const missing = expected.fields.filter((f) => !props.some((p) => p.name === f.name)).map((f) => `'${f.name}'`)
+      if (missing.length > 0) {
+        this.error(node, `Missing ${missing.length === 1 ? "property" : "properties"} ${missing.join(", ")} of type '${typeToString(expected)}'.`)
+        ok = false
+      }
+      const fields = props.map((p) => {
+        const type = findField(expected, p.name)?.type ?? types.i64
+        return { name: p.name, value: this.coerce(this.checkExpr(p.value, scope, type), type, p.value) }
+      })
+      return ok ? typed({ k: "object", type: expected, fields }) : errorOperand
+    }
+
+    const fields: { name: string; value: ir.Expr }[] = []
+    for (const p of props) {
+      const value = this.checkExpr(p.value, scope)
+      if (value.k === "error") return errorOperand
+      const expr = this.toDefault(value, p.value)
+      if (expr.type.kind === "void" || expr.type.kind === "never") return this.fail(p.value, `A property cannot have type '${expr.type.kind}'.`)
+      fields.push({ name: p.name, value: expr })
+    }
+    const type = this.shape(fields.map((f) => ({ name: f.name, type: f.value.type, readonly: false })))
+    return typed({ k: "object", type, fields })
+  }
+
   private checkTemplate(node: ts.TemplateExpression, scope: Scope): Operand {
     const parts: ir.Expr[] = []
     const text = (value: string) => {
@@ -836,6 +949,10 @@ class Checker {
     const value = this.toDefault(target, node.expression)
     const name = node.name.text
     if (name === "length" && (value.type.kind === "string" || value.type.kind === "array")) return typed({ k: "len", type: types.i64, value })
+    if (value.type.kind === "struct") {
+      const field = findField(value.type, name)
+      if (field) return typed({ k: "field", type: field.type, object: value, name })
+    }
     return this.fail(node.name, `Property '${name}' does not exist on type '${typeToString(value.type)}'.`)
   }
 
@@ -1037,6 +1154,25 @@ function numericLiteral(text: string): Operand {
 
 function floatLit(type: ir.FloatType, value: number): ir.FloatLit {
   return { k: "float", type, value: type.bits === 32 ? Math.fround(value) : value }
+}
+
+/** A stable key of a type for interning shapes. */
+function typeKey(type: Type): string {
+  switch (type.kind) {
+    case "array":
+      return `${typeKey(type.elem)}[]`
+    case "struct":
+      return `#${type.id}`
+    case "func":
+      return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
+    default:
+      return typeToString(type)
+  }
+}
+
+/** Whether a type has a zero value for variables without an initializer; references do not. */
+function hasZeroValue(type: Type): boolean {
+  return type.kind !== "struct"
 }
 
 function zeroValue(type: Type): ir.Expr {
