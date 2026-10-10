@@ -2507,7 +2507,11 @@ class Checker {
    */
   private builtinCall(name: string, decl: ts.FunctionDeclaration, node: ts.CallExpression, scope: Scope): Operand {
     const args = node.arguments
-    if (args.length !== decl.parameters.length) return this.fail(node, `'${name}' expects ${decl.parameters.length} argument(s), got ${args.length}.`)
+    const required = decl.parameters.filter((p) => !p.questionToken).length
+    if (args.length < required || args.length > decl.parameters.length) {
+      const count = required === decl.parameters.length ? `${required}` : `${required} to ${decl.parameters.length}`
+      return this.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+    }
     if (decl.typeParameters) {
       const operands = args.map((a) => this.checkExpr(a, scope))
       if (operands.some((o) => o.k === "error")) return errorOperand
@@ -2520,7 +2524,11 @@ class Checker {
     const types_ = decl.parameters.map((p) => this.resolveType(p.type!, this.builtins!)!)
     const values = args.map((a, i) => this.coerce(this.checkExpr(a, scope, types_[i]), types_[i]!, a))
     const result = this.resolveType(decl.type!, this.builtins!)!
-    return typed({ k: "builtin", type: result, name, args: values })
+    // A built-in that fails with an Error creates the basic one.
+    const error = membersOf(result).some((m) => m === this.errorType)
+      ? { ctor: this.basicErrorClass().ctor!, itab: this.itab(this.basicErrorClass(), this.errorType!) }
+      : undefined
+    return typed({ k: "builtin", type: result, name, args: values, error })
   }
 
   /** Calls a function value with arguments converted to its parameters. */
@@ -2977,6 +2985,15 @@ class Checker {
       return typed({ k: "map", op, type: result, mapType: type, map: value, key, value: val })
     }
     if (type.kind === "array" && arrayMethods.has(name)) return this.arrayMethod(value, type, name, node, callee, scope)
+    if ((isNumeric(type) || type.kind === "bool") && name === "toString" && args.length === 0) {
+      return typed({ k: "concat", type: types.string, parts: [value] })
+    }
+    if (isNumeric(type) && name === "toFixed") {
+      if (args.length !== 1) return this.fail(node, `'toFixed' expects 1 argument(s), got ${args.length}.`)
+      const digits = this.coerce(this.checkExpr(args[0]!, scope, types.i64), types.i64, args[0]!)
+      const number: ir.Expr = type.kind === "float" && type.bits === 64 ? value : { k: "convert", type: types.f64, value }
+      return typed({ k: "builtin", type: types.string, name: "Number.toFixed", args: [number, digits] })
+    }
     const stringMethod = isStringLike(type) || (type.kind === "union" && type.members.every(isStringLike)) ? stringMethods[name] : undefined
     if (stringMethod) {
       const [params, optional, result] = stringMethod

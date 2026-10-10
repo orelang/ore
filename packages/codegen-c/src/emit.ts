@@ -1155,6 +1155,36 @@ const builtins: Record<string, (a: string[], expr: ir.BuiltinCall) => string> = 
   "Math.round": (a) => `ore_rt_round(${a[0]})`,
   "Math.sign": (a) => `({ f64 x_ = ${a[0]}; x_ > 0 ? 1.0 : x_ < 0 ? -1.0 : x_; })`,
   "Math.random": () => "ore_rt_random()",
+  "Number.toFixed": (a) => `ore_rt_str_fixed(${a[0]}, ${a[1]})`,
+  "Number.parseInt": (a, e) => maybe(e, "i64", `ore_rt_parse_int(${a[0]}, ${a[1] ?? "0"}, &v_)`),
+  "Number.parseFloat": (a, e) => maybe(e, "f64", `ore_rt_parse_float(${a[0]}, &v_)`),
+  "fs.readFile": (a, e) => fallible(e, "ore_string", `ore_rt_read_file(${a[0]}, &v_)`, "v_"),
+  "fs.writeFile": (a, e) => fallible(e, undefined, `ore_rt_write_file(${a[0]}, ${a[1]}, &v_)`, "v_"),
+  "fs.exists": (a) => `ore_rt_file_exists(${a[0]})`,
+  "Date.now": () => "ore_rt_now()",
+  "process.args": () => "ore_rt_args()",
+  "process.getenv": (a) => `ore_rt_getenv(${a[0]})`,
+}
+
+/** A `T | null` from a runtime call that stores the value in `v_` and returns whether there is one. */
+function maybe(expr: ir.BuiltinCall, t: string, call: string): string {
+  const u = expr.type as UnionType
+  const value = u.members.findIndex((m) => m.kind !== "null")
+  const none = inject(u, u.members.findIndex((m) => m.kind === "null"), "")
+  return `({ ${t} v_; ${call} ? ${inject(u, value, "v_")} : ${none}; })`
+}
+
+/**
+ * A `T | Error` (or `Error | null` without a value type) from a runtime call
+ * that stores the value or the error message in `v_` and returns success.
+ */
+function fallible(expr: ir.BuiltinCall, t: string | undefined, call: string, v: string): string {
+  const u = expr.type as UnionType
+  const { ctor, itab } = expr.error!
+  const error = u.members.findIndex((m) => m.kind === "interface")
+  const fail = inject(u, error, `((ore_iface){(void *)${ctor.name}(${v}), ore_itab_${itab.id}})`)
+  const ok = t ? inject(u, u.members.findIndex((m) => m.kind !== "interface"), v) : inject(u, u.members.findIndex((m) => m.kind === "null"), "")
+  return `({ ore_string ${t ? "" : ""}v_; ${call} ? ${ok} : ${fail}; })`
 }
 for (const f of ["sqrt", "cbrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot", "floor", "ceil", "trunc"]) {
   builtins[`Math.${f}`] = (a) => `${f}(${a.join(", ")})`

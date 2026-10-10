@@ -1,4 +1,4 @@
-import { types, type Type } from "@ore/ir"
+import { arrayOf, types, type Expr, type Type } from "@ore/ir"
 import { parse, type Source } from "@ore/syntax"
 import ts from "typescript"
 import builtinText from "../../../std/builtin.d.ore" with { type: "text" }
@@ -36,9 +36,11 @@ export function builtinScope(): { scope: Scope; source: Source } {
           for (const d of member.declarationList.declarations) {
             const name = `${ns}.${(d.name as ts.Identifier).text}`
             const value = constants[name]
-            if (value === undefined) throw new Error(`unknown builtin constant ${name}`)
-            const expr = { k: "float", type: types.f64, value } as const
-            members.set((d.name as ts.Identifier).text, { k: "const", value: { k: "typed", expr }, type: types.f64, decl: d })
+            // A value known only at run time, such as `process.args`, is a call of a built-in.
+            const expr: Expr =
+              value !== undefined ? { k: "float", type: types.f64, value } : { k: "builtin", type: arrayOf(types.string), name, args: [] }
+            if (value === undefined && name !== "process.args") throw new Error(`unknown builtin constant ${name}`)
+            members.set((d.name as ts.Identifier).text, { k: "const", value: { k: "typed", expr }, type: expr.type, decl: d })
           }
         }
       }

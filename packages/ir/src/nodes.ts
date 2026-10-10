@@ -351,6 +351,8 @@ export interface BuiltinCall {
   type: Type
   name: BuiltinName
   args: Expr[]
+  /** For built-ins that return `Error`: how to create one from a message. */
+  error?: { ctor: Func; itab: Itab }
 }
 
 export interface Conditional {

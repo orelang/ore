@@ -3,8 +3,10 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 // Boehm GC, linked from runtime/third_party/bdwgc. Declared here so that the
 // runtime builds without the GC headers.
@@ -12,9 +14,17 @@ void GC_init(void);
 void *GC_malloc(size_t size);
 void *GC_malloc_atomic(size_t size);
 
+// Helpers defined below.
+static void *alloc_atomic(i64 size);
+static ore_string str_copy(const char *s, size_t n);
+static bool is_space(u8 c);
+
+static int arg_count;
+static char **arg_values;
+
 int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
+  arg_count = argc;
+  arg_values = argv;
   GC_init();
   static char buffer[1 << 16];
   setvbuf(stdout, buffer, _IOFBF, sizeof buffer);
@@ -58,6 +68,116 @@ void *ore_rt_alloc(i64 size) {
   void *p = GC_malloc(size > 0 ? (size_t)size : 1);
   if (!p) ore_rt_panic_cstr("out of memory");
   return p;
+}
+
+/** A NUL-terminated copy of a string, for C APIs. */
+static char *c_string(ore_string s) {
+  char *p = alloc_atomic(s.len + 1);
+  memcpy(p, s.ptr, (size_t)s.len);
+  p[s.len] = 0;
+  return p;
+}
+
+ore_array *ore_rt_args(void) {
+  ore_array *a = ore_rt_array_new(sizeof(ore_string), 0);
+  for (int i = 1; i < arg_count; i++) {
+    *(ore_string *)ore_rt_array_push(a, sizeof(ore_string)) = str_copy(arg_values[i], strlen(arg_values[i]));
+  }
+  return a;
+}
+
+ore_string ore_rt_getenv(ore_string name) {
+  const char *v = getenv(c_string(name));
+  return v ? str_copy(v, strlen(v)) : (ore_string){0};
+}
+
+bool ore_rt_parse_int(ore_string s, i64 radix, i64 *out) {
+  i64 i = 0;
+  while (i < s.len && is_space(s.ptr[i])) i++;
+  bool negative = false;
+  if (i < s.len && (s.ptr[i] == '+' || s.ptr[i] == '-')) negative = s.ptr[i++] == '-';
+  if ((radix == 0 || radix == 16) && i + 1 < s.len && s.ptr[i] == '0' && (s.ptr[i + 1] == 'x' || s.ptr[i + 1] == 'X')) {
+    radix = 16;
+    i += 2;
+  }
+  if (radix == 0) radix = 10;
+  if (radix < 2 || radix > 36) return false;
+  u64 value = 0;
+  i64 start = i;
+  for (; i < s.len; i++) {
+    u8 c = s.ptr[i];
+    int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'z' ? c - 'a' + 10 : c >= 'A' && c <= 'Z' ? c - 'A' + 10 : 99;
+    if (d >= radix) break;
+    value = value * (u64)radix + (u64)d;
+  }
+  if (i == start) return false;
+  *out = negative ? -(i64)value : (i64)value;
+  return true;
+}
+
+bool ore_rt_parse_float(ore_string s, f64 *out) {
+  char *text = c_string(s);
+  char *end;
+  f64 v = strtod(text, &end);
+  // strtod also reads "nan", "inf" and hex floats, which parseFloat does not.
+  const char *p = text;
+  while (is_space((u8)*p)) p++;
+  if (*p == '+' || *p == '-') p++;
+  if (end == text || !(*p == '.' || (*p >= '0' && *p <= '9') || strncmp(p, "Infinity", 8) == 0)) return false;
+  if (strncmp(p, "Infinity", 8) == 0) v = text[p - text - 1] == '-' ? -INFINITY : INFINITY;
+  *out = v;
+  return true;
+}
+
+ore_string ore_rt_str_fixed(f64 x, i64 digits) {
+  if (digits < 0 || digits > 100) ore_rt_panic_cstr("toFixed() digits out of range");
+  char buf[512];
+  int n = snprintf(buf, sizeof buf, "%.*f", (int)digits, x);
+  return str_copy(buf, (size_t)n);
+}
+
+static ore_string error_message(const char *what, ore_string path) {
+  char buf[512];
+  int n = snprintf(buf, sizeof buf, "%s %.*s: %s", what, (int)path.len, (const char *)path.ptr, strerror(errno));
+  return str_copy(buf, (size_t)n);
+}
+
+bool ore_rt_read_file(ore_string path, ore_string *out) {
+  FILE *f = fopen(c_string(path), "rb");
+  if (!f) return *out = error_message("cannot open", path), false;
+  i64 cap = 4096, len = 0;
+  u8 *p = alloc_atomic(cap);
+  for (size_t n; (n = fread(p + len, 1, (size_t)(cap - len), f)) > 0;) {
+    len += (i64)n;
+    if (len == cap) {
+      u8 *bigger = alloc_atomic(cap * 2);
+      memcpy(bigger, p, (size_t)len);
+      p = bigger;
+      cap *= 2;
+    }
+  }
+  bool failed = ferror(f);
+  fclose(f);
+  if (failed) return *out = error_message("cannot read", path), false;
+  *out = (ore_string){p, len};
+  return true;
+}
+
+bool ore_rt_write_file(ore_string path, ore_string data, ore_string *err) {
+  FILE *f = fopen(c_string(path), "wb");
+  if (!f) return *err = error_message("cannot open", path), false;
+  bool ok = fwrite(data.ptr, 1, (size_t)data.len, f) == (size_t)data.len;
+  ok = fclose(f) == 0 && ok;
+  if (!ok) *err = error_message("cannot write", path);
+  return ok;
+}
+
+bool ore_rt_file_exists(ore_string path) { return access(c_string(path), F_OK) == 0; }
+
+i64 ore_rt_now(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return (i64)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 f64 ore_rt_round(f64 x) {
