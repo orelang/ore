@@ -3,22 +3,25 @@ import type * as ir from "@ore/ir"
 import { parse } from "@ore/syntax"
 import { expect, test } from "bun:test"
 import { planStack } from "../src/escape"
+import { inlineCalls } from "../src/inline"
 
 const vec = `
 class Vec {
     constructor(readonly x: int, readonly y: int) {}
     len(): int { return this.x + this.y }
     me(): Vec { return this }
+    plus(o: Vec): Vec { return new Vec(this.x + o.x, this.y + o.y) }
 }
 function sum(v: Vec): int { return v.x + v.y }
 function keep(v: Vec): Vec { return v }
 `
 
 /** What `main` places on the stack: "Vec" for instances, "object" for literals, "closure", or the name of a boxed local. */
-function stack(body: string): string[] {
+function stack(body: string, inline = false): string[] {
   const { source } = parse("test.ore", `${vec}\nexport function main() {\n${body}\n}\n`)
   const { module, diagnostics } = check(source)
   expect(diagnostics).toEqual([])
+  if (inline) inlineCalls(module!)
   const main = module!.functions.find((f) => f.sourceName === "main")!
   return (planStack(module!).slots.get(main) ?? []).map((n: ir.Expr | ir.Local) => ("id" in n ? n.name : n.k === "call" ? n.func.type.result.kind === "struct" ? n.func.type.result.name! : "call" : n.k))
 }
@@ -52,4 +55,11 @@ test("values are followed through locals and field reads", () => {
   expect(stack("const o = { v: new Vec(1, 2) }; const w = o.v; console.log(w.x)")).toEqual(["object", "Vec"])
   expect(stack("const o = { v: new Vec(1, 2) }; const w = o.v; keep(w)")).toEqual([])
   expect(stack("const a = new Vec(1, 2); const b = new Vec(3, 4); const c = a.x > 1 ? a : b; keep(c)")).toEqual([])
+})
+
+test("inlining keeps objects created by small callees on the stack", () => {
+  const body = "const a = new Vec(1, 2); const b = a.plus(new Vec(3, 4)); console.log(sum(b))"
+  expect(stack(body)).toEqual(["Vec", "Vec"])
+  expect(stack(body, true)).toEqual(["Vec", "Vec", "Vec"])
+  expect(stack("const a = new Vec(1, 2); const all = [a.plus(a)]", true)).toEqual(["Vec"])
 })
