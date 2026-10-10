@@ -1,0 +1,77 @@
+// JSON.stringify and JSON.parse<T>.
+
+type Kind = "admin" | "user"
+
+type User = {
+    name: string
+    age: int
+    kind: Kind
+    email: string | null
+    tags: string[]
+}
+
+class Point {
+    constructor(
+        public x: f64,
+        public y: f64,
+    ) {}
+}
+
+class Tree {
+    children: Tree[] = []
+    constructor(readonly label: string) {}
+}
+
+// Values to text.
+console.log(JSON.stringify(42), JSON.stringify(-1.5), JSON.stringify(true), JSON.stringify('a "quoted"\n line'))
+console.log(JSON.stringify([1, 2, 3]), JSON.stringify(new Point(1, 2.5)))
+const user: User = { name: "Ada", age: 36, kind: "admin", email: null, tags: ["math", "code"] }
+console.log(JSON.stringify(user))
+const none: int[] = []
+const scores = new Map<string, f64>()
+scores.set("a", 1)
+scores.set("b", 0.5)
+console.log(JSON.stringify(scores), JSON.stringify(new Map<string, int>()), JSON.stringify(none))
+const tree = new Tree("root")
+tree.children.push(new Tree("leaf"))
+console.log(JSON.stringify(tree, 2))
+console.log(JSON.stringify(Math.sqrt(-1)), JSON.stringify("ünïcode ✓"))
+
+// Text to values, with their shape checked.
+const parsed = JSON.parse<User>(
+    `{"name": "Grace", "age": 45, "kind": "user", "tags": [], "extra": {"ignored": [1, 2]}}`,
+)
+if (parsed instanceof Error) console.log(parsed.message)
+else console.log(parsed.name, parsed.age, parsed.kind, parsed.email ?? "no email", parsed.tags.length)
+
+const points = JSON.parse<Point[]>(' [ {"x": 1, "y": 2}, {"x": -0.5e1, "y": 1E2} ] ')
+if (!(points instanceof Error)) for (const p of points) console.log(p.x, p.y)
+
+const nested = JSON.parse<Map<string, int[]>>(`{"odd": [1, 3], "even": [2]}`)
+if (!(nested instanceof Error)) for (const [k, v] of nested) console.log(k, v.join("+"))
+
+const roundTrip = JSON.parse<Tree>(JSON.stringify(tree))
+if (!(roundTrip instanceof Error)) console.log(roundTrip.label, roundTrip.children[0].label)
+
+const escaped = JSON.parse<string>(`"esc\\u00e9\\ud83d\\ude00\\t"`)
+if (!(escaped instanceof Error)) console.log(escaped, escaped.length)
+const nothing = JSON.parse<int | null>("null")
+if (!(nothing instanceof Error)) console.log(nothing === null)
+for (const text of [`"text"`, "7"]) {
+    const either = JSON.parse<u8 | string>(text)
+    if (typeof either === "string") console.log("string", either)
+    else if (!(either instanceof Error)) console.log("u8", either)
+}
+
+// Errors say what and where.
+function problem(result: User | Error) {
+    if (result instanceof Error) console.log(result.message)
+}
+problem(JSON.parse<User>(`{"name": "x", "age": 1.5, "kind": "user", "tags": []}`))
+problem(JSON.parse<User>(`{"name": "x", "age": 1, "kind": "root", "tags": []}`))
+problem(JSON.parse<User>(`{"name": "x", "age": 1, "kind": "user", "tags": ["a", 2]}`))
+problem(JSON.parse<User>(`{"name": "x", "kind": "user", "tags": []}`))
+problem(JSON.parse<User>(`{"name": "x",}`))
+problem(JSON.parse<User>(`[1, 2`))
+const tooBig = JSON.parse<u8>("300")
+if (tooBig instanceof Error) console.log(tooBig.message)

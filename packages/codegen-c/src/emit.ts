@@ -1,5 +1,5 @@
 import * as ir from "@ore/ir"
-import { isStringLike, types, unionRepr, type FloatType, type IntType, type Type, type UnionType } from "@ore/ir"
+import { isStringLike, typeKey, typeToString, types, unionRepr, type FloatType, type IntType, type Type, type UnionType } from "@ore/ir"
 import { planStack, type StackPlan } from "./escape"
 import { inlineCalls } from "./inline"
 
@@ -38,6 +38,8 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   out.push("")
   const file = JSON.stringify(module.file)
   helpers.clear()
+  prototypes.clear()
+  jsonIds.clear()
   const bodies = module.functions
     .filter((f) => !f.extern)
     .flatMap((func) => {
@@ -45,7 +47,7 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
       return plan.ctorsAt.has(func) ? [emitFunction(ctx), emitFunction({ ...ctx, at: true })] : [emitFunction(ctx)]
     })
   // Helpers created while emitting the bodies, such as hash functions of map keys.
-  out.push(...helpers.values(), "")
+  out.push(...prototypes.values(), ...helpers.values(), "")
   for (const body of bodies) out.push(body, "")
   out.push(`void ore_entry(void) { ${module.inits.map((f) => `${f.name}();`).join(" ")} }`, "")
   return out.join("\n")
@@ -1297,6 +1299,8 @@ const builtins: Record<string, (a: string[], expr: ir.BuiltinCall) => string> = 
   "fs.readFile": (a, e) => fallible(e, "ore_string", `ore_rt_read_file(${a[0]}, &v_)`, "v_"),
   "fs.writeFile": (a, e) => fallible(e, undefined, `ore_rt_write_file(${a[0]}, ${a[1]}, &v_)`, "v_"),
   "fs.exists": (a) => `ore_rt_file_exists(${a[0]})`,
+  "JSON.stringify": (a, e) => `({ ore_sb b_ = {0}; ${jsonEncoder(e.args[0]!.type)}(&b_, ${a[0]}, ${a[1] ?? "0"}, 0); ore_sb_string(&b_); })`,
+  "JSON.parse": (a, e) => jsonParse(e, a[0]!),
   "Date.now": () => "ore_rt_now()",
   "process.args": () => "ore_rt_args()",
   "internal.runTest": (a) => `ore_rt_run_test(${a[0]}, ${a[1]})`,
@@ -1402,4 +1406,178 @@ export function stringLiteral(value: string): string {
     else out += `\\${byte.toString(8).padStart(3, "0")}`
   }
   return `${out}"`
+}
+
+// -----------------------------------------------------------------------------
+// JSON
+
+/** Prototypes of helpers that may call each other recursively, such as JSON coders of recursive types. */
+const prototypes = new Map<string, string>()
+
+/** Numbers of the types that have JSON coders, by type key. */
+const jsonIds = new Map<string, number>()
+
+function jsonId(type: Type): number {
+  const key = typeKey(type)
+  if (!jsonIds.has(key)) jsonIds.set(key, jsonIds.size)
+  return jsonIds.get(key)!
+}
+
+/** C putting a literal byte string into the builder `b`. */
+function put(text: string): string {
+  const lit = stringLiteral(text)
+  return `ore_sb_put(b, ${lit}, sizeof(${lit}) - 1);`
+}
+
+/** A helper writing a value of a type as JSON: `(ore_sb *b, T v, i64 indent, i64 depth)`. */
+function jsonEncoder(type: Type): string {
+  const name = `ore_json_enc_${jsonId(type)}`
+  if (prototypes.has(name)) return name
+  const proto = `static void ${name}(ore_sb *b, ${cType(type)} v, i64 indent, i64 depth)`
+  prototypes.set(name, `${proto};`)
+  helpers.set(name, `${proto} { (void)indent; (void)depth; ${encodeJson(type)} }`)
+  return name
+}
+
+function encodeJson(type: Type): string {
+  const nested = "indent, depth + 1"
+  switch (type.kind) {
+    case "int":
+      return type.signed ? "ore_rt_json_i64(b, (i64)v);" : "ore_rt_json_u64(b, (u64)v);"
+    case "float":
+      return type.bits === 32 ? "ore_rt_json_f32(b, v);" : "ore_rt_json_f64(b, v);"
+    case "bool":
+      return `if (v) ${put("true")} else ${put("false")}`
+    case "string":
+    case "literal":
+      return "ore_rt_json_str(b, v);"
+    case "union": {
+      if (unionRepr(type).k === "strings") return "ore_rt_json_str(b, v);"
+      return type.members
+        .map((m, i) => `if (${slotTest(type, "v", i)}) { ${m.kind === "null" ? put("null") : `${jsonEncoder(m)}(b, ${payload(type, "v", i)}, indent, depth);`} return; }`)
+        .join(" ")
+    }
+    case "array": {
+      const et = cType(type.elem)
+      const item = `${jsonEncoder(type.elem)}(b, ((${et} *)v->data)[i], ${nested});`
+      return `ore_sb_putc(b, '['); for (i64 i = 0; i < v->len; i++) { if (i) ore_sb_putc(b, ','); ore_rt_json_newline(b, indent, depth + 1); ${item} } if (v->len) ore_rt_json_newline(b, indent, depth); ore_sb_putc(b, ']');`
+    }
+    case "map": {
+      const value = `${jsonEncoder(type.value)}(b, *(${cType(type.value)} *)ore_rt_map_value(v, i), ${nested});`
+      return [
+        "ore_sb_putc(b, '{'); i64 n = 0;",
+        "for (i64 i = 0; i < v->count; i++) {",
+        "if (!ore_rt_map_live(v, i)) continue; if (n++) ore_sb_putc(b, ','); ore_rt_json_newline(b, indent, depth + 1);",
+        `ore_rt_json_str(b, *(ore_string *)ore_rt_map_key(v, i)); ore_sb_putc(b, ':'); if (indent > 0) ore_sb_putc(b, ' '); ${value}`,
+        "} if (n) ore_rt_json_newline(b, indent, depth); ore_sb_putc(b, '}');",
+      ].join(" ")
+    }
+    case "struct": {
+      const fields = type.fields.map((f, i) =>
+        [i > 0 ? "ore_sb_putc(b, ',');" : "", "ore_rt_json_newline(b, indent, depth + 1);", put(`${JSON.stringify(f.name)}:`), "if (indent > 0) ore_sb_putc(b, ' ');", `${jsonEncoder(f.type)}(b, v->${fieldName(f.name)}, ${nested});`].join(" "),
+      )
+      const close = type.fields.length > 0 ? "ore_rt_json_newline(b, indent, depth);" : ""
+      return `ore_sb_putc(b, '{'); ${fields.join(" ")} ${close} ore_sb_putc(b, '}');`
+    }
+    default:
+      return put("null")
+  }
+}
+
+/** A helper reading a value of a type from a parsed JSON value: `T (ore_json *v, ore_json_ctx *c)`. */
+function jsonDecoder(type: Type): string {
+  const name = `ore_json_dec_${jsonId(type)}`
+  if (prototypes.has(name)) return name
+  const proto = `static ${cType(type)} ${name}(ore_json *v, ore_json_ctx *c)`
+  prototypes.set(name, `${proto};`)
+  helpers.set(name, `${proto} { ${decodeJson(type)} }`)
+  return name
+}
+
+function decodeJson(type: Type): string {
+  const t = cType(type)
+  const zero = `return (${t}){0};`
+  const expect = (kind: string, what: string) => `if (v->kind != ${kind}) { ore_rt_json_expected(c, ${stringLiteral(what)}, v); ${zero} }`
+  switch (type.kind) {
+    case "int":
+      if (type.signed) return `i64 r; if (!ore_rt_json_int(c, v, INT${type.bits}_MIN, INT${type.bits}_MAX, &r)) ${zero} return (${t})r;`
+      return `u64 r; if (!ore_rt_json_uint(c, v, UINT${type.bits}_MAX, &r)) ${zero} return (${t})r;`
+    case "float":
+      return `${expect("ORE_JSON_NUMBER", "a number")} return (${t})v->num;`
+    case "bool":
+      return `${expect("ORE_JSON_BOOL", "a boolean")} return v->b;`
+    case "string":
+      return `${expect("ORE_JSON_STRING", "a string")} return v->str;`
+    case "literal": {
+      const what = JSON.stringify(type.value)
+      return `${expect("ORE_JSON_STRING", what)} if (!ore_rt_str_eq(v->str, ORE_STR(${stringLiteral(type.value)}))) { ore_rt_json_expected(c, ${stringLiteral(what)}, v); ${zero} } return v->str;`
+    }
+    case "union": {
+      if (unionRepr(type).k === "strings") {
+        if (type.members.some((m) => m.kind === "string")) return `${expect("ORE_JSON_STRING", "a string")} return v->str;`
+        const literals = type.members.map((m) => (m as ir.LiteralType).value)
+        const what = literals.map((l) => JSON.stringify(l)).join(" or ")
+        const test = literals.map((l) => `ore_rt_str_eq(v->str, ORE_STR(${stringLiteral(l)}))`).join(" || ")
+        return `if (v->kind != ORE_JSON_STRING || !(${test})) { ore_rt_json_expected(c, ${stringLiteral(what)}, v); ${zero} } return v->str;`
+      }
+      const nullIndex = type.members.findIndex((m) => m.kind === "null")
+      const others = type.members.flatMap((m, i) => (m.kind === "null" ? [] : [i]))
+      const onNull = nullIndex >= 0 ? `if (v->kind == ORE_JSON_NULL) return ${inject(type, nullIndex, "")};` : ""
+      // One possibility reports its own error; several are tried in order.
+      if (others.length === 1) {
+        const i = others[0]!
+        return `${onNull} ${cType(type.members[i]!)} x = ${jsonDecoder(type.members[i]!)}(v, c); if (c->failed) ${zero} return ${inject(type, i, "x")};`
+      }
+      const tries = others.map((i) => `{ ore_json_ctx t = {0}; ${cType(type.members[i]!)} x = ${jsonDecoder(type.members[i]!)}(v, &t); if (!t.failed) return ${inject(type, i, "x")}; }`)
+      return `${onNull} ${tries.join(" ")} ore_rt_json_expected(c, ${stringLiteral(typeToString(type))}, v); ${zero}`
+    }
+    case "array": {
+      const et = cType(type.elem)
+      return `${expect("ORE_JSON_ARRAY", "an array")} ore_array *a = ore_rt_array_new(sizeof(${et}), v->len); for (i64 i = 0; i < v->len; i++) { ((${et} *)a->data)[i] = ${jsonDecoder(type.elem)}(v->items[i], c); if (c->failed) { ore_rt_json_at_index(c, i); return NULL; } } return a;`
+    }
+    case "map": {
+      const { hash, eq } = keyFunctions(type.key)
+      const kt = cType(type.key)
+      const vt = cType(type.value)
+      // Keys are read as JSON strings, so that literal key types are checked.
+      return [
+        expect("ORE_JSON_OBJECT", "an object"),
+        `ore_map *m = ore_rt_map_new(sizeof(${kt}), sizeof(${vt}), ${hash}, ${eq});`,
+        "for (i64 i = 0; i < v->len; i++) {",
+        `ore_json key = {.kind = ORE_JSON_STRING, .str = v->keys[i]}; ${kt} k = ${jsonDecoder(type.key)}(&key, c);`,
+        `${vt} x = c->failed ? (${vt}){0} : ${jsonDecoder(type.value)}(v->items[i], c);`,
+        "if (c->failed) { ore_rt_json_at_field(c, ore_rt_cstring(v->keys[i])); return NULL; }",
+        "ore_rt_map_set(m, &k, &x); } return m;",
+      ].join(" ")
+    }
+    case "struct": {
+      const s = structName(type)
+      const fields = type.fields.map((f) => {
+        const target = `o->${fieldName(f.name)}`
+        const name = stringLiteral(f.name)
+        const u = f.type.kind === "union" ? f.type : undefined
+        const nullIndex = u ? u.members.findIndex((m) => m.kind === "null") : -1
+        const missing = nullIndex >= 0 ? `${target} = ${inject(u!, nullIndex, "")};` : `{ ore_rt_json_missing(c, ${name}); return NULL; }`
+        return `{ ore_json *f = ore_rt_json_field(v, ${name}, sizeof(${name}) - 1); if (!f) ${missing} else { ${target} = ${jsonDecoder(f.type)}(f, c); if (c->failed) { ore_rt_json_at_field(c, ${name}); return NULL; } } }`
+      })
+      return `${expect("ORE_JSON_OBJECT", "an object")} ${s} *o = ore_rt_alloc(sizeof(${s})); ${fields.join(" ")} return o;`
+    }
+    default:
+      return `ore_rt_json_expected(c, "a value", v); ${zero}`
+  }
+}
+
+/** `JSON.parse<T>(text)`: parses, then reads a `T`, or makes an Error from the first problem. */
+function jsonParse(expr: ir.BuiltinCall, text: string): string {
+  const u = expr.type as UnionType
+  const target = expr.typeArgs![0]!
+  const { ctor, itab } = expr.error!
+  const errorIndex = u.members.findIndex((m) => m.kind === "interface")
+  const fail = (message: string) => inject(u, errorIndex, `((ore_iface){(void *)${ctor.name}(${message}), ore_itab_${itab.id}})`)
+  const ok = emitExpr({ k: "recast", type: u, value: raw("r_", target) })
+  return [
+    `({ ore_string m_; ore_json *j_ = ore_rt_json_parse(${text}, &m_); ${cType(u)} res_;`,
+    `if (!j_) res_ = ${fail("m_")}; else { ore_json_ctx c_ = {0}; ${cType(target)} r_ = ${jsonDecoder(target)}(j_, &c_);`,
+    `res_ = c_.failed ? ${fail("ore_rt_json_error(&c_)")} : ${ok}; } res_; })`,
+  ].join(" ")
 }

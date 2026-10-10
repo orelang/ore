@@ -382,4 +382,71 @@ ore_closure ore_rt_case_handler(ore_select_case *c);
  */
 void ore_rt_select(ore_array *cases, ore_closure otherwise);
 
+// -----------------------------------------------------------------------------
+// String builder
+
+/** A growing byte buffer for building strings. Zero-initialize to start. */
+typedef struct {
+  u8 *data;
+  i64 len;
+  i64 cap;
+} ore_sb;
+
+void ore_sb_put(ore_sb *b, const void *bytes, i64 n);
+static inline void ore_sb_putc(ore_sb *b, char c) { ore_sb_put(b, &c, 1); }
+/** The bytes written so far, as a string. */
+ore_string ore_sb_string(ore_sb *b);
+
+// -----------------------------------------------------------------------------
+// JSON
+
+/** Writes `s` as a JSON string literal. */
+void ore_rt_json_str(ore_sb *b, ore_string s);
+void ore_rt_json_i64(ore_sb *b, i64 v);
+void ore_rt_json_u64(ore_sb *b, u64 v);
+/** Writes a number; NaN and infinities become `null`, as in JavaScript. */
+void ore_rt_json_f64(ore_sb *b, f64 v);
+void ore_rt_json_f32(ore_sb *b, f32 v);
+/** With `indent` > 0: a line break and `indent * depth` spaces. */
+void ore_rt_json_newline(ore_sb *b, i64 indent, i64 depth);
+
+enum { ORE_JSON_NULL, ORE_JSON_BOOL, ORE_JSON_NUMBER, ORE_JSON_STRING, ORE_JSON_ARRAY, ORE_JSON_OBJECT };
+
+/** A parsed JSON value. Numbers keep their source text in `str`. */
+typedef struct ore_json ore_json;
+struct ore_json {
+  i32 kind;
+  bool b;
+  f64 num;
+  ore_string str;
+  /** Elements of an array, or values of an object with their `keys`. */
+  i64 len;
+  ore_json **items;
+  ore_string *keys;
+};
+
+/** Parses a JSON text, or returns NULL and an error message. */
+ore_json *ore_rt_json_parse(ore_string text, ore_string *error);
+/** The value of a key of an object (the last one if repeated), or NULL. */
+ore_json *ore_rt_json_field(ore_json *object, const char *key, i64 len);
+
+/** The state of decoding a JSON value into a type: the first error and where it happened. */
+typedef struct {
+  bool failed;
+  ore_string message;
+  ore_string path;
+} ore_json_ctx;
+
+/** Fails with "expected <what>, got <the kind of v>". */
+void ore_rt_json_expected(ore_json_ctx *c, const char *what, ore_json *v);
+void ore_rt_json_missing(ore_json_ctx *c, const char *field);
+/** Prefixes the path of a failure with a field (".name") or an index ("[3]"). */
+void ore_rt_json_at_field(ore_json_ctx *c, const char *field);
+void ore_rt_json_at_index(ore_json_ctx *c, i64 index);
+/** Reads an integer in [min, max]. */
+bool ore_rt_json_int(ore_json_ctx *c, ore_json *v, i64 min, i64 max, i64 *out);
+bool ore_rt_json_uint(ore_json_ctx *c, ore_json *v, u64 max, u64 *out);
+/** The message of a failed decoding, with its path. */
+ore_string ore_rt_json_error(ore_json_ctx *c);
+
 #endif

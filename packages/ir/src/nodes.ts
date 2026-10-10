@@ -371,6 +371,8 @@ export interface BuiltinCall {
   args: Expr[]
   /** For built-ins that return `Error`: how to create one from a message. */
   error?: { ctor: Func; itab: Itab }
+  /** Type arguments, for `JSON.parse<T>`. */
+  typeArgs?: Type[]
 }
 
 export interface Conditional {

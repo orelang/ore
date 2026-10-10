@@ -2936,6 +2936,7 @@ class Checker {
    * `Math.abs`, `min` and `max` take and return any one numeric type.
    */
   private builtinCall(name: string, decl: ts.FunctionDeclaration, node: ts.CallExpression, scope: Scope): Operand {
+    if (name === "JSON.stringify" || name === "JSON.parse") return this.jsonCall(name, node, scope)
     const args = node.arguments
     const required = decl.parameters.filter((p) => !p.questionToken).length
     if (args.length < required || args.length > decl.parameters.length) {
@@ -2959,6 +2960,33 @@ class Checker {
       ? { ctor: this.basicErrorClass().ctor!, itab: this.itab(this.basicErrorClass(), this.errorType!) }
       : undefined
     return typed({ k: "builtin", type: result, name, args: values, error })
+  }
+
+  /** `JSON.stringify(value, indent?)` and `JSON.parse<T>(text)`, whose code is generated per type. */
+  private jsonCall(name: string, node: ts.CallExpression, scope: Scope): Operand {
+    const args = node.arguments
+    if (name === "JSON.stringify") {
+      if (args.length < 1 || args.length > 2) return this.fail(node, `'${name}' expects 1 to 2 argument(s), got ${args.length}.`)
+      const operand = this.checkExpr(args[0]!, scope)
+      if (operand.k === "error") return operand
+      const value = this.toDefault(operand, args[0]!)
+      const problem = jsonProblem(value.type)
+      if (problem) return this.fail(args[0]!, problem)
+      const values = [value]
+      if (args[1]) values.push(this.coerce(this.checkExpr(args[1], scope, types.i64), types.i64, args[1]))
+      return typed({ k: "builtin", type: types.string, name, args: values })
+    }
+    const typeArg = node.typeArguments?.length === 1 ? node.typeArguments[0] : undefined
+    if (!typeArg) return this.fail(node, "'JSON.parse' needs the type to read, e.g. 'JSON.parse<Config>(text)'.")
+    const target = this.resolveValueType(typeArg, scope)
+    if (!target) return errorOperand
+    const problem = jsonProblem(target)
+    if (problem) return this.fail(typeArg, problem)
+    if (args.length !== 1) return this.fail(node, `'${name}' expects 1 argument(s), got ${args.length}.`)
+    const text = this.coerce(this.checkExpr(args[0]!, scope, types.string), types.string, args[0]!)
+    const result = this.unionOf([target, this.errorType!])
+    const error = { ctor: this.basicErrorClass().ctor!, itab: this.itab(this.basicErrorClass(), this.errorType!) }
+    return typed({ k: "builtin", type: result, name, args: [text], error, typeArgs: [target] })
   }
 
   /** Calls a function value with arguments converted to its parameters. */
@@ -4029,4 +4057,38 @@ function visitLocals(node: unknown, visit: (local: ir.Local) => void, seen = new
 /** The name of a parameter's local: its own, or a made-up one for a destructured parameter. */
 function paramName(p: ts.ParameterDeclaration, index: number): string {
   return ts.isIdentifier(p.name) ? p.name.text : `param${index}`
+}
+
+/** Why values of a type cannot be converted to or from JSON, if they cannot. */
+function jsonProblem(type: Type, seen = new Set<Type>()): string | undefined {
+  switch (type.kind) {
+    case "int":
+    case "float":
+    case "bool":
+    case "string":
+    case "literal":
+    case "null":
+      return undefined
+    case "array":
+      return jsonProblem(type.elem, seen)
+    case "map":
+      if (!isStringLike(type.key)) return `Type '${typeToString(type)}' cannot be converted to or from JSON: the keys of a Map must be strings.`
+      return jsonProblem(type.value, seen)
+    case "struct":
+      if (seen.has(type)) return undefined
+      seen.add(type)
+      for (const f of type.fields) {
+        const problem = jsonProblem(f.type, seen)
+        if (problem) return problem
+      }
+      return undefined
+    case "union":
+      for (const m of type.members) {
+        const problem = jsonProblem(m, seen)
+        if (problem) return problem
+      }
+      return undefined
+    default:
+      return `Type '${typeToString(type)}' cannot be converted to or from JSON.`
+  }
 }

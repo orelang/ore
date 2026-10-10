@@ -136,12 +136,25 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
 | `Date.now()` | milliseconds since the Unix epoch |
+| `JSON.stringify(value, indent?)` | the JSON text of a value |
+| `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
 
 Printed values are numbers, `bool`, strings and unions of them (`null` prints
 as `null`). Floats are printed in the shortest form that round-trips, like
 JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`.
+
+JSON is typed, as in Go: the code that writes and reads a type is generated
+for it. Numbers, `bool`, strings, string literal types, `null`, arrays,
+`Map`s with string keys, object types, classes (all their fields) and unions
+of these can be converted; interfaces and functions cannot. `JSON.parse<T>`
+checks the shape: an integer must be whole and in range, a string literal
+type must match, and a field must be present unless its type includes
+`null`; unknown fields are ignored. Its errors name the place, e.g.
+`JSON: expected a string, got a number at .tags[1]`. Fields of object types
+are written in alphabetical order, fields of classes in declaration order;
+non-finite floats are written as `null`.
 
 Numeric conversions (`i32(x)`, `f64(x)`) are type names, not namespaced
 functions.
