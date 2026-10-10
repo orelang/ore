@@ -303,3 +303,100 @@ void ore_rt_run_main(void (*entry)(void)) {
     if (t->state == TASK_DONE) task_free(t);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Channels
+
+/** A task waiting in a channel queue, in the task's own stack frame. */
+struct ore_waiter {
+  ore_task *task;
+  /** The value to send, or where to put the received value. */
+  void *slot;
+  /** Whether the operation completed with a value (false when the channel closed). */
+  bool ok;
+  ore_waiter *next;
+};
+
+static void wait_push(ore_waiter **queue, ore_waiter *w) {
+  w->next = NULL;
+  while (*queue) queue = &(*queue)->next;
+  *queue = w;
+}
+
+static ore_waiter *wait_pop(ore_waiter **queue) {
+  ore_waiter *w = *queue;
+  if (w) *queue = w->next;
+  return w;
+}
+
+ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap) {
+  if (cap < 0) ore_rt_panic_cstr("negative channel capacity");
+  ore_chan *c = ore_rt_alloc(sizeof(ore_chan));
+  c->elem_size = elem_size;
+  c->cap = cap;
+  c->buf = ore_rt_alloc(elem_size * (cap > 0 ? cap : 1));
+  return c;
+}
+
+static void *slot_at(ore_chan *c, i64 i) { return c->buf + ((c->head + i) % c->cap) * c->elem_size; }
+
+void ore_rt_chan_send(ore_chan *c, const void *value) {
+  if (c->closed) ore_rt_panic_cstr("send on closed channel");
+  ore_waiter *r = wait_pop(&c->receivers);
+  if (r) {
+    // A receiver is waiting: hand the value over directly.
+    memcpy(r->slot, value, (size_t)c->elem_size);
+    r->ok = true;
+    enqueue(r->task);
+    return;
+  }
+  if (c->len < c->cap) {
+    memcpy(slot_at(c, c->len++), value, (size_t)c->elem_size);
+    return;
+  }
+  ore_waiter w = {current, (void *)value, false, NULL};
+  wait_push(&c->senders, &w);
+  current->state = TASK_BLOCKED;
+  park();
+  if (!w.ok) ore_rt_panic_cstr("send on closed channel");
+}
+
+bool ore_rt_chan_recv(ore_chan *c, void *out) {
+  if (c->len > 0) {
+    memcpy(out, slot_at(c, 0), (size_t)c->elem_size);
+    c->head = (c->head + 1) % c->cap;
+    c->len--;
+    // A waiting sender's value takes the freed place.
+    ore_waiter *s = wait_pop(&c->senders);
+    if (s) {
+      memcpy(slot_at(c, c->len++), s->slot, (size_t)c->elem_size);
+      s->ok = true;
+      enqueue(s->task);
+    }
+    return true;
+  }
+  ore_waiter *s = wait_pop(&c->senders);
+  if (s) {
+    memcpy(out, s->slot, (size_t)c->elem_size);
+    s->ok = true;
+    enqueue(s->task);
+    return true;
+  }
+  if (c->closed) {
+    memset(out, 0, (size_t)c->elem_size);
+    return false;
+  }
+  ore_waiter w = {current, out, false, NULL};
+  wait_push(&c->receivers, &w);
+  current->state = TASK_BLOCKED;
+  park();
+  if (!w.ok) memset(out, 0, (size_t)c->elem_size);
+  return w.ok;
+}
+
+void ore_rt_chan_close(ore_chan *c) {
+  if (c->closed) ore_rt_panic_cstr("close of closed channel");
+  c->closed = true;
+  for (ore_waiter *w; (w = wait_pop(&c->receivers));) enqueue(w->task);
+  for (ore_waiter *w; (w = wait_pop(&c->senders));) enqueue(w->task);
+}

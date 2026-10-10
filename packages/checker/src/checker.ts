@@ -17,6 +17,7 @@ import {
   type InterfaceType,
   type LiteralType,
   type MapType,
+  type ChanType,
   type StructType,
   type Type,
   type UnionType,
@@ -1153,6 +1154,11 @@ class Checker {
       const value = this.resolveValueType(node.typeArguments[1]!, scope)
       return key && value ? this.mapOf(key, value, node.typeArguments[0]!) : undefined
     }
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "Chan" && !scope.lookupType("Chan")) {
+      if (node.typeArguments?.length !== 1) return this.error(node, "'Chan' expects exactly 1 type argument."), undefined
+      const elem = this.resolveValueType(node.typeArguments[0]!, scope)
+      return elem && { kind: "chan", elem }
+    }
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "Array" && !scope.lookupType("Array")) {
       if (node.typeArguments?.length !== 1) return this.error(node, "'Array' expects exactly 1 type argument."), undefined
       const elem = this.resolveValueType(node.typeArguments[0]!, scope)
@@ -1638,7 +1644,7 @@ class Checker {
       bindings = [[names[0], type.key], [names[1], type.value]]
     } else {
       if (!ts.isIdentifier(decl.name)) return this.error(decl.name, "Destructuring is not supported yet."), undefined
-      if (type.kind === "array") bindings = [[decl.name, type.elem]]
+      if (type.kind === "array" || type.kind === "chan") bindings = [[decl.name, type.elem]]
       else if (type.kind === "string") bindings = [[decl.name, types.i32]]
       else return this.error(stmt.expression, `Type '${typeToString(type)}' is not iterable.`), undefined
     }
@@ -2221,7 +2227,7 @@ class Checker {
       return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal", "func", "ptr"].includes(type.kind)
+    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal", "func", "ptr", "chan"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
@@ -2612,6 +2618,16 @@ class Checker {
     const name = node.expression.getText()
     const symbol = qualified ? this.typeSymbol(node.expression, scope) : scope.lookupType(name)
     if (qualified && !symbol) return errorOperand
+    if (name === "Chan" && !symbol) {
+      let type: ChanType | undefined
+      if (node.typeArguments) type = this.resolveType(ts.factory.createTypeReferenceNode("Chan", node.typeArguments), scope) as ChanType | undefined
+      else if (expected?.kind === "chan") type = expected
+      else return this.fail(node, "Cannot infer the type of the channel. Write 'new Chan<T>()' or annotate the variable.")
+      const args = node.arguments ?? []
+      if (args.length > 1) return this.fail(args[1]!, "'new Chan' takes at most a capacity.")
+      const capacity = args[0] ? this.coerce(this.checkExpr(args[0], scope, types.i64), types.i64, args[0]) : ({ k: "int", type: types.i64, value: 0n } as const)
+      return type ? typed({ k: "chan", op: "new", type, chanType: type, value: capacity }) : errorOperand
+    }
     if (name === "Map" && !symbol) {
       if (node.arguments && node.arguments.length > 0) return this.fail(node.arguments[0]!, "'new Map' takes no arguments; add entries with 'set'.")
       let type: MapType | undefined
@@ -3030,6 +3046,16 @@ class Checker {
       if (member?.type.kind === "func") return this.callValue(this.member(value, callee), node, scope)
       if (member) return this.fail(callee.name, `Field '${name}' is not a method.`)
     }
+    if (type.kind === "chan") {
+      const arity: Record<string, number> = { send: 1, receive: 0, close: 0 }
+      const count = arity[name]
+      if (count === undefined) return this.fail(callee.name, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+      if (args.length !== count) return this.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+      const op = name as ir.ChanOp["op"]
+      const sent = op === "send" ? this.coerce(this.checkExpr(args[0]!, scope, type.elem), type.elem, args[0]!) : undefined
+      const result = op === "receive" ? this.unionOf([type.elem, types.null]) : types.void
+      return typed({ k: "chan", op, type: result, chanType: type, chan: value, value: sent })
+    }
     if (type.kind === "map") {
       const arity: Record<string, number> = { get: 1, set: 2, has: 1, delete: 1, clear: 0, keys: 0, values: 0 }
       const count = arity[name]
@@ -3435,7 +3461,7 @@ function floatLit(type: ir.FloatType, value: number): ir.FloatLit {
 /** Whether a type has a zero value for variables without an initializer; references do not. */
 function hasZeroValue(type: Type): boolean {
   if (type.kind === "union") return type.members.some((m) => m.kind === "null")
-  return type.kind !== "struct" && type.kind !== "interface"
+  return type.kind !== "struct" && type.kind !== "interface" && type.kind !== "chan" && type.kind !== "func" && type.kind !== "ptr"
 }
 
 function zeroValue(type: Type): ir.Expr {

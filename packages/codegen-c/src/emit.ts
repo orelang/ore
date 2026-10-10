@@ -311,6 +311,8 @@ export function cType(type: Type): string {
       return "void *"
     case "map":
       return "ore_map *"
+    case "chan":
+      return "ore_chan *"
     case "func":
       return "ore_closure"
     case "null":
@@ -450,6 +452,11 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       if (stmt.iterable.type.kind === "string") {
         head = `ore_string ${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}.len;)`
         first = declare(stmt.local, `ore_rt_str_decode(${it}, &${i})`)
+      } else if (stmt.iterable.type.kind === "chan") {
+        // Values until the channel is closed and empty.
+        const v = temp()
+        head = `ore_chan *${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (${elem} ${v}; ore_rt_chan_recv(${it}, &${v});)`
+        first = declare(stmt.local, v)
       } else if (stmt.iterable.type.kind === "map") {
         // Entries in insertion order, skipping deleted ones.
         const value = stmt.value!
@@ -717,6 +724,8 @@ function emitExpr(expr: ir.Expr): string {
     }
     case "map":
       return emitMapOp(expr)
+    case "chan":
+      return emitChanOp(expr)
     case "func-ref":
       return `((ore_closure){(void *)${thunk(expr.func)}, 0})`
     case "closure": {
@@ -998,6 +1007,24 @@ function stringMethod(method: string, s: string, a: string[]): string {
   }
 }
 
+function emitChanOp(expr: ir.ChanOp): string {
+  const t = cType(expr.chanType.elem)
+  switch (expr.op) {
+    case "new":
+      return `ore_rt_chan_new(sizeof(${t}), ${emitExpr(expr.value!)})`
+    case "close":
+      return `ore_rt_chan_close(${emitExpr(expr.chan!)})`
+    case "send":
+      // The channel is evaluated before the value, and the value needs an address.
+      return `({ ore_chan *c_ = ${emitExpr(expr.chan!)}; ${t} v_ = ${emitExpr(expr.value!)}; ore_rt_chan_send(c_, &v_); })`
+    case "receive": {
+      const u = expr.type as UnionType
+      const none = inject(u, u.members.findIndex((m) => m.kind === "null"), "")
+      return `({ ${t} v_; ore_rt_chan_recv(${emitExpr(expr.chan!)}, &v_) ? ${recast("v_", expr.chanType.elem, u)} : ${none}; })`
+    }
+  }
+}
+
 function emitMapOp(expr: ir.MapOp): string {
   const { key: K, value: V } = expr.mapType
   const kt = cType(K)
@@ -1124,6 +1151,7 @@ function effects(e: ir.Expr): boolean {
     case "call-value":
     case "array-method":
     case "string-method":
+    case "chan":
     case "recast":
     case "optional":
     case "coalesce":
@@ -1185,6 +1213,9 @@ const builtins: Record<string, (a: string[], expr: ir.BuiltinCall) => string> = 
   "Date.now": () => "ore_rt_now()",
   "process.args": () => "ore_rt_args()",
   "internal.runTest": (a) => `ore_rt_run_test(${a[0]}, ${a[1]})`,
+  "task.spawn": (a) => `ore_rt_spawn(${a[0]})`,
+  "task.sleep": (a) => `ore_rt_sleep(${a[0]})`,
+  "task.yield": () => "ore_rt_yield()",
   "process.getenv": (a) => `ore_rt_getenv(${a[0]})`,
 }
 

@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, LiteralType, MapType, StringType, StructType, Type, UnionType } from "./types"
+import type { ArrayType, BoolType, ChanType, FloatType, FuncType, IntType, InterfaceType, LiteralType, MapType, StringType, StructType, Type, UnionType } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -231,6 +231,7 @@ export type Expr =
   | BoundMethod
   | ArrayMethod
   | StringMethod
+  | ChanOp
 
 export interface IntLit {
   k: "int"
@@ -631,4 +632,17 @@ export interface StringMethod {
   type: Type
   value: Expr
   args: Expr[]
+}
+
+/**
+ * An operation of `Chan`: `new Chan(capacity)`, `send(value)`,
+ * `receive()` (the value, or null once closed and empty) and `close()`.
+ */
+export interface ChanOp {
+  k: "chan"
+  op: "new" | "send" | "receive" | "close"
+  type: Type
+  chanType: ChanType
+  chan?: Expr
+  value?: Expr
 }

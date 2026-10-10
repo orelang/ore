@@ -74,6 +74,26 @@ void *ore_rt_task_current(void);
 void ore_rt_task_block(void);
 void ore_rt_task_wake(void *task);
 
+// Channels, as in Go: a buffer of `cap` values (none for a rendezvous) and
+// queues of tasks waiting to send or receive.
+
+typedef struct ore_waiter ore_waiter;
+
+typedef struct {
+  i64 elem_size, cap, len, head;
+  u8 *buf;
+  bool closed;
+  ore_waiter *receivers, *senders;
+} ore_chan;
+
+ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap);
+/** Sends the value at `value`, blocking until there is room or a receiver; panics if closed. */
+void ore_rt_chan_send(ore_chan *c, const void *value);
+/** Receives into `out`, blocking until there is a value; false (and zeroes) once closed and empty. */
+bool ore_rt_chan_recv(ore_chan *c, void *out);
+/** Closes a channel: waiting receivers get nothing, waiting senders panic. */
+void ore_rt_chan_close(ore_chan *c);
+
 /** A new heap box holding a copy of the `size` bytes at `p`; used for per-iteration loop variables. */
 void *ore_rt_box_copy(void *p, i64 size);
 
