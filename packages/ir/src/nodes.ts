@@ -118,6 +118,10 @@ export type Expr =
   | Call
   | BuiltinCall
   | Conditional
+  | Concat
+  | Index
+  | Len
+  | Slice
 
 export interface IntLit {
   k: "int"
@@ -234,4 +238,35 @@ export interface Conditional {
   cond: Expr
   then: Expr
   else: Expr
+}
+
+/** String concatenation; non-string parts are formatted like `print` does. */
+export interface Concat {
+  k: "concat"
+  type: StringType
+  parts: Expr[]
+}
+
+/** Bounds-checked element read: a byte of a string. The index has any integer type. */
+export interface Index {
+  k: "index"
+  type: Type
+  target: Expr
+  index: Expr
+}
+
+/** Length of a string in bytes. */
+export interface Len {
+  k: "len"
+  type: IntType
+  value: Expr
+}
+
+/** JavaScript `slice` on a string: a substring of byte offsets. */
+export interface Slice {
+  k: "slice"
+  type: Type
+  value: Expr
+  start?: Expr
+  end?: Expr
 }

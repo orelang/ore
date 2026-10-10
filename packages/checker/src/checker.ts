@@ -475,7 +475,9 @@ class Checker {
     if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
       return this.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
     }
-    if (ts.isTemplateExpression(node)) return this.fail(node, "Template literals with substitutions are not supported yet.")
+    if (ts.isTemplateExpression(node)) return this.checkTemplate(node, scope)
+    if (ts.isPropertyAccessExpression(node)) return this.checkProperty(node, scope)
+    if (ts.isElementAccessExpression(node)) return this.checkElement(node, scope)
     if (node.kind === ts.SyntaxKind.NullKeyword) return this.fail(node, "'null' is not supported yet.")
     if (ts.isAwaitExpression(node)) return this.fail(node, "'await' is not supported in Ore.")
     if (ts.isDeleteExpression(node)) return this.fail(node, "'delete' is not supported in Ore.")
@@ -548,13 +550,19 @@ class Checker {
       return typed({ k: "arith", type: lt, op, left: l, right: r })
     }
 
+    if (op === "+" && (isString(left) || isString(right))) {
+      if (!isString(left) || !isString(right)) {
+        return this.fail(opNode, "Only strings can be concatenated with '+'. Use a template literal: `${a}${b}`.")
+      }
+      return typed({ k: "concat", type: types.string, parts: [left.expr, right.expr] })
+    }
     const [l, r] = this.unify(left, right, node.left, node.right)
     if (!l || !r) return errorOperand
     const type = typeOf(l)
     if (!sameType(type, typeOf(r))) {
       return this.fail(opNode, `Operator '${op}' cannot be applied to types '${typeToString(type)}' and '${typeToString(typeOf(r))}'. Convert one side explicitly, e.g. '${typeToString(type)}(x)'.`)
     }
-    if (type.kind === "string" && op === "+") return this.fail(opNode, "String concatenation is not supported yet.")
+    if (type.kind === "string" && op === "+") return typed({ k: "concat", type: types.string, parts: [l, r] })
     if (!isNumeric(type)) return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     if (type.kind === "float" && (op === "&" || op === "|" || op === "^")) {
       return this.fail(opNode, `Operator '${op}' requires integer operands, got '${type.name}'.`)
@@ -576,7 +584,7 @@ class Checker {
       return this.fail(node.operatorToken, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    if (ordered ? !isNumeric(type) : !(isNumeric(type) || type.kind === "bool" || type.kind === "string")) {
+    if (ordered ? !(isNumeric(type) || type.kind === "string") : !(isNumeric(type) || type.kind === "bool" || type.kind === "string")) {
       return this.fail(node.operatorToken, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
     return typed({ k: "compare", type: types.bool, op, left: l, right: r })
@@ -608,6 +616,10 @@ class Checker {
 
   private assignTarget(node: ts.Expression, scope: Scope): ir.Local | undefined {
     if (ts.isParenthesizedExpression(node)) return this.assignTarget(node.expression, scope)
+    if (ts.isElementAccessExpression(node)) {
+      const target = this.checkExpr(node.expression, scope)
+      if (target.k === "typed" && target.expr.type.kind === "string") return this.error(node, "Strings are immutable."), undefined
+    }
     if (!ts.isIdentifier(node)) return this.error(node, "Only variables can be assigned to yet."), undefined
     const symbol = scope.lookupValue(node.text)
     if (!symbol) return this.error(node, `Cannot find name '${node.text}'.`), undefined
@@ -657,6 +669,7 @@ class Checker {
     if (node.typeArguments) return this.fail(node.typeArguments[0]!, "Type arguments are not supported yet.")
     if (node.questionDotToken) return this.fail(node, "Optional calls are not supported yet.")
     const callee = node.expression
+    if (ts.isPropertyAccessExpression(callee)) return this.checkMethodCall(node, callee, scope)
     if (!ts.isIdentifier(callee)) return this.fail(callee, "Only calls of named functions are supported yet.")
     const symbol = scope.lookupValue(callee.text)
     if (!symbol) return this.fail(callee, `Cannot find name '${callee.text}'.`)
@@ -693,11 +706,7 @@ class Checker {
           const value = this.checkExpr(arg, scope)
           if (value.k === "error") continue
           const expr = this.toDefault(value, arg)
-          const type = typeOf(expr)
-          if (!isNumeric(type) && type.kind !== "bool" && type.kind !== "string") {
-            this.error(arg, `Cannot print a value of type '${typeToString(type)}'.`)
-          }
-          values.push(expr)
+          if (this.printable(expr, arg)) values.push(expr)
         }
         return typed({ k: "builtin", type: types.void, name: symbol.name, args: values })
       }
@@ -712,6 +721,80 @@ class Checker {
       default:
         return this.fail(callee, `'${callee.text}' is not a function.`)
     }
+  }
+
+  private checkTemplate(node: ts.TemplateExpression, scope: Scope): Operand {
+    const parts: ir.Expr[] = []
+    const text = (value: string) => {
+      if (value !== "") parts.push({ k: "string", type: types.string, value })
+    }
+    text(node.head.text)
+    for (const span of node.templateSpans) {
+      const value = this.checkExpr(span.expression, scope)
+      if (value.k !== "error") {
+        const expr = this.toDefault(value, span.expression)
+        if (this.printable(expr, span.expression)) parts.push(expr)
+      }
+      text(span.literal.text)
+    }
+    return typed({ k: "concat", type: types.string, parts })
+  }
+
+  /** Whether a value can be printed or interpolated; reports an error if not. */
+  private printable(expr: ir.Expr, node: ts.Node): boolean {
+    const type = expr.type
+    if (isNumeric(type) || type.kind === "bool" || type.kind === "string") return true
+    this.error(node, `Cannot format a value of type '${typeToString(type)}'.`)
+    return false
+  }
+
+  private checkProperty(node: ts.PropertyAccessExpression, scope: Scope): Operand {
+    if (node.questionDotToken) return this.fail(node, "Optional chaining is not supported yet.")
+    const target = this.checkExpr(node.expression, scope)
+    if (target.k === "error") return target
+    const value = this.toDefault(target, node.expression)
+    const name = node.name.text
+    if (name === "length" && value.type.kind === "string") return typed({ k: "len", type: types.i64, value })
+    return this.fail(node.name, `Property '${name}' does not exist on type '${typeToString(value.type)}'.`)
+  }
+
+  private checkElement(node: ts.ElementAccessExpression, scope: Scope): Operand {
+    if (node.questionDotToken) return this.fail(node, "Optional chaining is not supported yet.")
+    const target = this.checkExpr(node.expression, scope)
+    if (target.k === "error") return target
+    const value = this.toDefault(target, node.expression)
+    const index = this.checkIndex(node.argumentExpression, scope)
+    if (!index) return errorOperand
+    if (value.type.kind === "string") return typed({ k: "index", type: types.u8, target: value, index })
+    return this.fail(node.expression, `Type '${typeToString(value.type)}' cannot be indexed.`)
+  }
+
+  /** Checks an index or offset: any integer type, and untyped constants must not be negative. */
+  private checkIndex(node: ts.Expression, scope: Scope, allowNegative = false): ir.Expr | undefined {
+    const value = this.checkExpr(node, scope)
+    if (value.k === "error") return undefined
+    if (value.k === "untyped-int" && value.value < 0n && !allowNegative) return this.error(node, `Index ${value.value} must not be negative.`), undefined
+    const expr = value.k === "typed" ? value.expr : this.coerce(value, types.i64, node)
+    if (expr.type.kind !== "int") return this.error(node, `An index must be an integer, got '${typeToString(expr.type)}'.`), undefined
+    return expr
+  }
+
+  private checkMethodCall(node: ts.CallExpression, callee: ts.PropertyAccessExpression, scope: Scope): Operand {
+    if (callee.questionDotToken) return this.fail(callee, "Optional chaining is not supported yet.")
+    const target = this.checkExpr(callee.expression, scope)
+    if (target.k === "error") return target
+    const value = this.toDefault(target, callee.expression)
+    const name = callee.name.text
+    const args = node.arguments
+    const type = value.type
+
+    if (name === "slice" && type.kind === "string") {
+      if (args.length > 2) return this.fail(node, `'slice' expects at most 2 arguments, got ${args.length}.`)
+      const offsets = args.map((a) => this.checkIndex(a, scope, true))
+      if (offsets.some((o) => !o)) return errorOperand
+      return typed({ k: "slice", type, value, start: offsets[0], end: offsets[1] })
+    }
+    return this.fail(callee.name, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
   }
 
   // ---------------------------------------------------------------------------
@@ -839,6 +922,10 @@ const compareOps = new Map<ts.SyntaxKind, ir.CompareOp>([
   [K.GreaterThanToken, ">"],
   [K.GreaterThanEqualsToken, ">="],
 ])
+
+function isString(value: Operand): value is Extract<Operand, { k: "typed" }> {
+  return value.k === "typed" && value.expr.type.kind === "string"
+}
 
 function typed(expr: ir.Expr): Operand {
   return { k: "typed", expr }

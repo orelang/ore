@@ -166,7 +166,8 @@ function emitExpr(expr: ir.Expr): string {
       const l = emitExpr(expr.left)
       const r = emitExpr(expr.right)
       if (expr.left.type.kind === "string") {
-        return `(${expr.op === "===" ? "" : "!"}ore_rt_str_eq(${l}, ${r}))`
+        if (expr.op === "===" || expr.op === "!==") return `(${expr.op === "===" ? "" : "!"}ore_rt_str_eq(${l}, ${r}))`
+        return `(ore_rt_str_cmp(${l}, ${r}) ${expr.op} 0)`
       }
       return `(${l} ${cCompare[expr.op]} ${r})`
     }
@@ -184,6 +185,37 @@ function emitExpr(expr: ir.Expr): string {
       return emitBuiltin(expr)
     case "cond":
       return `(${emitExpr(expr.cond)} ? ${emitExpr(expr.then)} : ${emitExpr(expr.else)})`
+    case "concat":
+      if (expr.parts.length === 0) return `ORE_STR("")`
+      if (expr.parts.length === 1) return toString(expr.parts[0]!)
+      return `ore_rt_str_concat(${expr.parts.length}, (ore_string[]){${expr.parts.map(toString).join(", ")}})`
+    case "index":
+      return `ore_rt_str_at(${emitExpr(expr.target)}, (i64)${emitExpr(expr.index)})`
+    case "len":
+      return `(${emitExpr(expr.value)}).len`
+    case "slice": {
+      const start = expr.start ? `(i64)${emitExpr(expr.start)}` : "0"
+      const end = expr.end ? `(i64)${emitExpr(expr.end)}` : "ORE_SLICE_END"
+      return `ore_rt_str_slice(${emitExpr(expr.value)}, ${start}, ${end})`
+    }
+  }
+}
+
+/** Formats a printable value as a string, like `print` does. */
+function toString(expr: ir.Expr): string {
+  const value = emitExpr(expr)
+  const t = expr.type
+  switch (t.kind) {
+    case "string":
+      return value
+    case "int":
+      return t.signed ? `ore_rt_str_from_i64((i64)${value})` : `ore_rt_str_from_u64((u64)${value})`
+    case "float":
+      return `ore_rt_str_from_${t.name}(${value})`
+    case "bool":
+      return `ore_rt_str_from_bool(${value})`
+    default:
+      throw new Error(`cannot format ${t.kind}`)
   }
 }
 
