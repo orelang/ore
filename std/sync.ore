@@ -1,0 +1,69 @@
+// The "ore:sync" module: synchronization of tasks, which run in parallel.
+//
+//   import { Mutex, WaitGroup } from "ore:sync"
+
+/** A mutual exclusion lock, held by one task at a time. */
+export class Mutex {
+    private slot = new Chan<bool>(1)
+
+    /** Waits until the lock is free, then holds it. */
+    lock(): void {
+        this.slot.send(true)
+    }
+
+    /** Releases the lock; panics if it is not held. */
+    unlock(): void {
+        task.select([this.slot.onReceive(() => {})], () => process.panic("unlock of an unlocked mutex"))
+    }
+
+    /** Holds the lock until the returned guard is disposed: `using guard = mutex.acquire()`. */
+    acquire(): MutexGuard {
+        this.lock()
+        return new MutexGuard(this)
+    }
+}
+
+/** Releases a mutex when disposed, at the end of the block of its `using` declaration. */
+export class MutexGuard {
+    constructor(private mutex: Mutex) {}
+
+    [Symbol.dispose](): void {
+        this.mutex.unlock()
+    }
+}
+
+/** Waits for a group of tasks to finish, like Go's sync.WaitGroup. */
+export class WaitGroup {
+    private count = 0
+    private mutex = new Mutex()
+    /** Closed when the count drops to zero, then replaced. */
+    private zero = new Chan<bool>()
+
+    /** Adds `n` (possibly negative) to the number of tasks to wait for. */
+    add(n: int): void {
+        using guard = this.mutex.acquire()
+        this.count += n
+        if (this.count < 0) process.panic("negative WaitGroup count")
+        if (this.count === 0) {
+            this.zero.close()
+            this.zero = new Chan<bool>()
+        }
+    }
+
+    /** Marks one task as finished. */
+    done(): void {
+        this.add(-1)
+    }
+
+    /** Waits until every task added has finished. */
+    wait(): void {
+        this.mutex.lock()
+        if (this.count === 0) {
+            this.mutex.unlock()
+            return
+        }
+        const zero = this.zero
+        this.mutex.unlock()
+        zero.receive()
+    }
+}

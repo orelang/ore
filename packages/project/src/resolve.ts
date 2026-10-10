@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import syncModule from "../../../std/sync.ore" with { type: "text" }
 import testModule from "../../../std/test.ore" with { type: "text" }
 
 /** Standard library modules, imported as "ore:name" and embedded in the compiler. */
-export const stdModules: Record<string, string> = { "ore:test": testModule }
+export const stdModules: Record<string, string> = { "ore:sync": syncModule, "ore:test": testModule }
 
 export interface PackageJson {
   name?: string

@@ -1,0 +1,40 @@
+// threads: 8
+// exit: 2
+// stderr: panic: unlock of an unlocked mutex
+
+import { Mutex, WaitGroup } from "ore:sync"
+
+class Account {
+    balance = 0
+    private mutex = new Mutex()
+
+    deposit(amount: int): void {
+        using guard = this.mutex.acquire()
+        // Read, yield, write: without the lock, deposits would be lost.
+        const before = this.balance
+        task.yield()
+        this.balance = before + amount
+    }
+}
+
+export function main() {
+    const account = new Account()
+    const group = new WaitGroup()
+    for (let i = 0; i < 50; i++) {
+        group.add(1)
+        task.spawn(() => {
+            for (let j = 0; j < 20; j++) account.deposit(1)
+            group.done()
+        })
+    }
+    group.wait()
+    console.log(account.balance)
+
+    // wait returns at once when nothing is pending.
+    new WaitGroup().wait()
+
+    const shared = new Mutex()
+    shared.lock()
+    shared.unlock()
+    shared.unlock()
+}
