@@ -39,7 +39,7 @@ interface StmtBase {
   line?: number
 }
 
-export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | BreakStmt | ContinueStmt | ReturnStmt
+export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | BreakStmt | ContinueStmt | ReturnStmt
 
 export interface Block extends StmtBase {
   k: "block"
@@ -78,6 +78,19 @@ export interface LoopStmt extends StmtBase {
   cond?: Expr
   condAfter: boolean
   update?: Expr
+  body: Stmt
+}
+
+/**
+ * `for (const x of iterable)`: over array elements, or over the runes (`i32`)
+ * of a string. The array length is re-read on every iteration.
+ */
+export interface ForOfStmt extends StmtBase {
+  k: "for-of"
+  id: number
+  labeled: boolean
+  local: Local
+  iterable: Expr
   body: Stmt
 }
 

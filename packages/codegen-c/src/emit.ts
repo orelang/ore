@@ -147,6 +147,26 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       const update = stmt.update ? emitExpr(stmt.update) : ""
       return `for (; ${cond}; ${update}) ${body}${after}`
     }
+    case "for-of": {
+      const lines = (stmt.body.k === "block" ? stmt.body.body : [stmt.body]).map((s) => emitLine(s, depth + 1, ctx))
+      if (stmt.labeled) lines.push(`${indent(depth + 2)}continue_${stmt.id}:;`)
+      const name = localName(stmt.local)
+      const elem = cType(stmt.local.type)
+      const it = temp()
+      const i = temp()
+      let head: string
+      let first: string
+      if (stmt.iterable.type.kind === "string") {
+        head = `ore_string ${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}.len;)`
+        first = `${elem} ${name} = ore_rt_str_decode(${it}, &${i});`
+      } else {
+        head = `ore_array *${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}->len; ${i}++)`
+        first = `${elem} ${name} = ((${elem} *)${it}->data)[${i}];`
+      }
+      const body = [`${indent(depth + 2)}${first}`, ...lines].join("\n")
+      const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
+      return `{\n${indent(depth + 1)}${head} {\n${body}\n${indent(depth + 1)}}\n${indent(depth)}}${after}`
+    }
     case "break":
       return stmt.target === undefined ? "break;" : `goto break_${stmt.target};`
     case "continue":

@@ -335,12 +335,15 @@ class Checker {
       this.error(stmt, "Exceptions are not supported in Ore. Return an error value, or call panic() for unrecoverable failures.")
     } else if (ts.isSwitchStatement(stmt)) {
       this.error(stmt, "'switch' is not supported yet.")
-    } else if (ts.isForOfStatement(stmt) || ts.isForInStatement(stmt)) {
-      this.error(stmt, `'${ts.isForOfStatement(stmt) ? "for...of" : "for...in"}' is not supported yet.`)
+    } else if (ts.isForOfStatement(stmt)) {
+      const loop = this.checkForOf(stmt, scope)
+      if (loop) out.push(loop)
+    } else if (ts.isForInStatement(stmt)) {
+      this.error(stmt, "'for...in' is not supported in Ore. Use 'for...of'.")
     } else if (ts.isLabeledStatement(stmt)) {
       const label = stmt.label.text
       const inner = stmt.statement
-      if (!(ts.isWhileStatement(inner) || ts.isDoStatement(inner) || ts.isForStatement(inner))) {
+      if (!(ts.isWhileStatement(inner) || ts.isDoStatement(inner) || ts.isForStatement(inner) || ts.isForOfStatement(inner))) {
         this.error(stmt.label, "Labels are only supported on loops.")
       } else if (fn.loops.some((l) => l.label === label)) {
         this.error(stmt.label, `Duplicate label '${label}'.`)
@@ -425,6 +428,33 @@ class Checker {
       body,
     })
     return prelude.length === 0 ? loop : { k: "block", body: [...prelude, loop] }
+  }
+
+  private checkForOf(stmt: ts.ForOfStatement, outer: Scope): ir.ForOfStmt | undefined {
+    if (stmt.awaitModifier) return this.error(stmt.awaitModifier, "'for await' is not supported in Ore."), undefined
+    const list = stmt.initializer
+    if (!ts.isVariableDeclarationList(list) || !(list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let))) {
+      return this.error(list, "The loop variable must be declared with 'const' or 'let'."), undefined
+    }
+    const decl = list.declarations[0]!
+    if (!ts.isIdentifier(decl.name)) return this.error(decl.name, "Destructuring is not supported yet."), undefined
+    if (decl.type) this.error(decl.type, "The loop variable cannot have a type annotation; its type comes from the iterable.")
+
+    const value = this.checkExpr(stmt.expression, outer)
+    if (value.k === "error") return undefined
+    const iterable = this.toDefault(value, stmt.expression)
+    const type = iterable.type
+    let elem: Type
+    if (type.kind === "array") elem = type.elem
+    else if (type.kind === "string") elem = types.i32
+    else return this.error(stmt.expression, `Type '${typeToString(type)}' is not iterable.`), undefined
+
+    const scope = new Scope(outer)
+    const local = this.newLocal(decl.name.text, elem, (list.flags & ts.NodeFlags.Let) !== 0)
+    scope.declareValue(local.name, { k: "local", local, decl })
+    this.info.types.set(decl.name, elem)
+    const loop = this.checkLoopBody(stmt.statement, scope)
+    return Object.assign(loop.ir, { k: "for-of" as const, id: loop.id, local, iterable, body: loop.body })
   }
 
   private checkLoopBody(stmt: ts.Statement, scope: Scope): LoopContext & { body: ir.Stmt } {
@@ -1070,6 +1100,7 @@ function breaks(stmt: ir.Stmt, loopId: number, nested: boolean): boolean {
     case "if":
       return breaks(stmt.then, loopId, nested) || (stmt.else !== undefined && breaks(stmt.else, loopId, nested))
     case "loop":
+    case "for-of":
       return breaks(stmt.body, loopId, true)
     default:
       return false
