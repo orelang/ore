@@ -795,7 +795,8 @@ export function floatLiteral(type: FloatType, value: number): string {
   const suffix = type.bits === 32 ? "f" : ""
   if (Number.isNaN(value)) return `((${type.name})__builtin_nan(""))`
   if (!Number.isFinite(value)) return `((${type.name})${value < 0 ? "-" : ""}__builtin_inf())`
-  let text = String(value)
+  // String(-0) is "0".
+  let text = Object.is(value, -0) ? "-0" : String(value)
   if (!/[.e]/.test(text)) text += ".0"
   return `(${text}${suffix})`
 }

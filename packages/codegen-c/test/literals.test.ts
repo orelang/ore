@@ -11,6 +11,7 @@ test("integer literals", () => {
 test("float literals", () => {
   expect(floatLiteral(types.f64, 1)).toBe("(1.0)")
   expect(floatLiteral(types.f64, -0.1)).toBe("(-0.1)")
+  expect(floatLiteral(types.f64, -0)).toBe("(-0.0)")
   expect(floatLiteral(types.f32, 1e21)).toBe("(1e+21f)")
   expect(floatLiteral(types.f64, Infinity)).toBe("((f64)__builtin_inf())")
 })
