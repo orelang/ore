@@ -48,8 +48,56 @@ extern _Thread_local ore_frame *ore_rt_top;
 
 _Noreturn void ore_rt_panic(ore_string message);
 _Noreturn void ore_rt_panic_cstr(const char *message);
+_Noreturn void ore_rt_panic_index(i64 index, i64 length);
+
+/** Allocates zeroed, garbage-collected memory. */
+void *ore_rt_alloc(i64 size);
+
+// Strings
 
 bool ore_rt_str_eq(ore_string a, ore_string b);
+/** Byte-wise comparison: negative, zero or positive. */
+i32 ore_rt_str_cmp(ore_string a, ore_string b);
+ore_string ore_rt_str_concat(i64 count, const ore_string *parts);
+/** JavaScript `slice` on byte offsets: negative offsets count from the end, out-of-range offsets are clamped. */
+ore_string ore_rt_str_slice(ore_string s, i64 start, i64 end);
+/** Decodes the UTF-8 rune at `*pos` and advances it. Invalid bytes decode to U+FFFD one at a time. */
+i32 ore_rt_str_decode(ore_string s, i64 *pos);
+ore_string ore_rt_str_from_i64(i64 v);
+ore_string ore_rt_str_from_u64(u64 v);
+ore_string ore_rt_str_from_f64(f64 v);
+ore_string ore_rt_str_from_f32(f32 v);
+ore_string ore_rt_str_from_bool(bool v);
+
+static inline u8 ore_rt_str_at(ore_string s, i64 i) {
+  if ((u64)i >= (u64)s.len) ore_rt_panic_index(i, s.len);
+  return s.ptr[i];
+}
+
+// Arrays are references to a growable buffer of elements of one type.
+
+typedef struct {
+  void *data;
+  i64 len;
+  i64 cap;
+} ore_array;
+
+/** A new array of `len` zeroed elements. */
+ore_array *ore_rt_array_new(i64 elem_size, i64 len);
+/** Appends one zeroed element and returns a pointer to it. */
+void *ore_rt_array_push(ore_array *a, i64 elem_size);
+/** Removes the last element and returns a pointer to it; panics if empty. */
+void *ore_rt_array_pop(ore_array *a, i64 elem_size);
+/** A copy of the elements in [start, end), with JavaScript `slice` offsets. */
+ore_array *ore_rt_array_slice(ore_array *a, i64 elem_size, i64 start, i64 end);
+
+static inline i64 ore_rt_check_index(i64 i, i64 len) {
+  if ((u64)i >= (u64)len) ore_rt_panic_index(i, len);
+  return i;
+}
+
+/** Sentinel for an omitted `end` argument of `slice`. */
+#define ORE_SLICE_END INT64_MAX
 
 void ore_rt_print_i64(i64 v);
 void ore_rt_print_u64(u64 v);
