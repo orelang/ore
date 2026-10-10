@@ -33,7 +33,18 @@ export function check(source: Source, options: CheckOptions = { entry: true }): 
 
 interface FuncContext {
   result: Type
-  loopDepth: number
+  /** Enclosing loops, innermost last. */
+  loops: LoopContext[]
+  nextLoopId: number
+  /** Label of a labeled statement whose loop has not been entered yet. */
+  pendingLabel?: string
+}
+
+interface LoopContext {
+  id: number
+  label?: string
+  /** Shared with the IR loop so a labeled jump can mark it. */
+  ir: { labeled: boolean }
 }
 
 class Checker {
@@ -138,7 +149,7 @@ class Checker {
         if (!scope.declareValue(local.name, { k: "local", local, decl: p })) this.error(p.name, `Duplicate parameter '${local.name}'.`)
       }
     })
-    this.fn = { result: func.type.result, loopDepth: 0 }
+    this.fn = { result: func.type.result, loops: [], nextLoopId: 0 }
     func.body = this.checkBlock(decl.body!, scope)
     this.fn = undefined
 
@@ -274,18 +285,27 @@ class Checker {
       out.push({ k: "if", cond, then, else: elseStmt })
     } else if (ts.isWhileStatement(stmt)) {
       const cond = this.checkCondition(stmt.expression, scope)
-      out.push({ k: "loop", cond: isTrue(cond) ? undefined : cond, condAfter: false, body: this.checkLoopBody(stmt.statement, scope) })
+      const loop = this.checkLoopBody(stmt.statement, scope)
+      out.push(Object.assign(loop.ir, { k: "loop" as const, id: loop.id, cond: isTrue(cond) ? undefined : cond, condAfter: false, body: loop.body }))
     } else if (ts.isDoStatement(stmt)) {
-      const body = this.checkLoopBody(stmt.statement, scope)
+      const loop = this.checkLoopBody(stmt.statement, scope)
       const cond = this.checkCondition(stmt.expression, scope)
-      out.push({ k: "loop", cond, condAfter: true, body })
+      out.push(Object.assign(loop.ir, { k: "loop" as const, id: loop.id, cond, condAfter: true, body: loop.body }))
     } else if (ts.isForStatement(stmt)) {
       out.push(this.checkFor(stmt, scope))
     } else if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {
       const word = ts.isBreakStatement(stmt) ? "break" : "continue"
-      if (stmt.label) this.error(stmt.label, "Labeled statements are not supported yet.")
-      else if (fn.loopDepth === 0) this.error(stmt, `'${word}' must be inside a loop.`)
-      out.push({ k: word })
+      if (stmt.label) {
+        const loop = fn.loops.findLast((l) => l.label === stmt.label!.text)
+        if (!loop) this.error(stmt.label, `Cannot find loop label '${stmt.label.text}'.`)
+        else {
+          loop.ir.labeled = true
+          out.push({ k: word, target: loop.id })
+        }
+      } else {
+        if (fn.loops.length === 0) this.error(stmt, `'${word}' must be inside a loop.`)
+        out.push({ k: word })
+      }
     } else if (ts.isReturnStatement(stmt)) {
       out.push(this.checkReturn(stmt, scope))
     } else if (ts.isEmptyStatement(stmt)) {
@@ -299,7 +319,16 @@ class Checker {
     } else if (ts.isForOfStatement(stmt) || ts.isForInStatement(stmt)) {
       this.error(stmt, `'${ts.isForOfStatement(stmt) ? "for...of" : "for...in"}' is not supported yet.`)
     } else if (ts.isLabeledStatement(stmt)) {
-      this.error(stmt.label, "Labeled statements are not supported yet.")
+      const label = stmt.label.text
+      const inner = stmt.statement
+      if (!(ts.isWhileStatement(inner) || ts.isDoStatement(inner) || ts.isForStatement(inner))) {
+        this.error(stmt.label, "Labels are only supported on loops.")
+      } else if (fn.loops.some((l) => l.label === label)) {
+        this.error(stmt.label, `Duplicate label '${label}'.`)
+      } else {
+        fn.pendingLabel = label
+      }
+      this.checkStmt(inner, scope, out)
     } else {
       this.error(stmt, "This statement is not supported yet.")
     }
@@ -367,16 +396,26 @@ class Checker {
       const value = this.checkExpr(stmt.incrementor, scope)
       if (value.k === "typed") update = value.expr
     }
-    const body = this.checkLoopBody(stmt.statement, scope)
-    const loop: ir.LoopStmt = { k: "loop", cond: cond && !isTrue(cond) ? cond : undefined, condAfter: false, update, body }
+    const { id, ir: shared, body } = this.checkLoopBody(stmt.statement, scope)
+    const loop: ir.LoopStmt = Object.assign(shared, {
+      k: "loop" as const,
+      id,
+      cond: cond && !isTrue(cond) ? cond : undefined,
+      condAfter: false,
+      update,
+      body,
+    })
     return prelude.length === 0 ? loop : { k: "block", body: [...prelude, loop] }
   }
 
-  private checkLoopBody(stmt: ts.Statement, scope: Scope): ir.Stmt {
-    this.fn!.loopDepth++
+  private checkLoopBody(stmt: ts.Statement, scope: Scope): LoopContext & { body: ir.Stmt } {
+    const fn = this.fn!
+    const loop: LoopContext = { id: fn.nextLoopId++, label: fn.pendingLabel, ir: { labeled: false } }
+    fn.pendingLabel = undefined
+    fn.loops.push(loop)
     const body = this.checkNested(stmt, scope)
-    this.fn!.loopDepth--
-    return body
+    fn.loops.pop()
+    return { ...loop, body }
   }
 
   private checkReturn(stmt: ts.ReturnStatement, scope: Scope): ir.ReturnStmt {
@@ -846,7 +885,7 @@ function terminates(stmt: ir.Stmt): boolean {
     case "if":
       return stmt.else !== undefined && terminates(stmt.then) && terminates(stmt.else)
     case "loop":
-      return stmt.cond === undefined && !breaks(stmt.body)
+      return stmt.cond === undefined && !breaks(stmt.body, stmt.id, false)
     case "expr":
       return stmt.expr.type.kind === "never"
     default:
@@ -854,15 +893,17 @@ function terminates(stmt: ir.Stmt): boolean {
   }
 }
 
-/** Whether a loop body contains a `break` targeting that loop. */
-function breaks(stmt: ir.Stmt): boolean {
+/** Whether a statement contains a `break` that exits the loop `loopId`. */
+function breaks(stmt: ir.Stmt, loopId: number, nested: boolean): boolean {
   switch (stmt.k) {
     case "break":
-      return true
+      return stmt.target === undefined ? !nested : stmt.target === loopId
     case "block":
-      return stmt.body.some(breaks)
+      return stmt.body.some((s) => breaks(s, loopId, nested))
     case "if":
-      return breaks(stmt.then) || (stmt.else !== undefined && breaks(stmt.else))
+      return breaks(stmt.then, loopId, nested) || (stmt.else !== undefined && breaks(stmt.else, loopId, nested))
+    case "loop":
+      return breaks(stmt.body, loopId, true)
     default:
       return false
   }

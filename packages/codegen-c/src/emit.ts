@@ -77,16 +77,21 @@ function emitStmt(stmt: ir.Stmt, depth: number): string {
       return s
     }
     case "loop": {
-      const body = emitBody(stmt.body, depth)
-      if (stmt.condAfter) return `do ${body} while (${emitExpr(stmt.cond!)});`
+      // A labeled continue jumps to the end of the body, so the update and
+      // condition still run; a labeled break jumps past the loop.
+      const lines = (stmt.body.k === "block" ? stmt.body.body : [stmt.body]).map((s) => indent(depth + 1) + emitStmt(s, depth + 1))
+      if (stmt.labeled) lines.push(`${indent(depth + 1)}continue_${stmt.id}:;`)
+      const body = lines.length === 0 ? "{}" : `{\n${lines.join("\n")}\n${indent(depth)}}`
+      const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
+      if (stmt.condAfter) return `do ${body} while (${emitExpr(stmt.cond!)});${after}`
       const cond = stmt.cond ? emitExpr(stmt.cond) : ""
       const update = stmt.update ? emitExpr(stmt.update) : ""
-      return `for (; ${cond}; ${update}) ${body}`
+      return `for (; ${cond}; ${update}) ${body}${after}`
     }
     case "break":
-      return "break;"
+      return stmt.target === undefined ? "break;" : `goto break_${stmt.target};`
     case "continue":
-      return "continue;"
+      return stmt.target === undefined ? "continue;" : `goto continue_${stmt.target};`
     case "return":
       return stmt.value ? `return ${emitExpr(stmt.value)};` : "return;"
   }

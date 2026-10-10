@@ -62,18 +62,26 @@ export interface IfStmt {
  */
 export interface LoopStmt {
   k: "loop"
+  /** Unique within the function; the target of labeled `break` / `continue`. */
+  id: number
+  /** Set when a labeled `break` / `continue` targets this loop. */
+  labeled: boolean
   cond?: Expr
   condAfter: boolean
   update?: Expr
   body: Stmt
 }
 
+/** Exits the innermost loop, or the loop with id `target` for a labeled break. */
 export interface BreakStmt {
   k: "break"
+  target?: number
 }
 
+/** Continues the innermost loop, or the loop with id `target` for a labeled continue. */
 export interface ContinueStmt {
   k: "continue"
+  target?: number
 }
 
 export interface ReturnStmt {
