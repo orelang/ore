@@ -1,0 +1,120 @@
+// Objects that may live on the stack, and objects that must not.
+
+class Vec {
+    constructor(
+        readonly x: int,
+        readonly y: int,
+    ) {}
+
+    plus(other: Vec): Vec {
+        return new Vec(this.x + other.x, this.y + other.y)
+    }
+
+    self(): Vec {
+        return this
+    }
+}
+
+class Pair {
+    constructor(
+        readonly first: Vec,
+        readonly second: Vec,
+    ) {}
+}
+
+type Holder = { v: Vec | null }
+
+function sum(v: Vec): int {
+    return v.x + v.y
+}
+
+function first(p: { a: Vec; b: Vec }): Vec {
+    return p.a
+}
+
+function depth(n: int): int {
+    const v = new Vec(n, 1)
+    if (n === 0) return sum(v)
+    return depth(n - 1) + v.x
+}
+
+function makeCounter(): () => int {
+    let count = 0
+    return () => ++count
+}
+
+export function main() {
+    // A field assignment keeps the object alive past its iteration.
+    const holder: Holder = { v: null }
+    for (let i = 0; i < 3; i++) {
+        const t = new Vec(i, i)
+        if (i === 0) holder.v = t
+    }
+    console.log(holder.v?.x ?? -1)
+
+    // Returned, pushed and chained objects.
+    const kept: Vec[] = []
+    for (let i = 0; i < 3; i++) {
+        const v = new Vec(i, 10)
+        kept.push(v.self())
+        kept.push(new Vec(1, 2).plus(v))
+    }
+    console.log(kept.map(sum).join(" "))
+
+    // A constructor storing its arguments; a literal read out through a function.
+    const pairs: Pair[] = []
+    for (let i = 0; i < 2; i++) {
+        const a = new Vec(i, 0)
+        const b = new Vec(0, i)
+        pairs.push(new Pair(a, b))
+    }
+    console.log(pairs.map((p) => sum(p.first) + sum(p.second)).join(" "))
+    const firsts: Vec[] = []
+    for (let i = 0; i < 2; i++) {
+        const a = new Vec(i, 5)
+        firsts.push(first({ a, b: new Vec(0, 0) }))
+    }
+    console.log(firsts.map(sum).join(" "))
+
+    // Recursion: every call has its own object.
+    console.log(depth(10))
+
+    // Closures called in place share boxes with the frame; escaping ones keep their own.
+    let total = 0
+    for (let i = 0; i < 4; i++) [1, 2, 3].forEach((n) => (total += n * i))
+    console.log(total)
+    const fns: (() => int)[] = []
+    for (let i = 0; i < 3; i++) fns.push(() => i * 10)
+    console.log(fns.map((f) => f()).join(" "))
+    const counter = makeCounter()
+    counter()
+    console.log(counter())
+    let calls = 0
+    const bump = () => calls++
+    bump()
+    bump()
+    console.log(calls)
+
+    // A stack object refers to heap objects that must survive collections.
+    const big = { items: [1, 2, 3], name: "big" }
+    let garbage = 0
+    for (let i = 0; i < 200000; i++) garbage += [i, i, i].length
+    console.log(big.items.reduce((a, b) => a + b, 0), big.name, garbage)
+
+    // Tasks have their own stacks.
+    const done = new Chan<int>()
+    for (let t = 0; t < 4; t++) {
+        task.spawn(() => {
+            let acc = 0
+            for (let i = 0; i < 1000; i++) {
+                const v = new Vec(i, t)
+                task.yield()
+                acc += sum(v)
+            }
+            done.send(acc)
+        })
+    }
+    let all = 0
+    for (let t = 0; t < 4; t++) all += done.receive() ?? 0
+    console.log(all)
+}

@@ -1,5 +1,6 @@
 import * as ir from "@ore/ir"
 import { isStringLike, types, unionRepr, type FloatType, type IntType, type Type, type UnionType } from "@ore/ir"
+import { planStack, type StackPlan } from "./escape"
 
 export interface EmitOptions {
   /**
@@ -14,6 +15,8 @@ interface Context {
   /** The source path as a C string literal. */
   file: string
   func: ir.Func
+  /** Emitting the variant of a constructor that initializes an instance at `ore_mem` instead of allocating it. */
+  at?: boolean
 }
 
 /** Emits a C translation unit for a module. Requires `ore.h` from the runtime. */
@@ -25,11 +28,18 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   for (const s of module.structs) out.push(emitStruct(s))
   for (const func of module.functions) if (func.captures?.length) out.push(emitEnv(func))
   for (const func of module.functions) out.push(func.extern ? externSignature(func) : `static ${signature(func)};`)
+  plan = planStack(module)
+  for (const func of plan.ctorsAt) out.push(`static ${signature(func, true)};`)
   for (const itab of module.itabs) out.push(emitItab(itab))
   out.push("")
   const file = JSON.stringify(module.file)
   helpers.clear()
-  const bodies = module.functions.filter((f) => !f.extern).map((func) => emitFunction({ debug: options.debug, file: func.file ? JSON.stringify(func.file) : file, func }))
+  const bodies = module.functions
+    .filter((f) => !f.extern)
+    .flatMap((func) => {
+      const ctx = { debug: options.debug, file: func.file ? JSON.stringify(func.file) : file, func }
+      return plan.ctorsAt.has(func) ? [emitFunction(ctx), emitFunction({ ...ctx, at: true })] : [emitFunction(ctx)]
+    })
   // Helpers created while emitting the bodies, such as hash functions of map keys.
   out.push(...helpers.values(), "")
   for (const body of bodies) out.push(body, "")
@@ -42,6 +52,21 @@ const frame = "ore_frame_"
 
 /** The function being emitted; decides how locals are accessed. */
 let current: ir.Func | undefined
+
+/** Which allocations live on the stack; see `planStack`. */
+let plan: StackPlan = { slots: new Map(), ctorsAt: new Set() }
+
+/** Stack slots of the function being emitted, by allocation or boxed local. */
+let slots = new Map<ir.Expr | ir.Local, string>()
+
+/** Whether the function being emitted is a constructor initializing `ore_mem`. */
+let emittingAt = false
+
+/** A zeroed stack slot of the current function, or undefined when `node` is allocated on the heap. */
+function slot(node: ir.Expr | ir.Local): string | undefined {
+  const name = slots.get(node)
+  return name && `(${name} = (__typeof__(${name})){0}, &${name})`
+}
 
 /** Loops and switches being emitted, innermost last, for `break` and `continue`. */
 let breakables: { id: number; isSwitch: boolean }[] = []
@@ -84,7 +109,7 @@ function declare(local: ir.Local, init: string | undefined): string {
   const t = cType(local.type)
   if (!boxed(local)) return `${t} ${localName(local)} = ${init ?? `(${t}){0}`};`
   // The box exists before the value is computed, so a closure in it can capture itself.
-  const box = `${t} *${localName(local)} = ore_rt_alloc(sizeof(${t}));`
+  const box = `${t} *${localName(local)} = ${slot(local) ?? `ore_rt_alloc(sizeof(${t}))`};`
   return init === undefined ? box : `${box} *${localName(local)} = ${init};`
 }
 
@@ -108,7 +133,10 @@ function emitFunction(ctx: Context): string {
   current = func
   breakables = []
   disposals = []
+  emittingAt = ctx.at === true
+  slots = new Map((plan.slots.get(func) ?? []).map((node, i) => [node, `ore_slot${i}_`]))
   const lines = func.body.body.map((s) => emitLine(s, 0, ctx))
+  for (const [node, name] of slots) lines.unshift(`  ${slotType(node)} ${name};`)
   // Parameters captured and assigned by closures move into boxes.
   for (const p of [...func.params].reverse()) if (boxed(p)) lines.unshift(`  ${declare(p, `${localName(p)}_arg`)}`)
   if (func.captures) lines.unshift(`  ${func.captures.length > 0 ? `${envName(func)} *ore_env = env_;` : "(void)env_;"}`)
@@ -121,7 +149,7 @@ function emitFunction(ctx: Context): string {
     )
     if (func.type.result.kind === "void") lines.push(`  ore_rt_top = ${frame}.prev;`)
   }
-  const header = `static ${signature(func)}`
+  const header = `static ${signature(func, ctx.at)}`
   return lines.length === 0 ? `${header} {}` : `${header} {\n${lines.join("\n")}\n}`
 }
 
@@ -274,12 +302,21 @@ function externSignature(func: ir.Func): string {
   return `extern ${externType(func.type.result)} ${func.name}(${params});`
 }
 
-function signature(func: ir.Func): string {
+/** The prototype of a function, or of the variant of a constructor initializing `ore_mem` (`at`). */
+function signature(func: ir.Func, at = false): string {
   const list = func.params.map((p) => `${cType(p.type)} ${localName(p)}${boxed(p) ? "_arg" : ""}`)
   if (func.receiver) list.unshift("void *self_")
   if (func.captures) list.unshift("void *env_")
+  if (at) list.unshift(`${cType(func.type.result)} ore_mem`)
   const params = list.length === 0 ? "void" : list.join(", ")
-  return `${cType(func.type.result)} ${func.name}(${params})`
+  return `${cType(func.type.result)} ${func.name}${at ? "_at" : ""}(${params})`
+}
+
+/** The C type of the stack slot of an allocation or a box. */
+function slotType(node: ir.Expr | ir.Local): string {
+  if ("id" in node) return cType(node.type)
+  if (node.k === "closure") return envName(node.func)
+  return structName(node.type as ir.StructType)
 }
 
 export function cType(type: Type): string {
@@ -439,7 +476,8 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       if (stmt.condAfter) return `do ${body} while (${emitExpr(stmt.cond!)});${after}`
       const cond = stmt.cond ? emitExpr(stmt.cond) : ""
       // Captured `for (let ...)` variables get a fresh copy for each iteration, before the update.
-      const copies = (stmt.perIteration ?? []).filter(boxed).map((l) => `${localName(l)} = ore_rt_box_copy(${localName(l)}, sizeof(${cType(l.type)}))`)
+      // A box on the stack is shared by all iterations: no closure of an earlier one is alive.
+      const copies = (stmt.perIteration ?? []).filter((l) => boxed(l) && !slots.has(l)).map((l) => `${localName(l)} = ore_rt_box_copy(${localName(l)}, sizeof(${cType(l.type)}))`)
       const update = [...copies, ...(stmt.update ? [emitExpr(stmt.update)] : [])].join(", ")
       return `for (; ${cond}; ${update}) ${body}${after}`
     }
@@ -596,6 +634,7 @@ function emitExpr(expr: ir.Expr): string {
           return expr.func.type.result.kind === "string" ? `ore_rt_from_cstring(${call})` : call
         })
       }
+      if (slots.has(expr)) return inOrder(expr.args, (args) => `${expr.func.name}_at(${[slot(expr), ...args].join(", ")})`)
       return inOrder(expr.args, (args) => `${expr.func.name}(${args.join(", ")})`)
     case "builtin":
       return emitBuiltin(expr)
@@ -647,11 +686,12 @@ function emitExpr(expr: ir.Expr): string {
       const s = structName(expr.type)
       const o = temp()
       const stores = expr.fields.map((f) => `${o}->${fieldName(f.name)} = ${emitExpr(f.value)};`).join(" ")
-      return `({ ${s} *${o} = ore_rt_alloc(sizeof(${s})); ${stores} ${o}; })`
+      return `({ ${s} *${o} = ${slot(expr) ?? `ore_rt_alloc(sizeof(${s}))`}; ${stores} ${o}; })`
     }
     case "field":
       return `(${emitExpr(expr.object)})->${fieldName(expr.name)}`
     case "alloc":
+      if (emittingAt) return "ore_mem"
       return `((${structName(expr.type)} *)ore_rt_alloc(sizeof(${structName(expr.type)})))`
     case "method-call":
       return inOrder([expr.receiver, ...expr.args], (args) => `${expr.func.name}(${args.join(", ")})`)
@@ -736,7 +776,7 @@ function emitExpr(expr: ir.Expr): string {
       const e = temp()
       const env = envName(expr.func)
       const stores = captures.map((c) => `${e}->c${c.id} = ${boxed(c) ? boxOf(c) : access(c)};`).join(" ")
-      return `({ ${env} *${e} = ore_rt_alloc(sizeof(${env})); ${stores} (ore_closure){(void *)${expr.func.name}, ${e}}; })`
+      return `({ ${env} *${e} = ${slot(expr) ?? `ore_rt_alloc(sizeof(${env}))`}; ${stores} (ore_closure){(void *)${expr.func.name}, ${e}}; })`
     }
     case "call-value": {
       // The callee is evaluated before the arguments.
