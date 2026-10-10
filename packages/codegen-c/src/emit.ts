@@ -173,8 +173,12 @@ function emitItab(itab: ir.Itab): string {
     if (m.k === "field") return `(void *)(uintptr_t)offsetof(${s}, ${fieldName(m.name)})`
     return `(void *)${ir.findMethod(itab.struct, m.name)!.func.name}`
   })
-  // C has no empty arrays.
-  return `static void *const ore_itab_${itab.id}[] = { ${entries.length === 0 ? "0" : entries.join(", ")} };`
+  return `static void *const ore_itab_${itab.id}[] = { ${[`(void *)(uintptr_t)${typeId(itab.struct)}`, ...entries].join(", ")} };`
+}
+
+/** The id of a struct in interface tables; never 0. */
+function typeId(s: ir.StructType): number {
+  return s.id + 1
 }
 
 function signature(func: ir.Func): string {
@@ -521,9 +525,18 @@ function emitExpr(expr: ir.Expr): string {
       return `({ ${cType(from)} ${t} = ${emitExpr(expr.value)}; ${branches.join(" ")} ORE_STR("object"); })`
     }
     case "is": {
-      const u = expr.value.type as UnionType
       const t = temp()
-      return `({ ${cType(u)} ${t} = ${emitExpr(expr.value)}; ${slotTest(u, t, memberIndex(u, expr.member))}; })`
+      const value = `${cType(expr.value.type)} ${t} = ${emitExpr(expr.value)};`
+      if (expr.value.type.kind === "interface") return `({ ${value} ore_iface_is(${t}, ${typeId(expr.member as ir.StructType)}); })`
+      const u = expr.value.type as UnionType
+      if (!expr.via) return `({ ${value} ${slotTest(u, t, memberIndex(u, expr.member))}; })`
+      const i = memberIndex(u, expr.via)
+      return `({ ${value} ${slotTest(u, t, i)} && ore_iface_is(${payload(u, t, i)}, ${typeId(expr.member as ir.StructType)}); })`
+    }
+    case "downcast": {
+      const t = temp()
+      const message = stringLiteral(`value is not a ${expr.type.name}`)
+      return `({ ore_iface ${t} = ${emitExpr(expr.value)}; if (!ore_iface_is(${t}, ${typeId(expr.type)})) ore_rt_panic_cstr(${message}); (${cType(expr.type)})${t}.data; })`
     }
     case "coalesce": {
       const from = expr.value.type as UnionType
@@ -533,7 +546,7 @@ function emitExpr(expr: ir.Expr): string {
     case "iface-call": {
       // The receiver is evaluated once, before the arguments.
       const r = temp()
-      const fn = `(${cType(expr.method.result)} (*)(${["void *", ...expr.method.params.map(cType)].join(", ")}))${r}.itab[${expr.index}]`
+      const fn = `(${cType(expr.method.result)} (*)(${["void *", ...expr.method.params.map(cType)].join(", ")}))${r}.itab[${expr.index + 1}]`
       return `({ ore_iface ${r} = ${emitExpr(expr.value)}; ${inOrder(expr.args, (args) => `(${fn})(${[`${r}.data`, ...args].join(", ")})`)}; })`
     }
   }
@@ -693,6 +706,7 @@ function effects(e: ir.Expr): boolean {
     case "null":
       return false
     case "iface-call":
+    case "downcast":
     case "recast":
     case "optional":
     case "coalesce":

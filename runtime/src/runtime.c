@@ -152,8 +152,9 @@ ore_string ore_rt_str_from_bool(bool v) { return v ? ORE_STR("true") : ORE_STR("
 // Interfaces
 
 ore_iface ore_rt_iface_project(ore_iface v, i64 count, const i32 *indices) {
-  void **itab = ore_rt_alloc(count * (i64)sizeof(void *));
-  for (i64 k = 0; k < count; k++) itab[k] = v.itab[indices[k]];
+  void **itab = ore_rt_alloc((count + 1) * (i64)sizeof(void *));
+  itab[0] = v.itab[0];
+  for (i64 k = 0; k < count; k++) itab[k + 1] = v.itab[indices[k] + 1];
   return (ore_iface){v.data, (void *const *)itab};
 }
 

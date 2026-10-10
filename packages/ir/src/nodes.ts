@@ -185,6 +185,7 @@ export type Expr =
   | UnionField
   | TypeOf
   | Is
+  | Downcast
 
 export interface IntLit {
   k: "int"
@@ -491,10 +492,22 @@ export interface TypeOf {
   value: Expr
 }
 
-/** Whether a union value holds `member`, as for `instanceof`. */
+/**
+ * `instanceof`: whether a union value holds `member`, or whether an interface
+ * value refers to an instance of the class `member`. With `via`, the union
+ * holds the interface `via` referring to an instance of `member`.
+ */
 export interface Is {
   k: "is"
   type: BoolType
   value: Expr
   member: Type
+  via?: InterfaceType
+}
+
+/** The instance behind an interface value, which must be of class `type`; panics otherwise. */
+export interface Downcast {
+  k: "downcast"
+  type: StructType
+  value: Expr
 }

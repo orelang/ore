@@ -121,6 +121,9 @@ class Checker {
   private readonly interfaces = new Map<InterfaceType, InterfaceInfo>()
   private readonly unions = new Map<string, UnionType>()
   private readonly literals = new Map<string, LiteralType>()
+  /** The built-in `Error` interface, and the class behind `new Error(...)` once used. */
+  private errorType: InterfaceType | undefined
+  private basicError: StructType | undefined
   /** Narrowing facts by flow scope, innermost last. */
   private facts: Map<string, Type>[] = [new Map()]
   private readonly itabs = new Map<string, ir.Itab>()
@@ -132,7 +135,11 @@ class Checker {
   }
 
   run(options: CheckOptions): CheckResult {
-    const scope = new Scope(builtinScope())
+    const builtins = builtinScope()
+    for (const stmt of builtins.source.ast.statements) if (ts.isInterfaceDeclaration(stmt)) this.declareInterface(stmt, builtins.scope)
+    const error = builtins.scope.lookupType("Error")?.type
+    this.errorType = error?.kind === "interface" ? error : undefined
+    const scope = new Scope(builtins.scope)
     const bodies: [ts.FunctionDeclaration, ir.Func][] = []
     const statements = this.source.ast.statements
 
@@ -1176,9 +1183,11 @@ class Checker {
         const expr = this.checkCondition(node, scope)
         const key = this.refKey(node.left, scope)
         const type = this.info.types.get(node.left)
-        const cls = ts.isIdentifier(node.right) ? scope.lookupType(node.right.text)?.type : undefined
-        if (!key || !type || !cls) return { expr, whenTrue: [], whenFalse: [] }
-        return { expr, whenTrue: [{ key, type: cls }], whenFalse: [{ key, type: this.without(type, (m) => sameType(m, cls)) }] }
+        const target = ts.isIdentifier(node.right) ? scope.lookupType(node.right.text)?.type : undefined
+        if (!key || !type || !target) return { expr, whenTrue: [], whenFalse: [] }
+        // Only a member of a union can be excluded when the test is false.
+        const isMember = membersOf(type).some((m) => sameType(m, target))
+        return { expr, whenTrue: [{ key, type: target }], whenFalse: isMember ? [{ key, type: this.without(type, (m) => sameType(m, target)) }] : [] }
       }
     }
     return { expr: this.checkCondition(node, scope), whenTrue: [], whenFalse: [] }
@@ -1241,9 +1250,23 @@ class Checker {
   private narrowed(key: string, expr: ir.Expr): ir.Expr {
     for (let i = this.facts.length - 1; i >= 0; i--) {
       const type = this.facts[i]!.get(key)
-      if (type) return sameType(type, expr.type) ? expr : { k: "recast", type, value: expr }
+      if (type) return this.narrowConvert(expr, type)
     }
     return expr
+  }
+
+  /**
+   * Converts a value to a narrower type established by a check: a member of
+   * its union, or the class behind an interface (directly or in a union).
+   */
+  private narrowConvert(expr: ir.Expr, type: Type): ir.Expr {
+    if (sameType(type, expr.type)) return expr
+    if (type.kind === "struct" && expr.type.kind === "interface") return { k: "downcast", type, value: expr }
+    if (type.kind === "struct" && expr.type.kind === "union" && !expr.type.members.some((m) => sameType(m, type))) {
+      const via = this.interfaceFor(expr.type, type)
+      if (via) return { k: "downcast", type, value: { k: "recast", type: via, value: expr } }
+    }
+    return { k: "recast", type, value: expr }
   }
 
   private withFacts<T>(facts: Fact[], check: () => T): T {
@@ -1660,6 +1683,11 @@ class Checker {
     if (!ts.isIdentifier(node.expression)) return this.fail(node.expression, "Only named classes can be instantiated.")
     const name = node.expression.text
     const symbol = scope.lookupType(name)
+    if (symbol && symbol.type === this.errorType) {
+      this.info.definitions.set(node.expression, symbol.decl)
+      const created = this.callFunc(this.basicErrorClass().ctor!, node.arguments ?? [], node, scope, "'new Error'")
+      return created.k === "typed" ? typed(this.coerce(created, this.errorType, node)) : created
+    }
     const type = symbol?.type
     if (!type || type.kind !== "struct" || !type.nominal) return this.fail(node.expression, `'${name}' is not a class.`)
     this.info.definitions.set(node.expression, symbol.decl)
@@ -1667,6 +1695,35 @@ class Checker {
   }
 
   /** A checked call of a function or method with arguments converted to its parameters. */
+  /** The class created by `new Error(message)`. */
+  private basicErrorClass(): StructType {
+    if (this.basicError) return this.basicError
+    const type: StructType = { kind: "struct", id: this.nextStructId++, name: "BasicError", nominal: true, fields: [{ name: "message", type: types.string, readonly: true }], methods: [] }
+    const message = this.newLocal("message", types.string, false)
+    const self = this.newLocal("this", type, false)
+    const thisRef: ir.Expr = { k: "local", type, local: self }
+    type.ctor = {
+      name: "ore_new_BasicError",
+      sourceName: "Error.constructor",
+      line: 1,
+      type: { kind: "func", params: [types.string], result: type },
+      params: [message],
+      body: {
+        k: "block",
+        body: [
+          { k: "let", local: self, init: { k: "alloc", type } },
+          { k: "expr", expr: { k: "assign", type: types.string, target: { k: "field", object: thisRef, name: "message" }, value: { k: "local", type: types.string, local: message } } },
+          { k: "return", value: thisRef },
+        ],
+      },
+      exported: false,
+    }
+    this.module.structs.push(type)
+    this.module.functions.push(type.ctor)
+    this.basicError = type
+    return type
+  }
+
   private callFunc(func: ir.Func, args: readonly ts.Expression[], node: ts.Node, scope: Scope, what: string, receiver?: ir.Expr): Operand {
     for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
     if (args.length !== func.params.length) {
@@ -1877,18 +1934,37 @@ class Checker {
     const operand = this.checkExpr(node.left, scope)
     if (operand.k !== "typed") return operand.k === "error" ? operand : this.fail(node.left, "A constant is not an object.")
     const value = operand.expr
-    const cls = this.instanceOfClass(node.right, scope)
-    if (!cls) return errorOperand
-    if (sameType(value.type, cls)) return typed({ k: "bool", type: types.bool, value: true })
-    if (value.type.kind === "union" && value.type.members.some((m) => sameType(m, cls))) return typed({ k: "is", type: types.bool, value, member: cls })
-    return this.fail(node, `A value of type '${typeToString(value.type)}' is never an instance of '${cls.name}'.`)
+    const target = this.instanceOfTarget(node.right, scope)
+    if (!target) return errorOperand
+    const test = this.instanceTest(value, target)
+    if (test) return typed(test)
+    return this.fail(node, `A value of type '${typeToString(value.type)}' is never an instance of '${typeToString(target)}'.`)
   }
 
-  private instanceOfClass(node: ts.Expression, scope: Scope): StructType | undefined {
+  /** The `is` test of `value instanceof target`, or undefined if it can never be true. */
+  private instanceTest(value: ir.Expr, target: StructType | InterfaceType): ir.Expr | undefined {
+    const type = value.type
+    if (sameType(type, target)) return { k: "bool", type: types.bool, value: true }
+    if (type.kind === "union" && type.members.some((m) => sameType(m, target))) return { k: "is", type: types.bool, value, member: target }
+    if (target.kind !== "struct") return undefined
+    if (type.kind === "interface" && !this.conformance(target, type).reason) return { k: "is", type: types.bool, value, member: target }
+    const via = this.interfaceFor(type, target)
+    return via && { k: "is", type: types.bool, value, member: target, via }
+  }
+
+  /** The interface member of a union that a class implements, if exactly one. */
+  private interfaceFor(type: Type, cls: StructType): InterfaceType | undefined {
+    if (type.kind !== "union") return undefined
+    const ifaces = type.members.filter((m): m is InterfaceType => m.kind === "interface" && !this.conformance(cls, m).reason)
+    return ifaces.length === 1 ? ifaces[0] : undefined
+  }
+
+  private instanceOfTarget(node: ts.Expression, scope: Scope): StructType | InterfaceType | undefined {
     const symbol = ts.isIdentifier(node) ? scope.lookupType(node.text) : undefined
     if (ts.isIdentifier(node) && symbol) this.info.definitions.set(node, symbol.decl)
-    if (symbol?.type.kind === "struct" && symbol.type.nominal) return symbol.type
-    this.error(node, "The right side of 'instanceof' must be a class.")
+    const type = symbol?.type
+    if ((type?.kind === "struct" && type.nominal) || type?.kind === "interface") return type
+    this.error(node, "The right side of 'instanceof' must be a class or an interface.")
     return undefined
   }
 

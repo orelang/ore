@@ -1,13 +1,16 @@
 import { types, type Type } from "@ore/ir"
-import { parse } from "@ore/syntax"
+import { parse, type Source } from "@ore/syntax"
 import ts from "typescript"
 import builtinText from "../../../std/builtin.d.ore" with { type: "text" }
 import { Scope, type BuiltinFunc } from "./symbols"
 
 const builtinFuncs = new Set<string>(["println", "print", "panic"])
 
-/** Builds the root scope from `std/builtin.d.ore`. */
-export function builtinScope(): Scope {
+/**
+ * Builds the root scope from the type aliases and functions of
+ * `std/builtin.d.ore`. Its interfaces are declared by the checker.
+ */
+export function builtinScope(): { scope: Scope; source: Source } {
   const { source, diagnostics } = parse("std/builtin.d.ore", builtinText)
   if (diagnostics.length > 0) throw new Error(`invalid builtin.d.ore: ${diagnostics[0]!.message}`)
   const scope = new Scope()
@@ -25,7 +28,7 @@ export function builtinScope(): Scope {
       else throw new Error(`unknown builtin function ${name}`)
     }
   }
-  return scope
+  return { scope, source }
 }
 
 function resolveBuiltinType(node: ts.TypeNode, scope: Scope, name: string): Type | undefined {

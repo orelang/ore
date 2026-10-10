@@ -1,0 +1,48 @@
+class ParseError {
+  constructor(readonly message: string, readonly position: int) {}
+}
+
+class RangeError {
+  readonly message: string
+  constructor(public value: int) {
+    this.message = `out of range: ${value}`
+  }
+}
+
+function digit(c: u8): int | Error {
+  if (c < 48 || c > 57) return new Error(`not a digit: ${c}`)
+  return i64(c - 48)
+}
+
+function parse(s: string): int | Error {
+  if (s.length === 0) return new ParseError("empty input", 0)
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const d = digit(s[i])
+    if (d instanceof Error) return new ParseError(d.message, i)
+    n = n * 10 + d
+  }
+  return n
+}
+
+function percent(s: string): int | Error {
+  const n = parse(s)
+  if (n instanceof Error) return n
+  if (n > 100) return new RangeError(n)
+  return n
+}
+
+function report(r: int | Error): string {
+  if (r instanceof ParseError) return `parse error at ${r.position}: ${r.message}`
+  if (r instanceof Error) return `error: ${r.message}`
+  return `ok ${r}`
+}
+
+export function main() {
+  for (const input of ["42", "", "4x2", "250"]) println(report(percent(input)))
+
+  // An Error value can be checked for its class.
+  const e: Error = new RangeError(7)
+  if (e instanceof RangeError) println(e.value, e.message)
+  println(e instanceof ParseError)
+}
