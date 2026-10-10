@@ -59,6 +59,12 @@ void *ore_rt_alloc(i64 size) {
   return p;
 }
 
+void *ore_rt_box_copy(void *p, i64 size) {
+  void *box = ore_rt_alloc(size);
+  memcpy(box, p, (size_t)size);
+  return box;
+}
+
 /** Memory that never holds pointers, so the GC does not scan it. Not zeroed. */
 static void *alloc_atomic(i64 size) {
   void *p = GC_malloc_atomic(size > 0 ? (size_t)size : 1);

@@ -255,7 +255,7 @@ export function typeKey(type: Type): string {
 
 /** Whether values of a type are references that can be null without a tag. */
 export function isReference(type: Type): boolean {
-  return type.kind === "struct" || type.kind === "array" || type.kind === "interface" || type.kind === "string" || type.kind === "map"
+  return ["struct", "array", "interface", "string", "map", "func"].includes(type.kind)
 }
 
 /** Whether values of a type are strings: `string` or a string literal type. */

@@ -23,6 +23,7 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   // Unions hold structs only by pointer, so they come before struct definitions.
   for (const u of module.unions) if (unionRepr(u).k === "tagged") out.push(...emitUnion(u))
   for (const s of module.structs) out.push(emitStruct(s))
+  for (const func of module.functions) if (func.captures?.length) out.push(emitEnv(func))
   for (const func of module.functions) out.push(`static ${signature(func)};`)
   for (const itab of module.itabs) out.push(emitItab(itab))
   out.push("")
@@ -39,9 +40,51 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
 
 const frame = "ore_frame_"
 
+/** The function being emitted; decides how locals are accessed. */
+let current: ir.Func | undefined
+
+/** Whether a local lives in a heap box: captured by a closure and assigned after its declaration. */
+function boxed(local: ir.Local): boolean {
+  return local.captured === true && local.assigned === true
+}
+
+/** C for the value of a local: a variable, a box, or a capture in the closure's environment. */
+function access(local: ir.Local): string {
+  if (current?.captures?.includes(local)) return boxed(local) ? `(*ore_env->c${local.id})` : `ore_env->c${local.id}`
+  return boxed(local) ? `(*${localName(local)})` : localName(local)
+}
+
+/** C declaring a local with an initial value (zeroed without one), in a box if needed. */
+function declare(local: ir.Local, init: string | undefined): string {
+  const t = cType(local.type)
+  if (!boxed(local)) return `${t} ${localName(local)} = ${init ?? `(${t}){0}`};`
+  // The box exists before the value is computed, so a closure in it can capture itself.
+  const box = `${t} *${localName(local)} = ore_rt_alloc(sizeof(${t}));`
+  return init === undefined ? box : `${box} *${localName(local)} = ${init};`
+}
+
+/** The box of a captured local, as seen from the current function. */
+function boxOf(local: ir.Local): string {
+  return current?.captures?.includes(local) ? `ore_env->c${local.id}` : localName(local)
+}
+
+function envName(func: ir.Func): string {
+  return `${func.name}_env`
+}
+
+/** The environment of a closure: boxes of captured locals that change, values of the others. */
+function emitEnv(func: ir.Func): string {
+  const fields = func.captures!.map((c) => `${cType(c.type)}${boxed(c) ? " *" : " "}c${c.id};`)
+  return `typedef struct { ${fields.join(" ")} } ${envName(func)};`
+}
+
 function emitFunction(ctx: Context): string {
   const { func } = ctx
+  current = func
   const lines = func.body.body.map((s) => emitLine(s, 0, ctx))
+  // Parameters captured and assigned by closures move into boxes.
+  for (const p of [...func.params].reverse()) if (boxed(p)) lines.unshift(`  ${declare(p, `${localName(p)}_arg`)}`)
+  if (func.captures) lines.unshift(`  ${func.captures.length > 0 ? `${envName(func)} *ore_env = env_;` : "(void)env_;"}`)
   // Methods take `this` untyped so that interface tables can call them uniformly.
   if (func.receiver) lines.unshift(`  ${cType(func.receiver.type)} ${localName(func.receiver)} = self_;`)
   if (ctx.debug) {
@@ -86,6 +129,7 @@ function emitUnion(u: UnionType): string[] {
 /** C equality of two values of a non-union type, as `===`. */
 function equals(a: string, b: string, type: Type): string {
   if (isStringLike(type)) return `ore_rt_str_eq(${a}, ${b})`
+  if (type.kind === "func") return `(${a}.fn == ${b}.fn && ${a}.env == ${b}.env)`
   if (type.kind === "interface") return `(${a}.data == ${b}.data)`
   return `(${a} == ${b})`
 }
@@ -122,12 +166,14 @@ function inject(u: UnionType, i: number, p: string): string {
 
 function nullRef(base: Type): string {
   if (base.kind === "interface") return "((ore_iface){0})"
+  if (base.kind === "func") return "((ore_closure){0})"
   if (base.kind === "string") return "((ore_string){0})"
   return `((${cType(base)})0)`
 }
 
 function isNullRef(v: string, base: Type): string {
   if (base.kind === "interface") return `(${v}.data == 0)`
+  if (base.kind === "func") return `(${v}.fn == 0)`
   if (base.kind === "string") return `(${v}.ptr == 0)`
   return `(${v} == 0)`
 }
@@ -186,8 +232,9 @@ function typeId(s: ir.StructType): number {
 }
 
 function signature(func: ir.Func): string {
-  const list = func.params.map((p) => `${cType(p.type)} ${localName(p)}`)
+  const list = func.params.map((p) => `${cType(p.type)} ${localName(p)}${boxed(p) ? "_arg" : ""}`)
   if (func.receiver) list.unshift("void *self_")
+  if (func.captures) list.unshift("void *env_")
   const params = list.length === 0 ? "void" : list.join(", ")
   return `${cType(func.type.result)} ${func.name}(${params})`
 }
@@ -219,10 +266,10 @@ export function cType(type: Type): string {
       return "ore_string"
     case "map":
       return "ore_map *"
+    case "func":
+      return "ore_closure"
     case "null":
       return "void *"
-    case "func":
-      throw new Error("function types are not supported by the C backend yet")
   }
 }
 
@@ -325,7 +372,7 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
     case "block":
       return emitBlock(stmt, depth, ctx)
     case "let":
-      return `${cType(stmt.local.type)} ${localName(stmt.local)} = ${emitExpr(stmt.init)};`
+      return declare(stmt.local, stmt.init ? emitExpr(stmt.init) : undefined)
     case "expr":
       return `${emitExpr(stmt.expr)};`
     case "if": {
@@ -342,13 +389,14 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
       if (stmt.condAfter) return `do ${body} while (${emitExpr(stmt.cond!)});${after}`
       const cond = stmt.cond ? emitExpr(stmt.cond) : ""
-      const update = stmt.update ? emitExpr(stmt.update) : ""
+      // Captured `for (let ...)` variables get a fresh copy for each iteration, before the update.
+      const copies = (stmt.perIteration ?? []).filter(boxed).map((l) => `${localName(l)} = ore_rt_box_copy(${localName(l)}, sizeof(${cType(l.type)}))`)
+      const update = [...copies, ...(stmt.update ? [emitExpr(stmt.update)] : [])].join(", ")
       return `for (; ${cond}; ${update}) ${body}${after}`
     }
     case "for-of": {
       const lines = (stmt.body.k === "block" ? stmt.body.body : [stmt.body]).map((s) => emitLine(s, depth + 1, ctx))
       if (stmt.labeled) lines.push(`${indent(depth + 2)}continue_${stmt.id}:;`)
-      const name = localName(stmt.local)
       const elem = cType(stmt.local.type)
       const it = temp()
       const i = temp()
@@ -356,15 +404,15 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       let first: string
       if (stmt.iterable.type.kind === "string") {
         head = `ore_string ${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}.len;)`
-        first = `${elem} ${name} = ore_rt_str_decode(${it}, &${i});`
+        first = declare(stmt.local, `ore_rt_str_decode(${it}, &${i})`)
       } else if (stmt.iterable.type.kind === "map") {
         // Entries in insertion order, skipping deleted ones.
         const value = stmt.value!
         head = `ore_map *${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}->count; ${i}++)`
-        first = `if (!ore_rt_map_live(${it}, ${i})) continue; ${elem} ${name} = *(${elem} *)ore_rt_map_key(${it}, ${i}); ${cType(value.type)} ${localName(value)} = *(${cType(value.type)} *)ore_rt_map_value(${it}, ${i});`
+        first = `if (!ore_rt_map_live(${it}, ${i})) continue; ${declare(stmt.local, `*(${elem} *)ore_rt_map_key(${it}, ${i})`)} ${declare(value, `*(${cType(value.type)} *)ore_rt_map_value(${it}, ${i})`)}`
       } else {
         head = `ore_array *${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}->len; ${i}++)`
-        first = `${elem} ${name} = ((${elem} *)${it}->data)[${i}];`
+        first = declare(stmt.local, `((${elem} *)${it}->data)[${i}]`)
       }
       const body = [`${indent(depth + 2)}${first}`, ...lines].join("\n")
       const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
@@ -421,12 +469,12 @@ function emitExpr(expr: ir.Expr): string {
     case "string":
       return `ORE_STR(${stringLiteral(expr.value)})`
     case "local":
-      return localName(expr.local)
+      return access(expr.local)
     case "assign":
       return emitAssign(expr)
     case "incdec": {
       if (expr.target.k === "local") {
-        const name = localName(expr.target.local)
+        const name = access(expr.target.local)
         return expr.prefix ? `(${expr.op}${name})` : `(${name}${expr.op})`
       }
       const p = temp()
@@ -440,6 +488,10 @@ function emitExpr(expr: ir.Expr): string {
         if (expr.left.type.kind === "string" && expr.op !== "===" && expr.op !== "!==") return `(ore_rt_str_cmp(${l}, ${r}) ${expr.op} 0)`
         // Interface values are equal when they refer to the same object.
         if (expr.left.type.kind === "interface") return `((${l}).data ${cCompare[expr.op]} (${r}).data)`
+        if (expr.left.type.kind === "func") {
+          const eq = equals(`(${l})`, `(${r})`, expr.left.type)
+          return expr.op === "===" ? eq : `(!${eq})`
+        }
         if (isStringLike(expr.left.type)) {
           const eq = `ore_rt_str_eq(${l}, ${r})`
           return expr.op === "===" ? eq : `(!${eq})`
@@ -540,7 +592,7 @@ function emitExpr(expr: ir.Expr): string {
       // `value?.body`: null when value is null, else body with the value bound.
       const from = expr.value.type as UnionType
       const t = temp()
-      const bind = `${cType(expr.binding.type)} ${localName(expr.binding)} = ${recast(t, from, expr.binding.type)};`
+      const bind = declare(expr.binding, recast(t, from, expr.binding.type))
       if (expr.type.kind !== "union") {
         return `({ ${cType(from)} ${t} = ${emitExpr(expr.value)}; if (!${isNullValue(from, t)}) { ${bind} ${emitExpr(expr.body)}; } })`
       }
@@ -591,6 +643,25 @@ function emitExpr(expr: ir.Expr): string {
     }
     case "map":
       return emitMapOp(expr)
+    case "func-ref":
+      return `((ore_closure){(void *)${thunk(expr.func)}, 0})`
+    case "closure": {
+      const captures = expr.func.captures ?? []
+      if (captures.length === 0) return `((ore_closure){(void *)${expr.func.name}, 0})`
+      const e = temp()
+      const env = envName(expr.func)
+      const stores = captures.map((c) => `${e}->c${c.id} = ${boxed(c) ? boxOf(c) : access(c)};`).join(" ")
+      return `({ ${env} *${e} = ore_rt_alloc(sizeof(${env})); ${stores} (ore_closure){(void *)${expr.func.name}, ${e}}; })`
+    }
+    case "call-value": {
+      // The callee is evaluated before the arguments.
+      const f = temp()
+      const type = expr.callee.type as ir.FuncType
+      const fn = `(${cType(type.result)} (*)(${["void *", ...type.params.map(cType)].join(", ")}))${f}.fn`
+      return `({ ore_closure ${f} = ${emitExpr(expr.callee)}; ${inOrder(expr.args, (args) => `(${fn})(${[`${f}.env`, ...args].join(", ")})`)}; })`
+    }
+    case "bound-method":
+      return emitBound(expr)
     case "coalesce": {
       const from = expr.value.type as UnionType
       const t = temp()
@@ -665,7 +736,7 @@ function placePointer(target: Exclude<ir.LValue, { k: "local" }>, type: Type, p:
 
 function emitAssign(expr: ir.Assign): string {
   const target = expr.target
-  if (target.k === "local") return `(${localName(target.local)} = ${emitExpr(expr.value)})`
+  if (target.k === "local") return `(${access(target.local)} = ${emitExpr(expr.value)})`
   // The parts of the place and the value are evaluated before the pointer is
   // taken, since evaluating the value may grow an array.
   const t = cType(expr.type)
@@ -680,6 +751,41 @@ function emitAssign(expr: ir.Assign): string {
       ? { k: "concat", type: types.string, parts: [current, right] }
       : { k: "arith", type: expr.type as ir.IntType | ir.FloatType, op: expr.op, left: current, right }
   return `({ ${place} *${p} = ${emitExpr(combined)}; })`
+}
+
+/** A function taking an unused environment that calls a top-level function, for function values. */
+function thunk(func: ir.Func): string {
+  const name = `${func.name}_thunk`
+  if (!helpers.has(name)) {
+    const params = func.params.map((p, i) => `${cType(p.type)} a${i}`)
+    const args = func.params.map((_, i) => `a${i}`).join(", ")
+    const call = `${func.name}(${args})`
+    const body = func.type.result.kind === "void" || func.type.result.kind === "never" ? `${call};` : `return ${call};`
+    helpers.set(name, `static ${cType(func.type.result)} ${name}(${["void *env_", ...params].join(", ")}) { (void)env_; ${body} }`)
+  }
+  return name
+}
+
+/** A method bound to its receiver: the environment holds the receiver, a thunk calls the method. */
+function emitBound(expr: ir.BoundMethod): string {
+  const type = expr.type
+  const name = expr.func ? `${expr.func.name}_bound` : `ore_iface_bound_${ir.typeKey(type).replace(/[^A-Za-z0-9]/g, "_")}_${expr.index}`
+  const receiverType = cType(expr.receiver.type)
+  if (!helpers.has(name)) {
+    const params = type.params.map((p, i) => `${cType(p)} a${i}`)
+    const args = type.params.map((_, i) => `a${i}`)
+    let call: string
+    if (expr.func) call = `${expr.func.name}(${["*(void **)env_", ...args].join(", ")})`
+    else {
+      const fn = `(${cType(type.result)} (*)(${["void *", ...type.params.map(cType)].join(", ")}))self.itab[${expr.index! + 1}]`
+      call = `(${fn})(${["self.data", ...args].join(", ")})`
+    }
+    const prelude = expr.func ? "" : "ore_iface self = *(ore_iface *)env_; "
+    const body = type.result.kind === "void" || type.result.kind === "never" ? `${call};` : `return ${call};`
+    helpers.set(name, `static ${cType(type.result)} ${name}(${["void *env_", ...params].join(", ")}) { ${prelude}${body} }`)
+  }
+  const e = temp()
+  return `({ ${receiverType} *${e} = ore_rt_alloc(sizeof(${receiverType})); *${e} = ${emitExpr(expr.receiver)}; (ore_closure){(void *)${name}, ${e}}; })`
 }
 
 function emitMapOp(expr: ir.MapOp): string {
@@ -797,10 +903,15 @@ function effects(e: ir.Expr): boolean {
     case "is":
       return effects(e.value)
     case "null":
+    case "func-ref":
+    case "closure":
       return false
+    case "bound-method":
+      return effects(e.receiver)
     case "iface-call":
     case "downcast":
     case "map":
+    case "call-value":
     case "recast":
     case "optional":
     case "coalesce":

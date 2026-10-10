@@ -37,10 +37,28 @@ export class Scope {
   private readonly values = new Map<string, ValueSymbol>()
   private readonly types = new Map<string, TypeSymbol>()
 
-  constructor(readonly parent?: Scope) {}
+  /**
+   * @param closure set on the outermost scope of a closure body: names found
+   * beyond it are captured by that closure.
+   */
+  constructor(
+    readonly parent?: Scope,
+    readonly closure?: Func,
+  ) {}
 
   lookupValue(name: string): ValueSymbol | undefined {
     return this.values.get(name) ?? this.parent?.lookupValue(name)
+  }
+
+  /** Looks up a value and the closures between this scope and its declaration, innermost first. */
+  lookupCapturing(name: string): { symbol: ValueSymbol; closures: Func[] } | undefined {
+    const closures: Func[] = []
+    for (let scope: Scope | undefined = this; scope; scope = scope.parent) {
+      const symbol = scope.values.get(name)
+      if (symbol) return { symbol, closures }
+      if (scope.closure) closures.push(scope.closure)
+    }
+    return undefined
   }
 
   lookupType(name: string): TypeSymbol | undefined {

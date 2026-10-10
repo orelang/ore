@@ -38,6 +38,11 @@ export interface Func {
   params: Local[]
   /** `this` of a method, passed before the parameters. */
   receiver?: Local
+  /**
+   * For a closure: the locals of enclosing functions it uses, in the order of
+   * its environment. The closure is called with the environment first.
+   */
+  captures?: Local[]
   body: Block
   exported: boolean
 }
@@ -47,6 +52,10 @@ export interface Local {
   name: string
   type: Type
   mutable: boolean
+  /** Referenced by a closure other than the function that declares it. */
+  captured?: boolean
+  /** Assigned after its declaration. A captured local that is assigned lives in a heap box. */
+  assigned?: boolean
 }
 
 interface StmtBase {
@@ -64,7 +73,8 @@ export interface Block extends StmtBase {
 export interface LetStmt extends StmtBase {
   k: "let"
   local: Local
-  init: Expr
+  /** Without an initializer, the local starts zeroed; used for hoisted functions. */
+  init?: Expr
 }
 
 export interface ExprStmt extends StmtBase {
@@ -90,6 +100,11 @@ export interface LoopStmt extends StmtBase {
   id: number
   /** Set when a labeled `break` / `continue` targets this loop. */
   labeled: boolean
+  /**
+   * Variables declared by `for (let ...)`: each iteration has its own copy,
+   * which matters when closures capture them.
+   */
+  perIteration?: Local[]
   cond?: Expr
   condAfter: boolean
   update?: Expr
@@ -190,6 +205,10 @@ export type Expr =
   | Is
   | Downcast
   | MapOp
+  | FuncRef
+  | Closure
+  | CallValue
+  | BoundMethod
 
 export interface IntLit {
   k: "int"
@@ -529,4 +548,38 @@ export interface MapOp {
   map?: Expr
   key?: Expr
   value?: Expr
+}
+
+/** A top-level function used as a value. */
+export interface FuncRef {
+  k: "func-ref"
+  type: FuncType
+  func: Func
+}
+
+/** Creates a closure of `func`, capturing `func.captures` from the current function. */
+export interface Closure {
+  k: "closure"
+  type: FuncType
+  func: Func
+}
+
+/** Calls a function value. */
+export interface CallValue {
+  k: "call-value"
+  type: Type
+  callee: Expr
+  args: Expr[]
+}
+
+/**
+ * A method bound to its receiver as a function value: a class method
+ * (`func`), or method `index` of an interface value.
+ */
+export interface BoundMethod {
+  k: "bound-method"
+  type: FuncType
+  receiver: Expr
+  func?: Func
+  index?: number
 }

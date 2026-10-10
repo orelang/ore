@@ -1,0 +1,28 @@
+function apply(f: (x: int) => int): int {
+  return f(1)
+}
+
+class Box {
+  value = 1
+  get(): () => int {
+    return function () {
+      return this.value // error: 'this' can only be used inside a class.
+    }
+  }
+}
+
+export function main() {
+  const f = (x) => x // error: Parameter 'x' needs a type annotation here.
+  apply((a, b) => a) // error: This function takes 2 parameter(s), but 1 are expected.
+  apply((x: string) => 1) // error: Parameter type 'string' does not match the expected 'i64'.
+  apply((x) => "no") // error: Type 'string' is not assignable to type 'i64'.
+  const n = 5
+  n() // error: 'n' is not a function.
+  const g = (x: int): int => x
+  g(1, 2) // error: This function expects 1 argument(s), got 2.
+  const h: (s: string) => void = g // error: Type '(i64) => i64' is not assignable to type '(string) => void'.
+  helper()
+  function helper(): int { // error: must return a value of type 'i64' on every path
+    if (n > 1) return 1
+  }
+}

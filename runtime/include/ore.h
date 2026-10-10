@@ -29,6 +29,18 @@ typedef struct {
 
 #define ORE_STR(lit) ((ore_string){(const u8 *)(lit), (i64)(sizeof(lit) - 1)})
 
+/**
+ * A function value: code and the environment it was created in. The code
+ * takes the environment as its first argument. A null function has no code.
+ */
+typedef struct {
+  void *fn;
+  void *env;
+} ore_closure;
+
+/** A new heap box holding a copy of the `size` bytes at `p`; used for per-iteration loop variables. */
+void *ore_rt_box_copy(void *p, i64 size);
+
 // Entry point emitted by the compiler; calls the user's `main`.
 void ore_entry(void);
 

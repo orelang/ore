@@ -53,7 +53,12 @@ export function check(source: Source, options: CheckOptions = { entry: true }): 
 }
 
 interface FuncContext {
-  result: Type
+  /** The return type; `undefined` while it is inferred from return statements of a closure. */
+  result: Type | undefined
+  /** The closure being checked, if any. */
+  closure?: ir.Func
+  /** Closures between here and the method that owns `this`, which capture it. */
+  thisCaptures?: ir.Func[]
   /** `this` inside a method or constructor. */
   this?: ir.Local
   /** The class whose method or constructor is being checked. */
@@ -132,6 +137,7 @@ class Checker {
   /** The generic and type arguments of each instance type. */
   private readonly instanceOf = new Map<Type, { generic: Generic; args: Type[] }>()
   private instanceCount = 0
+  private nextLambda = 0
   /** The generic instance being checked, named in its diagnostics. */
   private context: string | undefined
   /** Narrowing facts by flow scope, innermost last. */
@@ -983,6 +989,18 @@ class Checker {
     }
     if (ts.isParenthesizedTypeNode(node)) return this.resolveType(node.type, scope)
     if (ts.isTypeLiteralNode(node)) return this.resolveTypeLiteral(node, scope)
+    if (ts.isFunctionTypeNode(node)) {
+      if (node.typeParameters) return this.error(node.typeParameters[0]!, "Generic function types are not supported."), undefined
+      const params: Type[] = []
+      for (const p of node.parameters) {
+        if (!p.type || p.dotDotDotToken || p.questionToken) return this.error(p, "Parameters of function types need a type and cannot be optional or rest parameters."), undefined
+        const t = this.resolveValueType(p.type, scope)
+        if (!t) return undefined
+        params.push(t)
+      }
+      const result = this.resolveType(node.type, scope)
+      return result && { kind: "func", params, result }
+    }
     this.error(node, "This kind of type is not supported yet.")
     return undefined
   }
@@ -1094,9 +1112,59 @@ class Checker {
     const inner = new Scope(scope)
     const body: ir.Stmt[] = []
     this.withFacts([], () => {
-      for (const stmt of block.statements) this.checkStmt(stmt, inner, body)
+      // Function declarations are hoisted, as in JavaScript: they exist from the
+      // start of the block, can call each other, and see every variable of the
+      // block. Their signatures are declared first and their bodies checked last.
+      const nested = block.statements.filter(ts.isFunctionDeclaration)
+      const locals = nested.map((decl) => this.declareNestedFunction(decl, inner))
+      const statements: ir.Stmt[] = []
+      for (const stmt of block.statements) if (!ts.isFunctionDeclaration(stmt)) this.checkStmt(stmt, inner, statements)
+
+      const creations: ir.Stmt[] = []
+      const captured = new Set<ir.Local>()
+      nested.forEach((decl, i) => {
+        const local = locals[i]
+        if (!local) return
+        const closure = this.checkClosure(decl, inner, local.type)
+        if (closure.k !== "typed") return
+        for (const c of (closure.expr as ir.Closure).func.captures ?? []) captured.add(c)
+        const assign: ir.Expr = { k: "assign", type: local.type, target: { k: "local", local }, value: closure.expr }
+        creations.push({ k: "expr", expr: assign, line: this.line(decl) })
+      })
+      // Variables of this block used by hoisted functions get their boxes at the
+      // start of the block; their declarations become assignments.
+      const boxes: ir.Stmt[] = []
+      statements.forEach((s, i) => {
+        if (s.k !== "let" || !captured.has(s.local)) return
+        s.local.assigned = true
+        boxes.push({ k: "let", local: s.local, line: s.line })
+        statements[i] = { k: "expr", expr: { k: "assign", type: s.local.type, target: { k: "local", local: s.local }, value: s.init! }, line: s.line }
+      })
+      for (const [i, local] of locals.entries()) if (local) body.push({ k: "let", local, line: this.line(nested[i]!) })
+      body.push(...boxes, ...creations, ...statements)
     })
     return { k: "block", body }
+  }
+
+  /** Declares a local for a nested function declaration, typed by its annotations. */
+  private declareNestedFunction(decl: ts.FunctionDeclaration, scope: Scope): ir.Local | undefined {
+    if (!decl.name || !decl.body) return this.error(decl, "A nested function needs a name and a body."), undefined
+    if (decl.typeParameters) return this.error(decl.typeParameters[0]!, "Nested generic functions are not supported."), undefined
+    const params: Type[] = []
+    for (const p of decl.parameters) {
+      if (!p.type) return this.error(p, `Parameter '${p.name.getText()}' must have a type annotation.`), undefined
+      const t = this.resolveValueType(p.type, scope)
+      if (!t) return undefined
+      params.push(t)
+    }
+    const result = decl.type ? this.resolveType(decl.type, scope) : types.void
+    if (!result) return undefined
+    const local = this.newLocal(decl.name.text, { kind: "func", params, result }, false)
+    // Assigned once its closure exists; a recursive function captures itself through a box.
+    local.assigned = true
+    if (!scope.declareValue(decl.name.text, { k: "local", local, decl })) this.error(decl.name, `Cannot redeclare '${decl.name.text}' in the same scope.`)
+    this.info.types.set(decl.name, local.type)
+    return local
   }
 
   /** Checks a statement whose own scope ends with it (a branch or loop body). */
@@ -1168,7 +1236,8 @@ class Checker {
     } else if (ts.isEmptyStatement(stmt)) {
       // nothing
     } else if (ts.isFunctionDeclaration(stmt)) {
-      this.error(stmt, "Nested functions are not supported yet.")
+      // A function declaration outside a block body, such as `if (x) function f() {}`.
+      this.error(stmt, "A function declaration must be at the top level or directly in a block.")
     } else if (ts.isThrowStatement(stmt) || ts.isTryStatement(stmt)) {
       this.error(stmt, "Exceptions are not supported in Ore. Return an error value, or call panic() for unrecoverable failures.")
     } else if (ts.isSwitchStatement(stmt)) {
@@ -1267,6 +1336,7 @@ class Checker {
     const loop: ir.LoopStmt = Object.assign(shared, {
       k: "loop" as const,
       id,
+      perIteration: prelude.flatMap((s) => (s.k === "let" && s.local.mutable ? [s.local] : [])),
       cond: cond && !isTrue(cond) ? cond : undefined,
       condAfter: false,
       update,
@@ -1395,6 +1465,18 @@ class Checker {
       if (stmt.expression) this.error(stmt.expression, "A constructor cannot return a value.")
       return { k: "return", value: { k: "local", type: fn.this!.type, local: fn.this! } }
     }
+    if (fn.result === undefined) {
+      // A closure without a return type takes the type of its first return.
+      if (!stmt.expression) {
+        fn.result = types.void
+        return { k: "return" }
+      }
+      const value = this.checkExpr(stmt.expression, scope)
+      if (value.k === "error") return { k: "return" }
+      const expr = this.toDefault(value, stmt.expression)
+      fn.result = expr.type
+      return { k: "return", value: expr }
+    }
     const result = fn.result
     if (!stmt.expression) {
       if (result.kind !== "void") this.error(stmt, `A return value of type '${typeToString(result)}' is required.`)
@@ -1410,6 +1492,102 @@ class Checker {
 
   private checkCondition(node: ts.Expression, scope: Scope): ir.Expr {
     return this.coerce(this.checkExpr(node, scope), types.bool, node)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Closures
+
+  /** Records that closures, innermost first, capture a local of an enclosing function. */
+  private capture(local: ir.Local, closures: ir.Func[]) {
+    if (closures.length === 0) return
+    local.captured = true
+    for (const f of closures) if (!f.captures!.includes(local)) f.captures!.push(local)
+  }
+
+  /**
+   * Checks an arrow function, function expression or nested function into a
+   * closure. Parameter and return types come from annotations or from the
+   * expected function type; otherwise the return type is inferred.
+   */
+  private checkClosure(node: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration, outer: Scope, expected?: Type): Operand {
+    if (node.typeParameters) return this.fail(node.typeParameters[0]!, "Generic closures are not supported.")
+    if (node.asteriskToken) return this.fail(node.asteriskToken, "Generators are not supported in Ore.")
+    if (node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return this.fail(node, "'async' is not supported in Ore. Use spawn() and channels.")
+    // The expected function type, also from a union such as `(() => void) | null`.
+    const funcs = expected ? membersOf(expected).filter((m): m is FuncType => m.kind === "func") : []
+    const want = funcs.length === 1 ? funcs[0] : undefined
+    if (want && node.parameters.length > want.params.length) {
+      return this.fail(node, `This function takes ${node.parameters.length} parameter(s), but ${want.params.length} are expected.`)
+    }
+    const params: ir.Local[] = []
+    for (const [i, p] of node.parameters.entries()) {
+      if (!ts.isIdentifier(p.name)) return this.fail(p.name, "Destructuring parameters are not supported yet.")
+      if (p.dotDotDotToken || p.questionToken || p.initializer) return this.fail(p, "Optional, default and rest parameters are not supported yet.")
+      const type = p.type ? this.resolveValueType(p.type, outer) : want?.params[i]
+      if (!type) return this.fail(p.name, `Parameter '${p.name.text}' needs a type annotation here.`)
+      if (p.type && want && !sameType(type, want.params[i]!)) {
+        return this.fail(p.type, `Parameter type '${typeToString(type)}' does not match the expected '${typeToString(want.params[i]!)}'.`)
+      }
+      this.info.types.set(p.name, type)
+      params.push(this.newLocal(p.name.text, type, true))
+    }
+    // An unused trailing parameter of the expected type is still passed.
+    for (let i = params.length; i < (want?.params.length ?? 0); i++) params.push(this.newLocal(`_${i}`, want!.params[i]!, false))
+
+    const annotated = node.type ? this.resolveType(node.type, outer) : undefined
+    const outerFn = this.fn
+    const name = ts.isFunctionDeclaration(node) ? node.name!.text : "<lambda>"
+    const func: ir.Func = {
+      name: `ore_lambda_${this.nextLambda++}`,
+      sourceName: outerFn?.closure ? `${outerFn.closure.sourceName}.${name}` : name,
+      line: this.line(node),
+      type: { kind: "func", params: params.map((p) => p.type), result: types.void },
+      params,
+      body: { k: "block", body: [] },
+      exported: false,
+      captures: [],
+    }
+    this.module.functions.push(func)
+    const scope = this.paramScope(node.parameters, params, new Scope(outer, func))
+
+    // Arrow functions keep the `this` of the enclosing method; function expressions have none.
+    const isArrow = ts.isArrowFunction(node)
+    const savedFn = this.fn
+    const savedFacts = this.facts
+    this.facts = [new Map()]
+    this.fn = {
+      result: annotated ?? (want && want.result.kind !== "void" ? want.result : want ? types.void : undefined),
+      closure: func,
+      this: isArrow ? outerFn?.this : undefined,
+      thisCaptures: isArrow ? [func, ...(outerFn?.thisCaptures ?? [])] : [],
+      cls: isArrow ? outerFn?.cls : undefined,
+      loops: [],
+      nextLoopId: 0,
+    }
+    try {
+      const body = node.body!
+      if (ts.isBlock(body)) {
+        func.body = this.checkBlock(body, scope)
+      } else {
+        // An expression body returns its value, or is evaluated for a void result.
+        const value = this.checkExpr(body, scope, this.fn.result)
+        if (value.k === "error") return errorOperand
+        if (this.fn.result?.kind === "void") {
+          func.body = { k: "block", body: value.k === "typed" ? [{ k: "expr", expr: value.expr }] : [] }
+        } else {
+          const expr = this.fn.result ? this.coerce(value, this.fn.result, body) : this.toDefault(value, body)
+          this.fn.result ??= expr.type
+          func.body = { k: "block", body: [{ k: "return", value: expr }] }
+        }
+      }
+      const result = this.fn.result ?? types.void
+      func.type = { kind: "func", params: func.type.params, result }
+      this.checkReturns(func, node.type ?? node)
+    } finally {
+      this.fn = savedFn
+      this.facts = savedFacts
+    }
+    return typed({ k: "closure", type: func.type, func })
   }
 
   // ---------------------------------------------------------------------------
@@ -1606,6 +1784,7 @@ class Checker {
     if (node.kind === ts.SyntaxKind.ThisKeyword) {
       const self = this.fn?.this
       if (!self) return this.fail(node, this.fn?.fieldInit ? "Field initializers cannot use 'this'." : "'this' can only be used inside a class.")
+      this.capture(self, this.fn?.thisCaptures ?? [])
       return typed({ k: "local", type: self.type, local: self })
     }
     if (ts.isNewExpression(node)) return this.checkNew(node, scope, expected)
@@ -1625,6 +1804,7 @@ class Checker {
     if (ts.isElementAccessExpression(node)) return this.checkElement(node, scope)
     if (node.kind === ts.SyntaxKind.NullKeyword) return typed(nullOperand)
     if (ts.isNonNullExpression(node)) return this.checkNonNull(node, scope)
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return this.checkClosure(node, scope, expected)
     if (ts.isTypeOfExpression(node)) {
       const value = this.checkExpr(node.expression, scope)
       if (value.k === "error") return value
@@ -1636,7 +1816,9 @@ class Checker {
   }
 
   private checkIdentifier(node: ts.Identifier, scope: Scope): Operand {
-    const symbol = scope.lookupValue(node.text)
+    const found = scope.lookupCapturing(node.text)
+    const symbol = found?.symbol
+    if (symbol?.k === "local") this.capture(symbol.local, found!.closures)
     if (!symbol && node.text === "undefined") return this.fail(node, "'undefined' is not supported in Ore. Use 'null'.")
     if (!symbol) return this.fail(node, unknownName(node.text))
     this.info.definitions.set(node, symbol.decl)
@@ -1651,6 +1833,8 @@ class Checker {
         return this.fail(node, `'${node.text}' is a generic function and cannot be used as a value.`)
       case "namespace":
         return this.fail(node, `'${node.text}' is a namespace; call its functions, e.g. '${node.text}.${[...symbol.members.keys()][0]}(...)'.`)
+      case "func":
+        return typed({ k: "func-ref", type: symbol.func.type, func: symbol.func })
       default:
         return this.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)
     }
@@ -1758,7 +1942,7 @@ class Checker {
       return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal"].includes(type.kind)
+    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal", "func"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
@@ -1853,11 +2037,14 @@ class Checker {
       return { lvalue: { k: "field", object, name }, type: field.type }
     }
     if (!ts.isIdentifier(node)) return this.error(node, "Only variables, fields and array elements can be assigned to."), undefined
-    const symbol = scope.lookupValue(node.text)
+    const found = scope.lookupCapturing(node.text)
+    const symbol = found?.symbol
     if (!symbol) return this.error(node, `Cannot find name '${node.text}'.`), undefined
     this.info.definitions.set(node, symbol.decl)
     if (symbol.k !== "local") return this.error(node, `Cannot assign to '${node.text}' because it is not a variable.`), undefined
     if (!symbol.local.mutable) return this.error(node, `Cannot assign to '${node.text}' because it is a constant.`), undefined
+    this.capture(symbol.local, found!.closures)
+    symbol.local.assigned = true
     this.info.types.set(node, symbol.local.type)
     return { lvalue: { k: "local", local: symbol.local }, type: symbol.local.type }
   }
@@ -1917,7 +2104,12 @@ class Checker {
       return this.callFunc(func, node.arguments, node, scope, `Function '${generic.name}'`, undefined, call.operands.length > 0 ? call.operands : undefined)
     }
     if (node.typeArguments) return this.fail(node.typeArguments[0]!, "Type arguments are only allowed for generic functions.")
-    if (node.questionDotToken && !ts.isPropertyAccessExpression(callee)) return this.fail(node, "Optional calls of functions are not supported.")
+    if (node.questionDotToken && !ts.isPropertyAccessExpression(callee)) {
+      // `f?.(...)` calls a function value unless it is null.
+      const value = this.checkExpr(callee, scope)
+      if (value.k !== "typed") return value
+      return this.optional(value.expr, node, (f) => this.callValue(typed(f), node, scope))
+    }
     let symbol: ValueSymbol | undefined
     let name: string
     let nameNode: ts.Node
@@ -1932,11 +2124,13 @@ class Checker {
       if (!symbol) return this.fail(callee.name, `'${ns.name}' has no member '${callee.name.text}'.`)
       if (ts.isIdentifier(callee.name)) this.info.definitions.set(callee.name, symbol.decl)
     } else {
-      if (!ts.isIdentifier(callee)) return this.fail(callee, "Only calls of named functions are supported yet.")
+      // Anything but a name is a function value, such as `make()(1)` or `handlers[i](e)`.
+      if (!ts.isIdentifier(callee)) return this.callValue(this.checkExpr(callee, scope), node, scope)
       name = callee.text
       nameNode = callee
       symbol = scope.lookupValue(callee.text)
       if (!symbol) return this.fail(callee, unknownName(callee.text))
+      if (symbol.k === "local") return this.callValue(this.checkExpr(callee, scope), node, scope)
       this.info.definitions.set(callee, symbol.decl)
     }
     const args = node.arguments
@@ -1983,6 +2177,18 @@ class Checker {
       default:
         return this.fail(nameNode, `'${name}' is not a function.`)
     }
+  }
+
+  /** Calls a function value with arguments converted to its parameters. */
+  private callValue(callee: Operand, node: ts.CallExpression, scope: Scope): Operand {
+    if (callee.k !== "typed") return callee.k === "error" ? callee : this.fail(node.expression, "A constant is not a function.")
+    const type = callee.expr.type
+    if (type.kind !== "func") return this.fail(node.expression, `A value of type '${typeToString(type)}' is not a function.`)
+    const args = node.arguments
+    for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
+    if (args.length !== type.params.length) return this.fail(node, `This function expects ${type.params.length} argument(s), got ${args.length}.`)
+    const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope, type.params[i]), type.params[i]!, arg))
+    return typed({ k: "call-value", type: type.result, callee: callee.expr, args: values })
   }
 
   private checkNew(node: ts.NewExpression, scope: Scope, expected?: Type): Operand {
@@ -2212,14 +2418,18 @@ class Checker {
         if (!this.checkAccess(struct, field, name, node.name)) return errorOperand
         return typed({ k: "field", type: field.type, object: value, name })
       }
-      if (findMethod(struct, name)) return this.fail(node.name, `Method '${name}' must be called; method values are not supported yet.`)
+      const method = findMethod(struct, name)
+      if (method) {
+        if (!this.checkAccess(struct, method, name, node.name)) return errorOperand
+        return typed({ k: "bound-method", type: method.func.type, receiver: value, func: method.func })
+      }
     }
     if (value.type.kind === "interface") {
       const index = value.type.members.findIndex((m) => m.name === name)
       const member = value.type.members[index]
       this.defineMember(node.name, value.type, name)
       if (member?.k === "field") return typed({ k: "iface-field", type: member.type, value, index })
-      if (member) return this.fail(node.name, `Method '${name}' must be called; method values are not supported yet.`)
+      if (member) return typed({ k: "bound-method", type: member.type, receiver: value, index })
     }
     if (value.type.kind === "union" && !canBeNull(value.type)) {
       // A field that every member has, such as the discriminant of a tagged union.
@@ -2354,7 +2564,9 @@ class Checker {
         if (!this.checkAccess(type, method, name, callee.name)) return errorOperand
         return this.callFunc(method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
       }
-      if (findField(type, name)) return this.fail(callee.name, `Field '${name}' is not a method.`)
+      const field = findField(type, name)
+      if (field?.type.kind === "func") return this.callValue(this.member(value, callee), node, scope)
+      if (field) return this.fail(callee.name, `Field '${name}' is not a method.`)
     }
     if (type.kind === "interface") {
       const index = type.members.findIndex((m) => m.name === name)
@@ -2367,6 +2579,7 @@ class Checker {
         const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope, params[i]), params[i]!, arg))
         return typed({ k: "iface-call", type: member.type.result, value, index, method: member.type, args: values })
       }
+      if (member?.type.kind === "func") return this.callValue(this.member(value, callee), node, scope)
       if (member) return this.fail(callee.name, `Field '${name}' is not a method.`)
     }
     if (type.kind === "map") {
