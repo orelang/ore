@@ -107,6 +107,7 @@ class Checker {
       let type: Type | undefined
       if (!p.type) this.error(p.name, `Parameter '${p.name.text}' must have a type annotation.`)
       else type = this.resolveValueType(p.type, scope)
+      if (type) this.info.types.set(p.name, type)
       params.push(this.newLocal(p.name.text, type ?? types.i64, true))
     }
 
