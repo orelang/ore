@@ -8,7 +8,7 @@ described here is either unsupported or follows TypeScript syntax rules.
 - Extension: `.ore`. Encoding: UTF-8.
 - Syntax is exactly the TypeScript syntax. Ore adds no new syntax; it only
   restricts it and assigns native semantics.
-- A file is a module. Imports and exports use ES module syntax.
+- A file is a module. Imports and exports use ES module syntax; see §8.
 
 ## 2. Program entry
 
@@ -110,6 +110,18 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `console.error(...values)` | values separated by spaces and a newline, to stderr |
 | `process.panic(message)` | aborts with the message and a stack trace (status 2) |
 | `process.exit(code)` | exits with a status code |
+| `process.args` | the command-line arguments after the program name |
+| `process.getenv(name)` | an environment variable, or `null` |
+| `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
+| `Math.abs(x)`, `Math.min(a, b)`, `Math.max(a, b)` | for any numeric type, keeping it |
+| `Math.random()` | a pseudo-random `f64` in [0, 1) |
+| `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
+| `fs.readFile(path)` | the file as a `string`, or an `Error` |
+| `fs.writeFile(path, data)` | `null`, or an `Error` |
+| `fs.exists(path)` | whether a file exists |
+| `Date.now()` | milliseconds since the Unix epoch |
+
+Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
 
 Printed values are numbers, `bool`, strings and unions of them (`null` prints
 as `null`). Floats are printed in the shortest form that round-trips, like
@@ -131,6 +143,12 @@ functions.
 - `<`, `<=`, `>`, `>=` compare strings byte-wise; `===` compares contents.
 - `for (const r of s)` iterates runes as `i32`. Invalid UTF-8 yields
   U+FFFD (65533) for each invalid byte.
+- Methods, as in JavaScript but on byte offsets: `indexOf(s, from?)`,
+  `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `split(sep)` (an empty
+  separator splits into UTF-8 characters), `trim`, `trimStart`, `trimEnd`,
+  `toUpperCase` and `toLowerCase` (ASCII letters), `replace` (the first
+  occurrence), `replaceAll`, `repeat(n)`, `padStart(n, pad?)`,
+  `padEnd(n, pad?)`, `substring(start, end?)`.
 
 ### 3.8 Arrays
 
@@ -344,6 +362,20 @@ panic: integer divide by zero
 
 Release builds (`--release`) keep no call stack information.
 
+### 3.22 External C functions
+
+`declare function name(params): result` at the top level of a module declares
+a C function named `name`. Parameters and results may be numbers, `bool`,
+`string` and `ptr`, an opaque pointer for handles. A `string` is passed as a
+NUL-terminated copy (`const char *`); a returned `const char *` is copied
+into an Ore string (NULL gives `""`). External functions cannot be used as
+values.
+
+In package.json, `"ore": { "link": [...], "sources": [...] }` adds libraries
+to link (`-l`) and C files, relative to the package, to compile into the
+program. This applies to every package of the program, including
+dependencies in `node_modules`.
+
 ## 4. Errors
 
 Errors are values. The built-in interface `Error` has a `message`; any class
@@ -412,3 +444,39 @@ use.
 | `map.keys()` | iterator | array |
 | `[10, 9, 1].sort()` | `[1, 10, 9]` (as strings) | `[1, 9, 10]` |
 | generic bodies | checked once | checked per instance |
+
+## 8. Modules and packages
+
+- Each `.ore` file is a module. `export` marks declarations visible to other
+  modules; everything else is private to its module. `export { a, b as c }`
+  exports declared or imported names, also from another module
+  (`export { x } from "./m"`). Default exports and `export *` are rejected.
+- `import { a, b as c } from "./m"` imports names; `import * as m from "./m"`
+  imports a module, used as `m.f()`, `m.value`, `m.Type` and `new m.Class()`.
+  Modules may import each other in cycles; top-level constants are evaluated
+  with imported modules first.
+- Specifiers resolve like Node: `./x` and `../x` to `x.ore` or
+  `x/index.ore`; a package name to `node_modules/<name>` in the directory of
+  the importing file or above, using its package.json `main` (or
+  `index.ore`); `name/sub/path` to a file of the package. `ore:` names
+  standard modules embedded in the compiler.
+- A project is an npm package: package.json `main` is the entry module, and
+  dependencies are installed by npm and locked in `package-lock.json`.
+
+## 9. Tests
+
+A test file `*.test.ore` imports from `"ore:test"`:
+
+```ts
+import { test, expect, fail } from "ore:test"
+
+test("adds", () => {
+  expect(add(1, 2)).toBe(3)
+})
+```
+
+Its top-level statements, including `const` declarations, form its `main`.
+A test fails when it panics, for example in a failed expectation
+(`toBe`, `notToBe`, `fail`); the other tests still run. `ore test` runs every
+test file below the given paths, skipping `node_modules`, and exits with
+status 1 if any test fails.
