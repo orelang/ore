@@ -1,0 +1,61 @@
+// Default, optional and rest parameters.
+
+function greet(name: string, greeting = "hello", times: int = 1): string {
+    return `${greeting}, ${name}`.repeat(times)
+}
+console.log(greet("Ada"))
+console.log(greet("Ada", "hi"))
+console.log(greet("Ada", "hey ", 2))
+
+// Defaults can use earlier parameters and are computed at each call.
+function range(start: int, end: int = start + 3, items: int[] = []): int[] {
+    for (let i = start; i < end; i++) items.push(i)
+    return items
+}
+console.log(range(1).join(","), range(2, 4).join(","))
+const a = range(0)
+const b = range(0)
+a.push(99)
+console.log(a.length, b.length)
+
+// Arguments are evaluated before defaults, in order.
+let log: string[] = []
+function note(s: string): int {
+    log.push(s)
+    return s.length
+}
+function pair(x: int, y: int = note("default")): int {
+    return x + y
+}
+console.log(pair(note("first")), log.join(" "))
+
+// Optional parameters are null when missing.
+function label(text: string, suffix?: string): string {
+    return suffix === null ? text : `${text}-${suffix}`
+}
+console.log(label("a"), label("a", "b"))
+
+// Rest parameters collect the extra arguments; '...array' passes an array on.
+function sum(first: int, ...rest: int[]): int {
+    return rest.reduce((acc, n) => acc + n, first)
+}
+console.log(sum(1), sum(1, 2, 3))
+const more = [10, 20]
+console.log(sum(0, ...more))
+
+// Methods and constructors.
+class Counter {
+    constructor(
+        readonly name: string,
+        public count: int = 0,
+    ) {}
+
+    add(step = 1, ...also: int[]): Counter {
+        this.count += step
+        for (const n of also) this.count += n
+        return this
+    }
+}
+const c = new Counter("c")
+c.add().add(5).add(1, 1, 1)
+console.log(c.name, c.count, new Counter("d", 7).count)

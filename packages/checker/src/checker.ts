@@ -21,6 +21,7 @@ import {
   type StructType,
   type Type,
   type UnionType,
+  type ArrayType,
 } from "@ore/ir"
 import { diagnosticAt, type Diagnostic, type Source } from "@ore/syntax"
 import ts from "typescript"
@@ -67,6 +68,17 @@ interface ModuleInfo {
   prefix: string
   /** Exported names and the local names they refer to; `from` for re-exports. */
   exports: Map<string, { local: string; from?: ModuleInfo }>
+}
+
+/** How a function with optional or rest parameters may be called. */
+interface Signature {
+  parameters: readonly ts.ParameterDeclaration[]
+  /** The scope of the declaration, in which default values are checked. */
+  scope: Scope
+  /** Parameters before the first optional or rest one. */
+  required: number
+  /** The last parameter is a rest parameter, an array of the extra arguments. */
+  rest: boolean
 }
 
 interface FuncContext {
@@ -169,6 +181,8 @@ class Checker {
   private readonly itabs = new Map<string, ir.Itab>()
   /** Declarations of fields and methods, for tooling. */
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
+  /** Optional and rest parameters of functions, by their parameter list. */
+  private readonly signatures = new WeakMap<ir.Local[], Signature>()
 
   private readonly sources = new Map<ts.SourceFile, Source>()
   /** The scope of built-in declarations, for resolving their signatures. */
@@ -426,6 +440,7 @@ class Checker {
     if (decl.typeParameters) return this.error(decl.typeParameters[0]!, "External functions cannot be generic.")
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return this.error(decl.name!, "An external function needs a C name.")
     const params = this.resolveParams(decl.parameters, scope)
+    if (this.signatures.has(params)) this.error(decl.name!, "An external function cannot have optional or rest parameters.")
     const result = decl.type ? this.resolveType(decl.type, scope) ?? types.void : types.void
     // C can exchange numbers, booleans, strings and pointers.
     const cCompatible = (t: Type) => isNumeric(t) || t.kind === "bool" || t.kind === "string" || t.kind === "ptr"
@@ -688,20 +703,56 @@ class Checker {
     return instance ? { instance, operands } : undefined
   }
 
-  /** Resolves parameters into locals; parameter properties are allowed only by the caller. */
+  /**
+   * Resolves parameters into locals; parameter properties are allowed only by
+   * the caller. Optional (`x?: T`, `x = value`) and rest (`...xs: T[]`)
+   * parameters are recorded in `signatures`.
+   */
   private resolveParams(parameters: readonly ts.ParameterDeclaration[], scope: Scope): ir.Local[] {
     const params: ir.Local[] = []
+    // Default values may use the parameters before them.
+    const defaults = new Scope(scope)
+    let required = -1
+    let rest = false
     for (const [i, p] of parameters.entries()) {
-      if (p.dotDotDotToken) this.error(p, "Rest parameters are not supported yet.")
-      if (p.questionToken) this.error(p, "Optional parameters are not supported yet.")
-      if (p.initializer) this.error(p.initializer, "Default parameter values are not supported yet.")
       let type: Type | undefined
-      if (!p.type) this.error(p.name, `Parameter '${p.name.getText()}' must have a type annotation.`)
-      else type = this.resolveValueType(p.type, scope)
+      if (p.type) type = this.resolveValueType(p.type, scope)
+      else if (p.initializer) {
+        const value = this.checkDefault(p.initializer, defaults, undefined)
+        if (value) type = value.type
+      } else this.error(p.name, `Parameter '${p.name.getText()}' must have a type annotation.`)
+      if (type && p.type && p.initializer) this.checkDefault(p.initializer, defaults, type)
+      if (type && p.questionToken) type = this.unionOf([type, types.null])
+      if (p.dotDotDotToken) {
+        if (i !== parameters.length - 1) this.error(p, "A rest parameter must be the last parameter.")
+        else if (type && type.kind !== "array") this.error(p.type ?? p, "A rest parameter must have an array type.")
+        else rest = true
+      }
+      if (p.initializer && p.questionToken) this.error(p.questionToken, "A parameter with a default value is already optional.")
+      const optional = p.initializer !== undefined || p.questionToken !== undefined || (p.dotDotDotToken !== undefined && i === parameters.length - 1)
+      if (optional && required === -1) required = i
+      if (!optional && required !== -1) this.error(p, "A required parameter cannot follow an optional or rest parameter.")
       if (type) this.info.types.set(p.name, type)
-      params.push(this.newLocal(paramName(p, i), type ?? types.i64, true))
+      const local = this.newLocal(paramName(p, i), type ?? types.i64, true)
+      params.push(local)
+      if (ts.isIdentifier(p.name)) defaults.declareValue(local.name, { k: "local", local, decl: p })
     }
+    if (required !== -1) this.signatures.set(params, { parameters, scope, required, rest })
     return params
+  }
+
+  /** Checks a default parameter value, for its type and errors; the value is created again at each call. */
+  private checkDefault(node: ts.Expression, scope: Scope, type: Type | undefined): ir.Expr | undefined {
+    const saved = [this.fn, this.facts] as const
+    this.fn ??= { result: types.void, loops: [], nextLoopId: 0 }
+    this.facts = [new Map()]
+    try {
+      const value = this.checkExpr(node, scope, type)
+      if (value.k === "error") return undefined
+      return type ? this.coerce(value, type, node) : this.toDefault(value, node)
+    } finally {
+      ;[this.fn, this.facts] = saved
+    }
   }
 
   /**
@@ -1942,7 +1993,7 @@ class Checker {
     }
     const params: ir.Local[] = []
     for (const [i, p] of node.parameters.entries()) {
-      if (p.dotDotDotToken || p.questionToken || p.initializer) return this.fail(p, "Optional, default and rest parameters are not supported yet.")
+      if (p.dotDotDotToken || p.questionToken || p.initializer) return this.fail(p, "Optional, default and rest parameters are not supported in closures, which are called as values.")
       const type = p.type ? this.resolveValueType(p.type, outer) : want?.params[i]
       if (!type) return this.fail(p.name, `Parameter '${p.name.getText()}' needs a type annotation here.`)
       if (p.type && want && !sameType(type, want.params[i]!)) {
@@ -2583,7 +2634,8 @@ class Checker {
       this.info.definitions.set(callee, symbol.decl)
     }
     const args = node.arguments
-    for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
+    // Functions check spread arguments themselves, for rest parameters.
+    if (symbol.k !== "func") for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
 
     switch (symbol.k) {
       case "conversion": {
@@ -2835,14 +2887,68 @@ class Checker {
   }
 
   private callFunc(func: ir.Func, args: readonly ts.Expression[], node: ts.Node, scope: Scope, what: string, receiver?: ir.Expr, operands?: Operand[]): Operand {
-    for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
-    if (args.length !== func.params.length) {
-      return this.fail(node, `${what} expects ${func.params.length} argument(s), got ${args.length}.`)
-    }
     const params = func.type.params
-    const values = args.map((arg, i) => this.coerce(operands?.[i] ?? this.checkExpr(arg, scope, params[i]), params[i]!, arg))
-    if (receiver) return typed({ k: "method-call", type: func.type.result, func, receiver, args: values })
-    return typed({ k: "call", type: func.type.result, func, args: values })
+    const signature = this.signatures.get(func.params)
+    const fixed = signature?.rest ? params.length - 1 : params.length
+    const required = signature?.required ?? params.length
+    const given = args.slice(0, fixed)
+    for (const arg of given) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are only supported for a rest parameter.")
+    if (args.length < required || (!signature?.rest && args.length > fixed)) {
+      const count = signature?.rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
+      return this.fail(node, `${what} expects ${count} argument(s), got ${args.length}.`)
+    }
+    const values = given.map((arg, i) => this.coerce(operands?.[i] ?? this.checkExpr(arg, scope, params[i]), params[i]!, arg))
+
+    // Extra arguments form the rest array, unless a single `...array` is passed on.
+    if (signature?.rest) {
+      const array = params[fixed] as ArrayType
+      const extra = args.slice(fixed)
+      if (extra.length === 1 && ts.isSpreadElement(extra[0]!)) {
+        const spread = extra[0]
+        values.push(this.coerce(this.checkExpr(spread.expression, scope, array), array, spread.expression))
+      } else {
+        const elems: ir.Expr[] = []
+        for (const arg of extra) {
+          if (ts.isSpreadElement(arg)) return this.fail(arg, "Pass a single '...array' as all the rest arguments.")
+          elems.push(this.coerce(this.checkExpr(arg, scope, array.elem), array.elem, arg))
+        }
+        // Before default values, which come only when there are no extra arguments.
+        if (values.length === fixed) values.push({ k: "array", type: array, elems })
+      }
+    }
+
+    if (values.length >= params.length) {
+      if (receiver) return typed({ k: "method-call", type: func.type.result, func, receiver, args: values })
+      return typed({ k: "call", type: func.type.result, func, args: values })
+    }
+    // Missing arguments take their default values, computed after the given
+    // ones, which their expressions can use by the parameter names.
+    const locals: ir.Bind["locals"] = []
+    const hold = (value: ir.Expr): ir.Expr & { k: "local" } => {
+      const local = this.newLocal("arg", value.type, false)
+      locals.push({ local, init: value })
+      return { k: "local", type: value.type, local }
+    }
+    const self = receiver && hold(receiver)
+    const held: ir.Expr[] = values.map(hold)
+    const inner = new Scope(signature!.scope)
+    held.forEach((v, i) => {
+      const p = signature!.parameters[i]!
+      if (ts.isIdentifier(p.name) && v.k === "local") inner.declareValue(p.name.text, { k: "local", local: v.local, decl: p })
+    })
+    // Errors in default values were reported at the declaration.
+    const errors = this.diagnostics.length
+    for (let i = held.length; i < fixed; i++) {
+      const p = signature!.parameters[i]!
+      const type = params[i]!
+      held.push(p.initializer ? this.coerce(this.checkExpr(p.initializer, inner, type), type, p.initializer) : { k: "null", type: type as UnionType })
+    }
+    this.diagnostics.length = errors
+    if (signature!.rest) held.push({ k: "array", type: params[fixed] as ArrayType, elems: [] })
+    const call: ir.Expr = self
+      ? { k: "method-call", type: func.type.result, func, receiver: self, args: held }
+      : { k: "call", type: func.type.result, func, args: held }
+    return typed({ k: "bind", type: func.type.result, locals, body: call })
   }
 
   private checkArrayLiteral(node: ts.ArrayLiteralExpression, scope: Scope, expected: Type | undefined): Operand {

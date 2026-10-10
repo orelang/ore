@@ -328,6 +328,14 @@ exhaustive: like a `default`, it lets a function end without `return`.
 - Nested function declarations are hoisted: they can be called anywhere in
   their block, call each other recursively, and use every variable of the
   block. Arrow functions can only use variables declared before them.
+- Top-level functions, methods and constructors can have optional
+  parameters after the required ones: `b = 1` (its type may come from the
+  value), or `b?: T`, which is `T | null` and `null` when missing. A default
+  value is computed at each call that omits it, after the given arguments,
+  and can use the parameters before it. A last rest parameter `...xs: T[]`
+  receives the extra arguments as an array; `f(...array)` passes an array as
+  all of them. As values, such functions take all their parameters, and
+  closures cannot have optional or rest parameters.
 
 ### 3.17 Array methods
 
