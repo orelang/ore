@@ -1,0 +1,63 @@
+import { existsSync, readFileSync, statSync } from "node:fs"
+import { dirname, isAbsolute, join, resolve } from "node:path"
+
+export interface PackageJson {
+  name?: string
+  version?: string
+  /** The entry file of a program, or the module imported by a package's name. */
+  main?: string
+  dependencies?: Record<string, string>
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+export function readPackageJson(dir: string): PackageJson | undefined {
+  const path = join(dir, "package.json")
+  if (!existsSync(path)) return undefined
+  return JSON.parse(readFileSync(path, "utf8")) as PackageJson
+}
+
+/** The nearest directory at or above `dir` that has a package.json. */
+export function findPackageRoot(dir: string): string | undefined {
+  for (let d = resolve(dir); ; d = dirname(d)) {
+    if (existsSync(join(d, "package.json"))) return d
+    if (dirname(d) === d) return undefined
+  }
+}
+
+/** A file path for a module path: `x.ore`, `x` itself if it ends in `.ore`, or `x/index.ore`. */
+function resolveFile(base: string): string | undefined {
+  const candidates = base.endsWith(".ore") ? [base] : [`${base}.ore`, join(base, "index.ore")]
+  return candidates.find(isFile)
+}
+
+/** The entry module of a package directory: its package.json `main`, or `index.ore`. */
+export function packageEntry(dir: string): string | undefined {
+  const main = readPackageJson(dir)?.main
+  return main ? resolveFile(join(dir, main)) : resolveFile(join(dir, "index"))
+}
+
+/**
+ * Resolves an import specifier like Node does: relative paths against the
+ * importing file, and package names in `node_modules` directories above it.
+ */
+export function resolveImport(specifier: string, fromFile: string): string | undefined {
+  if (specifier.startsWith("./") || specifier.startsWith("../") || isAbsolute(specifier)) {
+    return resolveFile(resolve(dirname(fromFile), specifier))
+  }
+  const parts = specifier.split("/")
+  const nameLength = specifier.startsWith("@") ? 2 : 1
+  const name = parts.slice(0, nameLength).join("/")
+  const subpath = parts.slice(nameLength).join("/")
+  for (let d = dirname(resolve(fromFile)); ; d = dirname(d)) {
+    const dir = join(d, "node_modules", name)
+    if (existsSync(dir)) return subpath ? resolveFile(join(dir, subpath)) : packageEntry(dir)
+    if (dirname(d) === d) return undefined
+  }
+}
