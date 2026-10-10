@@ -1,0 +1,91 @@
+interface Shape {
+  readonly name: string
+  area(): f64
+  scale(k: f64): void
+}
+
+class Circle implements Shape {
+  readonly name = "circle"
+  constructor(public r: f64) {}
+
+  area(): f64 {
+    return 3 * this.r * this.r
+  }
+
+  scale(k: f64): void {
+    this.r *= k
+  }
+}
+
+class Rect {
+  readonly name: string = "rect"
+  constructor(public w: f64, public h: f64) {}
+
+  area(): f64 {
+    return this.w * this.h
+  }
+
+  scale(k: f64): void {
+    this.w *= k
+    this.h *= k
+  }
+
+  diagonal2(): f64 {
+    return this.w * this.w + this.h * this.h
+  }
+}
+
+function total(shapes: Shape[]): f64 {
+  let sum = 0.0
+  for (const s of shapes) sum += s.area()
+  return sum
+}
+
+// Interfaces with fields accept classes and object literals alike.
+interface Point {
+  x: f64
+  y: f64
+}
+
+function shift(p: Point, dx: f64): void {
+  p.x += dx
+}
+
+class Pixel {
+  color = "red"
+  constructor(public x: f64, public y: f64) {}
+}
+
+interface Named {
+  readonly name: string
+}
+
+interface Area extends Named {
+  area(): f64
+}
+
+function describe(n: Named): string {
+  return `<${n.name}>`
+}
+
+export function main() {
+  const c = new Circle(1)
+  const shapes: Shape[] = [c, new Rect(2, 3)]
+  println(total(shapes))
+  for (const s of shapes) s.scale(2)
+  println(total(shapes), c.r)
+
+  const px = new Pixel(1, 2)
+  shift(px, 10)
+  const lit = { x: 0.5, y: 0.25, z: true }
+  shift(lit, 1)
+  const p: Point = { x: 1, y: 2 }
+  shift(p, 1)
+  println(px.x, lit.x, p.x)
+
+  // An interface converts to a narrower one; identity is preserved.
+  const a: Area = c
+  const n: Named = a
+  const s: Shape = c
+  println(describe(a), describe(n), describe(new Rect(1, 1)), a.area(), s === shapes[0])
+}

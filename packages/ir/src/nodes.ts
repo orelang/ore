@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, FloatType, FuncType, IntType, StringType, StructType, Type } from "./types"
+import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, StringType, StructType, Type } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -14,6 +14,15 @@ export interface Module {
   functions: Func[]
   /** Every struct type used by the module. */
   structs: StructType[]
+  /** Interface tables of structs converted to interfaces. */
+  itabs: Itab[]
+}
+
+/** The table for a struct used as an interface; see `InterfaceType`. */
+export interface Itab {
+  id: number
+  struct: StructType
+  iface: InterfaceType
 }
 
 export interface Func {
@@ -146,6 +155,9 @@ export type Expr =
   | FieldGet
   | Alloc
   | MethodCall
+  | ToIface
+  | IfaceField
+  | IfaceCall
 
 export interface IntLit {
   k: "int"
@@ -184,6 +196,8 @@ export type LValue =
   | { k: "element"; array: Expr; index: Expr }
   /** A field of a struct reference. */
   | { k: "field"; object: Expr; name: string }
+  /** The field at `index` of an interface's members. */
+  | { k: "iface-field"; value: Expr; index: number }
 
 /**
  * Assignment. With `op` it is a compound assignment `target op= value`, where
@@ -356,5 +370,36 @@ export interface MethodCall {
   type: Type
   func: Func
   receiver: Expr
+  args: Expr[]
+}
+
+/**
+ * Converts a struct to an interface with a static table, or an interface to
+ * another interface by picking table entries: entry `i` of the result is
+ * entry `indices[i]` of the source.
+ */
+export interface ToIface {
+  k: "to-iface"
+  type: InterfaceType
+  value: Expr
+  itab?: Itab
+  indices?: number[]
+}
+
+/** Reads the field at `index` of an interface's members. */
+export interface IfaceField {
+  k: "iface-field"
+  type: Type
+  value: Expr
+  index: number
+}
+
+/** Calls the method at `index` of an interface's members. */
+export interface IfaceCall {
+  k: "iface-call"
+  type: Type
+  value: Expr
+  index: number
+  method: FuncType
   args: Expr[]
 }

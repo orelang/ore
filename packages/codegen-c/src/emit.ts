@@ -22,6 +22,7 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   for (const s of module.structs) out.push(`typedef struct ${structName(s)} ${structName(s)};`)
   for (const s of module.structs) out.push(emitStruct(s))
   for (const func of module.functions) out.push(`static ${signature(func)};`)
+  for (const itab of module.itabs) out.push(emitItab(itab))
   out.push("")
   const file = JSON.stringify(module.file)
   for (const func of module.functions) out.push(emitFunction({ debug: options.debug, file, func }), "")
@@ -62,6 +63,16 @@ function emitStruct(s: ir.StructType): string {
   return `struct ${structName(s)} { ${fields.join(" ")} };`
 }
 
+function emitItab(itab: ir.Itab): string {
+  const s = structName(itab.struct)
+  const entries = itab.iface.members.map((m) => {
+    if (m.k === "field") return `(void *)(uintptr_t)offsetof(${s}, ${fieldName(m.name)})`
+    return `(void *)${ir.findMethod(itab.struct, m.name)!.func.name}`
+  })
+  // C has no empty arrays.
+  return `static void *const ore_itab_${itab.id}[] = { ${entries.length === 0 ? "0" : entries.join(", ")} };`
+}
+
 function signature(func: ir.Func): string {
   const list = func.params.map((p) => `${cType(p.type)} ${localName(p)}`)
   if (func.receiver) list.unshift("void *self_")
@@ -85,6 +96,8 @@ export function cType(type: Type): string {
       return "ore_array *"
     case "struct":
       return `${structName(type)} *`
+    case "interface":
+      return "ore_iface"
     case "func":
       throw new Error("function types are not supported by the C backend yet")
   }
@@ -239,6 +252,8 @@ function emitExpr(expr: ir.Expr): string {
           if (expr.op === "===" || expr.op === "!==") return `(${expr.op === "===" ? "" : "!"}ore_rt_str_eq(${l}, ${r}))`
           return `(ore_rt_str_cmp(${l}, ${r}) ${expr.op} 0)`
         }
+        // Interface values are equal when they refer to the same object.
+        if (expr.left.type.kind === "interface") return `((${l}).data ${cCompare[expr.op]} (${r}).data)`
         return `(${l} ${cCompare[expr.op]} ${r})`
       })
     case "logical":
@@ -309,6 +324,20 @@ function emitExpr(expr: ir.Expr): string {
       return `((${structName(expr.type)} *)ore_rt_alloc(sizeof(${structName(expr.type)})))`
     case "method-call":
       return inOrder([expr.receiver, ...expr.args], (args) => `${expr.func.name}(${args.join(", ")})`)
+    case "to-iface": {
+      if (expr.itab) return `((ore_iface){(void *)${emitExpr(expr.value)}, ore_itab_${expr.itab.id}})`
+      const indices = expr.indices!
+      if (indices.length === 0) return `ore_rt_iface_project(${emitExpr(expr.value)}, 0, 0)`
+      return `ore_rt_iface_project(${emitExpr(expr.value)}, ${indices.length}, (const i32[]){${indices.join(", ")}})`
+    }
+    case "iface-field":
+      return `(*(${cType(expr.type)} *)ore_iface_field(${emitExpr(expr.value)}, ${expr.index}))`
+    case "iface-call": {
+      // The receiver is evaluated once, before the arguments.
+      const r = temp()
+      const fn = `(${cType(expr.method.result)} (*)(${["void *", ...expr.method.params.map(cType)].join(", ")}))${r}.itab[${expr.index}]`
+      return `({ ore_iface ${r} = ${emitExpr(expr.value)}; ${inOrder(expr.args, (args) => `(${fn})(${[`${r}.data`, ...args].join(", ")})`)}; })`
+    }
   }
 }
 
@@ -337,6 +366,10 @@ function toString(expr: ir.Expr): string {
  */
 function placePointer(target: Exclude<ir.LValue, { k: "local" }>, type: Type, p: string, before = ""): string {
   const t = cType(type)
+  if (target.k === "iface-field") {
+    const o = temp()
+    return `ore_iface ${o} = ${emitExpr(target.value)}; ${before}${t} *${p} = ore_iface_field(${o}, ${target.index});`
+  }
   if (target.k === "field") {
     const o = temp()
     return `${cType(target.object.type)} ${o} = ${emitExpr(target.object)}; ${before}${t} *${p} = &${o}->${fieldName(target.name)};`
@@ -432,6 +465,11 @@ function effects(e: ir.Expr): boolean {
       return e.fields.some((f) => effects(f.value))
     case "field":
       return effects(e.object)
+    case "to-iface":
+    case "iface-field":
+      return effects(e.value)
+    case "iface-call":
+      return true
   }
 }
 

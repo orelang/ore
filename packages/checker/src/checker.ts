@@ -1,5 +1,20 @@
 import * as ir from "@ore/ir"
-import { arrayOf, findField, findMethod, intRange, isNumeric, sameType, types, typeToString, type Field, type FuncType, type StructType, type Type } from "@ore/ir"
+import {
+  arrayOf,
+  findField,
+  findMethod,
+  intRange,
+  isNumeric,
+  sameType,
+  types,
+  typeToString,
+  type Field,
+  type FuncType,
+  type InterfaceMember,
+  type InterfaceType,
+  type StructType,
+  type Type,
+} from "@ore/ir"
 import { diagnosticAt, type Diagnostic, type Source } from "@ore/syntax"
 import ts from "typescript"
 import { builtinScope } from "./builtins"
@@ -60,6 +75,12 @@ interface ClassInfo {
   methods: [ts.MethodDeclaration, ir.Func][]
 }
 
+interface InterfaceInfo {
+  decl: ts.InterfaceDeclaration
+  type: InterfaceType
+  state: "declared" | "filling" | "filled"
+}
+
 interface LoopContext {
   id: number
   label?: string
@@ -77,11 +98,13 @@ class Checker {
   private readonly shapes = new Map<string, StructType>()
   private nextStructId = 0
   private readonly classes: ClassInfo[] = []
+  private readonly interfaces = new Map<InterfaceType, InterfaceInfo>()
+  private readonly itabs = new Map<string, ir.Itab>()
   /** Declarations of fields and methods, for tooling. */
-  private readonly memberDecls = new Map<StructType, Map<string, ts.Node>>()
+  private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
 
   constructor(private readonly source: Source) {
-    this.module = { file: source.path, functions: [], structs: [] }
+    this.module = { file: source.path, functions: [], structs: [], itabs: [] }
   }
 
   run(options: CheckOptions): CheckResult {
@@ -89,12 +112,16 @@ class Checker {
     const bodies: [ts.FunctionDeclaration, ir.Func][] = []
     const statements = this.source.ast.statements
 
-    // Pass 1: names of classes, so that types can refer to them in any order.
-    for (const stmt of statements) if (ts.isClassDeclaration(stmt)) this.declareClass(stmt, scope)
+    // Pass 1: names of classes and interfaces, so that types can refer to them in any order.
+    for (const stmt of statements) {
+      if (ts.isClassDeclaration(stmt)) this.declareClass(stmt, scope)
+      else if (ts.isInterfaceDeclaration(stmt)) this.declareInterface(stmt, scope)
+    }
 
     // Pass 2: type aliases, then signatures of functions and class members,
     // so that they can be used before their declaration and recursively.
     for (const stmt of statements) if (ts.isTypeAliasDeclaration(stmt)) this.declareTypeAlias(stmt, scope)
+    for (const info of this.interfaces.values()) this.fillInterface(info, scope)
     for (const stmt of statements) {
       if (ts.isFunctionDeclaration(stmt)) {
         const func = this.declareFunction(stmt, scope)
@@ -105,12 +132,13 @@ class Checker {
 
     // Pass 3: top-level constants in source order, field initializers, then bodies.
     for (const stmt of statements) {
-      if (ts.isTypeAliasDeclaration(stmt) || ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt)) continue
+      if (ts.isTypeAliasDeclaration(stmt) || ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt) || ts.isInterfaceDeclaration(stmt)) continue
       if (ts.isVariableStatement(stmt)) this.checkTopLevelVariables(stmt, scope)
       else if (ts.isEmptyStatement(stmt)) continue
       else this.error(stmt, this.unsupportedTopLevel(stmt))
     }
     for (const info of this.classes) this.checkFieldInitializers(info, scope)
+    for (const info of this.classes) this.checkImplements(info, scope)
     for (const [decl, func] of bodies) this.checkFunctionBody(decl, func, scope)
     for (const info of this.classes) this.checkClassBodies(info, scope)
 
@@ -220,7 +248,6 @@ class Checker {
     if (decl.typeParameters) this.error(decl.typeParameters[0]!, "Generic classes are not supported yet.")
     for (const clause of decl.heritageClauses ?? []) {
       if (clause.token === ts.SyntaxKind.ExtendsKeyword) this.error(clause, "Class inheritance is not supported in Ore. Use composition and interfaces.")
-      else this.error(clause, "'implements' is not supported yet.")
     }
     for (const mod of decl.modifiers ?? []) {
       if (mod.kind !== ts.SyntaxKind.ExportKeyword) this.error(mod, `Modifier '${mod.getText()}' is not allowed on classes.`)
@@ -425,6 +452,138 @@ class Checker {
     }
   }
 
+  /** Checks that a class has the members of the interfaces it `implements`. */
+  private checkImplements(info: ClassInfo, scope: Scope) {
+    for (const clause of info.decl.heritageClauses ?? []) {
+      if (clause.token !== ts.SyntaxKind.ImplementsKeyword) continue
+      for (const ref of clause.types) {
+        const type = ts.isIdentifier(ref.expression) ? scope.lookupType(ref.expression.text) : undefined
+        if (ts.isIdentifier(ref.expression) && type) this.info.definitions.set(ref.expression, type.decl)
+        if (!type || type.type.kind !== "interface") {
+          this.error(ref, `'${ref.expression.getText()}' is not an interface.`)
+          continue
+        }
+        const result = this.conformance(info.type, type.type)
+        if (result.reason) this.error(ref, `Class '${info.type.name}' does not implement '${type.type.name}': ${result.reason}.`)
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Interfaces
+
+  private declareInterface(decl: ts.InterfaceDeclaration, scope: Scope) {
+    const name = decl.name.text
+    if (decl.typeParameters) this.error(decl.typeParameters[0]!, "Generic interfaces are not supported yet.")
+    const type: InterfaceType = { kind: "interface", id: this.nextStructId++, name, members: [] }
+    if (!scope.declareType(name, { type, decl })) return this.error(decl.name, `Duplicate type '${name}'.`)
+    this.interfaces.set(type, { decl, type, state: "declared" })
+    this.memberDecls.set(type, new Map())
+  }
+
+  private fillInterface(info: InterfaceInfo, scope: Scope) {
+    if (info.state === "filled") return
+    if (info.state === "filling") return this.error(info.decl.name, `Interface '${info.type.name}' extends itself.`)
+    info.state = "filling"
+    const members: InterfaceMember[] = []
+    const decls = this.memberDecls.get(info.type)!
+    const add = (member: InterfaceMember, node: ts.Node, decl: ts.Node) => {
+      const existing = members.find((m) => m.name === member.name)
+      if (!existing) {
+        members.push(member)
+        decls.set(member.name, decl)
+      } else if (existing.k !== member.k || !sameType(existing.type, member.type)) {
+        this.error(node, `Member '${member.name}' conflicts with an inherited member of a different type.`)
+      }
+    }
+
+    for (const clause of info.decl.heritageClauses ?? []) {
+      for (const ref of clause.types) {
+        const base = ts.isIdentifier(ref.expression) ? scope.lookupType(ref.expression.text) : undefined
+        if (!base || base.type.kind !== "interface") {
+          this.error(ref, `An interface can only extend interfaces.`)
+          continue
+        }
+        if (ts.isIdentifier(ref.expression)) this.info.definitions.set(ref.expression, base.decl)
+        const baseInfo = this.interfaces.get(base.type)!
+        this.fillInterface(baseInfo, scope)
+        for (const m of base.type.members) add(m, ref, this.memberDecls.get(base.type)!.get(m.name)!)
+      }
+    }
+    for (const member of info.decl.members) {
+      if (!member.name) {
+        this.error(member, "Call, construct and index signatures are not supported.")
+        continue
+      }
+      const name = this.memberName(member.name)
+      if (name === undefined) continue
+      if (member.questionToken) this.error(member.questionToken, "Optional members are not supported yet.")
+      if (ts.isPropertySignature(member)) {
+        if (!member.type) {
+          this.error(member.name, `Property '${name}' must have a type annotation.`)
+          continue
+        }
+        const type = this.resolveValueType(member.type, scope)
+        const readonly = member.modifiers?.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword) ?? false
+        if (type) {
+          this.info.types.set(member.name, type)
+          add({ k: "field", name, type, readonly }, member.name, member)
+        }
+      } else if (ts.isMethodSignature(member)) {
+        if (member.typeParameters) this.error(member.typeParameters[0]!, "Generic methods are not supported yet.")
+        const params = this.resolveParams(member.parameters, scope)
+        const result = member.type ? this.resolveType(member.type, scope) ?? types.void : types.void
+        add({ k: "method", name, type: { kind: "func", params: params.map((p) => p.type), result } }, member.name, member)
+      } else {
+        this.error(member, "This interface member is not supported.")
+      }
+    }
+    members.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    info.type.members = members
+    info.state = "filled"
+  }
+
+  /**
+   * Whether a struct or interface has the members of an interface. For an
+   * interface source, `indices` maps each target member to a source member.
+   */
+  private conformance(from: StructType | InterfaceType, iface: InterfaceType): { reason?: string; indices?: number[] } {
+    const indices: number[] = []
+    for (const member of iface.members) {
+      const what = `${member.k === "field" ? "property" : "method"} '${member.name}'`
+      if (from.kind === "interface") {
+        const index = from.members.findIndex((m) => m.name === member.name)
+        const source = from.members[index]
+        if (!source || source.k !== member.k) return { reason: `${what} is missing` }
+        if (!sameType(source.type, member.type)) return { reason: `${what} has type '${typeToString(source.type)}' instead of '${typeToString(member.type)}'` }
+        if (source.k === "field" && member.k === "field" && source.readonly && !member.readonly) return { reason: `${what} is read-only` }
+        indices.push(index)
+      } else if (member.k === "field") {
+        const field = findField(from, member.name)
+        if (!field || field.private) return { reason: `${what} is missing` }
+        if (!sameType(field.type, member.type)) return { reason: `${what} has type '${typeToString(field.type)}' instead of '${typeToString(member.type)}'` }
+        if (field.readonly && !member.readonly) return { reason: `${what} is read-only` }
+      } else {
+        const method = findMethod(from, member.name)
+        if (!method || method.private) return { reason: `${what} is missing` }
+        if (!sameType(method.func.type, member.type)) return { reason: `${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'` }
+      }
+    }
+    return { indices }
+  }
+
+  /** The interface table of a struct, created once per struct and interface. */
+  private itab(struct: StructType, iface: InterfaceType): ir.Itab {
+    const key = `${struct.id}:${iface.id}`
+    let itab = this.itabs.get(key)
+    if (!itab) {
+      itab = { id: this.itabs.size, struct, iface }
+      this.itabs.set(key, itab)
+      this.module.itabs.push(itab)
+    }
+    return itab
+  }
+
   /** Reports access to a private member from outside its class. */
   private checkAccess(struct: StructType, member: { private?: boolean }, name: string, node: ts.Node): boolean {
     if (!member.private || this.fn?.cls === struct) return true
@@ -477,7 +636,6 @@ class Checker {
 
   private unsupportedTopLevel(stmt: ts.Statement): string {
     if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) return "Imports and re-exports are not supported yet."
-    if (ts.isInterfaceDeclaration(stmt)) return "Interfaces are not supported yet."
     if (ts.isEnumDeclaration(stmt)) return "Enums are not supported in Ore. Use a union of literal types."
     if (ts.isModuleDeclaration(stmt)) return "Namespaces are not supported in Ore. Use modules."
     return "Only declarations are allowed at the top level. Put statements in 'main'."
@@ -962,7 +1120,7 @@ class Checker {
       return this.fail(node.operatorToken, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || type.kind === "bool" || type.kind === "string" || type.kind === "array" || type.kind === "struct"
+    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(node.operatorToken, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
@@ -1018,6 +1176,15 @@ class Checker {
       if (target.k !== "typed") return undefined
       const object = target.expr
       const name = node.name.text
+      if (object.type.kind === "interface") {
+        const index = object.type.members.findIndex((m) => m.name === name)
+        const member = object.type.members[index]
+        if (member?.k !== "field") return this.error(node.name, `Property '${name}' does not exist on type '${object.type.name}'.`), undefined
+        this.defineMember(node.name, object.type, name)
+        if (member.readonly) return this.error(node.name, `Cannot assign to '${name}' because it is a read-only property.`), undefined
+        this.info.types.set(node, member.type)
+        return { lvalue: { k: "iface-field", value: object, index }, type: member.type }
+      }
       const struct = object.type.kind === "struct" ? object.type : undefined
       const field = struct && findField(struct, name)
       if (!struct || !field) return this.error(node.name, `Property '${name}' does not exist on type '${typeToString(object.type)}'.`), undefined
@@ -1212,11 +1379,21 @@ class Checker {
       return ok ? typed({ k: "object", type: expected, fields }) : errorOperand
     }
 
+    // For an interface, its field types guide the literal, which is then converted by the caller.
+    const hints = expected?.kind === "interface" ? expected : undefined
+    if (hints) {
+      for (const p of props) {
+        if (!hints.members.some((m) => m.k === "field" && m.name === p.name)) {
+          return this.fail(p.node, `Object literal may only specify known properties, and '${p.name}' does not exist in type '${hints.name}'.`)
+        }
+      }
+    }
     const fields: { name: string; value: ir.Expr }[] = []
     for (const p of props) {
-      const value = this.checkExpr(p.value, scope)
+      const hint = hints?.members.find((m) => m.k === "field" && m.name === p.name)?.type
+      const value = this.checkExpr(p.value, scope, hint)
       if (value.k === "error") return errorOperand
-      const expr = this.toDefault(value, p.value)
+      const expr = hint ? this.coerce(value, hint, p.value) : this.toDefault(value, p.value)
       if (expr.type.kind === "void" || expr.type.kind === "never") return this.fail(p.value, `A property cannot have type '${expr.type.kind}'.`)
       fields.push({ name: p.name, value: expr })
     }
@@ -1266,6 +1443,13 @@ class Checker {
       }
       if (findMethod(struct, name)) return this.fail(node.name, `Method '${name}' must be called; method values are not supported yet.`)
     }
+    if (value.type.kind === "interface") {
+      const index = value.type.members.findIndex((m) => m.name === name)
+      const member = value.type.members[index]
+      this.defineMember(node.name, value.type, name)
+      if (member?.k === "field") return typed({ k: "iface-field", type: member.type, value, index })
+      if (member) return this.fail(node.name, `Method '${name}' must be called; method values are not supported yet.`)
+    }
     return this.fail(node.name, `Property '${name}' does not exist on type '${typeToString(value.type)}'.`)
   }
 
@@ -1309,6 +1493,19 @@ class Checker {
       }
       if (findField(type, name)) return this.fail(callee.name, `Field '${name}' is not a method.`)
     }
+    if (type.kind === "interface") {
+      const index = type.members.findIndex((m) => m.name === name)
+      const member = type.members[index]
+      if (member?.k === "method") {
+        this.defineMember(callee.name, type, name)
+        for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
+        const params = member.type.params
+        if (args.length !== params.length) return this.fail(node, `Method '${type.name}.${name}' expects ${params.length} argument(s), got ${args.length}.`)
+        const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope, params[i]), params[i]!, arg))
+        return typed({ k: "iface-call", type: member.type.result, value, index, method: member.type, args: values })
+      }
+      if (member) return this.fail(callee.name, `Field '${name}' is not a method.`)
+    }
     if (type.kind === "array" && name === "push") {
       const values: ir.Expr[] = []
       for (const arg of args) {
@@ -1331,7 +1528,7 @@ class Checker {
   }
 
   /** Records the declaration of a field or method for go to definition. */
-  private defineMember(node: ts.MemberName, struct: StructType, name: string) {
+  private defineMember(node: ts.MemberName, struct: StructType | InterfaceType, name: string) {
     const decl = this.memberDecls.get(struct)?.get(name)
     if (decl && ts.isIdentifier(node)) this.info.definitions.set(node, decl)
   }
@@ -1347,6 +1544,15 @@ class Checker {
       case "typed": {
         const from = typeOf(value.expr)
         if (sameType(from, target) || from.kind === "never") return value.expr
+        if (target.kind === "interface" && (from.kind === "struct" || from.kind === "interface")) {
+          const result = this.conformance(from, target)
+          if (!result.reason) {
+            if (from.kind === "interface") return { k: "to-iface", type: target, value: value.expr, indices: result.indices }
+            return { k: "to-iface", type: target, value: value.expr, itab: this.itab(from, target) }
+          }
+          this.error(node, `Type '${typeToString(from)}' is not assignable to type '${target.name}': ${result.reason}.`)
+          return poison(target)
+        }
         let message = `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}'.`
         if (isNumeric(from) && isNumeric(target)) message += ` Use an explicit conversion: '${typeToString(target)}(...)'.`
         this.error(node, message)
@@ -1491,6 +1697,8 @@ function typeKey(type: Type): string {
       return `${typeKey(type.elem)}[]`
     case "struct":
       return `#${type.id}`
+    case "interface":
+      return `@${type.id}`
     case "func":
       return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
     default:
@@ -1500,7 +1708,7 @@ function typeKey(type: Type): string {
 
 /** Whether a type has a zero value for variables without an initializer; references do not. */
 function hasZeroValue(type: Type): boolean {
-  return type.kind !== "struct"
+  return type.kind !== "struct" && type.kind !== "interface"
 }
 
 function zeroValue(type: Type): ir.Expr {

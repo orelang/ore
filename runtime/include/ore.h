@@ -101,6 +101,20 @@ static inline void *ore_rt_array_at(ore_array *a, i64 i, i64 elem_size) {
   return (u8 *)a->data + elem_size * ore_rt_check_index(i, a->len);
 }
 
+// Interfaces: a reference to a struct and a table with, for each member of the
+// interface sorted by name, the field offset or the method.
+
+typedef struct {
+  void *data;
+  void *const *itab;
+} ore_iface;
+
+/** Pointer to the field whose offset is entry `i` of the table. */
+static inline void *ore_iface_field(ore_iface v, i64 i) { return (u8 *)v.data + (uintptr_t)v.itab[i]; }
+
+/** Converts to a narrower interface: entry `k` of the new table is entry `indices[k]` of the old one. */
+ore_iface ore_rt_iface_project(ore_iface v, i64 count, const i32 *indices);
+
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 

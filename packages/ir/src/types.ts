@@ -82,8 +82,25 @@ export interface StructType {
   ctor?: Func
 }
 
+export type InterfaceMember =
+  | { readonly k: "field"; readonly name: string; readonly type: Type; readonly readonly: boolean }
+  | { readonly k: "method"; readonly name: string; readonly type: FuncType }
+
+/**
+ * A structural interface. A value is a reference to any struct that has the
+ * members, paired with a table that holds, for each member in `members`
+ * order, the field offset or the method.
+ */
+export interface InterfaceType {
+  readonly kind: "interface"
+  readonly id: number
+  readonly name: string
+  /** Sorted by name; the layout of the table. */
+  members: InterfaceMember[]
+}
+
 export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType
-export type Type = PrimitiveType | FuncType | ArrayType | StructType
+export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType
 
 export function findField(t: StructType, name: string): Field | undefined {
   return t.fields.find((f) => f.name === name)
@@ -121,9 +138,28 @@ export function isNumeric(t: Type): t is IntType | FloatType {
   return t.kind === "int" || t.kind === "float"
 }
 
+/** Interface pairs assumed equal while comparing recursive interfaces. */
+const assumed: [InterfaceType, InterfaceType][] = []
+
+/** Whether two interfaces have the same members; recursive interfaces are compared coinductively. */
+function sameInterface(a: InterfaceType, b: InterfaceType): boolean {
+  if (a.members.length !== b.members.length) return false
+  if (assumed.some(([x, y]) => (x === a && y === b) || (x === b && y === a))) return true
+  assumed.push([a, b])
+  try {
+    return a.members.every((m, i) => {
+      const n = b.members[i]!
+      return m.k === n.k && m.name === n.name && sameType(m.type, n.type)
+    })
+  } finally {
+    assumed.pop()
+  }
+}
+
 export function sameType(a: Type, b: Type): boolean {
   if (a === b) return true
   if (a.kind === "array" && b.kind === "array") return sameType(a.elem, b.elem)
+  if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b)
   if (a.kind !== "func" || b.kind !== "func") return false
   return a.params.length === b.params.length
     && a.params.every((p, i) => sameType(p, b.params[i]!))
@@ -141,6 +177,8 @@ export function typeToString(t: Type): string {
       return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
     case "struct":
       return t.name ?? `{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${typeToString(f.type)}`).join("; ")} }`
+    case "interface":
+      return t.name
     default:
       return t.kind
   }

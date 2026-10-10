@@ -147,6 +147,15 @@ ore_string ore_rt_str_from_u64(u64 v) {
 ore_string ore_rt_str_from_bool(bool v) { return v ? ORE_STR("true") : ORE_STR("false"); }
 
 // ---------------------------------------------------------------------------
+// Interfaces
+
+ore_iface ore_rt_iface_project(ore_iface v, i64 count, const i32 *indices) {
+  void **itab = ore_rt_alloc(count * (i64)sizeof(void *));
+  for (i64 k = 0; k < count; k++) itab[k] = v.itab[indices[k]];
+  return (ore_iface){v.data, (void *const *)itab};
+}
+
+// ---------------------------------------------------------------------------
 // Arrays
 
 ore_array *ore_rt_array_new(i64 elem_size, i64 len) {
