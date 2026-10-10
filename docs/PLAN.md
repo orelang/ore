@@ -44,9 +44,9 @@ long-term goal.
 | Interfaces | Structural. An interface value is `(data, itab)`, as in Go. The itab is built at the conversion site and cached per (type, interface) pair. |
 | Generics | Monomorphization, as in Rust and C++. Constraints via `extends`. Conditional and mapped types are type-level only, initially rejected. |
 | Unions | `T \| null` is a nullable pointer. Discriminated unions are tagged unions. `string \| i64` is a tagged union with an implicit tag. Narrowing via `typeof`, `instanceof` and `switch (x.kind)` (a switch on the tag). |
-| Errors (proposed) | Errors as values via unions: `function read(p: string): string \| IoError`, then `if (r instanceof Error) return r`. No unwinding needed. `panic()` for unrecoverable failures. `throw` / `try` rejected for now, possibly added later. |
+| Errors | Errors as values via unions: `function read(p: string): string \| IoError`, then `if (r instanceof Error) return r`. No unwinding needed. `panic()` for unrecoverable failures. `throw` / `try` rejected for now, possibly added later. |
 | Defer | `using f = open(...)`: TS 5.2 explicit resource management, calls `[Symbol.dispose]`. A direct analogue of Go's `defer` with valid syntax. |
-| Concurrency (proposed) | Go-style, without function coloring: green threads (`spawn(() => ...)`), `Chan<T>`, `select([...])`. Blocking I/O parks the green thread. `async` / `await` either rejected or thin sugar over `Future`. Must be decided before the GC strategy. |
+| Concurrency | Go-style, without function coloring: green threads (`spawn(() => ...)`), `Chan<T>`, `select([...])`. Blocking I/O parks the green thread. `async` / `await` are rejected. |
 | Entry point | `export function main()`. Top level allows only declarations and `const`. |
 | FFI | `declare function` with a JSDoc tag `/** @extern("c") */`, plus `cstring` and `ptr<T>` types. Link flags in the manifest. |
 | Removed | `any`, `prototype`, `eval`, `delete`, dynamic keys, `with`, `arguments`, `var`, `==`. `unknown` stays as an explicitly boxed value with a type check. |
@@ -176,8 +176,8 @@ work.**
 - **JS developer expectations** (string length in bytes, wrapping integers,
   identity `===`). A dedicated "Differences from TypeScript" chapter in the
   spec, plus diagnostics with hints.
-- **Async vs green threads.** Decide in Phase 0 even though the
-  implementation lands in Phase 7.
+- **Green threads vs Boehm GC.** Goroutine stacks must be registered with the
+  GC; validate early with a prototype before Phase 7.
 
 ## 6. Immediate next steps
 
