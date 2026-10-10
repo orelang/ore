@@ -218,9 +218,21 @@ member completion. Another binary can be set in Zed settings:
 | 5. Closures, array methods, `using` | done |
 | 6. Modules, packages, standard library, C interop, `ore test`, `ore fmt` | done |
 | 7. Concurrency: tasks, `Chan<T>`, `select` on green threads (one OS thread) | done |
-| 7.5. Multi-threaded scheduler, non-blocking I/O | next |
+| 7.5. Multi-threaded scheduler, non-blocking I/O | in progress |
 | 8. Precise GC, escape analysis, LLVM backend | planned |
 | 9. Self-hosting | planned |
+
+### Known limitations
+
+- Tasks share one OS thread: they are concurrent but not parallel, and file
+  operations block every task (being addressed in 7.5).
+- A task has a fixed stack (256 KiB, 8 MiB for `main`); deep recursion in a
+  task can overflow it.
+- No default or rest parameters, no generic methods, no numeric literal types
+  (`1 | 2`), no `JSON`; case mapping of strings covers ASCII only.
+- A generic function or class that is never used is parsed but not checked.
+- The language server has no rename or find references yet; only Zed has an
+  extension.
 
 ## Development
 
