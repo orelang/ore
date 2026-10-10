@@ -34,6 +34,24 @@ bun run ore check file.ore
 bun run build            # standalone binary at dist/ore
 ```
 
+## Editor support: Zed
+
+1. Build the compiler and put it on `PATH`:
+   ```sh
+   bun run build
+   ln -sf "$PWD/dist/ore" ~/.local/bin/ore
+   ```
+2. In Zed run `zed: install dev extension` and select `editors/zed`
+   (requires Rust installed via rustup).
+
+The extension highlights `.ore` files with Zed's TypeScript grammar and starts
+`ore lsp` (diagnostics, hover, go to definition). A different binary can be
+configured in Zed settings:
+
+```json
+{ "lsp": { "ore": { "binary": { "path": "/path/to/ore", "arguments": ["lsp"] } } } }
+```
+
 ## Development
 
 ```sh
@@ -50,6 +68,8 @@ ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
 | `packages/codegen-c` | IR to C |
 | `packages/driver` | Compilation pipeline, clang invocation, runtime cache |
 | `packages/cli` | The `ore` command |
+| `packages/lsp` | Language server |
+| `editors/zed` | Zed extension |
 | `runtime/` | C runtime |
 | `std/` | Standard library, `builtin.d.ore` |
 | `tests/run` | Programs with expected output |
