@@ -168,8 +168,13 @@ work.**
   queue becomes a bottleneck.
 
 ### Phase 8: Performance and maturity
+- Done: escape analysis. Object literals, constructor calls, closures and
+  boxes of captured locals that cannot outlive their function get a slot in
+  its stack frame (`packages/codegen-c/src/escape.ts`); benchmarks in
+  `bench/`.
+- Next for escape analysis: inlining small functions so that returned
+  objects can stay on the stack, and stack arrays of known size.
 - Custom precise GC (needs stack maps, so likely together with LLVM).
-- Escape analysis for stack allocation.
 - LLVM or Cranelift backend.
 - `try` / `catch` if it turns out to be needed.
 

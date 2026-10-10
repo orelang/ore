@@ -220,7 +220,7 @@ member completion. Another binary can be set in Zed settings:
 | 6. Modules, packages, standard library, C interop, `ore test`, `ore fmt` | done |
 | 7. Concurrency: tasks, `Chan<T>`, `select` on green threads | done |
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
-| 8. Precise GC, escape analysis, LLVM backend | planned |
+| 8. Escape analysis, precise GC, LLVM backend | in progress |
 | 9. Self-hosting | planned |
 
 ### Known limitations
@@ -243,6 +243,7 @@ member completion. Another binary can be set in Zed settings:
 bun test                         # unit and golden tests
 bun run typecheck
 ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
+bench/run.sh                     # time the benchmarks in bench/ (release builds)
 ```
 
 | Path | Contents |
@@ -251,7 +252,7 @@ ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
 | `packages/project` | Module resolution, package.json, loading programs |
 | `packages/checker` | Type checker producing IR |
 | `packages/ir` | Type model and typed IR |
-| `packages/codegen-c` | IR to C |
+| `packages/codegen-c` | IR to C, escape analysis |
 | `packages/driver` | Compilation pipeline, clang, runtime and GC cache |
 | `packages/cli` | The `ore` command, including `test` and `fmt` |
 | `packages/lsp` | Language server |
@@ -260,3 +261,4 @@ ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
 | `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`) |
 | `tests/run` | Programs with expected output; directories are multi-module programs |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`) |
+| `bench/` | Benchmarks |
