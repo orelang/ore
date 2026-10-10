@@ -146,7 +146,8 @@ work.**
   function types, `using` / dispose.
 
 ### Phase 6: Modules and tooling (3–4 weeks)
-- ES imports, `ore.json` manifest, `std/*` imports, FFI.
+- ES imports; projects are npm packages: `package.json` (`main`, dependencies in
+  `node_modules`, `package-lock.json`); standard modules as `ore:*`; FFI.
 - `ore test` (`*.test.ore`, `test("name", t => ...)`).
 - `ore fmt` (initially Prettier / dprint with the TS parser on `.ore`).
 - LSP: rename, references, semantic tokens.
