@@ -1,0 +1,77 @@
+// Generic methods, in plain and generic classes.
+
+class Box<T> {
+    constructor(readonly value: T) {}
+
+    map<U>(f: (value: T) => U): Box<U> {
+        return new Box(f(this.value))
+    }
+
+    pair<U>(other: Box<U>): string {
+        return `${this.value} & ${other.value}`
+    }
+}
+
+class List<T> {
+    private items: T[] = []
+
+    add(item: T): List<T> {
+        this.items.push(item)
+        return this
+    }
+
+    map<U>(f: (item: T) => U): List<U> {
+        const out = new List<U>()
+        for (const item of this.items) out.add(f(item))
+        return out
+    }
+
+    reduce<A>(initial: A, f: (acc: A, item: T) => A): A {
+        let acc = initial
+        for (const item of this.items) acc = f(acc, item)
+        return acc
+    }
+
+    toArray(): T[] {
+        return this.items.slice()
+    }
+}
+
+interface Named {
+    readonly name: string
+}
+
+class Registry {
+    private names: string[] = []
+
+    register<T extends Named>(item: T): T {
+        this.names.push(item.name)
+        return item
+    }
+
+    describe<T>(label: string, values: T[]): string {
+        return `${label}: ${values.length}`
+    }
+
+    all(): string {
+        return this.names.join(",")
+    }
+}
+
+const box = new Box(21)
+const doubled = box.map((n) => n * 2)
+const text = doubled.map((n) => `#${n}`)
+console.log(doubled.value, text.value, box.pair(text))
+
+const words = new List<string>().add("one").add("three")
+const lengths = words.map((w) => w.length)
+console.log(
+    lengths.toArray().join(","),
+    lengths.reduce(0, (a, n) => a + n),
+    words.reduce("", (a, w) => a + w.slice(0, 1)),
+)
+
+const r = new Registry()
+const ada = r.register({ name: "ada", age: 36 })
+r.register({ name: "grace" })
+console.log(ada.age, r.all(), r.describe<f64>("floats", [1.5, 2.5]))

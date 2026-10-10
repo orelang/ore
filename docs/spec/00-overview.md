@@ -292,8 +292,13 @@ exhaustive: like a `default`, it lets a function end without `return`.
   constraint is checked where the instance is created. Errors inside a
   generic name the instance, e.g. `(in 'twice<string>')`. A generic that is
   never instantiated is only parsed.
-- Methods cannot have their own type parameters yet; default type arguments
-  are not supported.
+- Class methods can have their own type parameters
+  (`map<U>(f: (x: T) => U): Box<U>`), instantiated per call like generic
+  functions; they cannot be used as values, and interface methods cannot be
+  generic. Default type arguments are not supported.
+- A function literal passed for a parameter like `f: (x: T) => U` gets its
+  parameter types from the type arguments inferred from the other arguments,
+  and its result binds the rest: `box.map((n) => n * 2)`.
 
 ### 3.15 Maps
 

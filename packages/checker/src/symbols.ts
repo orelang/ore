@@ -8,7 +8,7 @@ export type BuiltinFunc = string
 /** A declaration with type parameters, and its instances by type arguments. */
 export interface Generic {
   name: string
-  decl: ts.FunctionDeclaration | ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration
+  decl: ts.FunctionDeclaration | ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration | ts.MethodDeclaration
   params: readonly ts.TypeParameterDeclaration[]
   /** The scope of the declaration. */
   scope: Scope

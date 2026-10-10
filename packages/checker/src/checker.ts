@@ -181,6 +181,8 @@ class Checker {
   private readonly itabs = new Map<string, ir.Itab>()
   /** Declarations of fields and methods, for tooling. */
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
+  /** Generic methods of classes by name, instantiated per call like generic functions. */
+  private readonly genericMethods = new Map<StructType, Map<string, { generic: Generic; info: ClassInfo; private: boolean }>>()
   /** Optional and rest parameters of functions, by their parameter list. */
   private readonly signatures = new WeakMap<ir.Local[], Signature>()
 
@@ -484,7 +486,7 @@ class Checker {
   // ---------------------------------------------------------------------------
   // Generics
 
-  private declareGeneric(decl: Generic["decl"], scope: Scope) {
+  private declareGeneric(decl: Exclude<Generic["decl"], ts.MethodDeclaration>, scope: Scope) {
     const name = decl.name!.text
     const params = decl.typeParameters!
     for (const p of params) if (p.default) this.error(p.default, "Default type arguments are not supported yet.")
@@ -541,6 +543,13 @@ class Checker {
       this.pending.push(inContext(() => this.checkFunctionBody(decl, func, scope)))
       return func
     }
+    if (ts.isMethodDeclaration(decl)) {
+      const owner = this.genericMethodOwner(generic)!
+      const func = this.makeMethod(decl, owner, scope, `${owner.type.name}.${label}`, `ore_m_${owner.cname}_${cname}`)
+      generic.instances.set(key, func)
+      this.pending.push(inContext(() => this.checkMethodBody(decl, func, owner.type, scope)))
+      return func
+    }
     if (ts.isInterfaceDeclaration(decl)) {
       const type: InterfaceType = { kind: "interface", id: this.nextStructId++, name: label, members: [] }
       generic.instances.set(key, type)
@@ -564,6 +573,12 @@ class Checker {
       }),
     )
     return type
+  }
+
+  /** The class declaring a generic method. */
+  private genericMethodOwner(generic: Generic): ClassInfo | undefined {
+    for (const methods of this.genericMethods.values()) for (const m of methods.values()) if (m.generic === generic) return m.info
+    return undefined
   }
 
   /** Whether a type argument satisfies a constraint. */
@@ -592,6 +607,11 @@ class Checker {
   private inferFrom(n: ts.TypeNode, type: Type, names: string[], bindings: Map<string, Type>, scope: Scope): void {
     const infer = (node: ts.TypeNode, t: Type): void => this.inferFrom(node, t, names, bindings, scope)
     if (ts.isParenthesizedTypeNode(n)) return infer(n.type, type)
+    if (ts.isFunctionTypeNode(n)) {
+      if (type.kind !== "func") return
+      n.parameters.forEach((p, i) => p.type && type.params[i] && infer(p.type, type.params[i]!))
+      return infer(n.type, type.result)
+    }
     if (ts.isArrayTypeNode(n)) return type.kind === "array" ? infer(n.elementType, type.elem) : undefined
     if (ts.isTypeReferenceNode(n) && ts.isIdentifier(n.typeName)) {
       const name = n.typeName.text
@@ -690,11 +710,41 @@ class Checker {
       const instance = this.instantiate(generic, explicit, node)
       return instance ? { instance, operands: [] } : undefined
     }
-    const operands = args.map((arg, i) => {
+    // Function literals for parameters such as `f: (x: T) => U` come last: the
+    // other arguments bind the types of their parameters (`T`), and their
+    // results bind the rest (`U`).
+    const deferred = (arg: ts.Expression, p: ts.TypeNode | undefined): p is ts.FunctionTypeNode =>
+      (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) && p !== undefined && ts.isFunctionTypeNode(p) && mentions(p, names)
+    const found: (Operand | undefined)[] = args.map((arg, i) => {
       const p = params[i]?.type
+      if (deferred(arg, p)) return undefined
       const expected = p && !mentions(p, names) ? this.resolveType(p, generic.scope) : undefined
       return this.checkExpr(arg, scope, expected)
     })
+    const bindings = new Map<string, Type>()
+    const bind = (i: number) => {
+      const o = found[i]
+      const p = params[i]?.type
+      if (o && o.k !== "error" && p) this.inferFrom(p, o.k === "typed" ? o.expr.type : this.defaultType(o), names, bindings, generic.scope)
+    }
+    args.forEach((_, i) => bind(i))
+    args.forEach((arg, i) => {
+      const p = params[i]?.type
+      if (found[i] || !deferred(arg, p)) return
+      const unbound = names.filter((n) => !bindings.has(n))
+      const known = new Scope(generic.scope)
+      for (const [n, t] of bindings) known.declareType(n, { type: t, decl: p })
+      const paramTypes = p.parameters.map((q) => (q.type && !mentions(q.type, unbound) ? this.resolveType(q.type, known) : undefined))
+      if (paramTypes.some((t) => t === undefined)) {
+        found[i] = this.checkExpr(arg, scope)
+      } else {
+        const resultKnown = !mentions(p.type, unbound)
+        const result = resultKnown ? this.resolveType(p.type, known) ?? types.void : types.void
+        found[i] = this.checkClosure(arg as ts.ArrowFunction | ts.FunctionExpression, scope, { kind: "func", params: paramTypes as Type[], result }, !resultKnown)
+      }
+      bind(i)
+    })
+    const operands = found as Operand[]
     if (operands.some((o) => o.k === "error")) return undefined
     const argTypes = operands.map((o, i) => (o.k === "typed" ? o.expr.type : o.k === "error" ? undefined : this.defaultType(o)))
     const typeArgsResolved = this.inferTypeArgs(generic, params, argTypes, node)
@@ -848,26 +898,20 @@ class Checker {
         if (flags.readonly) this.error(member, "Methods cannot be 'readonly'.")
         if (member.asteriskToken) this.error(member.asteriskToken, "Generators are not supported in Ore.")
         if (member.questionToken) this.error(member.questionToken, "Optional methods are not supported.")
-        if (member.typeParameters) this.error(member.typeParameters[0]!, "Generic methods are not supported yet.")
         if (!member.body) {
           this.error(member.name, "A method must have a body.")
           continue
         }
-        const params = this.resolveParams(member.parameters, scope)
-        const result = member.type ? this.resolveType(member.type, scope) ?? types.void : types.void
-        const func: ir.Func = {
-          name: `ore_m_${info.cname}_${cIdent(name)}`,
-          sourceName: `${className}.${name}`,
-          line: this.line(member.name),
-          type: { kind: "func", params: params.map((p) => p.type), result },
-          params,
-          receiver: this.newLocal("this", type, false),
-          body: { k: "block", body: [] },
-          exported: false,
+        if (member.typeParameters) {
+          for (const p of member.typeParameters) if (p.default) this.error(p.default, "Default type arguments are not supported yet.")
+          const generic: Generic = { name, decl: member, params: member.typeParameters, scope, instances: new Map() }
+          if (!this.genericMethods.has(type)) this.genericMethods.set(type, new Map())
+          this.genericMethods.get(type)!.set(name, { generic, info, private: flags.private })
+          continue
         }
+        const func = this.makeMethod(member, info, scope, `${className}.${name}`, `ore_m_${info.cname}_${cIdent(name)}`)
         type.methods.push({ name, func, private: flags.private })
         info.methods.push([member, func])
-        this.module.functions.push(func)
       } else if (ts.isConstructorDeclaration(member)) {
         if (info.ctorDecl) {
           this.error(member, "A class can have only one constructor.")
@@ -999,16 +1043,36 @@ class Checker {
       }
     }
 
-    for (const [decl, func] of info.methods) {
-      const prologue: ir.Stmt[] = []
-      const scope = this.paramScope(decl.parameters, func.params, outer, prologue)
-      this.facts = [new Map()]
-      this.fn = { result: func.type.result, loops: [], nextLoopId: 0, this: func.receiver, cls: type }
-      func.body = this.checkBlock(decl.body!, scope)
-      func.body.body.unshift(...prologue)
-      this.fn = undefined
-      this.checkReturns(func, decl.type ?? decl.name)
+    for (const [decl, func] of info.methods) this.checkMethodBody(decl, func, type, outer)
+  }
+
+  /** A method with the signature of a declaration, resolved in `scope`; the body is checked later. */
+  private makeMethod(decl: ts.MethodDeclaration, info: ClassInfo, scope: Scope, sourceName: string, cname: string): ir.Func {
+    const params = this.resolveParams(decl.parameters, scope)
+    const result = decl.type ? this.resolveType(decl.type, scope) ?? types.void : types.void
+    const func: ir.Func = {
+      name: cname,
+      sourceName,
+      line: this.line(decl.name),
+      type: { kind: "func", params: params.map((p) => p.type), result },
+      params,
+      receiver: this.newLocal("this", info.type, false),
+      body: { k: "block", body: [] },
+      exported: false,
     }
+    this.module.functions.push(func)
+    return func
+  }
+
+  private checkMethodBody(decl: ts.MethodDeclaration, func: ir.Func, type: StructType, outer: Scope) {
+    const prologue: ir.Stmt[] = []
+    const scope = this.paramScope(decl.parameters, func.params, outer, prologue)
+    this.facts = [new Map()]
+    this.fn = { result: func.type.result, loops: [], nextLoopId: 0, this: func.receiver, cls: type }
+    func.body = this.checkBlock(decl.body!, scope)
+    func.body.body.unshift(...prologue)
+    this.fn = undefined
+    this.checkReturns(func, decl.type ?? decl.name)
   }
 
   /** Checks that a class has the members of the interfaces it `implements`. */
@@ -1089,7 +1153,7 @@ class Checker {
           add({ k: "field", name, type, readonly }, member.name, member)
         }
       } else if (ts.isMethodSignature(member)) {
-        if (member.typeParameters) this.error(member.typeParameters[0]!, "Generic methods are not supported yet.")
+        if (member.typeParameters) this.error(member.typeParameters[0]!, "Generic methods are not supported in interfaces: calls through an interface cannot pick an instance.")
         const params = this.resolveParams(member.parameters, scope)
         const result = member.type ? this.resolveType(member.type, scope) ?? types.void : types.void
         add({ k: "method", name, type: { kind: "func", params: params.map((p) => p.type), result } }, member.name, member)
@@ -2587,7 +2651,8 @@ class Checker {
       const func = call.instance as ir.Func
       return this.callFunc(func, node.arguments, node, scope, `Function '${generic.name}'`, undefined, call.operands.length > 0 ? call.operands : undefined)
     }
-    if (node.typeArguments) return this.fail(node.typeArguments[0]!, "Type arguments are only allowed for generic functions.")
+    // Type arguments of a method call are checked with the method.
+    if (node.typeArguments && !ts.isPropertyAccessExpression(callee)) return this.fail(node.typeArguments[0]!, "Type arguments are only allowed for generic functions.")
     if (node.questionDotToken && !ts.isPropertyAccessExpression(callee)) {
       // `f?.(...)` calls a function value unless it is null.
       const value = this.checkExpr(callee, scope)
@@ -3140,6 +3205,7 @@ class Checker {
         if (!this.checkAccess(struct, method, name, nameNode)) return errorOperand
         return typed({ k: "bound-method", type: method.func.type, receiver: value, func: method.func })
       }
+      if (this.genericMethods.get(struct)?.has(name)) return this.fail(nameNode, `'${name}' is a generic method and cannot be used as a value; call it.`)
     }
     if (value.type.kind === "interface") {
       const index = value.type.members.findIndex((m) => m.name === name)
@@ -3274,6 +3340,17 @@ class Checker {
     const args = node.arguments
     const type = value.type
 
+    const generic = type.kind === "struct" ? this.genericMethods.get(type)?.get(name) : undefined
+    if (node.typeArguments && !generic) return this.fail(node.typeArguments[0]!, "Type arguments are only allowed for generic functions and methods.")
+    if (type.kind === "struct" && generic) {
+      this.defineMember(callee.name, type, name)
+      if (!this.checkAccess(type, generic, name, callee.name)) return errorOperand
+      const decl = generic.generic.decl as ts.MethodDeclaration
+      const call = this.genericCall(generic.generic, decl.parameters, node.typeArguments, args, node, scope)
+      if (!call) return errorOperand
+      const what = `Method '${type.name}.${name}'`
+      return this.callFunc(call.instance as ir.Func, args, node, scope, what, value, call.operands.length > 0 ? call.operands : undefined)
+    }
     if (type.kind === "struct") {
       const method = findMethod(type, name)
       if (method) {
