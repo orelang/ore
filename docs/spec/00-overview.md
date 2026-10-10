@@ -407,13 +407,33 @@ equivalent of Go's `defer`.
 
 ## 5. Concurrency
 
-Ore uses green threads without function coloring:
+Ore uses green threads ("tasks") without function coloring, like Go:
 
-- `spawn(fn)` starts a green thread.
-- `Chan<T>` is a typed channel; `select(...)` waits on several channels.
-- Blocking operations (I/O, channel receive) park the current green thread.
+```ts
+const results = new Chan<string>()
+task.spawn(() => results.send(work()))
+console.log(results.receive())
+```
 
-`async`, `await` and `Promise` are rejected.
+- `task.spawn(fn)` starts a task. Tasks run on one OS thread and switch when
+  one waits on a channel, sleeps (`task.sleep(ms)`) or calls `task.yield()`;
+  there is no preemption. The program ends when `main` returns, as in Go.
+  When every task waits, the program panics with a deadlock.
+- `Chan<T>` is a channel: `new Chan<T>()` hands values over directly (send
+  waits for a receiver), `new Chan<T>(n)` buffers `n` values. `send(v)`
+  waits for room and panics on a closed channel; `receive()` waits for a
+  value and returns `null` once the channel is closed and empty; `close()`
+  wakes all waiting tasks. `for (const v of ch)` receives until the channel
+  is closed.
+- `task.select(cases, otherwise?)` runs the handler of one case that can
+  proceed, choosing at random among several, or else waits for the first
+  one. Cases are `ch.onReceive((v) => ...)` (`v` is `null` once closed),
+  `ch.onSend(value, () => ...)` and `task.after(ms, () => ...)`. With
+  `otherwise`, it runs instead of waiting when no case is ready.
+- Each task has a fixed stack (256 KiB; 8 MiB for `main`) with a guard page:
+  overflowing it crashes the program.
+- File operations block all tasks. `async`, `await` and `Promise` are
+  rejected.
 
 ## 6. Removed TypeScript features
 
