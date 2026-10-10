@@ -567,6 +567,7 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       // The value is computed before resources are disposed and the frame is popped.
       const cleanup = [disposeFrom(-1), ctx.debug ? `ore_rt_top = ${frame}.prev;` : ""].filter(Boolean).join(" ")
       if (!stmt.value) return cleanup ? `{ ${cleanup} return; }` : "return;"
+      if (stmt.value.type.kind === "void") return `{ ${emitExpr(stmt.value)}; ${cleanup} return; }`
       if (!cleanup) return `return ${emitExpr(stmt.value)};`
       return `{ ${cType(stmt.value.type)} ore_ret_ = ${emitExpr(stmt.value)}; ${cleanup} return ore_ret_; }`
     }
@@ -1304,6 +1305,13 @@ const builtins: Record<string, (a: string[], expr: ir.BuiltinCall) => string> = 
   "Date.now": () => "ore_rt_now()",
   "process.args": () => "ore_rt_args()",
   "internal.runTest": (a) => `ore_rt_run_test(${a[0]}, ${a[1]})`,
+  "internal.netListen": (a, e) => fallibleValue(e, "i64", `ore_rt_net_listen(${a[0]}, ${a[1]}, &v_, &m_)`),
+  "internal.netConnect": (a, e) => fallibleValue(e, "i64", `ore_rt_net_connect(${a[0]}, ${a[1]}, &v_, &m_)`),
+  "internal.netAccept": (a, e) => fallibleValue(e, "i64", `ore_rt_net_accept(${a[0]}, &v_, &m_)`),
+  "internal.netRead": (a, e) => fallible(e, "ore_string", `ore_rt_net_read(${a[0]}, ${a[1]}, &v_)`, "v_"),
+  "internal.netWrite": (a, e) => fallible(e, undefined, `ore_rt_net_write(${a[0]}, ${a[1]}, &v_)`, "v_"),
+  "internal.netClose": (a) => `ore_rt_net_close(${a[0]})`,
+  "internal.netPort": (a) => `ore_rt_net_port(${a[0]})`,
   "task.spawn": (a) => `ore_rt_spawn(${a[0]})`,
   "task.sleep": (a) => `ore_rt_sleep(${a[0]})`,
   "task.yield": () => "ore_rt_yield()",
@@ -1332,6 +1340,15 @@ function fallible(expr: ir.BuiltinCall, t: string | undefined, call: string, v: 
   const ok = t ? inject(u, u.members.findIndex((m) => m.kind !== "interface"), v) : inject(u, u.members.findIndex((m) => m.kind === "null"), "")
   return `({ ore_string ${t ? "" : ""}v_; ${call} ? ${ok} : ${fail}; })`
 }
+/** A `T | Error` from a runtime call that stores the value in `v_` or the error message in `m_`, and returns success. */
+function fallibleValue(expr: ir.BuiltinCall, t: string, call: string): string {
+  const u = expr.type as UnionType
+  const { ctor, itab } = expr.error!
+  const fail = inject(u, u.members.findIndex((m) => m.kind === "interface"), `((ore_iface){(void *)${ctor.name}(m_), ore_itab_${itab.id}})`)
+  const ok = inject(u, u.members.findIndex((m) => m.kind !== "interface"), "v_")
+  return `({ ${t} v_; ore_string m_; ${call} ? ${ok} : ${fail}; })`
+}
+
 for (const f of ["sqrt", "cbrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot", "floor", "ceil", "trunc"]) {
   builtins[`Math.${f}`] = (a) => `${f}(${a.join(", ")})`
 }

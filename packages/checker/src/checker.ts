@@ -166,6 +166,7 @@ class Checker {
   private readonly info: CheckInfo = { types: new Map(), definitions: new Map() }
   private readonly module: ir.Module
   private nextLocalId = 0
+  private readonly localsById = new Map<number, ir.Local>()
   private fn: FuncContext | undefined
   /** The scope of the module whose top-level code is being checked: its variables are globals. */
   private globals: Scope | undefined
@@ -2087,7 +2088,9 @@ class Checker {
     }
     const value = this.checkExpr(stmt.expression, scope, result)
     if (result.kind === "void") {
-      this.error(stmt.expression, "A function without a return type annotation cannot return a value.")
+      // `return f()` of a void `f` calls it and returns.
+      if (value.k === "typed" && value.expr.type.kind === "void") return { k: "return", value: value.expr }
+      if (value.k !== "error") this.error(stmt.expression, "A function without a return type annotation cannot return a value.")
       return { k: "return" }
     }
     return { k: "return", value: this.coerce(value, result, stmt.expression) }
@@ -2158,7 +2161,19 @@ class Checker {
     const isArrow = ts.isArrowFunction(node)
     const savedFn = this.fn
     const savedFacts = this.facts
-    this.facts = [new Map()]
+    // What is known about constants where a function literal is created stays
+    // true inside it. A hoisted declaration may run earlier, so it knows nothing.
+    const inherited = new Map<string, Type>()
+    if (!ts.isFunctionDeclaration(node)) {
+      for (const frame of savedFacts) {
+        for (const [key, type] of frame) {
+          const id = /^L(\d+)$/.exec(key)?.[1]
+          const local = id === undefined ? undefined : this.localsById.get(Number(id))
+          if (local && !local.mutable && !local.assigned) inherited.set(key, type)
+        }
+      }
+    }
+    this.facts = [inherited]
     this.fn = {
       result: annotated ?? (inferResult ? undefined : want && want.result.kind !== "void" ? want.result : want ? types.void : undefined),
       closure: func,
@@ -3741,7 +3756,9 @@ class Checker {
   }
 
   private newLocal(name: string, type: Type, mutable: boolean): ir.Local {
-    return { id: this.nextLocalId++, name, type, mutable }
+    const local: ir.Local = { id: this.nextLocalId++, name, type, mutable }
+    this.localsById.set(local.id, local)
+    return local
   }
 
   private error(node: ts.Node, message: string) {
