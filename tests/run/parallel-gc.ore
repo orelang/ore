@@ -1,0 +1,44 @@
+// threads: 8
+
+class Node {
+    next: Node | null = null
+    constructor(public value: int) {}
+}
+
+/** Builds a list, yielding often so that collections happen while other tasks are suspended. */
+function build(n: int): Node {
+    let head = new Node(0)
+    for (let i = 1; i < n; i++) {
+        const node = new Node(i)
+        node.next = head
+        head = node
+        if (i % 50 === 0) task.yield()
+    }
+    return head
+}
+
+function sum(head: Node): int {
+    let total = 0
+    let cur: Node | null = head
+    while (cur !== null) {
+        total += cur.value
+        cur = cur.next
+    }
+    return total
+}
+
+export function main() {
+    const results = new Chan<int>()
+    const tasks = 50
+    for (let t = 0; t < tasks; t++) {
+        task.spawn(() => {
+            const list = build(2000)
+            let garbage = ""
+            for (let i = 0; i < 200; i++) garbage = `${garbage.length}${i}`
+            results.send(sum(list))
+        })
+    }
+    let total = 0
+    for (let t = 0; t < tasks; t++) total += results.receive() ?? 0
+    console.log(total)
+}

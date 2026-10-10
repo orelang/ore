@@ -183,7 +183,16 @@ static ore_string error_message(const char *what, ore_string path) {
   return str_copy(buf, (size_t)n);
 }
 
+static bool read_file(ore_string path, ore_string *out);
+
 bool ore_rt_read_file(ore_string path, ore_string *out) {
+  ore_rt_blocking_enter();
+  bool ok = read_file(path, out);
+  ore_rt_blocking_exit();
+  return ok;
+}
+
+static bool read_file(ore_string path, ore_string *out) {
   FILE *f = fopen(c_string(path), "rb");
   if (!f) return *out = error_message("cannot open", path), false;
   i64 cap = 4096, len = 0;
@@ -204,7 +213,16 @@ bool ore_rt_read_file(ore_string path, ore_string *out) {
   return true;
 }
 
+static bool write_file(ore_string path, ore_string data, ore_string *err);
+
 bool ore_rt_write_file(ore_string path, ore_string data, ore_string *err) {
+  ore_rt_blocking_enter();
+  bool ok = write_file(path, data, err);
+  ore_rt_blocking_exit();
+  return ok;
+}
+
+static bool write_file(ore_string path, ore_string data, ore_string *err) {
   FILE *f = fopen(c_string(path), "wb");
   if (!f) return *err = error_message("cannot open", path), false;
   bool ok = fwrite(data.ptr, 1, (size_t)data.len, f) == (size_t)data.len;
@@ -226,11 +244,11 @@ f64 ore_rt_round(f64 x) {
   return x - r >= 0.5 ? r + 1 : r;
 }
 
-// xorshift64*, seeded from the time at startup.
-static u64 random_state;
+// xorshift64*, per OS thread, seeded from the time and the thread.
+static _Thread_local u64 random_state;
 
 f64 ore_rt_random(void) {
-  if (random_state == 0) random_state = (u64)time(NULL) * 0x9e3779b97f4a7c15ull | 1;
+  if (random_state == 0) random_state = ((u64)time(NULL) ^ (u64)(uintptr_t)&random_state) * 0x9e3779b97f4a7c15ull | 1;
   random_state ^= random_state >> 12;
   random_state ^= random_state << 25;
   random_state ^= random_state >> 27;
@@ -672,8 +690,8 @@ ore_array *ore_rt_array_slice(ore_array *a, i64 elem_size, i64 start, i64 end) {
 // ---------------------------------------------------------------------------
 // Printing
 
-// Where printing goes; stdout unless set by ore_rt_print_to.
-static FILE *out;
+// Where printing goes, per OS thread; stdout unless set by ore_rt_print_to.
+static _Thread_local FILE *out;
 
 static FILE *stream(void) { return out ? out : stdout; }
 

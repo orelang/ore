@@ -335,11 +335,14 @@ void ore_rt_spawn(ore_closure body);
 void ore_rt_yield(void);
 /** Suspends the current task for `ms` milliseconds. */
 void ore_rt_sleep(i64 ms);
-/** The current task, for wait queues. */
+/** The current task. */
 void *ore_rt_task_current(void);
-/** Suspends the current task until another wakes it with ore_rt_task_wake. */
-void ore_rt_task_block(void);
-void ore_rt_task_wake(void *task);
+/**
+ * Brackets a call that may block its OS thread, such as file I/O, so that
+ * another worker runs the other tasks meanwhile.
+ */
+void ore_rt_blocking_enter(void);
+void ore_rt_blocking_exit(void);
 
 // Channels, as in Go: a buffer of `cap` values (none for a rendezvous) and
 // queues of tasks waiting to send or receive.
@@ -351,6 +354,8 @@ typedef struct {
   u8 *buf;
   bool closed;
   ore_waiter *receivers, *senders;
+  /** A pthread mutex guarding the channel. */
+  void *lock;
 } ore_chan;
 
 ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap);

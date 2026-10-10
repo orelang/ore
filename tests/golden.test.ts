@@ -7,6 +7,7 @@
  *                      Header comments set other expectations:
  *                        // exit: 2
  *                        // stderr: panic: integer divide by zero   (substring, repeatable)
+ *                        // threads: 4    (OS threads for tasks; default 1, for a stable order)
  * tests/diag/NAME.ore  must fail to check; every diagnostic must sit on a line
  *                      annotated with `// error: <substring of the message>`,
  *                      and every annotation must be matched. A directory
@@ -49,7 +50,8 @@ describe("run", () => {
       const result = await build(path, { output })
       expect(result.diagnostics.map((d) => d.message)).toEqual([])
 
-      const proc = Bun.spawn([output], { stdout: "pipe", stderr: "pipe" })
+      const threads = header(text, "threads") ?? "1"
+      const proc = Bun.spawn([output], { stdout: "pipe", stderr: "pipe", env: { ...process.env, ORE_THREADS: threads } })
       const [code, stdout, stderr] = await Promise.all([
         proc.exited,
         new Response(proc.stdout).text(),

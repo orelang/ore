@@ -12,11 +12,12 @@ export const gcObjectName = `gc-${process.platform}-${process.arch}.o`
 const sourceDir = join(import.meta.dir, "../../../runtime/third_party/bdwgc")
 
 /**
- * Build options of the GC. ALWAYS_SMALL_CLEAR_STACK: by default the GC clears
- * stack memory down to the lowest stack pointer it has seen, which with task
- * stacks lies on another stack and reaches guard pages.
+ * Build options of the GC. GC_THREADS: tasks run on several OS threads.
+ * ALWAYS_SMALL_CLEAR_STACK: by default the GC clears stack memory down to the
+ * lowest stack pointer it has seen, which with task stacks lies on another
+ * stack and reaches guard pages.
  */
-const gcDefines = ["-DNO_EXECUTE_PERMISSION", "-DALWAYS_SMALL_CLEAR_STACK"]
+const gcDefines = ["-DNO_EXECUTE_PERMISSION", "-DALWAYS_SMALL_CLEAR_STACK", "-DGC_THREADS", "-DGC_BUILTIN_ATOMIC", "-DPARALLEL_MARK"]
 
 /** Compiles the Boehm GC amalgamation into one object file. */
 export async function compileGc(output: string): Promise<void> {

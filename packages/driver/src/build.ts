@@ -73,7 +73,7 @@ export async function build(path: string, options: BuildOptions): Promise<BuildR
     const cPath = join(dir, "main.c")
     writeFileSync(cPath, c)
     const libs = (native?.link ?? []).map((l) => `-l${l}`)
-    await clang([...flags, "-I", runtime.includeDir, cPath, ...(native?.sources ?? []), ...runtime.objects, "-lm", ...libs, "-o", options.output])
+    await clang([...flags, "-I", runtime.includeDir, cPath, ...(native?.sources ?? []), ...runtime.objects, "-lm", "-pthread", ...libs, "-o", options.output])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

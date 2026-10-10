@@ -1,0 +1,76 @@
+// threads: 8
+
+/** Counts primes in [from, to) the slow way, to keep a worker busy. */
+function countPrimes(from: int, to: int): int {
+    let count = 0
+    for (let n = from; n < to; n++) {
+        if (n < 2) continue
+        let prime = true
+        for (let d = 2; d * d <= n; d++) {
+            if (n % d === 0) {
+                prime = false
+                break
+            }
+        }
+        if (prime) count++
+    }
+    return count
+}
+
+export function main() {
+    // Work split over tasks that run in parallel.
+    const parts = new Chan<int>(16)
+    const chunk = 25000
+    for (let i = 0; i < 16; i++) task.spawn(() => parts.send(countPrimes(i * chunk, (i + 1) * chunk)))
+    let primes = 0
+    for (let i = 0; i < 16; i++) primes += parts.receive() ?? 0
+    console.log(primes)
+
+    // Many small messages through an unbuffered channel between threads:
+    // 8 senders, 4 receivers, closed when every sender is done.
+    const numbers = new Chan<int>()
+    const finished = new Chan<bool>()
+    const sums = new Chan<int>()
+    const senders = 8
+    for (let s = 0; s < senders; s++) {
+        task.spawn(() => {
+            for (let i = 1; i <= 10000; i++) numbers.send(i)
+            finished.send(true)
+        })
+    }
+    task.spawn(() => {
+        for (let s = 0; s < senders; s++) finished.receive()
+        numbers.close()
+    })
+    for (let r = 0; r < 4; r++) {
+        task.spawn(() => {
+            let sum = 0
+            for (const n of numbers) sum += n
+            sums.send(sum)
+        })
+    }
+    let total = 0
+    for (let r = 0; r < 4; r++) total += sums.receive() ?? 0
+    console.log(total)
+
+    // Selects with timeouts across threads.
+    const ticks = new Chan<int>()
+    task.spawn(() => {
+        for (let i = 0; i < 200; i++) ticks.send(i)
+        ticks.close()
+    })
+    let seen = 0
+    let open = true
+    while (open) {
+        task.select([
+            ticks.onReceive((v) => {
+                if (v === null) open = false
+                else seen++
+            }),
+            task.after(1000, () => {
+                open = false
+            }),
+        ])
+    }
+    console.log(seen)
+}
