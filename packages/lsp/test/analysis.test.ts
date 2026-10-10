@@ -101,7 +101,7 @@ test("completion inside a class includes private members", () => {
 test("completion for arrays and strings", () => {
   const text = `export function main() {\n  const xs = [1]\n  xs.length\n}\n`
   const labels = analyze("main.ore", text).completions(pos(text, "xs.length", "xs.", true)).map((c) => c.label)
-  expect(labels).toEqual(["length", "push", "pop", "slice"])
+  expect(labels.slice(0, 6)).toEqual(["length", "push", "pop", "slice", "forEach", "map"])
 })
 
 test("hover on classes, methods and properties", () => {

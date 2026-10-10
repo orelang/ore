@@ -128,6 +128,11 @@ function emitUnion(u: UnionType): string[] {
 
 /** C equality of two values of a non-union type, as `===`. */
 function equals(a: string, b: string, type: Type): string {
+  if (type.kind === "union") {
+    const repr = unionRepr(type)
+    if (repr.k === "tagged") return `${unionName(type)}_eq(${a}, ${b})`
+    return equals(a, b, repr.k === "strings" ? types.string : repr.base)
+  }
   if (isStringLike(type)) return `ore_rt_str_eq(${a}, ${b})`
   if (type.kind === "func") return `(${a}.fn == ${b}.fn && ${a}.env == ${b}.env)`
   if (type.kind === "interface") return `(${a}.data == ${b}.data)`
@@ -662,6 +667,8 @@ function emitExpr(expr: ir.Expr): string {
     }
     case "bound-method":
       return emitBound(expr)
+    case "array-method":
+      return emitArrayMethod(expr)
     case "coalesce": {
       const from = expr.value.type as UnionType
       const t = temp()
@@ -788,6 +795,97 @@ function emitBound(expr: ir.BoundMethod): string {
   return `({ ${receiverType} *${e} = ore_rt_alloc(sizeof(${receiverType})); *${e} = ${emitExpr(expr.receiver)}; (ore_closure){(void *)${name}, ${e}}; })`
 }
 
+/** A call of the closure in C variable `f` with the first arguments it takes. */
+function callClosure(f: string, type: ir.FuncType, args: string[]): string {
+  const fn = `(${cType(type.result)} (*)(${["void *", ...type.params.map(cType)].join(", ")}))${f}.fn`
+  return `(${fn})(${[`${f}.env`, ...args.slice(0, type.params.length)].join(", ")})`
+}
+
+function emitArrayMethod(expr: ir.ArrayMethod): string {
+  const T = (expr.array.type as ir.ArrayType).elem
+  const t = cType(T)
+  const a = temp()
+  const i = temp()
+  const n = temp()
+  const f = temp()
+  const at = `((${t} *)${a}->data)[${i}]`
+  const head = `ore_array *${a} = ${emitExpr(expr.array)};`
+  const callback = expr.args[0]
+  const cb = callback ? `ore_closure ${f} = ${emitExpr(callback)};` : ""
+  const ft = callback?.type as ir.FuncType
+  const call = (args: string[]) => callClosure(f, ft, args)
+  // Elements present when the call starts, as in JavaScript, while they still exist.
+  const loop = (body: string) => `i64 ${n} = ${a}->len; for (i64 ${i} = 0; ${i} < ${n} && ${i} < ${a}->len; ${i}++) { ${body} }`
+  const r = temp()
+  const x = temp()
+  switch (expr.method) {
+    case "forEach":
+      return `({ ${head} ${cb} ${loop(`${call([at, i])};`)} })`
+    case "map": {
+      const u = cType((expr.type as ir.ArrayType).elem)
+      return `({ ${head} ${cb} ore_array *${r} = ore_rt_array_new(sizeof(${u}), ${a}->len); ${loop(`((${u} *)${r}->data)[${i}] = ${call([at, i])};`)} ${r}; })`
+    }
+    case "filter":
+      return `({ ${head} ${cb} ore_array *${r} = ore_rt_array_new(sizeof(${t}), 0); ${loop(`${t} ${x} = ${at}; if (${call([x, i])}) *(${t} *)ore_rt_array_push(${r}, sizeof(${t})) = ${x};`)} ${r}; })`
+    case "find": {
+      const u = expr.type as UnionType
+      const none = inject(u, u.members.findIndex((m) => m.kind === "null"), "")
+      return `({ ${head} ${cb} ${cType(u)} ${r} = ${none}; ${loop(`${t} ${x} = ${at}; if (${call([x, i])}) { ${r} = ${recast(x, T, u)}; break; }`)} ${r}; })`
+    }
+    case "findIndex":
+      return `({ ${head} ${cb} i64 ${r} = -1; ${loop(`if (${call([at, i])}) { ${r} = ${i}; break; }`)} ${r}; })`
+    case "some":
+      return `({ ${head} ${cb} bool ${r} = false; ${loop(`if (${call([at, i])}) { ${r} = true; break; }`)} ${r}; })`
+    case "every":
+      return `({ ${head} ${cb} bool ${r} = true; ${loop(`if (!${call([at, i])}) { ${r} = false; break; }`)} ${r}; })`
+    case "reduce": {
+      const u = cType(expr.type)
+      return `({ ${head} ${cb} ${u} ${r} = ${emitExpr(expr.args[1]!)}; ${loop(`${r} = ${call([r, at, i])};`)} ${r}; })`
+    }
+    case "includes":
+    case "indexOf": {
+      // includes finds NaN (SameValueZero); indexOf does not (===).
+      const same = expr.method === "includes" && T.kind === "float" ? `ore_rt_same_f64(${at}, ${x})` : equals(at, x, T)
+      const found = expr.method === "includes" ? [`bool ${r} = false;`, `${r} = true;`] : [`i64 ${r} = -1;`, `${r} = ${i};`]
+      return `({ ${head} ${t} ${x} = ${emitExpr(expr.args[0]!)}; ${found[0]} ${loop(`if (${same}) { ${found[1]} break; }`)} ${r}; })`
+    }
+    case "join": {
+      const sep = expr.args[0] ? emitExpr(expr.args[0]) : `ORE_STR(",")`
+      return `({ ${head} ore_array *${r} = ore_rt_array_new(sizeof(ore_string), ${a}->len); ${loop(`((ore_string *)${r}->data)[${i}] = ${toString(raw(at, T))};`)} ore_rt_str_join(${r}, ${sep}); })`
+    }
+    case "reverse":
+      return `({ ${head} ore_rt_array_reverse(${a}, sizeof(${t})); ${a}; })`
+    default: {
+      if (!callback) return `({ ${head} ore_rt_array_sort(${a}, sizeof(${t}), ${naturalOrder(T)}, 0); ${a}; })`
+      return `({ ${head} ${cb} ore_rt_array_sort(${a}, sizeof(${t}), ${comparator(ft)}, &${f}); ${a}; })`
+    }
+  }
+}
+
+/** A sort comparison calling a comparator closure, whose number result gives the order. */
+function comparator(type: ir.FuncType): string {
+  const name = `ore_cmp_${ir.typeKey(type).replace(/[^A-Za-z0-9]/g, (c) => `_${c.charCodeAt(0).toString(16)}`)}`
+  if (!helpers.has(name)) {
+    const t = cType(type.params[0]!)
+    const call = callClosure("(*f)", type, [`*(const ${t} *)a`, `*(const ${t} *)b`])
+    helpers.set(name, `static int ${name}(void *ctx, const void *a, const void *b) { ore_closure *f = ctx; ${cType(type.result)} r = ${call}; return r < 0 ? -1 : r > 0 ? 1 : 0; }`)
+  }
+  return name
+}
+
+/** A sort comparison in ascending order of numbers or strings. */
+function naturalOrder(type: Type): string {
+  const name = `ore_natural_${ir.typeKey(type).replace(/[^A-Za-z0-9]/g, "_")}`
+  if (!helpers.has(name)) {
+    const t = cType(type)
+    const body = isStringLike(type)
+      ? `return ore_rt_str_cmp(*(const ore_string *)a, *(const ore_string *)b);`
+      : `${t} x = *(const ${t} *)a, y = *(const ${t} *)b; return x < y ? -1 : x > y ? 1 : 0;`
+    helpers.set(name, `static int ${name}(void *ctx, const void *a, const void *b) { (void)ctx; ${body} }`)
+  }
+  return name
+}
+
 function emitMapOp(expr: ir.MapOp): string {
   const { key: K, value: V } = expr.mapType
   const kt = cType(K)
@@ -912,6 +1010,7 @@ function effects(e: ir.Expr): boolean {
     case "downcast":
     case "map":
     case "call-value":
+    case "array-method":
     case "recast":
     case "optional":
     case "coalesce":

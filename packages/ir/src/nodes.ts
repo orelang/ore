@@ -209,6 +209,7 @@ export type Expr =
   | Closure
   | CallValue
   | BoundMethod
+  | ArrayMethod
 
 export interface IntLit {
   k: "int"
@@ -582,4 +583,19 @@ export interface BoundMethod {
   receiver: Expr
   func?: Func
   index?: number
+}
+
+/**
+ * A method of arrays taking a callback or a value: forEach, map, filter,
+ * reduce, find, findIndex, some, every, includes, indexOf, join, reverse,
+ * sort. A callback is called with its first `arity` arguments of
+ * (element, index) — or (accumulator, element, index) for reduce.
+ */
+export interface ArrayMethod {
+  k: "array-method"
+  method: string
+  type: Type
+  array: Expr
+  args: Expr[]
+  arity?: number
 }

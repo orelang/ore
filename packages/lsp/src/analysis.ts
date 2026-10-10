@@ -159,6 +159,7 @@ function members(type: Type, inside: string | undefined): Completion[] {
         { label: "push", kind: "method", detail: `(...values: ${typeToString(type.elem)}[]) => i64` },
         { label: "pop", kind: "method", detail: `() => ${typeToString(type.elem)}` },
         { label: "slice", kind: "method", detail: `(start?: int, end?: int) => ${typeToString(type)}` },
+        ...arrayCallbacks(typeToString(type.elem), typeToString(type)),
       ]
     case "string":
       return [
@@ -182,6 +183,25 @@ function members(type: Type, inside: string | undefined): Completion[] {
     default:
       return []
   }
+}
+
+function arrayCallbacks(e: string, array: string): Completion[] {
+  const pred = `(f: (x: ${e}, i: int) => bool)`
+  return [
+    { label: "forEach", kind: "method", detail: `(f: (x: ${e}, i: int) => void) => void` },
+    { label: "map", kind: "method", detail: `<U>(f: (x: ${e}, i: int) => U) => U[]` },
+    { label: "filter", kind: "method", detail: `${pred} => ${array}` },
+    { label: "reduce", kind: "method", detail: `<U>(f: (acc: U, x: ${e}, i: int) => U, initial: U) => U` },
+    { label: "find", kind: "method", detail: `${pred} => ${e} | null` },
+    { label: "findIndex", kind: "method", detail: `${pred} => int` },
+    { label: "some", kind: "method", detail: `${pred} => bool` },
+    { label: "every", kind: "method", detail: `${pred} => bool` },
+    { label: "includes", kind: "method", detail: `(x: ${e}) => bool` },
+    { label: "indexOf", kind: "method", detail: `(x: ${e}) => int` },
+    { label: "join", kind: "method", detail: "(separator?: string) => string" },
+    { label: "reverse", kind: "method", detail: `() => ${array}` },
+    { label: "sort", kind: "method", detail: `(compare?: (a: ${e}, b: ${e}) => number) => ${array}` },
+  ]
 }
 
 /** Name of the class around a node, which may see its private members. */

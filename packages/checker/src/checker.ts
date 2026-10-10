@@ -1509,7 +1509,7 @@ class Checker {
    * closure. Parameter and return types come from annotations or from the
    * expected function type; otherwise the return type is inferred.
    */
-  private checkClosure(node: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration, outer: Scope, expected?: Type): Operand {
+  private checkClosure(node: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration, outer: Scope, expected?: Type, inferResult = false): Operand {
     if (node.typeParameters) return this.fail(node.typeParameters[0]!, "Generic closures are not supported.")
     if (node.asteriskToken) return this.fail(node.asteriskToken, "Generators are not supported in Ore.")
     if (node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return this.fail(node, "'async' is not supported in Ore. Use spawn() and channels.")
@@ -1556,7 +1556,7 @@ class Checker {
     const savedFacts = this.facts
     this.facts = [new Map()]
     this.fn = {
-      result: annotated ?? (want && want.result.kind !== "void" ? want.result : want ? types.void : undefined),
+      result: annotated ?? (inferResult ? undefined : want && want.result.kind !== "void" ? want.result : want ? types.void : undefined),
       closure: func,
       this: isArrow ? outerFn?.this : undefined,
       thisCaptures: isArrow ? [func, ...(outerFn?.thisCaptures ?? [])] : [],
@@ -2179,6 +2179,95 @@ class Checker {
     }
   }
 
+  /** Checks a call of an array method that takes a callback or a value. */
+  private arrayMethod(array: ir.Expr, type: ir.ArrayType, name: string, node: ts.CallExpression, callee: ts.PropertyAccessExpression, scope: Scope): Operand {
+    const T = type.elem
+    const args = node.arguments
+    const [min, max] = arrayMethods.get(name)!
+    if (args.length < min || args.length > max) {
+      return this.fail(node, `'${name}' expects ${min === max ? min : `${min} to ${max}`} argument(s), got ${args.length}.`)
+    }
+    const method = (resultType: Type, values: ir.Expr[], arity?: number): Operand => typed({ k: "array-method", method: name, type: resultType, array, args: values, arity })
+    const predicate = () => this.callback(args[0]!, scope, [T, types.i64], types.bool)
+    switch (name) {
+      case "forEach": {
+        const cb = this.callback(args[0]!, scope, [T, types.i64], types.void, true)
+        return cb ? method(types.void, [cb.expr], cb.arity) : errorOperand
+      }
+      case "map": {
+        const cb = this.callback(args[0]!, scope, [T, types.i64], undefined)
+        if (!cb) return errorOperand
+        if (cb.result.kind === "void" || cb.result.kind === "never") return this.fail(args[0]!, "The callback of 'map' must return a value.")
+        return method(arrayOf(cb.result), [cb.expr], cb.arity)
+      }
+      case "filter":
+      case "find":
+      case "findIndex":
+      case "some":
+      case "every": {
+        const cb = predicate()
+        if (!cb) return errorOperand
+        const result: Type = name === "filter" ? type : name === "find" ? this.unionOf([T, types.null]) : name === "findIndex" ? types.i64 : types.bool
+        return method(result, [cb.expr], cb.arity)
+      }
+      case "reduce": {
+        // The accumulator has the type of the initial value.
+        const initial = this.checkExpr(args[1]!, scope)
+        if (initial.k === "error") return errorOperand
+        const init = this.toDefault(initial, args[1]!)
+        const cb = this.callback(args[0]!, scope, [init.type, T, types.i64], init.type)
+        return cb ? method(init.type, [cb.expr, init], cb.arity) : errorOperand
+      }
+      case "includes":
+      case "indexOf": {
+        const x = this.coerce(this.checkExpr(args[0]!, scope, T), T, args[0]!)
+        return method(name === "includes" ? types.bool : types.i64, [x])
+      }
+      case "join": {
+        if (!membersOf(T).every((m) => isNumeric(m) || m.kind === "bool" || isStringLike(m) || m.kind === "null")) {
+          return this.fail(callee.name, `Cannot join elements of type '${typeToString(T)}'.`)
+        }
+        const sep = args[0] ? this.coerce(this.checkExpr(args[0], scope, types.string), types.string, args[0]) : undefined
+        return method(types.string, sep ? [sep] : [])
+      }
+      case "reverse":
+        return method(type, [])
+      default: {
+        // sort: by a comparator returning a number, or in natural order for numbers and strings.
+        if (args.length === 0) {
+          if (!(isNumeric(T) || isStringLike(T))) return this.fail(callee.name, `Sorting '${typeToString(T)}' needs a comparator: 'sort((a, b) => ...)'.`)
+          return method(type, [])
+        }
+        const cb = this.callback(args[0]!, scope, [T, T], undefined)
+        if (!cb) return errorOperand
+        if (!isNumeric(cb.result)) return this.fail(args[0]!, "The comparator of 'sort' must return a number.")
+        return method(type, [cb.expr], cb.arity)
+      }
+    }
+  }
+
+  /**
+   * Checks a callback: a function literal gets the parameter types, and its
+   * result is inferred when `result` is undefined; a function value may take
+   * fewer parameters than given. With `ignoreResult`, any result is accepted.
+   */
+  private callback(node: ts.Expression, scope: Scope, params: Type[], result: Type | undefined, ignoreResult = false): { expr: ir.Expr; arity: number; result: Type } | undefined {
+    const expected: FuncType = { kind: "func", params, result: result ?? types.void }
+    const literal = ts.isArrowFunction(node) || ts.isFunctionExpression(node)
+    const value = literal ? this.checkClosure(node, scope, expected, result === undefined) : this.checkExpr(node, scope)
+    const describe = `(${params.map(typeToString).join(", ")}) => ${result ? typeToString(result) : "..."}`
+    if (value.k === "error") return undefined
+    if (value.k !== "typed") return this.error(node, `Expected a function of type '${describe}', got '${typeToString(this.defaultType(value))}'.`), undefined
+    const type = value.expr.type
+    if (type.kind !== "func" || type.params.length > params.length || type.params.some((p, i) => !sameType(p, params[i]!))) {
+      return this.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`), undefined
+    }
+    if (!ignoreResult && result && !sameType(type.result, result)) {
+      return this.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`), undefined
+    }
+    return { expr: value.expr, arity: type.params.length, result: type.result }
+  }
+
   /** Calls a function value with arguments converted to its parameters. */
   private callValue(callee: Operand, node: ts.CallExpression, scope: Scope): Operand {
     if (callee.k !== "typed") return callee.k === "error" ? callee : this.fail(node.expression, "A constant is not a function.")
@@ -2599,6 +2688,7 @@ class Checker {
         : types.void
       return typed({ k: "map", op, type: result, mapType: type, map: value, key, value: val })
     }
+    if (type.kind === "array" && arrayMethods.has(name)) return this.arrayMethod(value, type, name, node, callee, scope)
     if (type.kind === "array" && name === "push") {
       const values: ir.Expr[] = []
       for (const arg of args) {
@@ -2793,6 +2883,23 @@ const compoundOps = new Map<ts.SyntaxKind, ir.ArithOp>([
   [K.CaretEqualsToken, "^"],
   [K.LessThanLessThanEqualsToken, "<<"],
   [K.GreaterThanGreaterThanEqualsToken, ">>"],
+])
+
+/** Array methods handled by `arrayMethod`, with their minimum and maximum argument counts. */
+const arrayMethods = new Map<string, [number, number]>([
+  ["forEach", [1, 1]],
+  ["map", [1, 1]],
+  ["filter", [1, 1]],
+  ["find", [1, 1]],
+  ["findIndex", [1, 1]],
+  ["some", [1, 1]],
+  ["every", [1, 1]],
+  ["reduce", [2, 2]],
+  ["includes", [1, 1]],
+  ["indexOf", [1, 1]],
+  ["join", [0, 1]],
+  ["reverse", [0, 0]],
+  ["sort", [0, 1]],
 ])
 
 const compareOps = new Map<ts.SyntaxKind, ir.CompareOp>([

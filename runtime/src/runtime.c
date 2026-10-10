@@ -329,6 +329,53 @@ void *ore_rt_array_pop(ore_array *a, i64 elem_size) {
   return (u8 *)a->data + elem_size * --a->len;
 }
 
+void ore_rt_array_sort(ore_array *a, i64 elem_size, ore_cmp_fn cmp, void *ctx) {
+  i64 n = a->len;
+  if (n < 2) return;
+  u8 *src = a->data;
+  u8 *buf = ore_rt_alloc(n * elem_size);
+  // Bottom-up merge sort: stable, as JavaScript requires.
+  for (i64 width = 1; width < n; width *= 2) {
+    for (i64 lo = 0; lo < n; lo += 2 * width) {
+      i64 mid = lo + width < n ? lo + width : n;
+      i64 hi = lo + 2 * width < n ? lo + 2 * width : n;
+      i64 i = lo, j = mid, k = lo;
+      while (i < mid && j < hi) {
+        bool right = cmp(ctx, src + j * elem_size, src + i * elem_size) < 0;
+        memcpy(buf + k++ * elem_size, src + (right ? j++ : i++) * elem_size, (size_t)elem_size);
+      }
+      while (i < mid) memcpy(buf + k++ * elem_size, src + i++ * elem_size, (size_t)elem_size);
+      while (j < hi) memcpy(buf + k++ * elem_size, src + j++ * elem_size, (size_t)elem_size);
+    }
+    u8 *t = src;
+    src = buf;
+    buf = t;
+  }
+  if (src != a->data) memcpy(a->data, src, (size_t)(n * elem_size));
+}
+
+void ore_rt_array_reverse(ore_array *a, i64 elem_size) {
+  u8 tmp[64];
+  u8 *big = elem_size > (i64)sizeof tmp ? ore_rt_alloc(elem_size) : tmp;
+  for (i64 i = 0, j = a->len - 1; i < j; i++, j--) {
+    u8 *x = (u8 *)a->data + i * elem_size, *y = (u8 *)a->data + j * elem_size;
+    memcpy(big, x, (size_t)elem_size);
+    memcpy(x, y, (size_t)elem_size);
+    memcpy(y, big, (size_t)elem_size);
+  }
+}
+
+ore_string ore_rt_str_join(ore_array *strings, ore_string sep) {
+  i64 n = strings->len;
+  if (n == 0) return ORE_STR("");
+  ore_string *parts = ore_rt_alloc((2 * n - 1) * (i64)sizeof(ore_string));
+  for (i64 i = 0; i < n; i++) {
+    if (i > 0) parts[2 * i - 1] = sep;
+    parts[2 * i] = ((ore_string *)strings->data)[i];
+  }
+  return ore_rt_str_concat(2 * n - 1, parts);
+}
+
 ore_array *ore_rt_array_slice(ore_array *a, i64 elem_size, i64 start, i64 end) {
   start = slice_offset(start, a->len);
   end = slice_offset(end, a->len);

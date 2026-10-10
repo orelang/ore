@@ -108,6 +108,15 @@ static inline i64 ore_rt_check_index(i64 i, i64 len) {
   return i;
 }
 
+/** Compares two elements for sorting: negative, zero or positive. */
+typedef int (*ore_cmp_fn)(void *ctx, const void *a, const void *b);
+
+/** Sorts an array in place, stably (merge sort). */
+void ore_rt_array_sort(ore_array *a, i64 elem_size, ore_cmp_fn cmp, void *ctx);
+void ore_rt_array_reverse(ore_array *a, i64 elem_size);
+/** Joins an array of strings with a separator. */
+ore_string ore_rt_str_join(ore_array *strings, ore_string sep);
+
 /** Pointer to element `i`, bounds-checked. */
 static inline void *ore_rt_array_at(ore_array *a, i64 i, i64 elem_size) {
   return (u8 *)a->data + elem_size * ore_rt_check_index(i, a->len);
