@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, StringType, StructType, Type, UnionType } from "./types"
+import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, LiteralType, StringType, StructType, Type, UnionType } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -119,6 +119,8 @@ export interface SwitchStmt extends StmtBase {
   k: "switch"
   id: number
   labeled: boolean
+  /** The cases cover every possible value, as a default would. */
+  exhaustive: boolean
   local: Local
   value: Expr
   clauses: { test?: Expr; body: Stmt[] }[]
@@ -180,6 +182,9 @@ export type Expr =
   | IsNull
   | Optional
   | Coalesce
+  | UnionField
+  | TypeOf
+  | Is
 
 export interface IntLit {
   k: "int"
@@ -201,7 +206,7 @@ export interface BoolLit {
 
 export interface StringLit {
   k: "string"
-  type: StringType
+  type: StringType | LiteralType
   value: string
 }
 
@@ -469,4 +474,27 @@ export interface Coalesce {
   type: Type
   value: Expr
   fallback: Expr
+}
+
+/** Reads a field that every member of a union of structs and interfaces has. */
+export interface UnionField {
+  k: "union-field"
+  type: Type
+  value: Expr
+  name: string
+}
+
+/** `typeof value`: "number", "boolean", "string" or "object" (also for null). */
+export interface TypeOf {
+  k: "typeof"
+  type: StringType
+  value: Expr
+}
+
+/** Whether a union value holds `member`, as for `instanceof`. */
+export interface Is {
+  k: "is"
+  type: BoolType
+  value: Expr
+  member: Type
 }

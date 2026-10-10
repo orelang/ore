@@ -99,6 +99,12 @@ export interface InterfaceType {
   members: InterfaceMember[]
 }
 
+/** A string literal type such as `"circle"`; its values are strings. */
+export interface LiteralType {
+  readonly kind: "literal"
+  readonly value: string
+}
+
 /** The type of `null`; appears in unions such as `Node | null`. */
 export interface NullType {
   readonly kind: "null"
@@ -115,7 +121,7 @@ export interface UnionType {
   readonly members: readonly Type[]
 }
 
-export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType
+export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType | LiteralType
 export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType
 
 export function findField(t: StructType, name: string): Field | undefined {
@@ -175,6 +181,7 @@ function sameInterface(a: InterfaceType, b: InterfaceType): boolean {
 
 export function sameType(a: Type, b: Type): boolean {
   if (a === b) return true
+  if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
   if (a.kind === "array" && b.kind === "array") return sameType(a.elem, b.elem)
   if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b)
   if (a.kind === "union" && b.kind === "union") {
@@ -201,6 +208,8 @@ export function typeToString(t: Type): string {
       return t.name
     case "union":
       return t.members.map((m) => (m.kind === "func" ? `(${typeToString(m)})` : typeToString(m))).join(" | ")
+    case "literal":
+      return JSON.stringify(t.value)
     default:
       return t.kind
   }
@@ -223,6 +232,8 @@ export function typeKey(type: Type): string {
       return `@${type.id}`
     case "union":
       return type.members.map(typeKey).join("|")
+    case "literal":
+      return JSON.stringify(type.value)
     case "func":
       return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
     default:
@@ -235,17 +246,26 @@ export function isReference(type: Type): boolean {
   return type.kind === "struct" || type.kind === "array" || type.kind === "interface" || type.kind === "string"
 }
 
+/** Whether values of a type are strings: `string` or a string literal type. */
+export function isStringLike(type: Type): boolean {
+  return type.kind === "string" || type.kind === "literal"
+}
+
 /**
  * How a union is represented at run time:
- * - `nullable`: one reference type and `null`, as the reference or null;
+ * - `strings`: only string literal types, as a string; the value tells the member;
+ * - `nullable`: one reference type (or only string literals) and `null`, as
+ *   the reference or null;
  * - `tagged`: a tag selecting one of `slots`, with the value of that slot.
  *   `null` has a slot without a value.
  */
-export type UnionRepr = { k: "nullable"; base: Type } | { k: "tagged"; slots: readonly Type[] }
+export type UnionRepr = { k: "strings" } | { k: "nullable"; base: Type } | { k: "tagged"; slots: readonly Type[] }
 
 export function unionRepr(u: UnionType): UnionRepr {
   const others = u.members.filter((m) => m.kind !== "null")
-  if (others.length === 1 && others.length < u.members.length && isReference(others[0]!)) return { k: "nullable", base: others[0]! }
+  const hasNull = others.length < u.members.length
+  if (others.every((m) => m.kind === "literal")) return hasNull ? { k: "nullable", base: { kind: "string" } } : { k: "strings" }
+  if (others.length === 1 && hasNull && isReference(others[0]!)) return { k: "nullable", base: others[0]! }
   return { k: "tagged", slots: u.members }
 }
 

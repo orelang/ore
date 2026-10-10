@@ -5,6 +5,7 @@ import {
   findMethod,
   intRange,
   isNumeric,
+  isStringLike,
   membersOf,
   sameType,
   typeKey,
@@ -14,6 +15,7 @@ import {
   type FuncType,
   type InterfaceMember,
   type InterfaceType,
+  type LiteralType,
   type StructType,
   type Type,
   type UnionType,
@@ -118,6 +120,7 @@ class Checker {
   private readonly classes: ClassInfo[] = []
   private readonly interfaces = new Map<InterfaceType, InterfaceInfo>()
   private readonly unions = new Map<string, UnionType>()
+  private readonly literals = new Map<string, LiteralType>()
   /** Narrowing facts by flow scope, innermost last. */
   private facts: Map<string, Type>[] = [new Map()]
   private readonly itabs = new Map<string, ir.Itab>()
@@ -689,6 +692,8 @@ class Checker {
         return this.error(node, "'undefined' is not supported in Ore. Use 'null'."), undefined
     }
     if (ts.isLiteralTypeNode(node) && node.literal.kind === ts.SyntaxKind.NullKeyword) return types.null
+    if (ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)) return this.literal(node.literal.text)
+    if (ts.isLiteralTypeNode(node)) return this.error(node, "Only string literal types are supported yet."), undefined
     if (ts.isUnionTypeNode(node)) {
       const members: Type[] = []
       for (const m of node.types) {
@@ -749,12 +754,23 @@ class Checker {
     return shape
   }
 
+  private literal(value: string): LiteralType {
+    let type = this.literals.get(value)
+    if (!type) {
+      type = { kind: "literal", value }
+      this.literals.set(value, type)
+    }
+    return type
+  }
+
   /** The normalized union of types: flattened, deduplicated and in canonical order. */
   private unionOf(types_: readonly Type[]): Type {
     const members: Type[] = []
     for (const t of types_.flatMap((t) => membersOf(t))) {
       if (t.kind !== "never" && !members.some((m) => sameType(m, t))) members.push(t)
     }
+    // `string` includes every string literal type.
+    if (members.some((m) => m.kind === "string")) members.splice(0, members.length, ...members.filter((m) => m.kind !== "literal"))
     if (members.length === 0) return types.never
     if (members.length === 1) return members[0]!
     members.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0))
@@ -1025,7 +1041,7 @@ class Checker {
     if (operand.k === "error") return undefined
     const value = this.toDefault(operand, stmt.expression)
     const type = value.type
-    if (!(isNumeric(type) || type.kind === "bool" || type.kind === "string")) {
+    if (!(isNumeric(type) || type.kind === "bool" || membersOf(type).every(isStringLike))) {
       return this.error(stmt.expression, `Cannot switch on a value of type '${typeToString(type)}'.`), undefined
     }
     const fn = this.fn!
@@ -1038,7 +1054,24 @@ class Checker {
     const scope = new Scope(outer)
     const clauses: ir.SwitchStmt["clauses"] = []
     let hasDefault = false
+    // String literal cases narrow the subject: within a clause, the values of
+    // the cases that lead to it without falling through code; in default, the rest.
+    const allCases = new Set<string>()
     for (const clause of stmt.caseBlock.clauses) {
+      if (ts.isCaseClause(clause) && isStringLiteralNode(clause.expression)) allCases.add(clause.expression.text)
+    }
+    let entering = new Set<string>()
+    let narrowable = true
+    for (const clause of stmt.caseBlock.clauses) {
+      let facts: Fact[] = []
+      if (ts.isCaseClause(clause)) {
+        if (isStringLiteralNode(clause.expression)) entering.add(clause.expression.text)
+        else narrowable = false
+        if (narrowable) facts = this.literalFacts(stmt.expression, entering, scope)[0]
+      } else if (narrowable && entering.size === 0) {
+        facts = this.literalFacts(stmt.expression, allCases, scope)[1]
+      }
+      this.facts.push(new Map(facts.map((f) => [f.key, f.type])))
       let test: ir.Expr | undefined
       if (ts.isCaseClause(clause)) {
         const compared = this.compare("===", typed(ref), this.checkExpr(clause.expression, scope), clause.expression, stmt.expression, clause.expression)
@@ -1052,9 +1085,19 @@ class Checker {
       const body: ir.Stmt[] = []
       for (const s of clause.statements) this.checkStmt(s, scope, body)
       fn.loops.pop()
+      this.facts.pop()
       clauses.push({ test, body })
+      // The next clause is narrowed only if this one cannot fall through into it.
+      if (clause.statements.length > 0) {
+        const last = body.at(-1)
+        const exits = last !== undefined && (last.k === "break" || last.k === "continue" || terminates(last))
+        entering = new Set()
+        narrowable = exits
+      }
     }
-    return Object.assign(loop.ir, { k: "switch" as const, id: loop.id, local, value, clauses })
+    // A switch over a union of string literals that has a case for each is exhaustive.
+    const exhaustive = membersOf(type).every((m) => m.kind === "literal" && allCases.has(m.value))
+    return Object.assign(loop.ir, { k: "switch" as const, id: loop.id, local, value, clauses, exhaustive })
   }
 
   private checkLoopBody(stmt: ts.Statement, scope: Scope): LoopContext & { body: ir.Stmt } {
@@ -1121,9 +1164,59 @@ class Checker {
           const notNull = key && type ? [{ key, type: this.without(type, (m) => m.kind === "null") }] : []
           return op === ts.SyntaxKind.EqualsEqualsEqualsToken ? { expr, whenTrue: [], whenFalse: notNull } : { expr, whenTrue: notNull, whenFalse: [] }
         }
+        const literalSide = isStringLiteralNode(node.right) ? node.right : isStringLiteralNode(node.left) ? node.left : undefined
+        if (literalSide) {
+          const subject = literalSide === node.right ? node.left : node.right
+          const expr = this.checkCondition(node, scope)
+          const [yes, no] = this.literalFacts(subject, new Set([literalSide.text]), scope)
+          return op === ts.SyntaxKind.EqualsEqualsEqualsToken ? { expr, whenTrue: yes, whenFalse: no } : { expr, whenTrue: no, whenFalse: yes }
+        }
+      }
+      if (op === ts.SyntaxKind.InstanceOfKeyword) {
+        const expr = this.checkCondition(node, scope)
+        const key = this.refKey(node.left, scope)
+        const type = this.info.types.get(node.left)
+        const cls = ts.isIdentifier(node.right) ? scope.lookupType(node.right.text)?.type : undefined
+        if (!key || !type || !cls) return { expr, whenTrue: [], whenFalse: [] }
+        return { expr, whenTrue: [{ key, type: cls }], whenFalse: [{ key, type: this.without(type, (m) => sameType(m, cls)) }] }
       }
     }
     return { expr: this.checkCondition(node, scope), whenTrue: [], whenFalse: [] }
+  }
+
+  /**
+   * Facts when `subject` equals one of `values`, and when it does not:
+   * `subject` is a variable of a literal union (`mode === "a"`), a field of a
+   * union of objects (`shape.kind === "circle"`), or `typeof x`.
+   */
+  private literalFacts(subject: ts.Expression, values: Set<string>, scope: Scope): [Fact[], Fact[]] {
+    if (ts.isParenthesizedExpression(subject)) return this.literalFacts(subject.expression, values, scope)
+    const narrow = (target: ts.Expression, matches: (member: Type) => boolean | "both"): [Fact[], Fact[]] => {
+      const key = this.refKey(target, scope)
+      const type = this.info.types.get(target)
+      if (!key || !type || type.kind !== "union") return [[], []]
+      const yes = this.unionOf(type.members.filter((m) => matches(m) !== false))
+      const no = this.unionOf(type.members.filter((m) => matches(m) !== true))
+      return [[{ key, type: yes }], [{ key, type: no }]]
+    }
+    // Whether a type's values are all in `values` (true), none (false), or some (both).
+    const covers = (type: Type): boolean | "both" => {
+      const members = membersOf(type)
+      if (members.every((m) => m.kind === "literal" && values.has(m.value))) return true
+      if (members.every((m) => m.kind === "literal" && !values.has(m.value))) return false
+      return "both"
+    }
+    if (ts.isTypeOfExpression(subject)) return narrow(subject.expression, (m) => values.has(typeofName(m)))
+    if (ts.isPropertyAccessExpression(subject) && !subject.questionDotToken) {
+      const base = this.info.types.get(subject.expression)
+      if (base?.kind === "union") {
+        return narrow(subject.expression, (m) => {
+          const type = fieldType(m, subject.name.text)
+          return type ? covers(type) : "both"
+        })
+      }
+    }
+    return narrow(subject, covers)
   }
 
   /**
@@ -1237,6 +1330,11 @@ class Checker {
     if (ts.isElementAccessExpression(node)) return this.checkElement(node, scope)
     if (node.kind === ts.SyntaxKind.NullKeyword) return typed(nullOperand)
     if (ts.isNonNullExpression(node)) return this.checkNonNull(node, scope)
+    if (ts.isTypeOfExpression(node)) {
+      const value = this.checkExpr(node.expression, scope)
+      if (value.k === "error") return value
+      return typed({ k: "typeof", type: types.string, value: this.toDefault(value, node.expression) })
+    }
     if (ts.isAwaitExpression(node)) return this.fail(node, "'await' is not supported in Ore.")
     if (ts.isDeleteExpression(node)) return this.fail(node, "'delete' is not supported in Ore.")
     return this.fail(node, "This expression is not supported yet.")
@@ -1285,7 +1383,8 @@ class Checker {
     if (op === K.CommaToken) return this.fail(node.operatorToken, "The comma operator is not supported in Ore.")
     if (op === K.QuestionQuestionToken) return this.checkCoalesce(node, scope)
     if (op === K.AsteriskAsteriskToken) return this.fail(node.operatorToken, "'**' is not supported yet.")
-    if (op === K.InstanceOfKeyword || op === K.InKeyword) return this.fail(node.operatorToken, `'${node.operatorToken.getText()}' is not supported yet.`)
+    if (op === K.InstanceOfKeyword) return this.checkInstanceOf(node, scope)
+    if (op === K.InKeyword) return this.fail(node.operatorToken, "'in' is not supported in Ore.")
     return this.fail(node.operatorToken, `Operator '${node.operatorToken.getText()}' is not supported.`)
   }
 
@@ -1619,6 +1718,28 @@ class Checker {
       if (props.findIndex((p) => p.name === props[i]!.name) !== i) return this.fail(props[i]!.node, `Duplicate property '${props[i]!.name}'.`)
     }
 
+    if (expected?.kind === "union") {
+      // Pick the object member whose literal-typed fields match the literal, as in a tagged union.
+      const candidates = expected.members.filter((m) => m.kind === "struct" || m.kind === "interface")
+      const matching = candidates.filter((m) =>
+        props.every((p) => {
+          const type = fieldType(m, p.name)
+          if (!type) return false
+          const literal = ts.isStringLiteral(p.value) || ts.isNoSubstitutionTemplateLiteral(p.value) ? p.value.text : undefined
+          return literal === undefined || membersOf(type).some((t) => t.kind === "string" || (t.kind === "literal" && t.value === literal))
+        }),
+      )
+      if (matching.length === 1) return this.checkObjectLiteral(node, scope, matching[0])
+      // Otherwise the member with these property names, to report what does not match.
+      const byNames = candidates.filter((m) => props.every((p) => fieldType(m, p.name)))
+      if (byNames.length === 1 && matching.length === 0) return this.checkObjectLiteral(node, scope, byNames[0])
+      if (candidates.length === 1) return this.checkObjectLiteral(node, scope, candidates[0])
+      if (candidates.length > 1) {
+        return this.fail(node, matching.length > 1
+          ? `Cannot tell which member of '${typeToString(expected)}' this object literal is. Give its discriminant field a literal value.`
+          : `No member of '${typeToString(expected)}' matches this object literal.`)
+      }
+    }
     if (expected?.kind === "struct") {
       // A literal for a known object type must have exactly its fields.
       let ok = true
@@ -1682,7 +1803,7 @@ class Checker {
   /** Whether a value can be printed or interpolated; reports an error if not. */
   private printable(expr: ir.Expr, node: ts.Node): boolean {
     const type = expr.type
-    const simple = (t: Type) => isNumeric(t) || t.kind === "bool" || t.kind === "string" || t.kind === "null"
+    const simple = (t: Type) => isNumeric(t) || t.kind === "bool" || isStringLike(t) || t.kind === "null"
     if (membersOf(type).every(simple)) return true
     this.error(node, `Cannot format a value of type '${typeToString(type)}'.`)
     return false
@@ -1719,6 +1840,13 @@ class Checker {
       if (member?.k === "field") return typed({ k: "iface-field", type: member.type, value, index })
       if (member) return this.fail(node.name, `Method '${name}' must be called; method values are not supported yet.`)
     }
+    if (value.type.kind === "union" && !canBeNull(value.type)) {
+      // A field that every member has, such as the discriminant of a tagged union.
+      const fieldTypes = value.type.members.map((m) => fieldType(m, name))
+      if (fieldTypes.every((t) => t !== undefined)) {
+        return typed({ k: "union-field", type: this.unionOf(fieldTypes as Type[]), value, name })
+      }
+    }
     return this.fail(node.name, this.noProperty(value.type, name))
   }
 
@@ -1743,6 +1871,25 @@ class Checker {
     if (resultType.kind === "void") return typed({ k: "optional", type: types.void as unknown as UnionType, value, binding, body: body.expr })
     const type = this.unionOf([resultType, types.null]) as UnionType
     return typed({ k: "optional", type, value, binding, body: this.coerce(body, type, node) })
+  }
+
+  private checkInstanceOf(node: ts.BinaryExpression, scope: Scope): Operand {
+    const operand = this.checkExpr(node.left, scope)
+    if (operand.k !== "typed") return operand.k === "error" ? operand : this.fail(node.left, "A constant is not an object.")
+    const value = operand.expr
+    const cls = this.instanceOfClass(node.right, scope)
+    if (!cls) return errorOperand
+    if (sameType(value.type, cls)) return typed({ k: "bool", type: types.bool, value: true })
+    if (value.type.kind === "union" && value.type.members.some((m) => sameType(m, cls))) return typed({ k: "is", type: types.bool, value, member: cls })
+    return this.fail(node, `A value of type '${typeToString(value.type)}' is never an instance of '${cls.name}'.`)
+  }
+
+  private instanceOfClass(node: ts.Expression, scope: Scope): StructType | undefined {
+    const symbol = ts.isIdentifier(node) ? scope.lookupType(node.text) : undefined
+    if (ts.isIdentifier(node) && symbol) this.info.definitions.set(node, symbol.decl)
+    if (symbol?.type.kind === "struct" && symbol.type.nominal) return symbol.type
+    this.error(node, "The right side of 'instanceof' must be a class.")
+    return undefined
   }
 
   private checkNonNull(node: ts.NonNullExpression, scope: Scope): Operand {
@@ -1861,13 +2008,21 @@ class Checker {
         const from = typeOf(value.expr)
         if (sameType(from, target) || from.kind === "never") return value.expr
         const targetMembers = membersOf(target)
+        // A string literal expression has the literal type its context asks for.
+        const lit = value.expr.k === "string" ? targetMembers.find((m) => m.kind === "literal" && m.value === (value.expr as ir.StringLit).value) : undefined
+        if (lit) {
+          const retyped: ir.Expr = { ...(value.expr as ir.StringLit), type: lit as LiteralType }
+          return target.kind === "union" ? { k: "recast", type: target, value: retyped } : retyped
+        }
+        // String literal types widen to `string`.
+        if (target.kind === "string" && membersOf(from).every(isStringLike)) return { k: "recast", type: target, value: value.expr }
         if (from.kind === "null") {
           if (target.kind === "union" && targetMembers.some((m) => m.kind === "null")) return { k: "null", type: target }
           this.error(node, `Type 'null' is not assignable to type '${typeToString(target)}'.`)
           return poison(target)
         }
         // A member, or a union of members, converts to a union containing them.
-        if (target.kind === "union" && membersOf(from).every((f) => targetMembers.some((m) => sameType(m, f)))) {
+        if (target.kind === "union" && membersOf(from).every((f) => targetMembers.some((m) => memberOf(f, m)))) {
           return { k: "recast", type: target, value: value.expr }
         }
         if (target.kind === "union") {
@@ -2020,6 +2175,36 @@ const compareOps = new Map<ts.SyntaxKind, ir.CompareOp>([
 /** `null` before it gets a union type from the context. */
 const nullOperand = { k: "null", type: types.null } as unknown as ir.Expr
 
+/** Whether a value of type `from` can be a member `m` of a union: the same type, or a string literal for `string`. */
+function memberOf(from: Type, m: Type): boolean {
+  return sameType(from, m) || (from.kind === "literal" && m.kind === "string")
+}
+
+/** The type of a public field of a struct or interface, if it has one. */
+function fieldType(type: Type, name: string): Type | undefined {
+  if (type.kind === "struct") {
+    const field = findField(type, name)
+    return field && !field.private ? field.type : undefined
+  }
+  if (type.kind === "interface") {
+    const member = type.members.find((m) => m.name === name)
+    return member?.k === "field" ? member.type : undefined
+  }
+  return undefined
+}
+
+/** What `typeof` gives for values of a type. */
+export function typeofName(type: Type): string {
+  if (isNumeric(type)) return "number"
+  if (type.kind === "bool") return "boolean"
+  if (isStringLike(type)) return "string"
+  return "object"
+}
+
+function isStringLiteralNode(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
+}
+
 function canBeNull(type: Type): boolean {
   return membersOf(type).some((m) => m.kind === "null")
 }
@@ -2109,7 +2294,7 @@ function terminates(stmt: ir.Stmt): boolean {
       // end of the last clause, unless a break exits the switch.
       const last = stmt.clauses.at(-1)
       return (
-        stmt.clauses.some((c) => !c.test) &&
+        (stmt.exhaustive || stmt.clauses.some((c) => !c.test)) &&
         last !== undefined &&
         last.body.some(terminates) &&
         !stmt.clauses.some((c) => c.body.some((s) => breaks(s, stmt.id, false)))

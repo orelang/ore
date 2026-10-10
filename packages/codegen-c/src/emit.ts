@@ -1,5 +1,5 @@
 import * as ir from "@ore/ir"
-import { types, unionRepr, type FloatType, type IntType, type Type, type UnionType } from "@ore/ir"
+import { isStringLike, types, unionRepr, type FloatType, type IntType, type Type, type UnionType } from "@ore/ir"
 
 export interface EmitOptions {
   /**
@@ -81,7 +81,7 @@ function emitUnion(u: UnionType): string[] {
 
 /** C equality of two values of a non-union type, as `===`. */
 function equals(a: string, b: string, type: Type): string {
-  if (type.kind === "string") return `ore_rt_str_eq(${a}, ${b})`
+  if (isStringLike(type)) return `ore_rt_str_eq(${a}, ${b})`
   if (type.kind === "interface") return `(${a}.data == ${b}.data)`
   return `(${a} == ${b})`
 }
@@ -92,7 +92,12 @@ function equals(a: string, b: string, type: Type): string {
 function slotTest(u: UnionType, v: string, i: number): string {
   const repr = unionRepr(u)
   if (repr.k === "tagged") return `(${v}.tag == ${i})`
-  return u.members[i]!.kind === "null" ? isNullRef(v, repr.base) : `!${isNullRef(v, repr.base)}`
+  const member = u.members[i]!
+  // Members that are string literals are told apart by the value.
+  const literal = member.kind === "literal" ? `ore_rt_str_eq(${v}, ORE_STR(${stringLiteral(member.value)}))` : undefined
+  if (repr.k === "strings") return `(${literal})`
+  if (member.kind === "null") return isNullRef(v, repr.base)
+  return literal ? `(!${isNullRef(v, repr.base)} && ${literal})` : `!${isNullRef(v, repr.base)}`
 }
 
 /** The value of member `i` of a union value `v` (a pure expression). */
@@ -100,10 +105,13 @@ function payload(u: UnionType, v: string, i: number): string {
   return unionRepr(u).k === "tagged" ? `${v}.as.s${i}` : v
 }
 
+
+
 /** A union value holding member `i` with value `p` (unused for `null`). */
 function inject(u: UnionType, i: number, p: string): string {
   const repr = unionRepr(u)
   const isNullMember = u.members[i]!.kind === "null"
+  if (repr.k === "strings") return p
   if (repr.k === "nullable") return isNullMember ? nullRef(repr.base) : p
   return isNullMember ? `((${unionName(u)}){.tag = ${i}})` : `((${unionName(u)}){.tag = ${i}, .as.s${i} = ${p}})`
 }
@@ -120,8 +128,11 @@ function isNullRef(v: string, base: Type): string {
   return `(${v} == 0)`
 }
 
+/** The member of a union that holds values of a type; a string literal also fits `string`. */
 function memberIndex(u: UnionType, type: Type): number {
-  return u.members.findIndex((m) => ir.sameType(m, type))
+  const exact = u.members.findIndex((m) => ir.sameType(m, type))
+  if (exact !== -1 || type.kind !== "literal") return exact
+  return u.members.findIndex((m) => m.kind === "string")
 }
 
 /**
@@ -129,6 +140,8 @@ function memberIndex(u: UnionType, type: Type): number {
  * the members of the other. Narrowing panics on a member the target lacks.
  */
 function recast(code: string, from: Type, to: Type): string {
+  // Unions of string literals widen to `string` without a change.
+  if (from.kind === "union" && unionRepr(from).k === "strings" && to.kind === "string") return code
   if (from.kind !== "union") {
     if (to.kind !== "union") return code
     return inject(to, memberIndex(to, from), code)
@@ -191,8 +204,11 @@ export function cType(type: Type): string {
       return "ore_iface"
     case "union": {
       const repr = unionRepr(type)
+      if (repr.k === "strings") return "ore_string"
       return repr.k === "nullable" ? cType(repr.base) : unionName(type)
     }
+    case "literal":
+      return "ore_string"
     case "null":
       return "void *"
     case "func":
@@ -366,16 +382,17 @@ function emitExpr(expr: ir.Expr): string {
       return emitArith(expr)
     case "compare":
       return inOrder([expr.left, expr.right], ([l, r]) => {
-        if (expr.left.type.kind === "string") {
-          if (expr.op === "===" || expr.op === "!==") return `(${expr.op === "===" ? "" : "!"}ore_rt_str_eq(${l}, ${r}))`
-          return `(ore_rt_str_cmp(${l}, ${r}) ${expr.op} 0)`
-        }
+        if (expr.left.type.kind === "string" && expr.op !== "===" && expr.op !== "!==") return `(ore_rt_str_cmp(${l}, ${r}) ${expr.op} 0)`
         // Interface values are equal when they refer to the same object.
         if (expr.left.type.kind === "interface") return `((${l}).data ${cCompare[expr.op]} (${r}).data)`
+        if (isStringLike(expr.left.type)) {
+          const eq = `ore_rt_str_eq(${l}, ${r})`
+          return expr.op === "===" ? eq : `(!${eq})`
+        }
         if (expr.left.type.kind === "union") {
           const u = expr.left.type
           const repr = unionRepr(u)
-          const eq = repr.k === "tagged" ? `${unionName(u)}_eq(${l}, ${r})` : equals(`(${l})`, `(${r})`, repr.base)
+          const eq = repr.k === "tagged" ? `${unionName(u)}_eq(${l}, ${r})` : equals(`(${l})`, `(${r})`, repr.k === "strings" ? types.string : repr.base)
           return expr.op === "===" ? eq : `(!${eq})`
         }
         return `(${l} ${cCompare[expr.op]} ${r})`
@@ -476,6 +493,38 @@ function emitExpr(expr: ir.Expr): string {
       const none = inject(expr.type, expr.type.members.findIndex((m) => m.kind === "null"), "")
       return `({ ${cType(from)} ${t} = ${emitExpr(expr.value)}; ${cType(expr.type)} ${r}; if (${isNullValue(from, t)}) ${r} = ${none}; else { ${bind} ${r} = ${emitExpr(expr.body)}; } ${r}; })`
     }
+    case "union-field": {
+      const u = expr.value.type as UnionType
+      const t = temp()
+      const r = temp()
+      const branches = u.members.map((m, i) => {
+        const object = payload(u, t, i)
+        let read: string
+        let type: Type
+        if (m.kind === "struct") {
+          type = ir.findField(m, expr.name)!.type
+          read = `(${object})->${fieldName(expr.name)}`
+        } else {
+          const index = (m as ir.InterfaceType).members.findIndex((x) => x.name === expr.name)
+          type = (m as ir.InterfaceType).members[index]!.type
+          read = `(*(${cType(type)} *)ore_iface_field(${object}, ${index}))`
+        }
+        return `if (${slotTest(u, t, i)}) ${r} = ${recast(read, type, expr.type)};`
+      })
+      return `({ ${cType(u)} ${t} = ${emitExpr(expr.value)}; ${cType(expr.type)} ${r}; ${branches.join(" else ")} ${r}; })`
+    }
+    case "typeof": {
+      const from = expr.value.type
+      if (from.kind !== "union") return `({ ${emitExpr(expr.value)}; ORE_STR(${stringLiteral(typeofName(from))}); })`
+      const t = temp()
+      const branches = from.members.map((m, i) => `${slotTest(from, t, i)} ? ORE_STR(${stringLiteral(typeofName(m))}) :`)
+      return `({ ${cType(from)} ${t} = ${emitExpr(expr.value)}; ${branches.join(" ")} ORE_STR("object"); })`
+    }
+    case "is": {
+      const u = expr.value.type as UnionType
+      const t = temp()
+      return `({ ${cType(u)} ${t} = ${emitExpr(expr.value)}; ${slotTest(u, t, memberIndex(u, expr.member))}; })`
+    }
     case "coalesce": {
       const from = expr.value.type as UnionType
       const t = temp()
@@ -513,6 +562,7 @@ function toString(expr: ir.Expr): string {
     })
     return `({ ${cType(t)} ${v} = ${value}; ore_string ${r} = ORE_STR(""); ${branches.join(" else ")} ${r}; })`
   }
+  if (t.kind === "literal") return value
   switch (t.kind) {
     case "string":
       return value
@@ -636,6 +686,9 @@ function effects(e: ir.Expr): boolean {
     case "to-iface":
     case "iface-field":
     case "is-null":
+    case "union-field":
+    case "typeof":
+    case "is":
       return effects(e.value)
     case "null":
       return false
@@ -697,6 +750,7 @@ function printCall(arg: ir.Expr): string {
   const value = emitExpr(arg)
   const t = arg.type
   if (t.kind === "union") return printUnion(t, value)
+  if (t.kind === "literal") return `ore_rt_print_string(${value})`
   switch (t.kind) {
     case "int":
       return t.signed ? `ore_rt_print_i64((i64)${value})` : `ore_rt_print_u64((u64)${value})`
@@ -730,6 +784,14 @@ export function floatLiteral(type: FloatType, value: number): string {
 }
 
 /** A C string literal; every byte outside printable ASCII is an octal escape. */
+/** What `typeof` gives for values of a type. */
+function typeofName(type: Type): string {
+  if (ir.isNumeric(type)) return "number"
+  if (type.kind === "bool") return "boolean"
+  if (isStringLike(type)) return "string"
+  return "object"
+}
+
 export function stringLiteral(value: string): string {
   let out = '"'
   for (const byte of new TextEncoder().encode(value)) {

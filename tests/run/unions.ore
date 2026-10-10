@@ -1,0 +1,84 @@
+type Circle = { kind: "circle"; r: f64 }
+type Square = { kind: "square"; side: f64 }
+type Rect = { kind: "rect"; w: f64; h: f64 }
+type Shape = Circle | Square | Rect
+
+function area(s: Shape): f64 {
+  switch (s.kind) {
+    case "circle":
+      return 3 * s.r * s.r
+    case "square":
+      return s.side * s.side
+    case "rect":
+      return s.w * s.h
+  }
+}
+
+function isRound(s: Shape): bool {
+  if (s.kind === "circle") return s.r > 0
+  return false
+}
+
+function perimeter(s: Shape): f64 {
+  if (s.kind !== "rect") {
+    if (s.kind === "square") return 4 * s.side
+    return 6 * s.r
+  }
+  return 2 * (s.w + s.h)
+}
+
+type Mode = "fast" | "slow" | "off"
+
+function speed(m: Mode): int {
+  switch (m) {
+    case "fast":
+      return 10
+    case "slow":
+      return 1
+    case "off":
+      return 0
+  }
+}
+
+function label(v: string | int | bool): string {
+  if (typeof v === "string") return `text ${v} (${v.length})`
+  if (typeof v === "number") return `number ${v + 1}`
+  return `flag ${v}`
+}
+
+class Cat {
+  constructor(public name: string) {}
+  meow(): string {
+    return `${this.name} meows`
+  }
+}
+
+class Dog {
+  constructor(public name: string) {}
+  bark(): string {
+    return `${this.name} barks`
+  }
+}
+
+function speak(pet: Cat | Dog): string {
+  if (pet instanceof Cat) return pet.meow()
+  return pet.bark()
+}
+
+export function main() {
+  const shapes: Shape[] = [{ kind: "circle", r: 1 }, { kind: "square", side: 2 }, { kind: "rect", w: 2, h: 3 }]
+  for (const s of shapes) println(s.kind, area(s), perimeter(s), isRound(s))
+
+  const m: Mode = "slow"
+  println(speed(m), speed("fast"), m === "slow", m)
+
+  println(label("ore"), label(41), label(true))
+  println(speak(new Cat("Tom")), speak(new Dog("Rex")))
+
+  // Unions print and compare by value.
+  const values: (string | int | null)[] = ["a", 1, null]
+  for (const v of values) print(v, typeof v, "")
+  println()
+  const x: string | int = 5
+  println(x === 5, values[1] === "1", values[0] === "a")
+}
