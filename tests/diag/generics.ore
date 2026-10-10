@@ -1,0 +1,37 @@
+interface Named {
+  readonly name: string
+}
+
+function longest<T extends Named>(items: T[]): T {
+  return items[0]
+}
+
+function twice<T>(x: T): T {
+  return x * 2 // error: An integer constant is not assignable to type 'string'. (in 'twice<string>')
+}
+
+function empty<T>(): T[] {
+  return []
+}
+
+class Box<T> {
+  constructor(public value: T) {}
+}
+
+type Pair<A, B> = { first: A; second: B }
+
+function plain(x: int): int {
+  return x
+}
+
+export function main() {
+  longest([1, 2]) // error: Type 'i64' does not satisfy the constraint 'Named' of 'T'.
+  twice("a")
+  empty() // error: Cannot infer type argument 'T' of 'empty'.
+  const e: string[] = empty<string>()
+  const b: Box = new Box(1) // error: Generic type 'Box' requires type arguments.
+  const p: Pair<int> = { first: 1, second: 2 } // error: 'Pair' expects 2 type argument(s), got 1.
+  plain<int>(1) // error: Type arguments are only allowed for generic functions.
+  const x: int<string> = 1 // error: Type 'int' is not generic.
+  const f = twice // error: 'twice' is a generic function and cannot be used as a value.
+}

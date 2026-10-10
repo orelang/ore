@@ -52,7 +52,7 @@ function emitFunction(ctx: Context): string {
 }
 
 function structName(s: ir.StructType): string {
-  return s.nominal ? `ore_C_${sanitize(s.name!)}` : `ore_obj_${s.id}`
+  return s.nominal ? `ore_C_${sanitize(s.name!)}_${s.id}` : `ore_obj_${s.id}`
 }
 
 function fieldName(name: string): string {
