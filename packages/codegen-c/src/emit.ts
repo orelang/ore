@@ -770,6 +770,10 @@ function emitExpr(expr: ir.Expr): string {
       return emitChanOp(expr)
     case "func-ref":
       return `((ore_closure){(void *)${thunk(expr.func)}, 0})`
+    case "bind": {
+      const decls = expr.locals.map((b) => declare(b.local, emitExpr(b.init))).join(" ")
+      return `({ ${decls} ${emitExpr(expr.body)}; })`
+    }
     case "closure": {
       const captures = expr.func.captures ?? []
       if (captures.length === 0) return `((ore_closure){(void *)${expr.func.name}, 0})`
@@ -1217,6 +1221,7 @@ function effects(e: ir.Expr): boolean {
     case "recast":
     case "optional":
     case "coalesce":
+    case "bind":
       return true
   }
 }

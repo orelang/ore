@@ -41,6 +41,14 @@ interface Summary {
 
 type Node = ir.Expr | ir.Local
 
+/**
+ * Where a value goes: into the group of a local or allocation that shares its
+ * fate, nowhere it could outlive the call (`safe`), or anywhere (`escapes`).
+ */
+type Flow = Node | typeof safe | typeof escapes
+const safe = undefined
+const escapes = null
+
 export function planStack(module: ir.Module): StackPlan {
   const funcs = module.functions.filter((f) => !f.extern)
   const summaries = new Map<ir.Func, Summary>()
@@ -195,40 +203,34 @@ class FuncAnalysis {
       case "let":
         this.declared(s.local)
         if (!s.init || s.init.k === "alloc") return
-        if (isSite(s.init) && !this.rebound(s.local)) {
-          this.union(s.local, s.init)
-          this.expr(s.init, true)
-        } else {
-          this.expr(s.init, false)
-        }
-        return
+        return this.expr(s.init, this.binding(s.local))
       case "expr":
-        return this.expr(s.expr, true)
+        return this.expr(s.expr, safe)
       case "if":
-        this.expr(s.cond, true)
+        this.expr(s.cond, safe)
         this.stmt(s.then)
         if (s.else) this.stmt(s.else)
         return
       case "loop":
-        if (s.cond) this.expr(s.cond, true)
-        if (s.update) this.expr(s.update, true)
+        if (s.cond) this.expr(s.cond, safe)
+        if (s.update) this.expr(s.update, safe)
         return this.stmt(s.body)
       case "for-of":
         this.declared(s.local)
         if (s.value) this.declared(s.value)
-        this.expr(s.iterable, false)
+        this.expr(s.iterable, escapes)
         return this.stmt(s.body)
       case "switch":
         this.declared(s.local)
-        this.expr(s.value, false)
+        this.expr(s.value, escapes)
         for (const c of s.clauses) {
-          if (c.test) this.expr(c.test, true)
+          if (c.test) this.expr(c.test, safe)
           this.block(c.body)
         }
         return
       case "using":
         this.declared(s.local)
-        this.expr(s.init, false)
+        this.expr(s.init, escapes)
         this.stmt(s.dispose)
         return this.block(s.body)
       case "break":
@@ -238,75 +240,95 @@ class FuncAnalysis {
         if (!s.value) return
         // A constructor returns its instance to the caller, who decided where it lives.
         if (this.ctor && s.value.k === "local" && s.value.local === this.self) return
-        return this.expr(s.value, false)
+        return this.expr(s.value, escapes)
     }
   }
 
-  /** Visits an expression whose value is used safely (`safe`) or may escape. */
-  private expr(e: ir.Expr, safe: boolean): void {
+  /** Where the initial value of a local flows: into the local, unless it is bound to other values later. */
+  private binding(local: ir.Local): Flow {
+    return this.rebound(local) ? escapes : local
+  }
+
+  /** Records that a value flows to `to`. */
+  private flow(node: Node, to: Flow) {
+    if (to === escapes) this.leak(node)
+    else if (to !== safe) this.union(node, to)
+  }
+
+  /** Visits an expression whose value flows to `to`. */
+  private expr(e: ir.Expr, to: Flow): void {
     if (isSite(e)) {
       this.sites.push(e)
-      if (!safe) this.leak(e)
+      this.flow(e, to)
     }
     switch (e.k) {
       case "local":
-        if (!safe) this.leak(e.local)
-        return
-      case "field":
-        this.expr(e.object, true)
-        // The value read may be another object stored in this one.
-        if (!safe && isReference(e.type)) this.leakRoot(e.object)
-        return
+        return this.flow(e.local, to)
+      case "field": {
+        // The value read may be another object stored in this one, so it goes where that one goes.
+        const root = rootOf(e.object)
+        if (!isReference(e.type) || to === safe) return this.expr(e.object, safe)
+        if (!root) return this.expr(e.object, escapes)
+        this.expr(e.object, safe)
+        return this.flow(root, to)
+      }
       case "assign":
       case "incdec":
         this.target(e.target)
-        if (e.k === "assign") this.expr(e.value, false)
+        if (e.k === "assign") this.expr(e.value, escapes)
         return
       case "compare":
-        this.expr(e.left, true)
-        this.expr(e.right, true)
+        this.expr(e.left, safe)
+        this.expr(e.right, safe)
         return
       case "is-null":
       case "is":
       case "typeof":
-        return this.expr(e.value, true)
+        return this.expr(e.value, safe)
       case "cond":
-        this.expr(e.cond, true)
-        this.expr(e.then, safe)
-        this.expr(e.else, safe)
+        this.expr(e.cond, safe)
+        this.expr(e.then, to)
+        this.expr(e.else, to)
         return
       case "coalesce":
-        this.expr(e.value, safe)
-        this.expr(e.fallback, safe)
+        this.expr(e.value, to)
+        this.expr(e.fallback, to)
         return
+      case "recast":
+        return this.expr(e.value, to)
+      case "bind":
+        for (const b of e.locals) {
+          this.declared(b.local)
+          this.expr(b.init, this.binding(b.local))
+        }
+        return this.expr(e.body, to)
+      case "optional":
+        this.expr(e.value, this.binding(e.binding))
+        return this.expr(e.body, to)
       case "call": {
         const summary = e.func.extern ? undefined : this.summaries.get(e.func)
         if (isCtor(e.func) && summary?.self !== false) this.leak(e)
-        e.args.forEach((a, i) => this.expr(a, summary !== undefined && !summary.params[i]))
+        e.args.forEach((a, i) => this.expr(a, summary !== undefined && !summary.params[i] ? safe : escapes))
         return
       }
       case "method-call": {
         const summary = this.summaries.get(e.func)
-        this.expr(e.receiver, summary !== undefined && !summary.self)
-        e.args.forEach((a, i) => this.expr(a, summary !== undefined && !summary.params[i]))
+        this.expr(e.receiver, summary !== undefined && !summary.self ? safe : escapes)
+        e.args.forEach((a, i) => this.expr(a, summary !== undefined && !summary.params[i] ? safe : escapes))
         return
       }
       case "call-value":
-        this.expr(e.callee, true)
-        for (const a of e.args) this.expr(a, false)
+        this.expr(e.callee, safe)
+        for (const a of e.args) this.expr(a, escapes)
         return
       case "array-method":
         // The runtime keeps neither the callbacks nor the values searched for; the initial value of reduce is returned.
-        this.expr(e.array, true)
-        e.args.forEach((a, i) => this.expr(a, !(e.method === "reduce" && i === 1)))
+        this.expr(e.array, safe)
+        e.args.forEach((a, i) => this.expr(a, e.method === "reduce" && i === 1 ? escapes : safe))
         return
       case "object":
-        for (const f of e.fields) {
-          // Objects stored in a new object share its fate.
-          if (f.value.k === "local") this.union(e, f.value.local)
-          else if (isSite(f.value)) this.union(e, f.value)
-          this.expr(f.value, f.value.k === "local" || isSite(f.value))
-        }
+        // Objects stored in a new object share its fate.
+        for (const f of e.fields) this.expr(f.value, e)
         return
       case "closure":
         if (e.func.captures?.length) this.closures.push(e)
@@ -314,7 +336,7 @@ class FuncAnalysis {
         for (const c of e.func.captures ?? []) this.leak(c)
         return
       default:
-        for (const child of children(e)) this.expr(child, false)
+        for (const child of children(e)) this.expr(child, escapes)
     }
   }
 
@@ -323,21 +345,21 @@ class FuncAnalysis {
       case "local":
         return
       case "element":
-        this.expr(t.array, true)
-        return this.expr(t.index, true)
+        this.expr(t.array, safe)
+        return this.expr(t.index, safe)
       case "field":
-        return this.expr(t.object, true)
+        return this.expr(t.object, safe)
       case "iface-field":
-        return this.expr(t.value, false)
+        return this.expr(t.value, escapes)
     }
   }
+}
 
-  /** Marks the local at the root of a chain of field reads as escaping. */
-  private leakRoot(e: ir.Expr) {
-    while (e.k === "field") e = e.object
-    if (e.k === "local") this.leak(e.local)
-    else if (isSite(e)) this.leak(e)
-  }
+/** The local or allocation at the root of a chain of field reads. */
+function rootOf(e: ir.Expr): Node | undefined {
+  while (e.k === "field") e = e.object
+  if (e.k === "local") return e.local
+  return isSite(e) ? e : undefined
 }
 
 /** The subexpressions of an expression, for uses with no special rule. */
@@ -415,5 +437,7 @@ function children(e: ir.Expr): ir.Expr[] {
       return [e.value, ...e.args]
     case "chan":
       return [e.chan, e.value, e.handler].filter((x) => x !== undefined)
+    case "bind":
+      return [...e.locals.map((b) => b.init), e.body]
   }
 }

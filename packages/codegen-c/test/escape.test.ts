@@ -45,3 +45,11 @@ test("closures called in place keep captured locals on the stack", () => {
   expect(stack("let n = 0; task.spawn(() => n++)")).toEqual([])
   expect(stack("let n = 0; const fs = [() => n++]")).toEqual([])
 })
+
+test("values are followed through locals and field reads", () => {
+  expect(stack("const v = new Vec(1, 2); const w = v; console.log(w.x)")).toEqual(["Vec"])
+  expect(stack("const v = new Vec(1, 2); const w = v; keep(w)")).toEqual([])
+  expect(stack("const o = { v: new Vec(1, 2) }; const w = o.v; console.log(w.x)")).toEqual(["object", "Vec"])
+  expect(stack("const o = { v: new Vec(1, 2) }; const w = o.v; keep(w)")).toEqual([])
+  expect(stack("const a = new Vec(1, 2); const b = new Vec(3, 4); const c = a.x > 1 ? a : b; keep(c)")).toEqual([])
+})

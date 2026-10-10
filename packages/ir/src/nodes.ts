@@ -232,6 +232,7 @@ export type Expr =
   | ArrayMethod
   | StringMethod
   | ChanOp
+  | Bind
 
 export interface IntLit {
   k: "int"
@@ -649,4 +650,15 @@ export interface ChanOp {
   /** For select cases: the handler, and how many arguments it takes. */
   handler?: Expr
   arity?: number
+}
+
+/**
+ * Declares `locals` with their initial values in order, then evaluates to
+ * `body`. Created by inlining a call: the locals are the parameters.
+ */
+export interface Bind {
+  k: "bind"
+  type: Type
+  locals: { local: Local; init: Expr }[]
+  body: Expr
 }
