@@ -8,7 +8,7 @@ const text = `function add(a: i32, b: i32): i32 {
 export function main() {
   const limit = 10
   let total: i32 = add(1, 2)
-  println(total, limit)
+  console.log(total, limit)
 }
 `
 
@@ -31,16 +31,16 @@ test("diagnostics carry ranges", () => {
 
 test("hover shows variable, parameter and constant types", () => {
   const analysis = analyze("main.ore", text)
-  expect(analysis.hover(at("println", "total"))?.contents).toBe("```ore\nlet total: i32\n```")
+  expect(analysis.hover(at("console.log", "total"))?.contents).toBe("```ore\nlet total: i32\n```")
   expect(analysis.hover(at("return a", "a"))?.contents).toBe("```ore\n(parameter) a: i32\n```")
-  expect(analysis.hover(at("println", "limit"))?.contents).toBe("```ore\nconst limit: i64\n```")
+  expect(analysis.hover(at("console.log", "limit"))?.contents).toBe("```ore\nconst limit: i64\n```")
 })
 
 test("hover shows function signatures, including built-ins", () => {
   const analysis = analyze("main.ore", text)
   expect(analysis.hover(at("let total", "add"))?.contents).toBe("```ore\nfunction add(a: i32, b: i32): i32\n```")
   expect(analysis.hover(at("let total", "i32"))?.contents).toBe("```ore\ntype i32 = intrinsic\n```")
-  expect(analysis.hover(at("println", "println"))?.contents).toContain("function println(")
+  expect(analysis.hover(at("console.log", "log"))?.contents).toContain("function log(")
 })
 
 test("go to definition", () => {
@@ -50,9 +50,9 @@ test("go to definition", () => {
     text: undefined,
     range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
   })
-  const builtin = analysis.definition(at("println", "println"))
+  const builtin = analysis.definition(at("console.log", "log"))
   expect(builtin?.path).toBe("std/builtin.d.ore")
-  expect(builtin?.text).toContain("declare function println")
+  expect(builtin?.text).toContain("declare namespace console")
 })
 
 const classes = `interface Shape {
@@ -71,7 +71,7 @@ class Circle {
 export function main() {
   const c = new Circle(1)
   const s: Shape = c
-  println(c.area(), s.area(), c.r)
+  console.log(c.area(), s.area(), c.r)
 }
 `
 
@@ -82,12 +82,12 @@ function pos(text: string, line: string, needle: string, after = false) {
 }
 
 test("completion lists public members after a dot", () => {
-  const text = classes.replace("  println(c.area(), s.area(), c.r)", "  c.")
+  const text = classes.replace("  console.log(c.area(), s.area(), c.r)", "  c.")
   const analysis = analyze("main.ore", text)
   expect(analysis.diagnostics.length).toBeGreaterThan(0)
   const ofCircle = analysis.completions(pos(text, "  c.", "c.", true))
   expect(ofCircle.map((c) => `${c.kind} ${c.label}: ${c.detail}`)).toEqual(["field r: f64", "method area: () => f64"])
-  const shape = classes.replace("  println(c.area(), s.area(), c.r)", "  s.")
+  const shape = classes.replace("  console.log(c.area(), s.area(), c.r)", "  s.")
   const ofShape = analyze("main.ore", shape).completions(pos(shape, "  s.", "s.", true))
   expect(ofShape.map((c) => c.label)).toEqual(["area"])
 })
@@ -107,7 +107,7 @@ test("completion for arrays and strings", () => {
 test("hover on classes, methods and properties", () => {
   const analysis = analyze("main.ore", classes)
   expect(analysis.hover(pos(classes, "new Circle", "Circle"))?.contents).toBe("```ore\nclass Circle\n```")
-  expect(analysis.hover(pos(classes, "println", "area"))?.contents).toBe("```ore\n(method) Circle.area(): f64\n```")
-  expect(analysis.hover(pos(classes, "println", "c.r", true))?.contents).toBe("```ore\n(property) Circle.r: f64\n```")
+  expect(analysis.hover(pos(classes, "console.log", "area"))?.contents).toBe("```ore\n(method) Circle.area(): f64\n```")
+  expect(analysis.hover(pos(classes, "console.log", "c.r", true))?.contents).toBe("```ore\n(property) Circle.r: f64\n```")
   expect(analysis.hover(pos(classes, "const s: Shape", "Shape"))?.contents).toBe("```ore\ninterface Shape {\n  area(): f64\n}\n```")
 })

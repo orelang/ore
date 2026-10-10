@@ -48,9 +48,12 @@
   function: ((identifier) @type.builtin
     (#match? @type.builtin "^(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)$")))
 
+; Built-in namespaces: `console.log(...)`, `process.panic(...)`.
 (call_expression
-  function: ((identifier) @function.builtin
-    (#match? @function.builtin "^(println|print|panic|spawn|select)$")))
+  function: (member_expression
+    object: ((identifier) @namespace
+      (#match? @namespace "^(console|process)$"))
+    property: (property_identifier) @function.builtin))
 
 ; Literals
 

@@ -10,7 +10,7 @@ function fib(n: int): int {
 
 export function main() {
   const x: u8 = 200
-  println(fib(30), x + 55, f64(x) / 3.0)
+  console.log(fib(30), x + 55, f64(x) / 3.0)
 }
 ```
 

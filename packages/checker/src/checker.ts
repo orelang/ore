@@ -1608,7 +1608,7 @@ class Checker {
   private checkIdentifier(node: ts.Identifier, scope: Scope): Operand {
     const symbol = scope.lookupValue(node.text)
     if (!symbol && node.text === "undefined") return this.fail(node, "'undefined' is not supported in Ore. Use 'null'.")
-    if (!symbol) return this.fail(node, `Cannot find name '${node.text}'.`)
+    if (!symbol) return this.fail(node, unknownName(node.text))
     this.info.definitions.set(node, symbol.decl)
     switch (symbol.k) {
       case "local":
@@ -1619,6 +1619,8 @@ class Checker {
         return this.fail(node, `'${node.text}' is a class. Create an instance with 'new ${node.text}(...)'.`)
       case "generic-func":
         return this.fail(node, `'${node.text}' is a generic function and cannot be used as a value.`)
+      case "namespace":
+        return this.fail(node, `'${node.text}' is a namespace; call its functions, e.g. '${node.text}.${[...symbol.members.keys()][0]}(...)'.`)
       default:
         return this.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)
     }
@@ -1886,17 +1888,33 @@ class Checker {
     }
     if (node.typeArguments) return this.fail(node.typeArguments[0]!, "Type arguments are only allowed for generic functions.")
     if (node.questionDotToken && !ts.isPropertyAccessExpression(callee)) return this.fail(node, "Optional calls of functions are not supported.")
-    if (ts.isPropertyAccessExpression(callee)) return this.checkMethodCall(node, callee, scope)
-    if (!ts.isIdentifier(callee)) return this.fail(callee, "Only calls of named functions are supported yet.")
-    const symbol = scope.lookupValue(callee.text)
-    if (!symbol) return this.fail(callee, `Cannot find name '${callee.text}'.`)
-    this.info.definitions.set(callee, symbol.decl)
+    let symbol: ValueSymbol | undefined
+    let name: string
+    let nameNode: ts.Node
+    if (ts.isPropertyAccessExpression(callee)) {
+      // `console.log(...)`: a member of a namespace, or else a method call.
+      const ns = ts.isIdentifier(callee.expression) ? scope.lookupValue(callee.expression.text) : undefined
+      if (ns?.k !== "namespace") return this.checkMethodCall(node, callee, scope)
+      this.info.definitions.set(callee.expression as ts.Identifier, ns.decl)
+      name = `${ns.name}.${callee.name.text}`
+      nameNode = callee.name
+      symbol = ns.members.get(callee.name.text)
+      if (!symbol) return this.fail(callee.name, `'${ns.name}' has no member '${callee.name.text}'.`)
+      if (ts.isIdentifier(callee.name)) this.info.definitions.set(callee.name, symbol.decl)
+    } else {
+      if (!ts.isIdentifier(callee)) return this.fail(callee, "Only calls of named functions are supported yet.")
+      name = callee.text
+      nameNode = callee
+      symbol = scope.lookupValue(callee.text)
+      if (!symbol) return this.fail(callee, unknownName(callee.text))
+      this.info.definitions.set(callee, symbol.decl)
+    }
     const args = node.arguments
     for (const arg of args) if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
 
     switch (symbol.k) {
       case "conversion": {
-        if (args.length !== 1) return this.fail(node, `Conversion '${callee.text}' expects exactly 1 argument, got ${args.length}.`)
+        if (args.length !== 1) return this.fail(node, `Conversion '${name}' expects exactly 1 argument, got ${args.length}.`)
         const target = symbol.type
         let value = this.checkExpr(args[0]!, scope)
         if (value.k === "untyped-float" && target.kind === "int") {
@@ -1913,10 +1931,11 @@ class Checker {
         return typed({ k: "convert", type: target, value: value.expr })
       }
       case "builtin": {
-        if (symbol.name === "panic") {
-          if (args.length !== 1) return this.fail(node, `'panic' expects exactly 1 argument, got ${args.length}.`)
-          const message = this.coerce(this.checkExpr(args[0]!, scope), types.string, args[0]!)
-          return typed({ k: "builtin", type: types.never, name: "panic", args: [message] })
+        if (symbol.name === "process.panic" || symbol.name === "process.exit") {
+          if (args.length !== 1) return this.fail(node, `'${name}' expects exactly 1 argument, got ${args.length}.`)
+          const type = symbol.name === "process.panic" ? types.string : types.i32
+          const value = this.coerce(this.checkExpr(args[0]!, scope, type), type, args[0]!)
+          return typed({ k: "builtin", type: types.never, name: symbol.name, args: [value] })
         }
         const values: ir.Expr[] = []
         for (const arg of args) {
@@ -1930,9 +1949,9 @@ class Checker {
       case "func":
         return this.callFunc(symbol.func, args, node, scope, `Function '${symbol.func.sourceName}'`)
       case "class":
-        return this.fail(callee, `Class '${callee.text}' must be instantiated with 'new ${callee.text}(...)'.`)
+        return this.fail(nameNode, `Class '${name}' must be instantiated with 'new ${name}(...)'.`)
       default:
-        return this.fail(callee, `'${callee.text}' is not a function.`)
+        return this.fail(nameNode, `'${name}' is not a function.`)
     }
   }
 
@@ -2518,6 +2537,14 @@ const compareOps = new Map<ts.SyntaxKind, ir.CompareOp>([
 
 /** `null` before it gets a union type from the context. */
 const nullOperand = { k: "null", type: types.null } as unknown as ir.Expr
+
+/** Built-in functions that moved into namespaces. */
+const renamed: Record<string, string> = { println: "console.log", print: "console.write", panic: "process.panic" }
+
+function unknownName(name: string): string {
+  const hint = renamed[name]
+  return hint ? `Cannot find name '${name}'. Use '${hint}'.` : `Cannot find name '${name}'.`
+}
 
 /** A C identifier for a source name: other characters become `_x<hex>_`. */
 function cIdent(name: string): string {

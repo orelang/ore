@@ -14,7 +14,7 @@ described here is either unsupported or follows TypeScript syntax rules.
 
 ```ts
 export function main() {
-  println("hello")
+  console.log("hello")
 }
 ```
 
@@ -99,11 +99,24 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
   untyped constant, usable as any numeric type it fits.
 - At the top level only `const` with a constant initializer is allowed.
 
-### 3.6 Printing
+### 3.6 Built-in namespaces
 
-`println(...)` and `print(...)` accept numbers, `bool` and `string`, separated
-by spaces. Floats are printed in the shortest form that round-trips, like
+Built-in functions live in namespaces, as in TypeScript and Node:
+
+| Function | Meaning |
+|---|---|
+| `console.log(...values)` | values separated by spaces and a newline, to stdout |
+| `console.write(...values)` | values separated by spaces, to stdout, without a newline |
+| `console.error(...values)` | values separated by spaces and a newline, to stderr |
+| `process.panic(message)` | aborts with the message and a stack trace (status 2) |
+| `process.exit(code)` | exits with a status code |
+
+Printed values are numbers, `bool`, strings and unions of them (`null` prints
+as `null`). Floats are printed in the shortest form that round-trips, like
 JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`.
+
+Numeric conversions (`i32(x)`, `f64(x)`) are type names, not namespaced
+functions.
 
 ### 3.7 Strings
 
@@ -201,7 +214,7 @@ right, as in TypeScript.
 - Loops may be labeled for `break label` and `continue label`; labels on
   other statements are rejected.
 - A function with a return type must return a value on every path. A path
-  ending in an infinite loop or a `panic(...)` call needs no return.
+  ending in an infinite loop or a `process.panic(...)` call needs no return.
 
 ### 3.14 Panics
 
@@ -229,7 +242,7 @@ if (r instanceof Error) return r
 // r: int here
 ```
 
-`panic(message)` aborts the program with a stack trace. It is reserved for
+`process.panic(message)` aborts the program with a stack trace. It is reserved for
 bugs and unrecoverable states. `throw`, `try`, `catch`, `finally` are
 rejected.
 

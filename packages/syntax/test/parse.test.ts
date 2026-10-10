@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { formatDiagnostic, parse } from "../src"
 
 test("parses a valid file without diagnostics", () => {
-  const { source, diagnostics } = parse("main.ore", "export function main() {\n  println(42)\n}\n")
+  const { source, diagnostics } = parse("main.ore", "export function main() {\n  console.log(42)\n}\n")
   expect(diagnostics).toEqual([])
   expect(source.ast.statements.length).toBe(1)
 })

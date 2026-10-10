@@ -303,7 +303,7 @@ export interface Call {
   args: Expr[]
 }
 
-export type BuiltinName = "println" | "print" | "panic"
+export type BuiltinName = "console.log" | "console.write" | "console.error" | "process.panic" | "process.exit"
 
 export interface BuiltinCall {
   k: "builtin"

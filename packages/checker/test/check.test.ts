@@ -116,7 +116,7 @@ describe("functions", () => {
   })
 
   test("functions may end with an infinite loop or panic", () => {
-    ok("", "function f(): i32 { while (true) {} }\nfunction g(): i32 { panic(\"no\") }")
+    ok("", "function f(): i32 { while (true) {} }\nfunction g(): i32 { process.panic(\"no\") }")
   })
 
   test("mutual recursion", () => {
@@ -138,7 +138,7 @@ describe("entry point", () => {
   })
 
   test("top-level statements are rejected", () => {
-    expect(errors("", "println(1)")[0]).toContain("Only declarations are allowed at the top level")
+    expect(errors("", "console.log(1)")[0]).toContain("Only declarations are allowed at the top level")
   })
 
   test("top-level constants", () => {

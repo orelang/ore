@@ -24,7 +24,7 @@ const LIMIT = 10
 
 export function main() {
   let total: u8 = u8(add(1, 2))
-  println("total", total, LIMIT, true)
+  console.log("total", total, LIMIT, true)
 }
 `
 
@@ -49,7 +49,8 @@ describe("zed queries", () => {
     expect(of("i32")).toEqual(["type.builtin", "type.builtin", "type.builtin"])
     expect(of("u8")).toEqual(["type.builtin", "type.builtin"])
     expect(of("add")).toEqual(["function", "function"])
-    expect(of("println")).toEqual(["function.builtin"])
+    expect(of("console")).toEqual(["namespace"])
+    expect(of("log")).toEqual(["function.builtin"])
     expect(of("LIMIT")).toEqual(["constant", "constant"])
     expect(of("a")).toEqual(["variable.parameter", "variable"])
     expect(of("/** Adds numbers. */")).toEqual(["comment.doc"])

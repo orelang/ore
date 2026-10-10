@@ -44,7 +44,7 @@ long-term goal.
 | Interfaces | Structural. An interface value is `(data, itab)`, as in Go. The itab is built at the conversion site and cached per (type, interface) pair. |
 | Generics | Monomorphization, as in Rust and C++. Constraints via `extends`. Conditional and mapped types are type-level only, initially rejected. |
 | Unions | `T \| null` is a nullable pointer. Discriminated unions are tagged unions. `string \| i64` is a tagged union with an implicit tag. Narrowing via `typeof`, `instanceof` and `switch (x.kind)` (a switch on the tag). |
-| Errors | Errors as values via unions: `function read(p: string): string \| IoError`, then `if (r instanceof Error) return r`. No unwinding needed. `panic()` for unrecoverable failures. `throw` / `try` rejected for now, possibly added later. |
+| Errors | Errors as values via unions: `function read(p: string): string \| IoError`, then `if (r instanceof Error) return r`. No unwinding needed. `process.panic()` for unrecoverable failures. `throw` / `try` rejected for now, possibly added later. |
 | Defer | `using f = open(...)`: TS 5.2 explicit resource management, calls `[Symbol.dispose]`. A direct analogue of Go's `defer` with valid syntax. |
 | Concurrency | Go-style, without function coloring: green threads (`spawn(() => ...)`), `Chan<T>`, `select([...])`. Blocking I/O parks the green thread. `async` / `await` are rejected. |
 | Entry point | `export function main()`. Top level allows only declarations and `const`. |
@@ -186,5 +186,5 @@ work.**
 1. Root `package.json` with workspaces, empty packages from section 2.
 2. `docs/spec/00-overview.md` from section 1.
 3. Golden test runner and `tests/run/hello.ore` with expected output.
-4. End-to-end path: `export function main() { println(42) }` → C → clang →
+4. End-to-end path: `export function main() { console.log(42) }` → C → clang →
    binary.

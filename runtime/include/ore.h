@@ -163,6 +163,10 @@ static inline bool ore_rt_same_f64(f64 a, f64 b) { return a == b || (a != a && b
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 
+/** Directs printing to stdout (1) or stderr (2). */
+void ore_rt_print_to(int fd);
+_Noreturn void ore_rt_exit(i32 code);
+
 void ore_rt_print_i64(i64 v);
 void ore_rt_print_u64(u64 v);
 void ore_rt_print_f64(f64 v);

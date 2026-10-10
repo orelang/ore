@@ -335,17 +335,33 @@ ore_array *ore_rt_array_slice(ore_array *a, i64 elem_size, i64 start, i64 end) {
 // ---------------------------------------------------------------------------
 // Printing
 
-void ore_rt_print_i64(i64 v) { printf("%lld", (long long)v); }
+// Where printing goes; stdout unless set by ore_rt_print_to.
+static FILE *out;
 
-void ore_rt_print_u64(u64 v) { printf("%llu", (unsigned long long)v); }
+static FILE *stream(void) { return out ? out : stdout; }
 
-void ore_rt_print_bool(bool v) { fputs(v ? "true" : "false", stdout); }
+void ore_rt_print_to(int fd) {
+  // Keep the order of output to both streams.
+  fflush(stream());
+  out = fd == 2 ? stderr : stdout;
+}
 
-void ore_rt_print_string(ore_string v) { fwrite(v.ptr, 1, (size_t)v.len, stdout); }
+_Noreturn void ore_rt_exit(i32 code) {
+  fflush(stdout);
+  exit(code);
+}
 
-void ore_rt_print_space(void) { putchar(' '); }
+void ore_rt_print_i64(i64 v) { fprintf(stream(), "%lld", (long long)v); }
 
-void ore_rt_print_newline(void) { putchar('\n'); }
+void ore_rt_print_u64(u64 v) { fprintf(stream(), "%llu", (unsigned long long)v); }
+
+void ore_rt_print_bool(bool v) { fputs(v ? "true" : "false", stream()); }
+
+void ore_rt_print_string(ore_string v) { fwrite(v.ptr, 1, (size_t)v.len, stream()); }
+
+void ore_rt_print_space(void) { fputc(' ', stream()); }
+
+void ore_rt_print_newline(void) { fputc('\n', stream()); }
 
 // Rewrites a C exponent ("1e-07", "1e+21") into the JavaScript style ("1e-7", "1e+21").
 static void normalize_exponent(char *s) {
@@ -377,13 +393,13 @@ static void format_float(char buf[64], f64 v, int max_precision, bool single) {
 void ore_rt_print_f64(f64 v) {
   char buf[64];
   format_float(buf, v, 17, false);
-  fputs(buf, stdout);
+  fputs(buf, stream());
 }
 
 void ore_rt_print_f32(f32 v) {
   char buf[64];
   format_float(buf, v, 9, true);
-  fputs(buf, stdout);
+  fputs(buf, stream());
 }
 
 ore_string ore_rt_str_from_f64(f64 v) {

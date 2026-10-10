@@ -2,7 +2,7 @@ import type { Func, InterfaceType, Local, StructType, Type } from "@ore/ir"
 import type ts from "typescript"
 import type { Operand } from "./operand"
 
-export type BuiltinFunc = "println" | "print" | "panic"
+export type BuiltinFunc = "console.log" | "console.write" | "console.error" | "process.panic" | "process.exit"
 
 /** A declaration with type parameters, and its instances by type arguments. */
 export interface Generic {
@@ -22,6 +22,8 @@ export type ValueSymbol =
   | { k: "builtin"; name: BuiltinFunc; decl: ts.Node }
   | { k: "class"; type: StructType | undefined; decl: ts.Node }
   | { k: "generic-func"; generic: Generic; decl: ts.Node }
+  /** A built-in namespace such as `console`, whose members are called as `console.log(...)`. */
+  | { k: "namespace"; name: string; members: Map<string, ValueSymbol>; decl: ts.Node }
 
 export interface TypeSymbol {
   type: Type

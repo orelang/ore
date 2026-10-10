@@ -750,13 +750,16 @@ function emitConvert(expr: ir.Convert): string {
 }
 
 function emitBuiltin(expr: ir.BuiltinCall): string {
-  if (expr.name === "panic") return `ore_rt_panic(${emitExpr(expr.args[0]!)})`
+  if (expr.name === "process.panic") return `ore_rt_panic(${emitExpr(expr.args[0]!)})`
+  if (expr.name === "process.exit") return `ore_rt_exit(${emitExpr(expr.args[0]!)})`
   const parts: string[] = []
+  if (expr.name === "console.error") parts.push("ore_rt_print_to(2)")
   expr.args.forEach((arg, i) => {
     if (i > 0) parts.push("ore_rt_print_space()")
     parts.push(printCall(arg))
   })
-  if (expr.name === "println") parts.push("ore_rt_print_newline()")
+  if (expr.name !== "console.write") parts.push("ore_rt_print_newline()")
+  if (expr.name === "console.error") parts.push("ore_rt_print_to(1)")
   return parts.length === 0 ? "((void)0)" : `(${parts.join(", ")})`
 }
 
