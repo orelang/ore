@@ -179,6 +179,14 @@ work.**
 - LLVM or Cranelift backend.
 - `try` / `catch` if it turns out to be needed.
 
+### Phase 8.5: Language completeness
+- Destructuring of objects and arrays in declarations, parameters, `for-of`
+  and assignments.
+- Default and rest parameters.
+- Generic methods.
+- Getters and setters.
+- `JSON.parse` / `JSON.stringify`.
+
 ### Phase 9: Self-hosting
 - Rewrite the compiler in Ore, the best stress test of the language.
 

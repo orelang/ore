@@ -140,6 +140,10 @@ task.select([
 ])
 ```
 
+**Fast by default.** Release builds (`ore build --release`) inline small
+functions and keep objects that never leave their function on the stack
+instead of the garbage-collected heap.
+
 **C interop.** `declare function strlen(s: string): u64` calls C directly.
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
@@ -222,7 +226,8 @@ member completion. Another binary can be set in Zed settings:
 | 6. Modules, packages, standard library, C interop, `ore test`, `ore fmt` | done |
 | 7. Concurrency: tasks, `Chan<T>`, `select` on green threads | done |
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
-| 8. Escape analysis, precise GC, LLVM backend | in progress |
+| 8. Performance: escape analysis and inlining (done); precise GC, LLVM backend | in progress |
+| 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | in progress |
 | 9. Self-hosting | planned |
 
 ### Known limitations
@@ -231,10 +236,11 @@ member completion. Another binary can be set in Zed settings:
   thread. Data races are not detected.
 - There is no network API yet, so no netpoller; a file operation occupies a
   whole OS thread while it runs.
-- A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep recursion in a
-  task can overflow it.
-- No default or rest parameters, no generic methods, no numeric literal types
-  (`1 | 2`), no `JSON`; case mapping of strings covers ASCII only.
+- A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
+  recursion in a task can overflow it.
+- No destructuring, default or rest parameters, generic methods, getters and
+  setters or `JSON` yet (being addressed in 8.5); no numeric literal types
+  (`1 | 2`); case mapping of strings covers ASCII only.
 - A generic function or class that is never used is parsed but not checked.
 - The language server has no rename or find references yet; only Zed has an
   extension.
