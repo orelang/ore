@@ -223,6 +223,12 @@ static inline bool ore_rt_same_f64(f64 a, f64 b) { return a == b || (a != a && b
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 
+/**
+ * Runs a test body (a closure taking no arguments), catching a panic in it.
+ * At exit, prints a summary and exits with status 1 if a test failed.
+ */
+void ore_rt_run_test(ore_string name, ore_closure body);
+
 /** A NUL-terminated copy of a string, for C. */
 const char *ore_rt_cstring(ore_string s);
 /** A copy of a NUL-terminated C string; empty for NULL. */

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <setjmp.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -38,7 +39,15 @@ int main(int argc, char **argv) {
 
 _Thread_local ore_frame *ore_rt_top = NULL;
 
+// While a test runs, a panic returns to the test runner instead of exiting.
+static jmp_buf *test_catch;
+static ore_string test_failure;
+
 _Noreturn void ore_rt_panic(ore_string message) {
+  if (test_catch) {
+    test_failure = message;
+    longjmp(*test_catch, 1);
+  }
   fflush(stdout);
   fprintf(stderr, "panic: %.*s\n\n", (int)message.len, (const char *)message.ptr);
   if (ore_rt_top) {
@@ -76,6 +85,33 @@ static char *c_string(ore_string s) {
   memcpy(p, s.ptr, (size_t)s.len);
   p[s.len] = 0;
   return p;
+}
+
+static int tests_passed, tests_failed;
+
+static void test_summary(void) {
+  printf("\n%d passed, %d failed\n", tests_passed, tests_failed);
+  fflush(stdout);
+  if (tests_failed > 0) _exit(1);
+}
+
+void ore_rt_run_test(ore_string name, ore_closure body) {
+  if (tests_passed + tests_failed == 0) atexit(test_summary);
+  jmp_buf here;
+  ore_frame *top = ore_rt_top;
+  test_catch = &here;
+  if (setjmp(here) == 0) {
+    ((void (*)(void *))body.fn)(body.env);
+    test_catch = NULL;
+    tests_passed++;
+    printf("  \u2713 %.*s\n", (int)name.len, (const char *)name.ptr);
+  } else {
+    test_catch = NULL;
+    ore_rt_top = top;
+    tests_failed++;
+    printf("  \u2717 %.*s\n      %.*s\n", (int)name.len, (const char *)name.ptr, (int)test_failure.len, (const char *)test_failure.ptr);
+  }
+  fflush(stdout);
 }
 
 const char *ore_rt_cstring(ore_string s) { return c_string(s); }

@@ -1184,6 +1184,7 @@ const builtins: Record<string, (a: string[], expr: ir.BuiltinCall) => string> = 
   "fs.exists": (a) => `ore_rt_file_exists(${a[0]})`,
   "Date.now": () => "ore_rt_now()",
   "process.args": () => "ore_rt_args()",
+  "internal.runTest": (a) => `ore_rt_run_test(${a[0]}, ${a[1]})`,
   "process.getenv": (a) => `ore_rt_getenv(${a[0]})`,
 }
 

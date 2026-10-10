@@ -16,10 +16,10 @@ export interface CompileResult {
 }
 
 /** Loads, checks and translates a program, given by its entry file, to C. */
-export function compileToC(entry: string, options: EmitOptions = { debug: false }): CompileResult {
+export function compileToC(entry: string, options: EmitOptions = { debug: false }, test = false): CompileResult {
   const program = loadProgram(entry)
   if (program.syntaxErrors) return { diagnostics: program.diagnostics }
-  const checked = check(program)
+  const checked = check(program, { entry: true, test })
   const diagnostics = [...program.diagnostics, ...checked.diagnostics]
   if (!checked.module || program.diagnostics.length > 0) return { diagnostics }
   return { c: emitModule(checked.module, options), diagnostics, native: nativeCode(program.modules.map((m) => m.path)) }
@@ -50,6 +50,8 @@ export interface BuildOptions {
   release?: boolean
   /** Also write the generated C to this path. */
   emitC?: string
+  /** Build a test file: its top-level statements, such as `test(...)` calls, are the program. */
+  test?: boolean
 }
 
 export interface BuildResult {
@@ -60,7 +62,7 @@ export interface BuildResult {
 const commonFlags = ["-std=c11", "-fwrapv", "-fno-strict-aliasing", "-w"]
 
 export async function build(path: string, options: BuildOptions): Promise<BuildResult> {
-  const { c, diagnostics, native } = compileToC(path, { debug: !options.release })
+  const { c, diagnostics, native } = compileToC(path, { debug: !options.release }, options.test)
   if (c === undefined) return { ok: false, diagnostics }
   if (options.emitC) writeFileSync(options.emitC, c)
 

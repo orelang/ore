@@ -46,6 +46,11 @@ export interface CheckInfo {
 export interface CheckOptions {
   /** Require `export function main()`. */
   entry: boolean
+  /**
+   * A test program: the entry module's top-level statements, such as
+   * `test(...)` calls, become its `main`.
+   */
+  test?: boolean
 }
 
 /** The modules of a program, as loaded by `@ore/project`. */
@@ -226,20 +231,44 @@ class Checker {
     this.checkExports(modules)
 
     // Pass 3: top-level constants in module and source order, field initializers, then bodies.
+    const testStatements: ts.Statement[] = []
     each((stmt, m) => {
-      if (ts.isVariableStatement(stmt)) this.checkTopLevelVariables(stmt, m.scope)
+      const inTest = options.test && m.source === this.program.entry
+      if (inTest && (ts.isExpressionStatement(stmt) || ts.isVariableStatement(stmt))) testStatements.push(stmt)
+      else if (ts.isVariableStatement(stmt)) this.checkTopLevelVariables(stmt, m.scope)
       else if (!isDeclaration(stmt)) this.error(stmt, this.unsupportedTopLevel(stmt))
     })
     for (const info of this.classes) this.checkFieldInitializers(info, info.scope)
     for (const info of this.classes) this.checkImplements(info, info.scope)
     for (const [decl, func, scope] of bodies) this.checkFunctionBody(decl, func, scope)
     for (const info of this.classes) this.checkClassBodies(info, info.scope)
+    if (options.test) this.testMain(testStatements, this.modules.get(this.program.entry)!)
     while (this.pending.length > 0) this.pending.shift()!()
 
-    if (options.entry) this.checkEntry(this.modules.get(this.program.entry)!)
+    if (options.entry && !options.test) this.checkEntry(this.modules.get(this.program.entry)!)
 
     const hasErrors = this.diagnostics.some((d) => d.severity === "error")
     return { module: hasErrors ? undefined : this.module, diagnostics: this.diagnostics, info: this.info }
+  }
+
+  /** The `main` of a test program: its top-level statements in order. */
+  private testMain(statements: ts.Statement[], entry: ModuleInfo) {
+    const func: ir.Func = {
+      name: "ore_fn_main",
+      sourceName: "main",
+      line: 1,
+      file: entry.source.path,
+      type: { kind: "func", params: [], result: types.void },
+      params: [],
+      body: { k: "block", body: [] },
+      exported: true,
+    }
+    this.facts = [new Map()]
+    this.fn = { result: types.void, loops: [], nextLoopId: 0 }
+    const scope = new Scope(entry.scope)
+    for (const stmt of statements) this.checkStmt(stmt, scope, func.body.body)
+    this.fn = undefined
+    this.module.functions.push(func)
   }
 
   // ---------------------------------------------------------------------------
@@ -2380,6 +2409,9 @@ class Checker {
       // `console.log(...)`: a member of a namespace, or else a method call.
       const ns = ts.isIdentifier(callee.expression) ? scope.lookupValue(callee.expression.text) : undefined
       if (ns?.k !== "namespace") return this.checkMethodCall(node, callee, scope)
+      if (ns.name === "internal" && !this.sourceOf(node).path.startsWith("ore:")) {
+        return this.fail(callee.expression, "'internal' is only for the standard library.")
+      }
       this.info.definitions.set(callee.expression as ts.Identifier, ns.decl)
       name = `${ns.name}.${callee.name.text}`
       nameNode = callee.name

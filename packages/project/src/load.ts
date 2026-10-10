@@ -2,7 +2,7 @@ import { parse, type Diagnostic, type Source } from "@ore/syntax"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import ts from "typescript"
-import { resolveImport } from "./resolve"
+import { resolveImport, stdModules } from "./resolve"
 
 export interface Program {
   /** Modules with each module after the modules it imports, the entry last (cycles aside). */
@@ -31,7 +31,7 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
   const order: Source[] = []
   let syntaxErrors = false
 
-  const read = (path: string) => options.overrides?.get(path) ?? readFileSync(path, "utf8")
+  const read = (path: string) => stdModules[path] ?? options.overrides?.get(path) ?? readFileSync(path, "utf8")
   const visit = (path: string, display: string): Source => {
     const existing = byPath.get(path)
     if (existing) return existing
@@ -51,7 +51,8 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
         diagnostics.push({ source, start, length: specifier.getEnd() - start, severity: "error", message: `Cannot find module '${specifier.text}'.` })
         continue
       }
-      resolved.set(specifier.text, visit(resolve(target), options.absolutePaths ? resolve(target) : displayPath(target)))
+      const key = target in stdModules ? target : resolve(target)
+      resolved.set(specifier.text, visit(key, target in stdModules || options.absolutePaths ? key : displayPath(target)))
     }
     order.push(source)
     return source

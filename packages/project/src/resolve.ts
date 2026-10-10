@@ -1,5 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import testModule from "../../../std/test.ore" with { type: "text" }
+
+/** Standard library modules, imported as "ore:name" and embedded in the compiler. */
+export const stdModules: Record<string, string> = { "ore:test": testModule }
 
 export interface PackageJson {
   name?: string
@@ -50,6 +54,7 @@ export function packageEntry(dir: string): string | undefined {
  * importing file, and package names in `node_modules` directories above it.
  */
 export function resolveImport(specifier: string, fromFile: string): string | undefined {
+  if (specifier.startsWith("ore:")) return stdModules[specifier] === undefined ? undefined : specifier
   if (specifier.startsWith("./") || specifier.startsWith("../") || isAbsolute(specifier)) {
     return resolveFile(resolve(dirname(fromFile), specifier))
   }
