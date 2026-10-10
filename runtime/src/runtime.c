@@ -29,8 +29,7 @@ int main(int argc, char **argv) {
   GC_init();
   static char buffer[1 << 16];
   setvbuf(stdout, buffer, _IOFBF, sizeof buffer);
-  ore_entry();
-  fflush(stdout);
+  ore_rt_run_main(ore_entry);
   return 0;
 }
 
@@ -39,12 +38,13 @@ int main(int argc, char **argv) {
 
 _Thread_local ore_frame *ore_rt_top = NULL;
 
-// While a test runs, a panic returns to the test runner instead of exiting.
+// While a test runs, a panic in its task returns to the test runner instead of exiting.
 static jmp_buf *test_catch;
+static void *test_task;
 static ore_string test_failure;
 
 _Noreturn void ore_rt_panic(ore_string message) {
-  if (test_catch) {
+  if (test_catch && ore_rt_task_current() == test_task) {
     test_failure = message;
     longjmp(*test_catch, 1);
   }
@@ -100,6 +100,7 @@ void ore_rt_run_test(ore_string name, ore_closure body) {
   jmp_buf here;
   ore_frame *top = ore_rt_top;
   test_catch = &here;
+  test_task = ore_rt_task_current();
   if (setjmp(here) == 0) {
     ((void (*)(void *))body.fn)(body.env);
     test_catch = NULL;

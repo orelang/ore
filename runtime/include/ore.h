@@ -58,6 +58,22 @@ f64 ore_rt_round(f64 x);
 /** A pseudo-random number in [0, 1). */
 f64 ore_rt_random(void);
 
+// Green threads (tasks), scheduled cooperatively on one OS thread.
+
+/** Runs `entry` as the main task and schedules tasks until it returns. */
+void ore_rt_run_main(void (*entry)(void));
+/** Starts a task running a closure without arguments. */
+void ore_rt_spawn(ore_closure body);
+/** Lets other runnable tasks run first. */
+void ore_rt_yield(void);
+/** Suspends the current task for `ms` milliseconds. */
+void ore_rt_sleep(i64 ms);
+/** The current task, for wait queues. */
+void *ore_rt_task_current(void);
+/** Suspends the current task until another wakes it with ore_rt_task_wake. */
+void ore_rt_task_block(void);
+void ore_rt_task_wake(void *task);
+
 /** A new heap box holding a copy of the `size` bytes at `p`; used for per-iteration loop variables. */
 void *ore_rt_box_copy(void *p, i64 size);
 
