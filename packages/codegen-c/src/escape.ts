@@ -302,6 +302,9 @@ class FuncAnalysis {
           this.expr(b.init, this.binding(b.local))
         }
         return this.expr(e.body, to)
+      case "seq":
+        e.exprs.forEach((x, i) => this.expr(x, i === e.exprs.length - 1 ? to : safe))
+        return
       case "optional":
         this.expr(e.value, this.binding(e.binding))
         return this.expr(e.body, to)
@@ -439,5 +442,7 @@ function children(e: ir.Expr): ir.Expr[] {
       return [e.chan, e.value, e.handler].filter((x) => x !== undefined)
     case "bind":
       return [...e.locals.map((b) => b.init), e.body]
+    case "seq":
+      return e.exprs
   }
 }

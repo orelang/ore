@@ -106,7 +106,14 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
   an initializer starts at the zero value (`0`, `false`, `""`).
 - `const N = 10` with an untyped constant initializer declares a named
   untyped constant, usable as any numeric type it fits.
-- At the top level only `const` with a constant initializer is allowed.
+- Top-level variables are module variables; see §2.
+- Destructuring works in declarations, parameters, `for-of` and assignments:
+  `const { x, y: why, home: { city } } = p`, `const [first, , ...rest] = xs`,
+  `function f({ x, y }: Point)`, `for (const [k, v] of pairs)`,
+  `[a, b] = [b, a]`. Object patterns read fields of classes, object types and
+  interfaces; array patterns read elements of arrays, with bounds checks, and
+  `...rest` is a copy of the remaining elements. Default values and rest
+  elements in object patterns are not supported.
 
 ### 3.6 Built-in namespaces
 

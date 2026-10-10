@@ -243,6 +243,7 @@ export type Expr =
   | StringMethod
   | ChanOp
   | Bind
+  | Seq
 
 export interface IntLit {
   k: "int"
@@ -671,4 +672,11 @@ export interface Bind {
   type: Type
   locals: { local: Local; init: Expr }[]
   body: Expr
+}
+
+/** Evaluates `exprs` in order; the value is the last one's. */
+export interface Seq {
+  k: "seq"
+  type: Type
+  exprs: Expr[]
 }

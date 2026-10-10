@@ -1,0 +1,81 @@
+// Destructuring of objects and arrays.
+
+type Point = { x: int; y: int }
+
+class Person {
+    constructor(
+        readonly name: string,
+        readonly age: int,
+        readonly home: Point,
+    ) {}
+}
+
+interface Named {
+    readonly name: string
+}
+
+// Declarations: renaming, nesting, holes and rest elements.
+const { x, y: why } = { x: 1, y: 2 }
+console.log(x, why)
+const ada = new Person("Ada", 36, { x: 3, y: 4 })
+const {
+    name,
+    home: { x: hx, y: hy },
+} = ada
+console.log(name, hx, hy)
+const [first, , third, ...others] = [10, 20, 30, 40, 50]
+console.log(first, third, others.join(","))
+let [a, b] = ["left", "right"]
+const matrix = [
+    [1, 2],
+    [3, 4],
+]
+const [[m00, m01], row1] = matrix
+console.log(m00, m01, row1.length)
+
+// Through an interface, from a call evaluated once.
+let calls = 0
+function named(): Named {
+    calls++
+    return ada
+}
+const { name: viaInterface } = named()
+console.log(viaInterface, calls)
+
+// Assignment: swapping, and the value of the expression.
+;[a, b] = [b, a]
+console.log(a, b)
+let p = 0
+let q = 0
+const pair = ([p, q] = [7, 8])
+console.log(p, q, pair.length)
+;({ x: p, y: q } = { x: 5, y: 6 })
+console.log(p, q)
+
+// Parameters of functions, methods and closures.
+function dist({ x, y }: Point): int {
+    return x * x + y * y
+}
+console.log(dist({ x: 3, y: 4 }))
+
+class Grid {
+    cell([row, col]: int[]): string {
+        return `${row}:${col}`
+    }
+}
+console.log(new Grid().cell([2, 5]))
+
+const people = [ada, new Person("Grace", 45, { x: 0, y: 0 })]
+console.log(people.map(({ name, age }) => `${name} ${age}`).join(", "))
+
+// for-of.
+for (const { name, home } of people) console.log(name, home.x)
+for (const [k, v] of [
+    [1, 2],
+    [3, 4],
+]) {
+    console.log(k + v)
+}
+const counts = new Map<string, int>()
+counts.set("a", 1)
+for (const [key, count] of counts) console.log(key, count)

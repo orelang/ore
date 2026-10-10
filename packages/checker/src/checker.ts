@@ -691,40 +691,45 @@ class Checker {
   /** Resolves parameters into locals; parameter properties are allowed only by the caller. */
   private resolveParams(parameters: readonly ts.ParameterDeclaration[], scope: Scope): ir.Local[] {
     const params: ir.Local[] = []
-    for (const p of parameters) {
-      if (!ts.isIdentifier(p.name)) {
-        this.error(p.name, "Destructuring parameters are not supported yet.")
-        continue
-      }
+    for (const [i, p] of parameters.entries()) {
       if (p.dotDotDotToken) this.error(p, "Rest parameters are not supported yet.")
       if (p.questionToken) this.error(p, "Optional parameters are not supported yet.")
       if (p.initializer) this.error(p.initializer, "Default parameter values are not supported yet.")
       let type: Type | undefined
-      if (!p.type) this.error(p.name, `Parameter '${p.name.text}' must have a type annotation.`)
+      if (!p.type) this.error(p.name, `Parameter '${p.name.getText()}' must have a type annotation.`)
       else type = this.resolveValueType(p.type, scope)
       if (type) this.info.types.set(p.name, type)
-      params.push(this.newLocal(p.name.text, type ?? types.i64, true))
+      params.push(this.newLocal(paramName(p, i), type ?? types.i64, true))
     }
     return params
   }
 
-  /** A scope with the parameters of a function declared. */
-  private paramScope(parameters: readonly ts.ParameterDeclaration[], locals: ir.Local[], outer: Scope): Scope {
+  /**
+   * A scope with the parameters of a function declared. The names of
+   * destructured parameters are declared by statements added to `prologue`,
+   * which go before the body.
+   */
+  private paramScope(parameters: readonly ts.ParameterDeclaration[], locals: ir.Local[], outer: Scope, prologue: ir.Stmt[]): Scope {
     const scope = new Scope(outer)
     parameters.forEach((p, i) => {
       const local = locals[i]
-      if (local && ts.isIdentifier(p.name)) {
+      if (!local) return
+      if (ts.isIdentifier(p.name)) {
         if (!scope.declareValue(local.name, { k: "local", local, decl: p })) this.error(p.name, `Duplicate parameter '${local.name}'.`)
+      } else {
+        this.bindPattern(p.name, { k: "local", type: local.type, local }, true, scope, prologue)
       }
     })
     return scope
   }
 
   private checkFunctionBody(decl: ts.FunctionDeclaration, func: ir.Func, outer: Scope) {
-    const scope = this.paramScope(decl.parameters, func.params, outer)
+    const prologue: ir.Stmt[] = []
+    const scope = this.paramScope(decl.parameters, func.params, outer, prologue)
     this.facts = [new Map()]
     this.fn = { result: func.type.result, loops: [], nextLoopId: 0 }
     func.body = this.checkBlock(decl.body!, scope)
+    func.body.body.unshift(...prologue)
     this.fn = undefined
     this.checkReturns(func, decl.type ?? decl.name!)
   }
@@ -917,10 +922,11 @@ class Checker {
     for (const p of info.paramProps) body.push(setField(p.name, { k: "local", type: p.type, local: p }))
     for (const init of info.inits) if (init.value) body.push(setField(init.name, init.value))
     if (info.ctorDecl) {
-      const scope = this.paramScope(info.ctorDecl.parameters, ctor.params, outer)
+      const prologue: ir.Stmt[] = []
+      const scope = this.paramScope(info.ctorDecl.parameters, ctor.params, outer, prologue)
       this.facts = [new Map()]
       this.fn = { result: types.void, loops: [], nextLoopId: 0, this: self, cls: type, ctor: true }
-      body.push(...this.checkBlock(info.ctorDecl.body!, scope).body)
+      body.push(...prologue, ...this.checkBlock(info.ctorDecl.body!, scope).body)
       this.fn = undefined
     }
     body.push({ k: "return", value: thisRef })
@@ -943,10 +949,12 @@ class Checker {
     }
 
     for (const [decl, func] of info.methods) {
-      const scope = this.paramScope(decl.parameters, func.params, outer)
+      const prologue: ir.Stmt[] = []
+      const scope = this.paramScope(decl.parameters, func.params, outer, prologue)
       this.facts = [new Map()]
       this.fn = { result: func.type.result, loops: [], nextLoopId: 0, this: func.receiver, cls: type }
       func.body = this.checkBlock(decl.body!, scope)
+      func.body.body.unshift(...prologue)
       this.fn = undefined
       this.checkReturns(func, decl.type ?? decl.name)
     }
@@ -1559,7 +1567,15 @@ class Checker {
     }
     for (const decl of list.declarations) {
       if (!ts.isIdentifier(decl.name)) {
-        this.error(decl.name, "Destructuring is not supported yet.")
+        if (!decl.initializer) {
+          this.error(decl.name, "A destructuring declaration must be initialized.")
+          continue
+        }
+        const declared = decl.type ? this.resolveValueType(decl.type, scope) : undefined
+        const value = this.checkExpr(decl.initializer, scope, declared)
+        if (value.k === "error") continue
+        const init = declared ? this.coerce(value, declared, decl.initializer) : this.toDefault(value, decl.initializer)
+        this.bindPattern(decl.name, init, !isConst, scope, out)
         continue
       }
       const name = decl.name.text
@@ -1599,6 +1615,110 @@ class Checker {
       }
       if (!scope.declareValue(name, symbol)) this.error(decl.name, `Cannot redeclare '${name}' in the same scope.`)
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Destructuring
+
+  /**
+   * Declares the names of a binding pattern, or a single name, with the parts
+   * of `value` they select, adding the declarations to `out`.
+   */
+  private bindPattern(name: ts.BindingName, value: ir.Expr, mutable: boolean, scope: Scope, out: ir.Stmt[]) {
+    if (ts.isIdentifier(name)) return this.declareBinding(name, value, mutable, scope, out)
+    // The value is read once per name, so it is held in a local first.
+    let whole = value
+    if (whole.k !== "local") {
+      const local = this.newLocal("tmp", value.type, false)
+      out.push({ k: "let", local, init: value })
+      whole = { k: "local", type: value.type, local }
+    }
+    if (ts.isObjectBindingPattern(name)) {
+      for (const e of name.elements) {
+        if (e.dotDotDotToken) {
+          this.error(e, "Rest elements are not supported in object destructuring.")
+          continue
+        }
+        if (e.initializer) this.error(e.initializer, "Default values in destructuring are not supported.")
+        const key = e.propertyName ?? e.name
+        if (!ts.isIdentifier(key) && !ts.isStringLiteral(key)) {
+          this.error(key, "Destructure a property by its name.")
+          continue
+        }
+        const part = this.member(whole, key, key.text)
+        if (part.k === "typed") this.bindPattern(e.name, part.expr, mutable, scope, out)
+      }
+      return
+    }
+    const array = whole.type
+    if (array.kind !== "array") return this.error(name, `Type '${typeToString(array)}' cannot be destructured as an array.`)
+    name.elements.forEach((e, i) => {
+      if (ts.isOmittedExpression(e)) return
+      if (e.initializer) this.error(e.initializer, "Default values in destructuring are not supported.")
+      const index: ir.Expr = { k: "int", type: types.i64, value: BigInt(i) }
+      const part: ir.Expr = e.dotDotDotToken ? { k: "slice", type: array, value: whole, start: index } : { k: "index", type: array.elem, target: whole, index }
+      this.bindPattern(e.name, part, mutable, scope, out)
+    })
+  }
+
+  private declareBinding(name: ts.Identifier, init: ir.Expr, mutable: boolean, scope: Scope, out: ir.Stmt[]) {
+    const local = this.newLocal(name.text, init.type, mutable)
+    if (scope === this.globals) local.global = true
+    if (!scope.declareValue(local.name, { k: "local", local, decl: name.parent })) this.error(name, `Cannot redeclare '${local.name}' in the same scope.`)
+    this.info.types.set(name, init.type)
+    out.push({ k: "let", local, init })
+  }
+
+  /** `[a, b] = value` or `({ a, b } = value)`: assigns the parts of the value; evaluates to the value. */
+  private checkDestructuringAssign(node: ts.BinaryExpression, scope: Scope): Operand {
+    const operand = this.checkExpr(node.right, scope)
+    if (operand.k === "error") return operand
+    const value = this.toDefault(operand, node.right)
+    const locals: ir.Bind["locals"] = []
+    const assigns: ir.Expr[] = []
+    const hold = (v: ir.Expr): ir.Expr => {
+      const local = this.newLocal("tmp", v.type, false)
+      locals.push({ local, init: v })
+      return { k: "local", type: v.type, local }
+    }
+    const assign = (target: ts.Expression, part: ir.Expr) => {
+      if (ts.isArrayLiteralExpression(target)) {
+        const whole = hold(part)
+        const array = whole.type
+        if (array.kind !== "array") return this.error(target, `Type '${typeToString(array)}' cannot be destructured as an array.`)
+        target.elements.forEach((e, i) => {
+          if (ts.isOmittedExpression(e)) return
+          const index: ir.Expr = { k: "int", type: types.i64, value: BigInt(i) }
+          if (ts.isSpreadElement(e)) assign(e.expression, { k: "slice", type: array, value: whole, start: index })
+          else assign(e, { k: "index", type: array.elem, target: whole, index })
+        })
+        return
+      }
+      if (ts.isObjectLiteralExpression(target)) {
+        const whole = hold(part)
+        for (const p of target.properties) {
+          if (ts.isShorthandPropertyAssignment(p)) {
+            const field = this.member(whole, p.name, p.name.text)
+            if (field.k === "typed") assign(p.name, field.expr)
+          } else if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) {
+            const field = this.member(whole, p.name, p.name.text)
+            if (field.k === "typed") assign(p.initializer, field.expr)
+          } else {
+            this.error(p, "Destructure a property by its name.")
+          }
+        }
+        return
+      }
+      const lvalue = this.assignTarget(target, scope)
+      if (!lvalue) return
+      const key = this.refKey(target, scope)
+      if (key) this.invalidate(key)
+      assigns.push({ k: "assign", type: lvalue.type, target: lvalue.lvalue, value: this.coerce(typed(part), lvalue.type, target) })
+    }
+    assign(node.left, value)
+    const result = locals[0]!
+    const ref: ir.Expr = { k: "local", type: value.type, local: result.local }
+    return typed({ k: "bind", type: value.type, locals, body: { k: "seq", type: value.type, exprs: [...assigns, ref] } })
   }
 
   private checkFor(stmt: ts.ForStatement, outer: Scope): ir.Stmt {
@@ -1648,29 +1768,38 @@ class Checker {
     const type = iterable.type
     const mutable = (list.flags & ts.NodeFlags.Let) !== 0
     // Names and types of the loop variables: one, or `[key, value]` for a map.
-    let bindings: [ts.Identifier, Type][]
+    let bindings: [ts.BindingName, Type][]
     if (type.kind === "map") {
       const pattern = decl.name
       const names = ts.isArrayBindingPattern(pattern) ? pattern.elements.map((e) => (ts.isBindingElement(e) && ts.isIdentifier(e.name) && !e.dotDotDotToken && !e.initializer ? e.name : undefined)) : []
       if (names.length !== 2 || !names[0] || !names[1]) return this.error(decl.name, "Iterate a Map with 'for (const [key, value] of map)'."), undefined
       bindings = [[names[0], type.key], [names[1], type.value]]
     } else {
-      if (!ts.isIdentifier(decl.name)) return this.error(decl.name, "Destructuring is not supported yet."), undefined
-      if (type.kind === "array" || type.kind === "chan") bindings = [[decl.name, type.elem]]
-      else if (type.kind === "string") bindings = [[decl.name, types.i32]]
+      let elem: Type
+      if (type.kind === "array" || type.kind === "chan") elem = type.elem
+      else if (type.kind === "string") elem = types.i32
       else return this.error(stmt.expression, `Type '${typeToString(type)}' is not iterable.`), undefined
+      bindings = [[decl.name, elem]]
     }
 
     this.invalidateAssigned(stmt.statement, outer)
     const scope = new Scope(outer)
+    // A destructured element is held by a hidden loop variable, unpacked at the start of each iteration.
+    const prologue: ir.Stmt[] = []
     const locals = bindings.map(([name, t]) => {
+      if (!ts.isIdentifier(name)) {
+        const local = this.newLocal("item", t, false)
+        this.bindPattern(name, { k: "local", type: t, local }, mutable, scope, prologue)
+        return local
+      }
       const local = this.newLocal(name.text, t, mutable)
       if (!scope.declareValue(local.name, { k: "local", local, decl: name.parent })) this.error(name, `Duplicate name '${name.text}'.`)
       this.info.types.set(name, t)
       return local
     })
     const loop = this.checkLoopBody(stmt.statement, scope)
-    return Object.assign(loop.ir, { k: "for-of" as const, id: loop.id, local: locals[0]!, value: locals[1], iterable, body: loop.body })
+    const body: ir.Stmt = prologue.length === 0 ? loop.body : { k: "block", body: [...prologue, ...(loop.body.k === "block" ? loop.body.body : [loop.body])] }
+    return Object.assign(loop.ir, { k: "for-of" as const, id: loop.id, local: locals[0]!, value: locals[1], iterable, body })
   }
 
   private checkSwitch(stmt: ts.SwitchStatement, outer: Scope): ir.SwitchStmt | undefined {
@@ -1813,15 +1942,14 @@ class Checker {
     }
     const params: ir.Local[] = []
     for (const [i, p] of node.parameters.entries()) {
-      if (!ts.isIdentifier(p.name)) return this.fail(p.name, "Destructuring parameters are not supported yet.")
       if (p.dotDotDotToken || p.questionToken || p.initializer) return this.fail(p, "Optional, default and rest parameters are not supported yet.")
       const type = p.type ? this.resolveValueType(p.type, outer) : want?.params[i]
-      if (!type) return this.fail(p.name, `Parameter '${p.name.text}' needs a type annotation here.`)
+      if (!type) return this.fail(p.name, `Parameter '${p.name.getText()}' needs a type annotation here.`)
       if (p.type && want && !sameType(type, want.params[i]!)) {
         return this.fail(p.type, `Parameter type '${typeToString(type)}' does not match the expected '${typeToString(want.params[i]!)}'.`)
       }
       this.info.types.set(p.name, type)
-      params.push(this.newLocal(p.name.text, type, true))
+      params.push(this.newLocal(paramName(p, i), type, true))
     }
     // An unused trailing parameter of the expected type is still passed.
     for (let i = params.length; i < (want?.params.length ?? 0); i++) params.push(this.newLocal(`_${i}`, want!.params[i]!, false))
@@ -1841,7 +1969,8 @@ class Checker {
       captures: [],
     }
     this.module.functions.push(func)
-    const scope = this.paramScope(node.parameters, params, new Scope(outer, func))
+    const prologue: ir.Stmt[] = []
+    const scope = this.paramScope(node.parameters, params, new Scope(outer, func), prologue)
 
     // Arrow functions keep the `this` of the enclosing method; function expressions have none.
     const isArrow = ts.isArrowFunction(node)
@@ -1873,6 +2002,7 @@ class Checker {
           func.body = { k: "block", body: [{ k: "return", value: expr }] }
         }
       }
+      func.body.body.unshift(...prologue)
       const result = this.fn.result ?? types.void
       func.type = { kind: "func", params: func.type.params, result }
       this.checkReturns(func, node.type ?? node)
@@ -2269,6 +2399,7 @@ class Checker {
   }
 
   private checkAssignInner(node: ts.BinaryExpression, op: ir.ArithOp | undefined, scope: Scope): Operand {
+    if (!op && (ts.isArrayLiteralExpression(node.left) || ts.isObjectLiteralExpression(node.left))) return this.checkDestructuringAssign(node, scope)
     const target = this.assignTarget(node.left, scope)
     const value = this.checkExpr(node.right, scope, op ? undefined : target?.type)
     if (!target) return errorOperand
@@ -2877,15 +3008,14 @@ class Checker {
     const target = this.checkExpr(node.expression, scope)
     if (target.k === "error") return target
     const value = this.toDefault(target, node.expression)
-    if (node.questionDotToken) return this.optional(value, node, (v) => this.member(v, node))
-    const result = this.member(value, node)
+    if (node.questionDotToken) return this.optional(value, node, (v) => this.member(v, node.name, node.name.text))
+    const result = this.member(value, node.name, node.name.text)
     const key = this.refKey(node, scope)
     return result.k === "typed" && key ? typed(this.narrowed(key, result.expr)) : result
   }
 
   /** Reads the field or length named by a property access from a value. */
-  private member(value: ir.Expr, node: ts.PropertyAccessExpression): Operand {
-    const name = node.name.text
+  private member(value: ir.Expr, nameNode: ts.Node, name: string): Operand {
     if (name === "length" && (value.type.kind === "string" || value.type.kind === "array")) return typed({ k: "len", type: types.i64, value })
     if (name === "length" && membersOf(value.type).every(isStringLike)) {
       return typed({ k: "len", type: types.i64, value: { k: "recast", type: types.string, value } })
@@ -2894,21 +3024,21 @@ class Checker {
     if (value.type.kind === "struct") {
       const struct = value.type
       const field = findField(struct, name)
-      this.defineMember(node.name, struct, name)
+      this.defineMember(nameNode, struct, name)
       if (field) {
-        if (!this.checkAccess(struct, field, name, node.name)) return errorOperand
+        if (!this.checkAccess(struct, field, name, nameNode)) return errorOperand
         return typed({ k: "field", type: field.type, object: value, name })
       }
       const method = findMethod(struct, name)
       if (method) {
-        if (!this.checkAccess(struct, method, name, node.name)) return errorOperand
+        if (!this.checkAccess(struct, method, name, nameNode)) return errorOperand
         return typed({ k: "bound-method", type: method.func.type, receiver: value, func: method.func })
       }
     }
     if (value.type.kind === "interface") {
       const index = value.type.members.findIndex((m) => m.name === name)
       const member = value.type.members[index]
-      this.defineMember(node.name, value.type, name)
+      this.defineMember(nameNode, value.type, name)
       if (member?.k === "field") return typed({ k: "iface-field", type: member.type, value, index })
       if (member) return typed({ k: "bound-method", type: member.type, receiver: value, index })
     }
@@ -2919,7 +3049,7 @@ class Checker {
         return typed({ k: "union-field", type: this.unionOf(fieldTypes as Type[]), value, name })
       }
     }
-    return this.fail(node.name, this.noProperty(value.type, name))
+    return this.fail(nameNode, this.noProperty(value.type, name))
   }
 
   private noProperty(type: Type, name: string): string {
@@ -3046,7 +3176,7 @@ class Checker {
         return this.callFunc(method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
       }
       const field = findField(type, name)
-      if (field?.type.kind === "func") return this.callValue(this.member(value, callee), node, scope)
+      if (field?.type.kind === "func") return this.callValue(this.member(value, callee.name, callee.name.text), node, scope)
       if (field) return this.fail(callee.name, `Field '${name}' is not a method.`)
     }
     if (type.kind === "interface") {
@@ -3060,7 +3190,7 @@ class Checker {
         const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope, params[i]), params[i]!, arg))
         return typed({ k: "iface-call", type: member.type.result, value, index, method: member.type, args: values })
       }
-      if (member?.type.kind === "func") return this.callValue(this.member(value, callee), node, scope)
+      if (member?.type.kind === "func") return this.callValue(this.member(value, callee.name, callee.name.text), node, scope)
       if (member) return this.fail(callee.name, `Field '${name}' is not a method.`)
     }
     if (type.kind === "chan") {
@@ -3143,7 +3273,7 @@ class Checker {
   }
 
   /** Records the declaration of a field or method for go to definition. */
-  private defineMember(node: ts.MemberName, struct: StructType | InterfaceType, name: string) {
+  private defineMember(node: ts.Node, struct: StructType | InterfaceType, name: string) {
     const decl = this.memberDecls.get(struct)?.get(name)
     if (decl && ts.isIdentifier(node)) this.info.definitions.set(node, decl)
   }
@@ -3608,4 +3738,9 @@ function visitLocals(node: unknown, visit: (local: ir.Local) => void, seen = new
     if (key === "local" || key === "binding") visit(value as ir.Local)
     else if (key !== "type" && key !== "func" && key !== "captures") visitLocals(value, visit, seen)
   }
+}
+
+/** The name of a parameter's local: its own, or a made-up one for a destructured parameter. */
+function paramName(p: ts.ParameterDeclaration, index: number): string {
+  return ts.isIdentifier(p.name) ? p.name.text : `param${index}`
 }
