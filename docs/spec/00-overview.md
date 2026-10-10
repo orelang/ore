@@ -202,21 +202,97 @@ functions.
   object type is an exact record, an interface accepts any record or class
   with the members.
 
-### 3.12 Evaluation order
+### 3.12 Unions and null
+
+- `A | B` is a union type. Unions are normalized: nested unions are
+  flattened, duplicates removed, and `string` absorbs string literal types.
+- `null` is a value only of unions that contain `null`. A variable of such a
+  type without an initializer starts as `null`. There is no `undefined`.
+- A string literal type such as `"circle"` has strings as values. A string
+  literal expression takes the literal type its context asks for.
+- A value converts implicitly to a union containing its type. A class or
+  object converts to a union member that is an interface it implements, if
+  exactly one does.
+- Representation: a reference type with `null` is a nullable reference; a
+  union of string literals is a string; other unions are tagged values.
+
+### 3.13 Narrowing
+
+Checks narrow the type of a variable, of `this`, or of a field path such as
+`this.head.next`:
+
+- `x !== null` and `x === null`;
+- `x === "lit"` for a union of literal types, and `x.kind === "lit"` for a
+  union of objects whose `kind` fields have literal types (discriminated
+  unions);
+- `typeof x === "string" | "number" | "boolean" | "object"`;
+- `x instanceof C` for a class `C` (also on interface values, which then
+  narrow to the class) and `x instanceof I` for an interface member of a
+  union.
+
+Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
+of `&&`, `||` and `?:`, `switch` clauses on a literal (clauses reached by
+falling through code are not narrowed), and after an `if` whose branch always
+exits (`if (x === null) return`). An assignment narrows to the assigned
+value's type until the next assignment. Loops forget facts about variables
+they assign.
+
+A narrowed read is checked at run time and panics if the value is not of the
+narrowed type, so a check made stale by a call cannot corrupt memory.
+
+`x?.f`, `x?.m()` and `x?.[i]` give `null` when `x` is null. `x ?? y` gives
+`y` when `x` is null. `x!` asserts that `x` is not null and panics otherwise.
+
+A `switch` over a union of string literals with a case for every literal is
+exhaustive: like a `default`, it lets a function end without `return`.
+
+### 3.14 Generics
+
+- Functions, classes, interfaces and type aliases may have type parameters,
+  optionally constrained: `function longest<T extends Named>(items: T[]): T`.
+- Type arguments are written (`id<int>(5)`, `new Box<string>()`) or inferred
+  from the arguments, also through arrays, unions, generic classes,
+  interfaces and aliases (`map(xs, new Doubler())` infers `Mapper<A, B>`).
+- Each set of type arguments creates a separate instance (monomorphization),
+  checked with the concrete types: inside `longest<City>`, `T` is `City`. The
+  constraint is checked where the instance is created. Errors inside a
+  generic name the instance, e.g. `(in 'twice<string>')`. A generic that is
+  never instantiated is only parsed.
+- Methods cannot have their own type parameters yet; default type arguments
+  are not supported.
+
+### 3.15 Maps
+
+- `Map<K, V>` is a reference to a hash map that iterates in insertion order.
+  `new Map<K, V>()` creates one; the type arguments may come from the context
+  (`const m: Map<string, int> = new Map()`). A variable without an
+  initializer starts as a new empty map.
+- `get(key)` returns `V | null`; `set(key, value)` returns the map;
+  `has`, `delete` (returns whether the key was present), `clear`, `size`.
+  `keys()` and `values()` return arrays in insertion order.
+- `for (const [key, value] of map)` iterates entries in insertion order.
+- Keys compare like SameValueZero: numbers and strings by value (`NaN`
+  equals `NaN`, `-0` equals `0`), objects, arrays and interface values by
+  identity. Unions cannot be keys yet.
+
+### 3.16 Evaluation order
 
 Operands, arguments and the receiver of a method call are evaluated left to
 right, as in TypeScript.
 
-### 3.13 Statements
+### 3.17 Statements
 
-- `if`, `while`, `do...while`, `for`, `for...of`, `break`, `continue` and
-  `return` work as in TypeScript. `for...in` is rejected.
-- Loops may be labeled for `break label` and `continue label`; labels on
-  other statements are rejected.
+- `if`, `while`, `do...while`, `for`, `for...of`, `switch`, `break`,
+  `continue` and `return` work as in TypeScript. `for...in` is rejected.
+- `switch` compares with `===`, evaluates case expressions in order until one
+  matches, and falls through until `break`. It works on numbers, `bool`,
+  strings and unions of string literals.
+- Loops and switches may be labeled for `break label`, and loops for
+  `continue label`; labels on other statements are rejected.
 - A function with a return type must return a value on every path. A path
   ending in an infinite loop or a `process.panic(...)` call needs no return.
 
-### 3.14 Panics
+### 3.18 Panics
 
 A panic prints its message and exits with status 2. Debug builds (the default)
 print the Ore call stack with source lines:
@@ -232,14 +308,24 @@ Release builds (`--release`) keep no call stack information.
 
 ## 4. Errors
 
-Errors are values. A fallible function returns a union with an error type:
+Errors are values. The built-in interface `Error` has a `message`; any class
+with a `message: string` field is an `Error`, and `new Error(message)`
+creates a basic one. A fallible function returns a union with `Error`:
 
 ```ts
-function parse(s: string): int | ParseError { ... }
+class ParseError {
+  constructor(readonly message: string, readonly position: int) {}
+}
+
+function parse(s: string): int | Error {
+  if (s.length === 0) return new ParseError("empty input", 0)
+  ...
+}
 
 const r = parse(input)
 if (r instanceof Error) return r
 // r: int here
+if (r instanceof ParseError) console.log(r.position)
 ```
 
 `process.panic(message)` aborts the program with a stack trace. It is reserved for
@@ -283,3 +369,7 @@ use.
 | class compatibility | structural | nominal; convert to an interface instead |
 | `===` on strings | value | value |
 | integer literal `5` | `number` | `int` |
+| missing value | `undefined` | `null` |
+| `map.get(missing)` | `undefined` | `null` |
+| `map.keys()` | iterator | array |
+| generic bodies | checked once | checked per instance |
