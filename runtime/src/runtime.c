@@ -153,6 +153,112 @@ i32 ore_rt_str_decode(ore_string s, i64 *pos) {
   return rune;
 }
 
+i64 ore_rt_str_index_of(ore_string s, ore_string sub, i64 from) {
+  if (from < 0) from = 0;
+  for (i64 i = from; i + sub.len <= s.len; i++) {
+    if (sub.len == 0 || memcmp(s.ptr + i, sub.ptr, (size_t)sub.len) == 0) return i;
+  }
+  return -1;
+}
+
+i64 ore_rt_str_last_index_of(ore_string s, ore_string sub) {
+  for (i64 i = s.len - sub.len; i >= 0; i--) {
+    if (sub.len == 0 || memcmp(s.ptr + i, sub.ptr, (size_t)sub.len) == 0) return i;
+  }
+  return -1;
+}
+
+bool ore_rt_str_starts_with(ore_string s, ore_string prefix) {
+  return prefix.len <= s.len && (prefix.len == 0 || memcmp(s.ptr, prefix.ptr, (size_t)prefix.len) == 0);
+}
+
+bool ore_rt_str_ends_with(ore_string s, ore_string suffix) {
+  return suffix.len <= s.len && (suffix.len == 0 || memcmp(s.ptr + s.len - suffix.len, suffix.ptr, (size_t)suffix.len) == 0);
+}
+
+ore_array *ore_rt_str_split(ore_string s, ore_string sep) {
+  ore_array *parts = ore_rt_array_new(sizeof(ore_string), 0);
+  if (sep.len == 0) {
+    for (i64 pos = 0; pos < s.len;) {
+      i64 start = pos;
+      ore_rt_str_decode(s, &pos);
+      *(ore_string *)ore_rt_array_push(parts, sizeof(ore_string)) = (ore_string){s.ptr + start, pos - start};
+    }
+    return parts;
+  }
+  i64 start = 0;
+  for (i64 at; (at = ore_rt_str_index_of(s, sep, start)) != -1; start = at + sep.len) {
+    *(ore_string *)ore_rt_array_push(parts, sizeof(ore_string)) = (ore_string){s.ptr + start, at - start};
+  }
+  *(ore_string *)ore_rt_array_push(parts, sizeof(ore_string)) = (ore_string){s.ptr + start, s.len - start};
+  return parts;
+}
+
+static bool is_space(u8 c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
+
+ore_string ore_rt_str_trim(ore_string s, int sides) {
+  i64 start = 0, end = s.len;
+  if (sides & 1) while (start < end && is_space(s.ptr[start])) start++;
+  if (sides & 2) while (end > start && is_space(s.ptr[end - 1])) end--;
+  return (ore_string){s.ptr + start, end - start};
+}
+
+ore_string ore_rt_str_case(ore_string s, bool upper) {
+  u8 *p = alloc_atomic(s.len);
+  for (i64 i = 0; i < s.len; i++) {
+    u8 c = s.ptr[i];
+    p[i] = upper ? (c >= 'a' && c <= 'z' ? c - 32 : c) : (c >= 'A' && c <= 'Z' ? c + 32 : c);
+  }
+  return (ore_string){p, s.len};
+}
+
+ore_string ore_rt_str_replace(ore_string s, ore_string from, ore_string to, bool all) {
+  ore_array *parts = ore_rt_array_new(sizeof(ore_string), 0);
+  i64 start = 0;
+  for (i64 at; (at = ore_rt_str_index_of(s, from, start)) != -1;) {
+    *(ore_string *)ore_rt_array_push(parts, sizeof(ore_string)) = (ore_string){s.ptr + start, at - start};
+    *(ore_string *)ore_rt_array_push(parts, sizeof(ore_string)) = to;
+    start = at + from.len;
+    // An empty pattern matches between characters; step over one to progress.
+    if (from.len == 0) {
+      if (at >= s.len || !all) break;
+      *(ore_string *)ore_rt_array_push(parts, sizeof(ore_string)) = (ore_string){s.ptr + at, 1};
+      start = at + 1;
+    }
+    if (!all) break;
+  }
+  *(ore_string *)ore_rt_array_push(parts, sizeof(ore_string)) = (ore_string){s.ptr + start, s.len - start};
+  return ore_rt_str_concat(parts->len, parts->data);
+}
+
+ore_string ore_rt_str_repeat(ore_string s, i64 count) {
+  if (count < 0) ore_rt_panic_cstr("invalid repeat count");
+  u8 *p = alloc_atomic(s.len * count);
+  for (i64 i = 0; i < count; i++) memcpy(p + i * s.len, s.ptr, (size_t)s.len);
+  return (ore_string){p, s.len * count};
+}
+
+ore_string ore_rt_str_pad(ore_string s, i64 length, ore_string pad, bool start) {
+  if (length <= s.len || pad.len == 0) return s;
+  i64 fill = length - s.len;
+  u8 *p = alloc_atomic(length);
+  u8 *f = start ? p : p + s.len;
+  for (i64 i = 0; i < fill; i++) f[i] = pad.ptr[i % pad.len];
+  memcpy(start ? p + fill : p, s.ptr, (size_t)s.len);
+  return (ore_string){p, length};
+}
+
+ore_string ore_rt_str_substring(ore_string s, i64 start, i64 end) {
+  start = start < 0 ? 0 : start > s.len ? s.len : start;
+  end = end < 0 ? 0 : end > s.len ? s.len : end;
+  if (start > end) {
+    i64 t = start;
+    start = end;
+    end = t;
+  }
+  return (ore_string){s.ptr + start, end - start};
+}
+
 static ore_string str_copy(const char *s, size_t n) {
   u8 *p = alloc_atomic((i64)n);
   memcpy(p, s, n);

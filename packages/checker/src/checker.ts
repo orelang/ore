@@ -2783,6 +2783,9 @@ class Checker {
   private member(value: ir.Expr, node: ts.PropertyAccessExpression): Operand {
     const name = node.name.text
     if (name === "length" && (value.type.kind === "string" || value.type.kind === "array")) return typed({ k: "len", type: types.i64, value })
+    if (name === "length" && membersOf(value.type).every(isStringLike)) {
+      return typed({ k: "len", type: types.i64, value: { k: "recast", type: types.string, value } })
+    }
     if (name === "size" && value.type.kind === "map") return typed({ k: "map", op: "size", type: types.i64, mapType: value.type, map: value })
     if (value.type.kind === "struct") {
       const struct = value.type
@@ -2974,6 +2977,16 @@ class Checker {
       return typed({ k: "map", op, type: result, mapType: type, map: value, key, value: val })
     }
     if (type.kind === "array" && arrayMethods.has(name)) return this.arrayMethod(value, type, name, node, callee, scope)
+    const stringMethod = isStringLike(type) || (type.kind === "union" && type.members.every(isStringLike)) ? stringMethods[name] : undefined
+    if (stringMethod) {
+      const [params, optional, result] = stringMethod
+      if (args.length < params.length - optional || args.length > params.length) {
+        return this.fail(node, `'${name}' expects ${optional ? `${params.length - optional} to ${params.length}` : params.length} argument(s), got ${args.length}.`)
+      }
+      const values = args.map((a, i) => this.coerce(this.checkExpr(a, scope, params[i]), params[i]!, a))
+      const str = sameType(type, types.string) ? value : ({ k: "recast", type: types.string, value } as ir.Expr)
+      return typed({ k: "string-method", method: name, type: result, value: str, args: values })
+    }
     if (type.kind === "array" && name === "push") {
       const values: ir.Expr[] = []
       for (const arg of args) {
@@ -3175,6 +3188,27 @@ const compoundOps = new Map<ts.SyntaxKind, ir.ArithOp>([
   [K.LessThanLessThanEqualsToken, "<<"],
   [K.GreaterThanGreaterThanEqualsToken, ">>"],
 ])
+
+/** String methods: parameter types, how many trailing ones are optional, and the result. */
+const stringMethods: Record<string, [Type[], number, Type]> = {
+  indexOf: [[types.string, types.i64], 1, types.i64],
+  lastIndexOf: [[types.string], 0, types.i64],
+  includes: [[types.string], 0, types.bool],
+  startsWith: [[types.string], 0, types.bool],
+  endsWith: [[types.string], 0, types.bool],
+  split: [[types.string], 0, arrayOf(types.string)],
+  trim: [[], 0, types.string],
+  trimStart: [[], 0, types.string],
+  trimEnd: [[], 0, types.string],
+  toUpperCase: [[], 0, types.string],
+  toLowerCase: [[], 0, types.string],
+  replace: [[types.string, types.string], 0, types.string],
+  replaceAll: [[types.string, types.string], 0, types.string],
+  repeat: [[types.i64], 0, types.string],
+  padStart: [[types.i64, types.string], 1, types.string],
+  padEnd: [[types.i64, types.string], 1, types.string],
+  substring: [[types.i64, types.i64], 1, types.string],
+}
 
 /** Array methods handled by `arrayMethod`, with their minimum and maximum argument counts. */
 const arrayMethods = new Map<string, [number, number]>([

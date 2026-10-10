@@ -717,6 +717,8 @@ function emitExpr(expr: ir.Expr): string {
       return emitBound(expr)
     case "array-method":
       return emitArrayMethod(expr)
+    case "string-method":
+      return inOrder([expr.value, ...expr.args], ([s, ...a]) => stringMethod(expr.method, s!, a))
     case "coalesce": {
       const from = expr.value.type as UnionType
       const t = temp()
@@ -934,6 +936,47 @@ function naturalOrder(type: Type): string {
   return name
 }
 
+/** C for a string method, given C for the string and the arguments present. */
+function stringMethod(method: string, s: string, a: string[]): string {
+  const space = `ORE_STR(" ")`
+  switch (method) {
+    case "indexOf":
+      return `ore_rt_str_index_of(${s}, ${a[0]}, ${a[1] ?? "0"})`
+    case "lastIndexOf":
+      return `ore_rt_str_last_index_of(${s}, ${a[0]})`
+    case "includes":
+      return `(ore_rt_str_index_of(${s}, ${a[0]}, 0) != -1)`
+    case "startsWith":
+      return `ore_rt_str_starts_with(${s}, ${a[0]})`
+    case "endsWith":
+      return `ore_rt_str_ends_with(${s}, ${a[0]})`
+    case "split":
+      return `ore_rt_str_split(${s}, ${a[0]})`
+    case "trim":
+      return `ore_rt_str_trim(${s}, 3)`
+    case "trimStart":
+      return `ore_rt_str_trim(${s}, 1)`
+    case "trimEnd":
+      return `ore_rt_str_trim(${s}, 2)`
+    case "toUpperCase":
+      return `ore_rt_str_case(${s}, true)`
+    case "toLowerCase":
+      return `ore_rt_str_case(${s}, false)`
+    case "replace":
+      return `ore_rt_str_replace(${s}, ${a[0]}, ${a[1]}, false)`
+    case "replaceAll":
+      return `ore_rt_str_replace(${s}, ${a[0]}, ${a[1]}, true)`
+    case "repeat":
+      return `ore_rt_str_repeat(${s}, ${a[0]})`
+    case "padStart":
+      return `ore_rt_str_pad(${s}, ${a[0]}, ${a[1] ?? space}, true)`
+    case "padEnd":
+      return `ore_rt_str_pad(${s}, ${a[0]}, ${a[1] ?? space}, false)`
+    default:
+      return `ore_rt_str_substring(${s}, ${a[0]}, ${a[1] ?? "INT64_MAX"})`
+  }
+}
+
 function emitMapOp(expr: ir.MapOp): string {
   const { key: K, value: V } = expr.mapType
   const kt = cType(K)
@@ -1059,6 +1102,7 @@ function effects(e: ir.Expr): boolean {
     case "map":
     case "call-value":
     case "array-method":
+    case "string-method":
     case "recast":
     case "optional":
     case "coalesce":

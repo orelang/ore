@@ -225,6 +225,7 @@ export type Expr =
   | CallValue
   | BoundMethod
   | ArrayMethod
+  | StringMethod
 
 export interface IntLit {
   k: "int"
@@ -614,4 +615,13 @@ export interface ArrayMethod {
   array: Expr
   args: Expr[]
   arity?: number
+}
+
+/** A method of strings, such as `indexOf` or `split`; omitted optional arguments are absent. */
+export interface StringMethod {
+  k: "string-method"
+  method: string
+  type: Type
+  value: Expr
+  args: Expr[]
 }

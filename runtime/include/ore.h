@@ -81,6 +81,23 @@ ore_string ore_rt_str_concat(i64 count, const ore_string *parts);
 ore_string ore_rt_str_slice(ore_string s, i64 start, i64 end);
 /** Decodes the UTF-8 rune at `*pos` and advances it. Invalid bytes decode to U+FFFD one at a time. */
 i32 ore_rt_str_decode(ore_string s, i64 *pos);
+// String methods, with JavaScript semantics on byte offsets.
+i64 ore_rt_str_index_of(ore_string s, ore_string sub, i64 from);
+i64 ore_rt_str_last_index_of(ore_string s, ore_string sub);
+bool ore_rt_str_starts_with(ore_string s, ore_string prefix);
+bool ore_rt_str_ends_with(ore_string s, ore_string suffix);
+/** Trims ASCII whitespace: from the start (1), the end (2), or both (3). */
+ore_string ore_rt_str_trim(ore_string s, int sides);
+/** ASCII letters to upper case (upper) or lower case. */
+ore_string ore_rt_str_case(ore_string s, bool upper);
+/** Replaces the first occurrence of `from` (all of them with `all`). */
+ore_string ore_rt_str_replace(ore_string s, ore_string from, ore_string to, bool all);
+ore_string ore_rt_str_repeat(ore_string s, i64 count);
+/** Pads to `length` bytes with repetitions of `pad`, at the start or the end. */
+ore_string ore_rt_str_pad(ore_string s, i64 length, ore_string pad, bool start);
+/** JavaScript substring: clamped offsets, swapped if start > end. */
+ore_string ore_rt_str_substring(ore_string s, i64 start, i64 end);
+
 ore_string ore_rt_str_from_i64(i64 v);
 ore_string ore_rt_str_from_u64(u64 v);
 ore_string ore_rt_str_from_f64(f64 v);
@@ -120,6 +137,8 @@ typedef int (*ore_cmp_fn)(void *ctx, const void *a, const void *b);
 /** Sorts an array in place, stably (merge sort). */
 void ore_rt_array_sort(ore_array *a, i64 elem_size, ore_cmp_fn cmp, void *ctx);
 void ore_rt_array_reverse(ore_array *a, i64 elem_size);
+/** Splits around `sep`; an empty `sep` splits into UTF-8 characters. Returns an array of strings. */
+ore_array *ore_rt_str_split(ore_string s, ore_string sep);
 /** Joins an array of strings with a separator. */
 ore_string ore_rt_str_join(ore_array *strings, ore_string sep);
 
