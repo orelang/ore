@@ -132,7 +132,7 @@ wrong and where (`expected a string, got a number at .tags[1]`).
 
 **Concurrency, like Go.** Green threads running in parallel on all CPUs,
 channels and select, without `async` coloring; `ore:sync` adds `Mutex` and
-`WaitGroup`:
+`WaitGroup`, and `ore:net` TCP whose waiting parks only the task:
 
 ```ts
 const results = new Chan<int>()
@@ -252,8 +252,9 @@ Another binary can be set with the `ore.path` setting.
 
 - Tasks are not preempted: a task that computes without waiting keeps its OS
   thread. Data races are not detected.
-- There is no network API yet, so no netpoller; a file operation occupies a
-  whole OS thread while it runs.
+- A file operation occupies a whole OS thread while it runs (the network does
+  not). The netpoller is tested on macOS (kqueue); the Linux (epoll) path is
+  not yet.
 - A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
   recursion in a task can overflow it.
 - No numeric literal types (`1 | 2`), static members or class inheritance;
@@ -282,7 +283,7 @@ bench/run.sh                     # time the benchmarks in bench/ (release builds
 | `editors/zed` | Zed extension |
 | `editors/vscode` | VS Code extension |
 | `runtime/` | C runtime; Boehm GC in `runtime/third_party/bdwgc` |
-| `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`) |
+| `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`) |
 | `tests/run` | Programs with expected output; directories are multi-module programs |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`) |
 | `bench/` | Benchmarks |

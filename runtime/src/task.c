@@ -14,6 +14,10 @@
 // Waking before sleeping: a task that waits holds a lock (of a channel, or
 // of the scheduler) that its wakers need, and releases it only after it has
 // left its stack, in the worker's scheduler loop (`park`).
+//
+// Network I/O: sockets are non-blocking. A task whose socket is not ready
+// parks, and a poller thread (kqueue or epoll) makes it runnable when the
+// socket is, so waiting on the network occupies no worker.
 
 #include "ore.h"
 
@@ -171,6 +175,8 @@ static pthread_cond_t sched_cond = PTHREAD_COND_INITIALIZER;
 static ore_task *run_head, *run_tail;
 static ore_task *timers;
 static int workers, idle_workers, blocking_workers, max_workers;
+/** Tasks parked until a socket is ready: not a deadlock while there are any. */
+static int net_waiters;
 static ore_task *main_task;
 
 /** All live tasks; changed only with the GC's allocation lock held. */
@@ -398,7 +404,7 @@ static ore_task *next_task(void) {
       pthread_mutex_unlock(&sched_lock);
       return t;
     }
-    if (!timers && blocking_workers == 0 && idle_workers == workers - 1) {
+    if (!timers && blocking_workers == 0 && net_waiters == 0 && idle_workers == workers - 1) {
       pthread_mutex_unlock(&sched_lock);
       current = main_task;
       ore_rt_top = main_task->top;
@@ -477,6 +483,97 @@ void ore_rt_run_main(void (*entry)(void)) {
   for (int i = 1; i < count; i++) add_worker_locked();
   pthread_mutex_unlock(&sched_lock);
   schedule();
+}
+
+// ---------------------------------------------------------------------------
+// Network polling
+
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <sys/event.h>
+#define ORE_KQUEUE 1
+#else
+#include <sys/epoll.h>
+#endif
+
+static int poll_fd = -1;
+static pthread_once_t poll_once = PTHREAD_ONCE_INIT;
+
+/** Makes the tasks whose sockets are ready runnable. */
+static void *poller_main(void *arg) {
+  (void)arg;
+  for (;;) {
+#ifdef ORE_KQUEUE
+    struct kevent events[64];
+    int n = kevent(poll_fd, NULL, 0, events, 64, NULL);
+#else
+    struct epoll_event events[64];
+    int n = epoll_wait(poll_fd, events, 64, -1);
+#endif
+    if (n <= 0) continue;
+    pthread_mutex_lock(&sched_lock);
+    for (int i = 0; i < n; i++) {
+#ifdef ORE_KQUEUE
+      ore_task *t = events[i].udata;
+#else
+      ore_task *t = events[i].data.ptr;
+#endif
+      net_waiters--;
+      enqueue_locked(t);
+    }
+    pthread_mutex_unlock(&sched_lock);
+  }
+  return NULL;
+}
+
+static void poll_init(void) {
+#ifdef ORE_KQUEUE
+  poll_fd = kqueue();
+#else
+  poll_fd = epoll_create1(EPOLL_CLOEXEC);
+#endif
+  if (poll_fd < 0) ore_rt_panic_cstr("cannot create the network poller");
+  pthread_t thread;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  if (pthread_create(&thread, &attr, poller_main, NULL) != 0) ore_rt_panic_cstr("cannot start the network poller");
+  pthread_attr_destroy(&attr);
+}
+
+typedef struct {
+  int fd;
+  bool write;
+  ore_task *task;
+} poll_wait;
+
+/** Registers a parked task for one readiness event of its socket; runs after it left its stack. */
+static void register_wait(void *arg) {
+  poll_wait *w = arg;
+  ore_task *t = w->task;
+#ifdef ORE_KQUEUE
+  struct kevent change;
+  EV_SET(&change, w->fd, w->write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, t);
+  int failed = kevent(poll_fd, &change, 1, NULL, 0, NULL) < 0;
+#else
+  struct epoll_event event = {.events = (w->write ? EPOLLOUT : EPOLLIN) | EPOLLONESHOT, .data.ptr = t};
+  int failed = epoll_ctl(poll_fd, EPOLL_CTL_MOD, w->fd, &event) < 0 && epoll_ctl(poll_fd, EPOLL_CTL_ADD, w->fd, &event) < 0;
+#endif
+  // The task retries its operation, which reports the error.
+  if (failed) {
+    pthread_mutex_lock(&sched_lock);
+    net_waiters--;
+    enqueue_locked(t);
+    pthread_mutex_unlock(&sched_lock);
+  }
+}
+
+void ore_rt_net_wait(int fd, bool write) {
+  pthread_once(&poll_once, poll_init);
+  poll_wait w = {fd, write, current};
+  pthread_mutex_lock(&sched_lock);
+  net_waiters++;
+  pthread_mutex_unlock(&sched_lock);
+  park(register_wait, &w);
 }
 
 // ---------------------------------------------------------------------------

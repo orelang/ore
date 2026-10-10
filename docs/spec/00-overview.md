@@ -493,6 +493,29 @@ The standard module `ore:sync` provides `Mutex` (`lock`, `unlock`, and
 `acquire()` for `using guard = mutex.acquire()`) and `WaitGroup` (`add`,
 `done`, `wait`), both built on channels.
 
+The standard module `ore:net` provides TCP: `listen(port, host?)` returns a
+`Listener` (`accept()`, `port`, `close()`) and `connect(host, port)` a
+`Conn` (`read(max?)`, `readAll()`, `write(data)`, `close()`), or an `Error`.
+Both are `Disposable`. Sockets are non-blocking: a task waiting for one
+parks, and the runtime's poller (kqueue or epoll) resumes it when the socket
+is ready, so waiting occupies no OS thread. Tasks waiting for the network
+are not a deadlock.
+
+```ts
+import { listen } from "ore:net"
+
+const server = listen(8080)
+if (server instanceof Error) process.panic(server.message)
+for (;;) {
+    const conn = server.accept()
+    if (conn instanceof Error) continue
+    task.spawn(() => {
+        using c = conn
+        c.write("hello\n")
+    })
+}
+```
+
 ## 6. Removed TypeScript features
 
 `any`, `var`, `==` / `!=`, `eval`, `delete`, `with`, `arguments`,

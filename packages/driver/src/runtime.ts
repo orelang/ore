@@ -5,6 +5,7 @@ import { join } from "node:path"
 import header from "../../../runtime/include/ore.h" with { type: "text" }
 import runtimeSource from "../../../runtime/src/runtime.c" with { type: "text" }
 import taskSource from "../../../runtime/src/task.c" with { type: "text" }
+import netSource from "../../../runtime/src/net.c" with { type: "text" }
 import { clang } from "./clang"
 import { prepareGc } from "./gc"
 
@@ -19,7 +20,7 @@ export function cacheDir(): string {
 }
 
 /** The C sources of the runtime, embedded in the compiler. */
-const sources: Record<string, string> = { "runtime.c": runtimeSource, "task.c": taskSource }
+const sources: Record<string, string> = { "runtime.c": runtimeSource, "task.c": taskSource, "net.c": netSource }
 
 /**
  * Materializes the embedded runtime into the cache and compiles it once per

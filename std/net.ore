@@ -1,0 +1,88 @@
+// The "ore:net" module: TCP connections. A task waiting for the network
+// parks without occupying an OS thread, so a server can serve each
+// connection in its own task.
+//
+//   import { connect, listen } from "ore:net"
+
+/** A TCP connection. Close it when done, e.g. with `using conn = ...`. */
+export class Conn {
+    private closed = false
+
+    constructor(private fd: int) {}
+
+    /** Reads what has arrived, up to `max` bytes, waiting for some; "" at the end of the stream. */
+    read(max: int = 65536): string | Error {
+        if (this.closed) return new Error("read: the connection is closed")
+        return internal.netRead(this.fd, max)
+    }
+
+    /** Reads until the other side closes the connection. */
+    readAll(): string | Error {
+        let all = ""
+        for (;;) {
+            const chunk = this.read()
+            if (chunk instanceof Error) return chunk
+            if (chunk.length === 0) return all
+            all += chunk
+        }
+    }
+
+    /** Writes all of `data`. */
+    write(data: string): Error | null {
+        if (this.closed) return new Error("write: the connection is closed")
+        return internal.netWrite(this.fd, data)
+    }
+
+    close(): void {
+        if (this.closed) return
+        this.closed = true
+        internal.netClose(this.fd)
+    }
+
+    [Symbol.dispose](): void {
+        this.close()
+    }
+}
+
+/** A socket accepting TCP connections. */
+export class Listener {
+    private closed = false
+
+    constructor(
+        private fd: int,
+        /** The port listened on, also when 0 asked for any free one. */
+        readonly port: int,
+    ) {}
+
+    /** Waits for the next connection. */
+    accept(): Conn | Error {
+        if (this.closed) return new Error("accept: the listener is closed")
+        const fd = internal.netAccept(this.fd)
+        if (fd instanceof Error) return fd
+        return new Conn(fd)
+    }
+
+    close(): void {
+        if (this.closed) return
+        this.closed = true
+        internal.netClose(this.fd)
+    }
+
+    [Symbol.dispose](): void {
+        this.close()
+    }
+}
+
+/** Listens on a port of a host (by default only this machine; "" for every interface). Port 0 picks a free port. */
+export function listen(port: int, host: string = "127.0.0.1"): Listener | Error {
+    const fd = internal.netListen(host, port)
+    if (fd instanceof Error) return fd
+    return new Listener(fd, internal.netPort(fd))
+}
+
+/** Connects to a port of a host. */
+export function connect(host: string, port: int): Conn | Error {
+    const fd = internal.netConnect(host, port)
+    if (fd instanceof Error) return fd
+    return new Conn(fd)
+}

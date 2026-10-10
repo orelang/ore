@@ -163,9 +163,10 @@ work.**
   parallel marking, a lock per channel, select claimed by compare-and-swap,
   and a handoff for blocking file operations (another thread takes over the
   other tasks). `ore:sync` with `Mutex` and `WaitGroup`.
-- Next: a network API with a netpoller (kqueue / epoll) so that sockets park
-  only their task; per-thread run queues with work stealing if the shared
-  queue becomes a bottleneck.
+- Done: `ore:net` (TCP) on non-blocking sockets with a netpoller thread
+  (kqueue / epoll) that resumes parked tasks.
+- Next: per-thread run queues with work stealing if the shared queue becomes
+  a bottleneck; UDP, TLS and HTTP in the standard library.
 
 ### Phase 8: Performance and maturity
 - Done: escape analysis. Object literals, constructor calls, closures and

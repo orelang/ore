@@ -1,0 +1,59 @@
+// threads: 4
+
+import { connect, listen } from "ore:net"
+
+// An echo server: each connection is served by its own task.
+const server = listen(0)
+if (server instanceof Error) process.panic(server.message)
+task.spawn(() => {
+    for (;;) {
+        const conn = server.accept()
+        if (conn instanceof Error) return
+        task.spawn(() => {
+            using c = conn
+            for (;;) {
+                const data = c.read()
+                if (data instanceof Error || data.length === 0) return
+                c.write(data.toUpperCase())
+            }
+        })
+    }
+})
+
+// One client, reading the reply until the server closes.
+const conn = connect("127.0.0.1", server.port)
+if (conn instanceof Error) process.panic(conn.message)
+conn.write("hello, ")
+const reply = conn.read()
+console.log(reply instanceof Error ? reply.message : reply)
+conn.close()
+
+// Many clients at once, each in a task: none occupies an OS thread while waiting.
+const clients = 100
+const results = new Chan<int>()
+for (let i = 0; i < clients; i++) {
+    task.spawn(() => {
+        const c = connect("localhost", server.port)
+        if (c instanceof Error) return results.send(-1)
+        using client = c
+        const message = `client ${i}`.repeat(200)
+        client.write(message)
+        let echoed = ""
+        while (echoed.length < message.length) {
+            const part = client.read()
+            if (part instanceof Error || part.length === 0) break
+            echoed += part
+        }
+        results.send(echoed === message.toUpperCase() ? 1 : 0)
+    })
+}
+let ok = 0
+for (let i = 0; i < clients; i++) ok += results.receive() ?? 0
+console.log(ok, "of", clients)
+
+// Errors are values.
+const refused = connect("127.0.0.1", 1)
+console.log(refused instanceof Error)
+const closed = conn.read()
+console.log(closed instanceof Error ? closed.message : "data")
+server.close()
