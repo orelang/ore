@@ -1,0 +1,75 @@
+class Node {
+  next: Node | null = null
+  constructor(public value: int) {}
+}
+
+function length(head: Node | null): int {
+  let n = 0
+  let cur = head
+  while (cur !== null) {
+    n++
+    cur = cur.next
+  }
+  return n
+}
+
+function last(head: Node): int {
+  let cur: Node = head
+  while (cur.next !== null) cur = cur.next
+  return cur.value
+}
+
+function find(xs: string[], needle: string): int | null {
+  for (let i = 0; i < xs.length; i++) {
+    if (xs[i] === needle) return i
+  }
+  return null
+}
+
+function describe(name: string | null): string {
+  if (name === null) return "anonymous"
+  return `name ${name} (${name.length})`
+}
+
+class Cache {
+  value: string | null = null
+
+  get(): string {
+    if (this.value === null) this.value = "computed"
+    return this.value!
+  }
+}
+
+export function main() {
+  const a = new Node(1)
+  a.next = new Node(2)
+  a.next.next = new Node(3)
+  println(length(a), length(null), last(a))
+
+  // Optional chaining and ?? on nullable references.
+  const b: Node | null = a.next
+  println(b?.value, a.next?.next?.next?.value, b?.next?.value ?? -1)
+  const missing: Node | null = null
+  println(missing?.value ?? 0, missing === null, b !== null)
+
+  // Tagged unions with null.
+  const i = find(["x", "y", "z"], "y")
+  const j = find(["x"], "q")
+  println(i, j, (i ?? -1) + 1, j ?? -1)
+  if (i !== null && i > 0) println("found at", i)
+
+  println(describe("ore"), describe(null))
+
+  const c = new Cache()
+  println(c.value, c.get(), c.value)
+
+  // Narrowing with ternaries and early exits.
+  const s: string | null = "hi"
+  const size = s !== null ? s.length : 0
+  println(size, `${j}`, j === null ? "none" : "some")
+
+  let maybe: int | null = 5
+  println(maybe === 5, maybe !== null)
+  maybe = null
+  println(maybe)
+}

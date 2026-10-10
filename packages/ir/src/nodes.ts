@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, StringType, StructType, Type } from "./types"
+import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, StringType, StructType, Type, UnionType } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -16,6 +16,8 @@ export interface Module {
   structs: StructType[]
   /** Interface tables of structs converted to interfaces. */
   itabs: Itab[]
+  /** Every union type used by the module. */
+  unions: UnionType[]
 }
 
 /** The table for a struct used as an interface; see `InterfaceType`. */
@@ -173,6 +175,11 @@ export type Expr =
   | ToIface
   | IfaceField
   | IfaceCall
+  | NullLit
+  | Recast
+  | IsNull
+  | Optional
+  | Coalesce
 
 export interface IntLit {
   k: "int"
@@ -417,4 +424,49 @@ export interface IfaceCall {
   index: number
   method: FuncType
   args: Expr[]
+}
+
+/** `null` of a union type that contains `null`. */
+export interface NullLit {
+  k: "null"
+  type: UnionType
+}
+
+/**
+ * Converts between a union and its members: a member to a union containing it
+ * (or containing all its members), or a union to a member or a smaller union.
+ * Narrowing checks at run time that the value is one of the target's members
+ * and panics otherwise.
+ */
+export interface Recast {
+  k: "recast"
+  type: Type
+  value: Expr
+}
+
+/** Whether a value of a union type is `null`. */
+export interface IsNull {
+  k: "is-null"
+  type: BoolType
+  value: Expr
+}
+
+/**
+ * Optional chaining `value?.…`: `null` if `value` is null, else `body`
+ * evaluated with `binding` set to the non-null value and converted to `type`.
+ */
+export interface Optional {
+  k: "optional"
+  type: UnionType
+  value: Expr
+  binding: Local
+  body: Expr
+}
+
+/** `value ?? fallback`: the non-null value, or `fallback`. */
+export interface Coalesce {
+  k: "coalesce"
+  type: Type
+  value: Expr
+  fallback: Expr
 }

@@ -70,6 +70,8 @@ static void *alloc_atomic(i64 size) {
 // Strings
 
 bool ore_rt_str_eq(ore_string a, ore_string b) {
+  // A null string (from `string | null`) has no pointer; real strings always have one.
+  if (!a.ptr || !b.ptr) return a.ptr == b.ptr;
   return a.len == b.len && (a.ptr == b.ptr || memcmp(a.ptr, b.ptr, (size_t)a.len) == 0);
 }
 

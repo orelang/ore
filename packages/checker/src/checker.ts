@@ -5,7 +5,9 @@ import {
   findMethod,
   intRange,
   isNumeric,
+  membersOf,
   sameType,
+  typeKey,
   types,
   typeToString,
   type Field,
@@ -14,6 +16,7 @@ import {
   type InterfaceType,
   type StructType,
   type Type,
+  type UnionType,
 } from "@ore/ir"
 import { diagnosticAt, type Diagnostic, type Source } from "@ore/syntax"
 import ts from "typescript"
@@ -75,6 +78,19 @@ interface ClassInfo {
   methods: [ts.MethodDeclaration, ir.Func][]
 }
 
+/** A narrowed type of a variable or a field path, keyed by `refKey`. */
+interface Fact {
+  key: string
+  type: Type
+}
+
+/** A checked condition with the facts that hold when it is true or false. */
+interface Condition {
+  expr: ir.Expr
+  whenTrue: Fact[]
+  whenFalse: Fact[]
+}
+
 interface InterfaceInfo {
   decl: ts.InterfaceDeclaration
   type: InterfaceType
@@ -101,12 +117,15 @@ class Checker {
   private nextStructId = 0
   private readonly classes: ClassInfo[] = []
   private readonly interfaces = new Map<InterfaceType, InterfaceInfo>()
+  private readonly unions = new Map<string, UnionType>()
+  /** Narrowing facts by flow scope, innermost last. */
+  private facts: Map<string, Type>[] = [new Map()]
   private readonly itabs = new Map<string, ir.Itab>()
   /** Declarations of fields and methods, for tooling. */
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
 
   constructor(private readonly source: Source) {
-    this.module = { file: source.path, functions: [], structs: [], itabs: [] }
+    this.module = { file: source.path, functions: [], structs: [], itabs: [], unions: [] }
   }
 
   run(options: CheckOptions): CheckResult {
@@ -228,6 +247,7 @@ class Checker {
 
   private checkFunctionBody(decl: ts.FunctionDeclaration, func: ir.Func, outer: Scope) {
     const scope = this.paramScope(decl.parameters, func.params, outer)
+    this.facts = [new Map()]
     this.fn = { result: func.type.result, loops: [], nextLoopId: 0 }
     func.body = this.checkBlock(decl.body!, scope)
     this.fn = undefined
@@ -389,6 +409,7 @@ class Checker {
   /** Checks field initializers and infers the types of fields without annotations. */
   private checkFieldInitializers(info: ClassInfo, scope: Scope) {
     // Initializers run before the constructor body but cannot use `this`.
+    this.facts = [new Map()]
     this.fn = { result: types.void, loops: [], nextLoopId: 0, fieldInit: true }
     for (const init of info.inits) {
       const index = info.type.fields.findIndex((f) => f.name === init.name)
@@ -422,6 +443,7 @@ class Checker {
     for (const init of info.inits) if (init.value) body.push(setField(init.name, init.value))
     if (info.ctorDecl) {
       const scope = this.paramScope(info.ctorDecl.parameters, ctor.params, outer)
+      this.facts = [new Map()]
       this.fn = { result: types.void, loops: [], nextLoopId: 0, this: self, cls: type, ctor: true }
       body.push(...this.checkBlock(info.ctorDecl.body!, scope).body)
       this.fn = undefined
@@ -447,6 +469,7 @@ class Checker {
 
     for (const [decl, func] of info.methods) {
       const scope = this.paramScope(decl.parameters, func.params, outer)
+      this.facts = [new Map()]
       this.fn = { result: func.type.result, loops: [], nextLoopId: 0, this: func.receiver, cls: type }
       func.body = this.checkBlock(decl.body!, scope)
       this.fn = undefined
@@ -662,6 +685,19 @@ class Checker {
         return this.error(node, "'any' is not supported in Ore."), undefined
       case ts.SyntaxKind.UnknownKeyword:
         return this.error(node, "'unknown' is not supported yet."), undefined
+      case ts.SyntaxKind.UndefinedKeyword:
+        return this.error(node, "'undefined' is not supported in Ore. Use 'null'."), undefined
+    }
+    if (ts.isLiteralTypeNode(node) && node.literal.kind === ts.SyntaxKind.NullKeyword) return types.null
+    if (ts.isUnionTypeNode(node)) {
+      const members: Type[] = []
+      for (const m of node.types) {
+        const type = this.resolveType(m, scope)
+        if (!type) return undefined
+        if (type.kind === "void" || type.kind === "never") return this.error(m, `A union cannot contain '${type.kind}'.`), undefined
+        members.push(type)
+      }
+      return this.unionOf(members)
     }
     if (ts.isArrayTypeNode(node)) {
       const elem = this.resolveValueType(node.elementType, scope)
@@ -713,6 +749,30 @@ class Checker {
     return shape
   }
 
+  /** The normalized union of types: flattened, deduplicated and in canonical order. */
+  private unionOf(types_: readonly Type[]): Type {
+    const members: Type[] = []
+    for (const t of types_.flatMap((t) => membersOf(t))) {
+      if (t.kind !== "never" && !members.some((m) => sameType(m, t))) members.push(t)
+    }
+    if (members.length === 0) return types.never
+    if (members.length === 1) return members[0]!
+    members.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0))
+    const key = members.map(typeKey).join("|")
+    let union = this.unions.get(key)
+    if (!union) {
+      union = { kind: "union", id: this.unions.size, members }
+      this.unions.set(key, union)
+      this.module.unions.push(union)
+    }
+    return union
+  }
+
+  /** A type without some of its members, such as `null`. */
+  private without(type: Type, drop: (t: Type) => boolean): Type {
+    return this.unionOf(membersOf(type).filter((m) => !drop(m)))
+  }
+
   /** The interned anonymous struct type with these fields. */
   private shape(fields: Field[]): StructType {
     const sorted = [...fields].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
@@ -750,7 +810,9 @@ class Checker {
   private checkBlock(block: ts.Block, scope: Scope): ir.Block {
     const inner = new Scope(scope)
     const body: ir.Stmt[] = []
-    for (const stmt of block.statements) this.checkStmt(stmt, inner, body)
+    this.withFacts([], () => {
+      for (const stmt of block.statements) this.checkStmt(stmt, inner, body)
+    })
     return { k: "block", body }
   }
 
@@ -758,7 +820,7 @@ class Checker {
   private checkNested(stmt: ts.Statement, scope: Scope): ir.Stmt {
     if (ts.isBlock(stmt)) return this.checkBlock(stmt, scope)
     const body: ir.Stmt[] = []
-    this.checkStmt(stmt, new Scope(scope), body)
+    this.withFacts([], () => this.checkStmt(stmt, new Scope(scope), body))
     return body.length === 1 ? body[0]! : { k: "block", body }
   }
 
@@ -777,15 +839,23 @@ class Checker {
       const value = this.checkExpr(stmt.expression, scope)
       if (value.k === "typed") out.push({ k: "expr", expr: value.expr })
     } else if (ts.isIfStatement(stmt)) {
-      const cond = this.checkCondition(stmt.expression, scope)
-      const then = this.checkNested(stmt.thenStatement, scope)
-      const elseStmt = stmt.elseStatement ? this.checkNested(stmt.elseStatement, scope) : undefined
-      out.push({ k: "if", cond, then, else: elseStmt })
+      const condition = this.condition(stmt.expression, scope)
+      const then = this.withFacts(condition.whenTrue, () => this.checkNested(stmt.thenStatement, scope))
+      const elseStmt = stmt.elseStatement ? this.withFacts(condition.whenFalse, () => this.checkNested(stmt.elseStatement!, scope)) : undefined
+      out.push({ k: "if", cond: condition.expr, then, else: elseStmt })
+      // After `if (x === null) return`, x is not null for the rest of the block.
+      const thenExits = terminates(then)
+      const elseExits = elseStmt !== undefined && terminates(elseStmt)
+      if (thenExits && !elseExits) this.addFacts(condition.whenFalse)
+      else if (elseExits && !thenExits) this.addFacts(condition.whenTrue)
     } else if (ts.isWhileStatement(stmt)) {
-      const cond = this.checkCondition(stmt.expression, scope)
-      const loop = this.checkLoopBody(stmt.statement, scope)
+      this.invalidateAssigned(stmt, scope)
+      const condition = this.condition(stmt.expression, scope)
+      const cond = condition.expr
+      const loop = this.withFacts(condition.whenTrue, () => this.checkLoopBody(stmt.statement, scope))
       out.push(Object.assign(loop.ir, { k: "loop" as const, id: loop.id, cond: isTrue(cond) ? undefined : cond, condAfter: false, body: loop.body }))
     } else if (ts.isDoStatement(stmt)) {
+      this.invalidateAssigned(stmt, scope)
       const loop = this.checkLoopBody(stmt.statement, scope)
       const cond = this.checkCondition(stmt.expression, scope)
       out.push(Object.assign(loop.ir, { k: "loop" as const, id: loop.id, cond, condAfter: true, body: loop.body }))
@@ -875,6 +945,7 @@ class Checker {
           init = this.toDefault(value, decl.initializer!)
           type = typeOf(init)
           if (type.kind === "void" || type.kind === "never") this.error(decl.initializer!, `Cannot assign an expression of type '${type.kind}' to a variable.`)
+          if (type.kind === "null") this.error(decl.initializer!, `Cannot infer a type from 'null'. Add a type annotation, e.g. 'let ${name}: T | null = null'.`)
         } else {
           type = types.i64
           init = zeroValue(type)
@@ -883,6 +954,8 @@ class Checker {
         symbol = { k: "local", local, decl }
         this.info.types.set(decl.name, type)
         out.push({ k: "let", local, init })
+        const initType = decl.initializer && this.info.types.get(decl.initializer)
+        if (initType) this.narrowTo(`L${local.id}`, type, initType)
       }
       if (!scope.declareValue(name, symbol)) this.error(decl.name, `Cannot redeclare '${name}' in the same scope.`)
     }
@@ -899,13 +972,15 @@ class Checker {
         if (value.k === "typed") prelude.push({ k: "expr", expr: value.expr })
       }
     }
-    const cond = stmt.condition ? this.checkCondition(stmt.condition, scope) : undefined
+    this.invalidateAssigned(stmt, scope)
+    const condition = stmt.condition ? this.condition(stmt.condition, scope) : undefined
+    const cond = condition?.expr
     let update: ir.Expr | undefined
     if (stmt.incrementor) {
       const value = this.checkExpr(stmt.incrementor, scope)
       if (value.k === "typed") update = value.expr
     }
-    const { id, ir: shared, body } = this.checkLoopBody(stmt.statement, scope)
+    const { id, ir: shared, body } = this.withFacts(condition?.whenTrue ?? [], () => this.checkLoopBody(stmt.statement, scope))
     const loop: ir.LoopStmt = Object.assign(shared, {
       k: "loop" as const,
       id,
@@ -936,6 +1011,7 @@ class Checker {
     else if (type.kind === "string") elem = types.i32
     else return this.error(stmt.expression, `Type '${typeToString(type)}' is not iterable.`), undefined
 
+    this.invalidateAssigned(stmt.statement, outer)
     const scope = new Scope(outer)
     const local = this.newLocal(decl.name.text, elem, (list.flags & ts.NodeFlags.Let) !== 0)
     scope.declareValue(local.name, { k: "local", local, decl })
@@ -1015,6 +1091,104 @@ class Checker {
   }
 
   // ---------------------------------------------------------------------------
+  // Narrowing
+
+  /** Checks a condition and the facts it establishes when true and when false. */
+  private condition(node: ts.Expression, scope: Scope): Condition {
+    if (ts.isParenthesizedExpression(node)) return this.condition(node.expression, scope)
+    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
+      const inner = this.condition(node.operand, scope)
+      return { expr: { k: "not", type: types.bool, operand: inner.expr }, whenTrue: inner.whenFalse, whenFalse: inner.whenTrue }
+    }
+    if (ts.isBinaryExpression(node)) {
+      const op = node.operatorToken.kind
+      if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken) {
+        const and = op === ts.SyntaxKind.AmpersandAmpersandToken
+        const left = this.condition(node.left, scope)
+        // The right side runs only when the left side did not decide the result.
+        const right = this.withFacts(and ? left.whenTrue : left.whenFalse, () => this.condition(node.right, scope))
+        const expr: ir.Expr = { k: "logical", type: types.bool, op: and ? "&&" : "||", left: left.expr, right: right.expr }
+        return and
+          ? { expr, whenTrue: [...left.whenTrue, ...right.whenTrue], whenFalse: [] }
+          : { expr, whenTrue: [], whenFalse: [...left.whenFalse, ...right.whenFalse] }
+      }
+      if (op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsEqualsToken) {
+        const nullSide = node.right.kind === ts.SyntaxKind.NullKeyword ? node.left : node.left.kind === ts.SyntaxKind.NullKeyword ? node.right : undefined
+        if (nullSide) {
+          const expr = this.checkCondition(node, scope)
+          const key = this.refKey(nullSide, scope)
+          const type = this.info.types.get(nullSide)
+          const notNull = key && type ? [{ key, type: this.without(type, (m) => m.kind === "null") }] : []
+          return op === ts.SyntaxKind.EqualsEqualsEqualsToken ? { expr, whenTrue: [], whenFalse: notNull } : { expr, whenTrue: notNull, whenFalse: [] }
+        }
+      }
+    }
+    return { expr: this.checkCondition(node, scope), whenTrue: [], whenFalse: [] }
+  }
+
+  /**
+   * The key of a variable or a field path for narrowing facts: `L<id>` for a
+   * local or `this`, followed by `.field` for each field access.
+   */
+  private refKey(node: ts.Expression, scope: Scope): string | undefined {
+    if (ts.isParenthesizedExpression(node)) return this.refKey(node.expression, scope)
+    if (ts.isIdentifier(node)) {
+      const symbol = scope.lookupValue(node.text)
+      return symbol?.k === "local" ? `L${symbol.local.id}` : undefined
+    }
+    if (node.kind === ts.SyntaxKind.ThisKeyword) return this.fn?.this ? `L${this.fn.this.id}` : undefined
+    if (ts.isPropertyAccessExpression(node) && !node.questionDotToken) {
+      const base = this.refKey(node.expression, scope)
+      return base && `${base}.${node.name.text}`
+    }
+    return undefined
+  }
+
+  /** A reference narrowed by the facts in effect, with a run-time checked conversion. */
+  private narrowed(key: string, expr: ir.Expr): ir.Expr {
+    for (let i = this.facts.length - 1; i >= 0; i--) {
+      const type = this.facts[i]!.get(key)
+      if (type) return sameType(type, expr.type) ? expr : { k: "recast", type, value: expr }
+    }
+    return expr
+  }
+
+  private withFacts<T>(facts: Fact[], check: () => T): T {
+    this.facts.push(new Map(facts.map((f) => [f.key, f.type])))
+    try {
+      return check()
+    } finally {
+      this.facts.pop()
+    }
+  }
+
+  /** Adds facts that hold for the rest of the current flow scope. */
+  private addFacts(facts: Fact[]) {
+    for (const f of facts) this.facts.at(-1)!.set(f.key, f.type)
+  }
+
+  /** Forgets facts about a variable or field path and paths through it, after it may have changed. */
+  private invalidate(key: string) {
+    for (const frame of this.facts) {
+      for (const k of frame.keys()) if (k === key || k.startsWith(`${key}.`)) frame.delete(k)
+    }
+  }
+
+  /** Forgets facts about variables assigned anywhere in a loop, which may change between iterations. */
+  private invalidateAssigned(node: ts.Node, scope: Scope) {
+    const visit = (n: ts.Node) => {
+      let target: ts.Expression | undefined
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) target = n.left
+      if (target) {
+        const key = this.refKey(target, scope)
+        if (key) this.invalidate(key)
+      }
+      ts.forEachChild(n, visit)
+    }
+    visit(node)
+  }
+
+  // ---------------------------------------------------------------------------
   // Expressions
 
   /**
@@ -1047,6 +1221,9 @@ class Checker {
       return typed({ k: "local", type: self.type, local: self })
     }
     if (ts.isNewExpression(node)) return this.checkNew(node, scope)
+    if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      return typed(this.condition(node, scope).expr)
+    }
     if (ts.isBinaryExpression(node)) return this.checkBinary(node, scope)
     if (ts.isPrefixUnaryExpression(node)) return this.checkPrefixUnary(node, scope)
     if (ts.isPostfixUnaryExpression(node)) return this.checkIncDec(node.operand, node.operator, false, scope)
@@ -1058,7 +1235,8 @@ class Checker {
     if (ts.isTemplateExpression(node)) return this.checkTemplate(node, scope)
     if (ts.isPropertyAccessExpression(node)) return this.checkProperty(node, scope)
     if (ts.isElementAccessExpression(node)) return this.checkElement(node, scope)
-    if (node.kind === ts.SyntaxKind.NullKeyword) return this.fail(node, "'null' is not supported yet.")
+    if (node.kind === ts.SyntaxKind.NullKeyword) return typed(nullOperand)
+    if (ts.isNonNullExpression(node)) return this.checkNonNull(node, scope)
     if (ts.isAwaitExpression(node)) return this.fail(node, "'await' is not supported in Ore.")
     if (ts.isDeleteExpression(node)) return this.fail(node, "'delete' is not supported in Ore.")
     return this.fail(node, "This expression is not supported yet.")
@@ -1066,11 +1244,12 @@ class Checker {
 
   private checkIdentifier(node: ts.Identifier, scope: Scope): Operand {
     const symbol = scope.lookupValue(node.text)
+    if (!symbol && node.text === "undefined") return this.fail(node, "'undefined' is not supported in Ore. Use 'null'.")
     if (!symbol) return this.fail(node, `Cannot find name '${node.text}'.`)
     this.info.definitions.set(node, symbol.decl)
     switch (symbol.k) {
       case "local":
-        return typed({ k: "local", type: symbol.local.type, local: symbol.local })
+        return typed(this.narrowed(`L${symbol.local.id}`, { k: "local", type: symbol.local.type, local: symbol.local }))
       case "const":
         return symbol.value
       case "class":
@@ -1104,7 +1283,7 @@ class Checker {
     const compare = compareOps.get(op)
     if (compare) return this.compare(compare, this.checkExpr(node.left, scope), this.checkExpr(node.right, scope), node.operatorToken, node.left, node.right)
     if (op === K.CommaToken) return this.fail(node.operatorToken, "The comma operator is not supported in Ore.")
-    if (op === K.QuestionQuestionToken) return this.fail(node.operatorToken, "'??' is not supported yet.")
+    if (op === K.QuestionQuestionToken) return this.checkCoalesce(node, scope)
     if (op === K.AsteriskAsteriskToken) return this.fail(node.operatorToken, "'**' is not supported yet.")
     if (op === K.InstanceOfKeyword || op === K.InKeyword) return this.fail(node.operatorToken, `'${node.operatorToken.getText()}' is not supported yet.`)
     return this.fail(node.operatorToken, `Operator '${node.operatorToken.getText()}' is not supported.`)
@@ -1159,14 +1338,29 @@ class Checker {
       if (typeof folded === "string") return this.fail(opNode, folded)
       return folded
     }
-    const [l, r] = this.unify(left, right, leftNode, rightNode)
+    // Comparing with null tests a nullable value.
+    if ((op === "===" || op === "!==") && (isNull(left) || isNull(right))) {
+      const other = isNull(left) ? right : left
+      if (other.k !== "typed") return this.fail(opNode, "A constant cannot be null.")
+      // A narrowed reference is tested through its declared type.
+      const value = other.expr.k === "recast" && canBeNull(other.expr.value.type) ? other.expr.value : other.expr
+      if (!canBeNull(value.type)) {
+        return this.fail(opNode, `Type '${typeToString(value.type)}' cannot be null, so this comparison is always ${op === "!=="}.`)
+      }
+      const test: ir.Expr = { k: "is-null", type: types.bool, value }
+      return typed(op === "===" ? test : { k: "not", type: types.bool, operand: test })
+    }
+    let [l, r] = this.unify(left, right, leftNode, rightNode)
     if (!l || !r) return errorOperand
+    // A member compares with a union containing it.
+    if (!sameType(l.type, r.type) && r.type.kind === "union") l = this.coerce(typed(l), r.type, leftNode)
+    else if (!sameType(l.type, r.type) && l.type.kind === "union") r = this.coerce(typed(r), l.type, rightNode)
     const type = typeOf(l)
     if (!sameType(type, typeOf(r))) {
       return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface"].includes(type.kind)
+    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
@@ -1174,6 +1368,24 @@ class Checker {
   }
 
   private checkAssign(node: ts.BinaryExpression, op: ir.ArithOp | undefined, scope: Scope): Operand {
+    const result = this.checkAssignInner(node, op, scope)
+    const key = this.refKey(node.left, scope)
+    if (key) {
+      this.invalidate(key)
+      // After `x = value`, x has the type of the value until it changes again.
+      const assigned = this.info.types.get(node.right)
+      if (!op && result.k === "typed" && assigned) this.narrowTo(key, result.expr.type, assigned)
+    }
+    return result
+  }
+
+  /** Adds a fact that a reference of a union type holds a value of a narrower type. */
+  private narrowTo(key: string, declared: Type, actual: Type) {
+    if (declared.kind !== "union" || sameType(declared, actual) || actual.kind === "null") return
+    if (membersOf(actual).every((a) => declared.members.some((m) => sameType(m, a)))) this.addFacts([{ key, type: actual }])
+  }
+
+  private checkAssignInner(node: ts.BinaryExpression, op: ir.ArithOp | undefined, scope: Scope): Operand {
     const target = this.assignTarget(node.left, scope)
     const value = this.checkExpr(node.right, scope, op ? undefined : target?.type)
     if (!target) return errorOperand
@@ -1277,8 +1489,11 @@ class Checker {
   }
 
   private checkConditional(node: ts.ConditionalExpression, scope: Scope): Operand {
-    const cond = this.checkCondition(node.condition, scope)
-    const [then, otherwise] = this.unify(this.checkExpr(node.whenTrue, scope), this.checkExpr(node.whenFalse, scope), node.whenTrue, node.whenFalse)
+    const condition = this.condition(node.condition, scope)
+    const cond = condition.expr
+    const whenTrue = this.withFacts(condition.whenTrue, () => this.checkExpr(node.whenTrue, scope))
+    const whenFalse = this.withFacts(condition.whenFalse, () => this.checkExpr(node.whenFalse, scope))
+    const [then, otherwise] = this.unify(whenTrue, whenFalse, node.whenTrue, node.whenFalse)
     if (!then || !otherwise) return errorOperand
     const type = typeOf(then)
     if (!sameType(type, typeOf(otherwise))) {
@@ -1289,8 +1504,8 @@ class Checker {
 
   private checkCall(node: ts.CallExpression, scope: Scope): Operand {
     if (node.typeArguments) return this.fail(node.typeArguments[0]!, "Type arguments are not supported yet.")
-    if (node.questionDotToken) return this.fail(node, "Optional calls are not supported yet.")
     const callee = node.expression
+    if (node.questionDotToken && !ts.isPropertyAccessExpression(callee)) return this.fail(node, "Optional calls of functions are not supported.")
     if (ts.isPropertyAccessExpression(callee)) return this.checkMethodCall(node, callee, scope)
     if (!ts.isIdentifier(callee)) return this.fail(callee, "Only calls of named functions are supported yet.")
     const symbol = scope.lookupValue(callee.text)
@@ -1467,16 +1682,24 @@ class Checker {
   /** Whether a value can be printed or interpolated; reports an error if not. */
   private printable(expr: ir.Expr, node: ts.Node): boolean {
     const type = expr.type
-    if (isNumeric(type) || type.kind === "bool" || type.kind === "string") return true
+    const simple = (t: Type) => isNumeric(t) || t.kind === "bool" || t.kind === "string" || t.kind === "null"
+    if (membersOf(type).every(simple)) return true
     this.error(node, `Cannot format a value of type '${typeToString(type)}'.`)
     return false
   }
 
   private checkProperty(node: ts.PropertyAccessExpression, scope: Scope): Operand {
-    if (node.questionDotToken) return this.fail(node, "Optional chaining is not supported yet.")
     const target = this.checkExpr(node.expression, scope)
     if (target.k === "error") return target
     const value = this.toDefault(target, node.expression)
+    if (node.questionDotToken) return this.optional(value, node, (v) => this.member(v, node))
+    const result = this.member(value, node)
+    const key = this.refKey(node, scope)
+    return result.k === "typed" && key ? typed(this.narrowed(key, result.expr)) : result
+  }
+
+  /** Reads the field or length named by a property access from a value. */
+  private member(value: ir.Expr, node: ts.PropertyAccessExpression): Operand {
     const name = node.name.text
     if (name === "length" && (value.type.kind === "string" || value.type.kind === "array")) return typed({ k: "len", type: types.i64, value })
     if (value.type.kind === "struct") {
@@ -1496,19 +1719,62 @@ class Checker {
       if (member?.k === "field") return typed({ k: "iface-field", type: member.type, value, index })
       if (member) return this.fail(node.name, `Method '${name}' must be called; method values are not supported yet.`)
     }
-    return this.fail(node.name, `Property '${name}' does not exist on type '${typeToString(value.type)}'.`)
+    return this.fail(node.name, this.noProperty(value.type, name))
+  }
+
+  private noProperty(type: Type, name: string): string {
+    const message = `Property '${name}' does not exist on type '${typeToString(type)}'.`
+    if (type.kind === "union" && type.members.some((m) => m.kind === "null")) {
+      return `${message} The value may be null: check it with '!== null' first, or use '?.'.`
+    }
+    return message
+  }
+
+  /**
+   * Optional chaining: `access` applied to the non-null value, or `null`.
+   * Values that cannot be null are accessed directly.
+   */
+  private optional(value: ir.Expr, node: ts.Node, access: (value: ir.Expr) => Operand): Operand {
+    if (!membersOf(value.type).some((m) => m.kind === "null")) return access(value)
+    const binding = this.newLocal("opt", this.without(value.type, (m) => m.kind === "null"), false)
+    const body = access({ k: "local", type: binding.type, local: binding })
+    if (body.k !== "typed") return body
+    const resultType = body.expr.type
+    if (resultType.kind === "void") return typed({ k: "optional", type: types.void as unknown as UnionType, value, binding, body: body.expr })
+    const type = this.unionOf([resultType, types.null]) as UnionType
+    return typed({ k: "optional", type, value, binding, body: this.coerce(body, type, node) })
+  }
+
+  private checkNonNull(node: ts.NonNullExpression, scope: Scope): Operand {
+    const operand = this.checkExpr(node.expression, scope)
+    if (operand.k !== "typed") return operand
+    const value = operand.expr
+    if (!membersOf(value.type).some((m) => m.kind === "null")) return this.fail(node, `Type '${typeToString(value.type)}' cannot be null; '!' is not needed.`)
+    return typed({ k: "recast", type: this.without(value.type, (m) => m.kind === "null"), value })
+  }
+
+  private checkCoalesce(node: ts.BinaryExpression, scope: Scope): Operand {
+    const operand = this.checkExpr(node.left, scope)
+    if (operand.k !== "typed") return operand.k === "error" ? operand : this.fail(node.left, "The left side of '??' cannot be null.")
+    const value = operand.expr
+    if (!membersOf(value.type).some((m) => m.kind === "null")) return this.fail(node.left, `Type '${typeToString(value.type)}' cannot be null; '??' is not needed.`)
+    const type = this.without(value.type, (m) => m.kind === "null")
+    const fallback = this.coerce(this.checkExpr(node.right, scope, type), type, node.right)
+    return typed({ k: "coalesce", type, value, fallback })
   }
 
   private checkElement(node: ts.ElementAccessExpression, scope: Scope): Operand {
-    if (node.questionDotToken) return this.fail(node, "Optional chaining is not supported yet.")
     const target = this.checkExpr(node.expression, scope)
     if (target.k === "error") return target
     const value = this.toDefault(target, node.expression)
-    const index = this.checkIndex(node.argumentExpression, scope)
-    if (!index) return errorOperand
-    if (value.type.kind === "string") return typed({ k: "index", type: types.u8, target: value, index })
-    if (value.type.kind === "array") return typed({ k: "index", type: value.type.elem, target: value, index })
-    return this.fail(node.expression, `Type '${typeToString(value.type)}' cannot be indexed.`)
+    const element = (v: ir.Expr): Operand => {
+      const index = this.checkIndex(node.argumentExpression, scope)
+      if (!index) return errorOperand
+      if (v.type.kind === "string") return typed({ k: "index", type: types.u8, target: v, index })
+      if (v.type.kind === "array") return typed({ k: "index", type: v.type.elem, target: v, index })
+      return this.fail(node.expression, `Type '${typeToString(v.type)}' cannot be indexed.`)
+    }
+    return node.questionDotToken ? this.optional(value, node, element) : element(value)
   }
 
   /** Checks an index or offset: any integer type, and untyped constants must not be negative. */
@@ -1522,10 +1788,14 @@ class Checker {
   }
 
   private checkMethodCall(node: ts.CallExpression, callee: ts.PropertyAccessExpression, scope: Scope): Operand {
-    if (callee.questionDotToken) return this.fail(callee, "Optional chaining is not supported yet.")
     const target = this.checkExpr(callee.expression, scope)
     if (target.k === "error") return target
     const value = this.toDefault(target, callee.expression)
+    if (callee.questionDotToken) return this.optional(value, node, (v) => this.methodCall(v, node, callee, scope))
+    return this.methodCall(value, node, callee, scope)
+  }
+
+  private methodCall(value: ir.Expr, node: ts.CallExpression, callee: ts.PropertyAccessExpression, scope: Scope): Operand {
     const name = callee.name.text
     const args = node.arguments
     const type = value.type
@@ -1570,7 +1840,7 @@ class Checker {
       if (offsets.some((o) => !o)) return errorOperand
       return typed({ k: "slice", type, value, start: offsets[0], end: offsets[1] })
     }
-    return this.fail(callee.name, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+    return this.fail(callee.name, this.noProperty(type, name).replace("Property", "Method"))
   }
 
   /** Records the declaration of a field or method for go to definition. */
@@ -1590,6 +1860,25 @@ class Checker {
       case "typed": {
         const from = typeOf(value.expr)
         if (sameType(from, target) || from.kind === "never") return value.expr
+        const targetMembers = membersOf(target)
+        if (from.kind === "null") {
+          if (target.kind === "union" && targetMembers.some((m) => m.kind === "null")) return { k: "null", type: target }
+          this.error(node, `Type 'null' is not assignable to type '${typeToString(target)}'.`)
+          return poison(target)
+        }
+        // A member, or a union of members, converts to a union containing them.
+        if (target.kind === "union" && membersOf(from).every((f) => targetMembers.some((m) => sameType(m, f)))) {
+          return { k: "recast", type: target, value: value.expr }
+        }
+        if (target.kind === "union") {
+          // A struct converts to an interface member it implements, if there is exactly one.
+          const ifaces = targetMembers.filter((m): m is InterfaceType => m.kind === "interface" && (from.kind === "struct" || from.kind === "interface") && !this.conformance(from, m).reason)
+          if (ifaces.length === 1) return { k: "recast", type: target, value: this.coerce(value, ifaces[0]!, node) }
+        }
+        if (from.kind === "union" && membersOf(from).some((m) => m.kind === "null") && sameType(this.without(from, (m) => m.kind === "null"), target)) {
+          this.error(node, `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}': the value may be null. Check it with '!== null' first, or use '??' or '!'.`)
+          return poison(target)
+        }
         if (target.kind === "interface" && (from.kind === "struct" || from.kind === "interface")) {
           const result = this.conformance(from, target)
           if (!result.reason) {
@@ -1605,6 +1894,7 @@ class Checker {
         return poison(target)
       }
       case "untyped-int": {
+        if (target.kind === "union") return this.coerceToUnion(value, target, node)
         if (target.kind === "int") {
           const [min, max] = intRange(target)
           if (value.value < min || value.value > max) {
@@ -1618,12 +1908,25 @@ class Checker {
         return poison(target)
       }
       case "untyped-float": {
+        if (target.kind === "union") return this.coerceToUnion(value, target, node)
         if (target.kind === "float") return floatLit(target, value.value)
         if (target.kind === "int") this.error(node, `A floating-point constant is not assignable to integer type '${target.name}'. Use '${target.name}(...)' to truncate.`)
         else this.error(node, `A floating-point constant is not assignable to type '${typeToString(target)}'.`)
         return poison(target)
       }
     }
+  }
+
+  /** Converts an untyped constant to the numeric member of a union: its default type if present, else the only one. */
+  private coerceToUnion(value: Operand, target: UnionType, node: ts.Node): ir.Expr {
+    // A float constant fits only float members; an integer constant fits any numeric member.
+    const numeric = target.members.filter((m) => (value.k === "untyped-float" ? m.kind === "float" : isNumeric(m)))
+    const preferred = numeric.find((m) => sameType(m, this.defaultType(value))) ?? (numeric.length === 1 ? numeric[0] : undefined)
+    if (!preferred) {
+      this.error(node, numeric.length === 0 ? `A numeric constant is not assignable to type '${typeToString(target)}'.` : `Ambiguous constant for type '${typeToString(target)}'. Convert it explicitly, e.g. '${typeToString(numeric[0]!)}(...)'.`)
+      return poison(target)
+    }
+    return { k: "recast", type: target, value: this.coerce(value, preferred, node) }
   }
 
   /** Gives an untyped constant its default type: `int` for integers, `f64` for floats. */
@@ -1714,6 +2017,17 @@ const compareOps = new Map<ts.SyntaxKind, ir.CompareOp>([
   [K.GreaterThanEqualsToken, ">="],
 ])
 
+/** `null` before it gets a union type from the context. */
+const nullOperand = { k: "null", type: types.null } as unknown as ir.Expr
+
+function canBeNull(type: Type): boolean {
+  return membersOf(type).some((m) => m.kind === "null")
+}
+
+function isNull(value: Operand): boolean {
+  return value.k === "typed" && value.expr.type.kind === "null"
+}
+
 function isString(value: Operand): value is Extract<Operand, { k: "typed" }> {
   return value.k === "typed" && value.expr.type.kind === "string"
 }
@@ -1736,24 +2050,9 @@ function floatLit(type: ir.FloatType, value: number): ir.FloatLit {
   return { k: "float", type, value: type.bits === 32 ? Math.fround(value) : value }
 }
 
-/** A stable key of a type for interning shapes. */
-function typeKey(type: Type): string {
-  switch (type.kind) {
-    case "array":
-      return `${typeKey(type.elem)}[]`
-    case "struct":
-      return `#${type.id}`
-    case "interface":
-      return `@${type.id}`
-    case "func":
-      return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
-    default:
-      return typeToString(type)
-  }
-}
-
 /** Whether a type has a zero value for variables without an initializer; references do not. */
 function hasZeroValue(type: Type): boolean {
+  if (type.kind === "union") return type.members.some((m) => m.kind === "null")
   return type.kind !== "struct" && type.kind !== "interface"
 }
 
@@ -1769,6 +2068,8 @@ function zeroValue(type: Type): ir.Expr {
       return { k: "string", type, value: "" }
     case "array":
       return { k: "array", type, elems: [] }
+    case "union":
+      return { k: "null", type }
     default:
       return poison(type)
   }

@@ -99,8 +99,24 @@ export interface InterfaceType {
   members: InterfaceMember[]
 }
 
-export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType
-export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType
+/** The type of `null`; appears in unions such as `Node | null`. */
+export interface NullType {
+  readonly kind: "null"
+}
+
+/**
+ * A union of two or more types. Members are normalized: no nested unions, no
+ * duplicates, and a canonical order, so equal unions have equal members.
+ */
+export interface UnionType {
+  readonly kind: "union"
+  /** Unique per program; used for names in generated code. */
+  readonly id: number
+  readonly members: readonly Type[]
+}
+
+export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType
+export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType
 
 export function findField(t: StructType, name: string): Field | undefined {
   return t.fields.find((f) => f.name === name)
@@ -132,6 +148,7 @@ export const types = {
   string: { kind: "string" } as StringType,
   void: { kind: "void" } as VoidType,
   never: { kind: "never" } as NeverType,
+  null: { kind: "null" } as NullType,
 } as const
 
 export function isNumeric(t: Type): t is IntType | FloatType {
@@ -160,6 +177,9 @@ export function sameType(a: Type, b: Type): boolean {
   if (a === b) return true
   if (a.kind === "array" && b.kind === "array") return sameType(a.elem, b.elem)
   if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b)
+  if (a.kind === "union" && b.kind === "union") {
+    return a.members.length === b.members.length && a.members.every((m, i) => sameType(m, b.members[i]!))
+  }
   if (a.kind !== "func" || b.kind !== "func") return false
   return a.params.length === b.params.length
     && a.params.every((p, i) => sameType(p, b.params[i]!))
@@ -179,6 +199,8 @@ export function typeToString(t: Type): string {
       return t.name ?? `{ ${t.fields.map((f) => `${f.readonly ? "readonly " : ""}${f.name}: ${typeToString(f.type)}`).join("; ")} }`
     case "interface":
       return t.name
+    case "union":
+      return t.members.map((m) => (m.kind === "func" ? `(${typeToString(m)})` : typeToString(m))).join(" | ")
     default:
       return t.kind
   }
@@ -188,4 +210,46 @@ export function typeToString(t: Type): string {
 export function intRange(t: IntType): [bigint, bigint] {
   const bits = BigInt(t.bits)
   return t.signed ? [-(1n << (bits - 1n)), (1n << (bits - 1n)) - 1n] : [0n, (1n << bits) - 1n]
+}
+
+/** A stable key of a type, for interning and canonical ordering. */
+export function typeKey(type: Type): string {
+  switch (type.kind) {
+    case "array":
+      return `${typeKey(type.elem)}[]`
+    case "struct":
+      return `#${type.id}`
+    case "interface":
+      return `@${type.id}`
+    case "union":
+      return type.members.map(typeKey).join("|")
+    case "func":
+      return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
+    default:
+      return typeToString(type)
+  }
+}
+
+/** Whether values of a type are references that can be null without a tag. */
+export function isReference(type: Type): boolean {
+  return type.kind === "struct" || type.kind === "array" || type.kind === "interface" || type.kind === "string"
+}
+
+/**
+ * How a union is represented at run time:
+ * - `nullable`: one reference type and `null`, as the reference or null;
+ * - `tagged`: a tag selecting one of `slots`, with the value of that slot.
+ *   `null` has a slot without a value.
+ */
+export type UnionRepr = { k: "nullable"; base: Type } | { k: "tagged"; slots: readonly Type[] }
+
+export function unionRepr(u: UnionType): UnionRepr {
+  const others = u.members.filter((m) => m.kind !== "null")
+  if (others.length === 1 && others.length < u.members.length && isReference(others[0]!)) return { k: "nullable", base: others[0]! }
+  return { k: "tagged", slots: u.members }
+}
+
+/** The members of a type: those of a union, or the type itself. */
+export function membersOf(type: Type): readonly Type[] {
+  return type.kind === "union" ? type.members : [type]
 }
