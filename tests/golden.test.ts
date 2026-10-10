@@ -10,7 +10,10 @@
  *                        // threads: 4    (OS threads for tasks; default 1, for a stable order)
  * tests/diag/NAME.ore  must fail to check; every diagnostic must sit on a line
  *                      annotated with `// error: <substring of the message>`,
- *                      and every annotation must be matched. A directory
+ *                      and every annotation must be matched. An annotation
+ *                      alone on its line belongs to the nearest line above
+ *                      with code, as `ore fmt` moves comments after `{`
+ *                      into the block. A directory
  *                      tests/diag/NAME/ is checked from main.ore, with
  *                      annotations in any of its modules.
  *
@@ -76,9 +79,13 @@ describe("diag", () => {
       // Annotations by module and line, in every module of the program.
       const expected = new Map<string, string[]>()
       for (const source of program.modules) {
-        source.text.split("\n").forEach((line, i) => {
+        const lines = source.text.split("\n")
+        let code = 0
+        lines.forEach((line, i) => {
+          const alone = /^\s*\/\//.test(line)
+          if (!alone && line.trim() !== "") code = i
           const m = line.match(/\/\/ error: (.*)$/)
-          const key = `${source.path}:${i}`
+          const key = `${source.path}:${alone ? code : i}`
           if (m) expected.set(key, [...(expected.get(key) ?? []), m[1]!.trim()])
         })
       }
