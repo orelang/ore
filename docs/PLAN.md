@@ -154,11 +154,13 @@ work.**
 - VS Code extension (TextMate grammar reused from TS + LSP client).
 
 ### Phase 7: Concurrency (4–6 weeks)
-- Runtime scheduler: M:1 first (ucontext or custom stack switching), then M:N.
-- `Chan<T>`, `select`, non-blocking I/O via kqueue / epoll.
-- Risk: Boehm and custom goroutine stacks do not mix well (requires
-  `GC_add_roots` / `GC_set_stackbottom` juggling). This is a motivation for a
-  custom GC.
+- Done: M:1 scheduler with stackful tasks (assembly context switch on arm64
+  and x86_64, mmap'ed stacks with guard pages), `task.spawn` / `sleep` /
+  `yield`, `Chan<T>`, `task.select` with timeouts, deadlock detection. The
+  GC scans suspended task stacks through a push-roots hook.
+- Next: M:N scheduler on several OS threads (GC_THREADS, work stealing,
+  locks in channels) and non-blocking I/O via kqueue / epoll, so that file
+  and network operations park only their task.
 
 ### Phase 8: Performance and maturity
 - Custom precise GC (needs stack maps, so likely together with LLVM).
