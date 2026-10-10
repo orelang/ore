@@ -1464,9 +1464,9 @@ class Checker {
       const then = this.withFacts(condition.whenTrue, () => this.checkNested(stmt.thenStatement, scope))
       const elseStmt = stmt.elseStatement ? this.withFacts(condition.whenFalse, () => this.checkNested(stmt.elseStatement!, scope)) : undefined
       out.push({ k: "if", cond: condition.expr, then, else: elseStmt })
-      // After `if (x === null) return`, x is not null for the rest of the block.
-      const thenExits = terminates(then)
-      const elseExits = elseStmt !== undefined && terminates(elseStmt)
+      // After `if (x === null) return` (or continue, break), x is not null for the rest of the block.
+      const thenExits = exits(then)
+      const elseExits = elseStmt !== undefined && exits(elseStmt)
       if (thenExits && !elseExits) this.addFacts(condition.whenFalse)
       else if (elseExits && !thenExits) this.addFacts(condition.whenTrue)
     } else if (ts.isWhileStatement(stmt)) {
@@ -3503,6 +3503,21 @@ function terminates(stmt: ir.Stmt): boolean {
     }
     default:
       return false
+  }
+}
+
+/** Whether control never reaches the statement after this one: it returns, panics, breaks or continues. */
+function exits(stmt: ir.Stmt): boolean {
+  switch (stmt.k) {
+    case "break":
+    case "continue":
+      return true
+    case "block":
+      return stmt.body.some(exits)
+    case "if":
+      return stmt.else !== undefined && exits(stmt.then) && exits(stmt.else)
+    default:
+      return terminates(stmt)
   }
 }
 
