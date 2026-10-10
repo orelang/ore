@@ -275,12 +275,50 @@ exhaustive: like a `default`, it lets a function end without `return`.
   equals `NaN`, `-0` equals `0`), objects, arrays and interface values by
   identity. Unions cannot be keys yet.
 
-### 3.16 Evaluation order
+### 3.16 Functions and closures
+
+- A function type `(a: int, b: string) => bool` describes function values.
+  Function values are top-level functions used by name, methods taken
+  without a call (`const f = obj.method`, bound to `obj`), arrow functions,
+  function expressions and nested function declarations. `===` compares
+  identity; a function type can be in a union with `null`, and `f?.(x)`
+  calls it unless it is null.
+- Closures capture variables by reference, as in JavaScript: changes are
+  seen by the closure and by the enclosing function. Each iteration of
+  `for (let ...)` has its own copy of the loop variable.
+- Parameters of a function literal take their types from the context
+  (`xs.map((x) => x * 2)`) or from annotations. The return type comes from
+  an annotation or the context, or is inferred from the first `return`.
+- Arrow functions keep `this` of the enclosing method; function expressions
+  have no `this`.
+- Nested function declarations are hoisted: they can be called anywhere in
+  their block, call each other recursively, and use every variable of the
+  block. Arrow functions can only use variables declared before them.
+
+### 3.17 Array methods
+
+`forEach`, `map`, `filter`, `reduce` (with an initial value), `find`
+(`T | null`), `findIndex`, `some`, `every`, `includes`, `indexOf`,
+`join(separator = ",")`, `reverse` and `sort(compare?)` work as in
+JavaScript. Callbacks receive `(element, index)` (`reduce`: accumulator
+first) and may declare fewer parameters. `sort` is stable; without a
+comparator it sorts numbers by value and strings by bytes (JavaScript sorts
+everything as strings). `includes` finds `NaN`, `indexOf` does not.
+
+### 3.18 Resources
+
+`using x = resource` declares a resource whose type has a
+`[Symbol.dispose](): void` method (the built-in interface `Disposable`).
+When the rest of the block ends, also by `return`, `break` or `continue`,
+`x[Symbol.dispose]()` is called; several resources are disposed in reverse
+order, and a null resource is skipped. Panics do not dispose resources.
+
+### 3.19 Evaluation order
 
 Operands, arguments and the receiver of a method call are evaluated left to
 right, as in TypeScript.
 
-### 3.17 Statements
+### 3.20 Statements
 
 - `if`, `while`, `do...while`, `for`, `for...of`, `switch`, `break`,
   `continue` and `return` work as in TypeScript. `for...in` is rejected.
@@ -292,7 +330,7 @@ right, as in TypeScript.
 - A function with a return type must return a value on every path. A path
   ending in an infinite loop or a `process.panic(...)` call needs no return.
 
-### 3.18 Panics
+### 3.21 Panics
 
 A panic prints its message and exits with status 2. Debug builds (the default)
 print the Ore call stack with source lines:
@@ -372,4 +410,5 @@ use.
 | missing value | `undefined` | `null` |
 | `map.get(missing)` | `undefined` | `null` |
 | `map.keys()` | iterator | array |
+| `[10, 9, 1].sort()` | `[1, 10, 9]` (as strings) | `[1, 9, 10]` |
 | generic bodies | checked once | checked per instance |
