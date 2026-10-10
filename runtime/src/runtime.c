@@ -5,9 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Boehm GC, linked from runtime/third_party/bdwgc. Declared here so that the
+// runtime builds without the GC headers.
+void GC_init(void);
+void *GC_malloc(size_t size);
+void *GC_malloc_atomic(size_t size);
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
+  GC_init();
   static char buffer[1 << 16];
   setvbuf(stdout, buffer, _IOFBF, sizeof buffer);
   ore_entry();
@@ -47,8 +54,14 @@ _Noreturn void ore_rt_panic_index(i64 index, i64 length) {
 // Memory
 
 void *ore_rt_alloc(i64 size) {
-  // TODO: allocate from the garbage collector.
-  void *p = calloc(1, size > 0 ? (size_t)size : 1);
+  void *p = GC_malloc(size > 0 ? (size_t)size : 1);
+  if (!p) ore_rt_panic_cstr("out of memory");
+  return p;
+}
+
+/** Memory that never holds pointers, so the GC does not scan it. Not zeroed. */
+static void *alloc_atomic(i64 size) {
+  void *p = GC_malloc_atomic(size > 0 ? (size_t)size : 1);
   if (!p) ore_rt_panic_cstr("out of memory");
   return p;
 }
@@ -70,7 +83,7 @@ i32 ore_rt_str_cmp(ore_string a, ore_string b) {
 ore_string ore_rt_str_concat(i64 count, const ore_string *parts) {
   i64 len = 0;
   for (i64 i = 0; i < count; i++) len += parts[i].len;
-  u8 *p = ore_rt_alloc(len);
+  u8 *p = alloc_atomic(len);
   i64 at = 0;
   for (i64 i = 0; i < count; i++) {
     if (parts[i].len > 0) memcpy(p + at, parts[i].ptr, (size_t)parts[i].len);
@@ -116,7 +129,7 @@ i32 ore_rt_str_decode(ore_string s, i64 *pos) {
 }
 
 static ore_string str_copy(const char *s, size_t n) {
-  u8 *p = ore_rt_alloc((i64)n);
+  u8 *p = alloc_atomic((i64)n);
   memcpy(p, s, n);
   return (ore_string){p, (i64)n};
 }

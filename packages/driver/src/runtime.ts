@@ -5,10 +5,12 @@ import { join } from "node:path"
 import header from "../../../runtime/include/ore.h" with { type: "text" }
 import source from "../../../runtime/src/runtime.c" with { type: "text" }
 import { clang } from "./clang"
+import { prepareGc } from "./gc"
 
 export interface RuntimeFiles {
   includeDir: string
-  object: string
+  /** Object files to link: the runtime and the garbage collector. */
+  objects: string[]
 }
 
 export function cacheDir(): string {
@@ -24,7 +26,8 @@ export async function prepareRuntime(flags: string[]): Promise<RuntimeFiles> {
   const dir = join(cacheDir(), `runtime-${hash}`)
   const includeDir = join(dir, "include")
   const object = join(dir, "runtime.o")
-  if (existsSync(object)) return { includeDir, object }
+  const gc = await prepareGc(cacheDir())
+  if (existsSync(object)) return { includeDir, objects: [object, gc] }
 
   mkdirSync(includeDir, { recursive: true })
   writeFileSync(join(includeDir, "ore.h"), header)
@@ -33,5 +36,5 @@ export async function prepareRuntime(flags: string[]): Promise<RuntimeFiles> {
   const temp = `${object}.${process.pid}.tmp`
   await clang([...flags, "-I", includeDir, "-c", join(dir, "runtime.c"), "-o", temp])
   renameSync(temp, object)
-  return { includeDir, object }
+  return { includeDir, objects: [object, gc] }
 }
