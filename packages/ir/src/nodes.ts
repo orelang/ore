@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, LiteralType, StringType, StructType, Type, UnionType } from "./types"
+import type { ArrayType, BoolType, FloatType, FuncType, IntType, InterfaceType, LiteralType, MapType, StringType, StructType, Type, UnionType } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -104,7 +104,10 @@ export interface ForOfStmt extends StmtBase {
   k: "for-of"
   id: number
   labeled: boolean
+  /** The element, rune, or key of a map entry. */
   local: Local
+  /** The value of a map entry, for `for (const [key, value] of map)`. */
+  value?: Local
   iterable: Expr
   body: Stmt
 }
@@ -186,6 +189,7 @@ export type Expr =
   | TypeOf
   | Is
   | Downcast
+  | MapOp
 
 export interface IntLit {
   k: "int"
@@ -510,4 +514,19 @@ export interface Downcast {
   k: "downcast"
   type: StructType
   value: Expr
+}
+
+/**
+ * An operation of `Map`: `new Map()`, `map.get(key)` (the value or null),
+ * `map.set(key, value)` (the map), `has`, `delete`, `clear`, `size`, and
+ * `keys` / `values` as arrays in insertion order.
+ */
+export interface MapOp {
+  k: "map"
+  op: "new" | "get" | "set" | "has" | "delete" | "clear" | "size" | "keys" | "values"
+  type: Type
+  mapType: MapType
+  map?: Expr
+  key?: Expr
+  value?: Expr
 }

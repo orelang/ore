@@ -121,8 +121,15 @@ export interface UnionType {
   readonly members: readonly Type[]
 }
 
+/** `Map<K, V>`: a reference to a hash map that keeps insertion order. */
+export interface MapType {
+  readonly kind: "map"
+  readonly key: Type
+  readonly value: Type
+}
+
 export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType | LiteralType
-export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType
+export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType | MapType
 
 export function findField(t: StructType, name: string): Field | undefined {
   return t.fields.find((f) => f.name === name)
@@ -183,6 +190,7 @@ export function sameType(a: Type, b: Type): boolean {
   if (a === b) return true
   if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
   if (a.kind === "array" && b.kind === "array") return sameType(a.elem, b.elem)
+  if (a.kind === "map" && b.kind === "map") return sameType(a.key, b.key) && sameType(a.value, b.value)
   if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b)
   if (a.kind === "union" && b.kind === "union") {
     return a.members.length === b.members.length && a.members.every((m, i) => sameType(m, b.members[i]!))
@@ -210,6 +218,8 @@ export function typeToString(t: Type): string {
       return t.members.map((m) => (m.kind === "func" ? `(${typeToString(m)})` : typeToString(m))).join(" | ")
     case "literal":
       return JSON.stringify(t.value)
+    case "map":
+      return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
     default:
       return t.kind
   }
@@ -234,6 +244,8 @@ export function typeKey(type: Type): string {
       return type.members.map(typeKey).join("|")
     case "literal":
       return JSON.stringify(type.value)
+    case "map":
+      return `Map<${typeKey(type.key)},${typeKey(type.value)}>`
     case "func":
       return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
     default:
@@ -243,7 +255,7 @@ export function typeKey(type: Type): string {
 
 /** Whether values of a type are references that can be null without a tag. */
 export function isReference(type: Type): boolean {
-  return type.kind === "struct" || type.kind === "array" || type.kind === "interface" || type.kind === "string"
+  return type.kind === "struct" || type.kind === "array" || type.kind === "interface" || type.kind === "string" || type.kind === "map"
 }
 
 /** Whether values of a type are strings: `string` or a string literal type. */

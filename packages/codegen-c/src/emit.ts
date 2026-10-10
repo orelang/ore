@@ -27,7 +27,11 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   for (const itab of module.itabs) out.push(emitItab(itab))
   out.push("")
   const file = JSON.stringify(module.file)
-  for (const func of module.functions) out.push(emitFunction({ debug: options.debug, file, func }), "")
+  helpers.clear()
+  const bodies = module.functions.map((func) => emitFunction({ debug: options.debug, file, func }))
+  // Helpers created while emitting the bodies, such as hash functions of map keys.
+  out.push(...helpers.values(), "")
+  for (const body of bodies) out.push(body, "")
   const main = module.functions.find((f) => f.sourceName === "main")
   if (main) out.push(`void ore_entry(void) { ${main.name}(); }`, "")
   return out.join("\n")
@@ -213,6 +217,8 @@ export function cType(type: Type): string {
     }
     case "literal":
       return "ore_string"
+    case "map":
+      return "ore_map *"
     case "null":
       return "void *"
     case "func":
@@ -221,6 +227,46 @@ export function cType(type: Type): string {
 }
 
 let tempCounter = 0
+
+/** C helper functions by name, emitted before function bodies. */
+const helpers = new Map<string, string>()
+
+/**
+ * The hash and equality functions of a map key type, as SameValueZero:
+ * strings by contents, references by identity, NaN equal to NaN.
+ */
+function keyFunctions(key: Type): { hash: string; eq: string } {
+  const id = ir.typeKey(key).replace(/[^A-Za-z0-9]/g, (c) => `_${c.charCodeAt(0).toString(16)}`)
+  const hash = `ore_hash_${id}`
+  const eq = `ore_eq_${id}`
+  if (!helpers.has(hash)) {
+    const t = cType(key)
+    const k = `(*(const ${t} *)k)`
+    const a = `(*(const ${t} *)a)`
+    const b = `(*(const ${t} *)b)`
+    let h: string
+    let e: string
+    if (key.kind === "float") {
+      h = `ore_rt_hash_f64((f64)${k})`
+      e = `ore_rt_same_f64((f64)${a}, (f64)${b})`
+    } else if (isStringLike(key)) {
+      h = `ore_rt_hash_bytes(${k}.ptr, ${k}.len)`
+      e = `ore_rt_str_eq(${a}, ${b})`
+    } else if (key.kind === "interface") {
+      h = `ore_rt_hash_u64((u64)(uintptr_t)${k}.data)`
+      e = `(${a}.data == ${b}.data)`
+    } else if (ir.isNumeric(key) || key.kind === "bool") {
+      h = `ore_rt_hash_u64((u64)${k})`
+      e = `(${a} == ${b})`
+    } else {
+      h = `ore_rt_hash_u64((u64)(uintptr_t)${k})`
+      e = `(${a} == ${b})`
+    }
+    helpers.set(hash, `static u64 ${hash}(const void *k) { return ${h}; }`)
+    helpers.set(eq, `static bool ${eq}(const void *a, const void *b) { return ${e}; }`)
+  }
+  return { hash, eq }
+}
 
 /** A fresh C identifier for a temporary; never clashes with locals, which end in `_<id>`. */
 function temp(): string {
@@ -311,6 +357,11 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       if (stmt.iterable.type.kind === "string") {
         head = `ore_string ${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}.len;)`
         first = `${elem} ${name} = ore_rt_str_decode(${it}, &${i});`
+      } else if (stmt.iterable.type.kind === "map") {
+        // Entries in insertion order, skipping deleted ones.
+        const value = stmt.value!
+        head = `ore_map *${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}->count; ${i}++)`
+        first = `if (!ore_rt_map_live(${it}, ${i})) continue; ${elem} ${name} = *(${elem} *)ore_rt_map_key(${it}, ${i}); ${cType(value.type)} ${localName(value)} = *(${cType(value.type)} *)ore_rt_map_value(${it}, ${i});`
       } else {
         head = `ore_array *${it} = ${emitExpr(stmt.iterable)};\n${indent(depth + 1)}for (i64 ${i} = 0; ${i} < ${it}->len; ${i}++)`
         first = `${elem} ${name} = ((${elem} *)${it}->data)[${i}];`
@@ -538,6 +589,8 @@ function emitExpr(expr: ir.Expr): string {
       const message = stringLiteral(`value is not a ${expr.type.name}`)
       return `({ ore_iface ${t} = ${emitExpr(expr.value)}; if (!ore_iface_is(${t}, ${typeId(expr.type)})) ore_rt_panic_cstr(${message}); (${cType(expr.type)})${t}.data; })`
     }
+    case "map":
+      return emitMapOp(expr)
     case "coalesce": {
       const from = expr.value.type as UnionType
       const t = temp()
@@ -629,6 +682,46 @@ function emitAssign(expr: ir.Assign): string {
   return `({ ${place} *${p} = ${emitExpr(combined)}; })`
 }
 
+function emitMapOp(expr: ir.MapOp): string {
+  const { key: K, value: V } = expr.mapType
+  const kt = cType(K)
+  const vt = cType(V)
+  switch (expr.op) {
+    case "new": {
+      const { hash, eq } = keyFunctions(K)
+      return `ore_rt_map_new(sizeof(${kt}), sizeof(${vt}), ${hash}, ${eq})`
+    }
+    case "size":
+      return `(${emitExpr(expr.map!)})->size`
+    case "clear":
+      return `ore_rt_map_clear(${emitExpr(expr.map!)})`
+    case "keys":
+      return `ore_rt_map_keys(${emitExpr(expr.map!)})`
+    case "values":
+      return `ore_rt_map_values(${emitExpr(expr.map!)})`
+  }
+  // The map and key (and value) are evaluated in order into temporaries, so the key has an address.
+  const m = temp()
+  const k = temp()
+  const decls = `ore_map *${m} = ${emitExpr(expr.map!)}; ${kt} ${k} = ${emitExpr(expr.key!)};`
+  switch (expr.op) {
+    case "get": {
+      const p = temp()
+      const result = expr.type as UnionType
+      const none = inject(result, result.members.findIndex((t) => t.kind === "null"), "")
+      return `({ ${decls} ${vt} *${p} = ore_rt_map_get(${m}, &${k}); ${p} ? ${recast(`(*${p})`, V, result)} : ${none}; })`
+    }
+    case "set": {
+      const v = temp()
+      return `({ ${decls} ${vt} ${v} = ${emitExpr(expr.value!)}; ore_rt_map_set(${m}, &${k}, &${v}); ${m}; })`
+    }
+    case "has":
+      return `({ ${decls} ore_rt_map_get(${m}, &${k}) != 0; })`
+    case "delete":
+      return `({ ${decls} ore_rt_map_delete(${m}, &${k}); })`
+  }
+}
+
 /**
  * Emits operands left to right, as Ore requires and C does not guarantee for
  * arguments and binary operators. When an operand has effects and another
@@ -707,6 +800,7 @@ function effects(e: ir.Expr): boolean {
       return false
     case "iface-call":
     case "downcast":
+    case "map":
     case "recast":
     case "optional":
     case "coalesce":

@@ -16,6 +16,7 @@ import {
   type InterfaceMember,
   type InterfaceType,
   type LiteralType,
+  type MapType,
   type StructType,
   type Type,
   type UnionType,
@@ -357,6 +358,11 @@ class Checker {
         return
       }
       if (name === "Array" && n.typeArguments?.length === 1) return type.kind === "array" ? infer(n.typeArguments[0]!, type.elem) : undefined
+      if (name === "Map" && n.typeArguments?.length === 2 && type.kind === "map") {
+        infer(n.typeArguments[0]!, type.key)
+        infer(n.typeArguments[1]!, type.value)
+        return
+      }
       const symbol = scope.lookupType(name)
       const generic = symbol?.generic
       if (!n.typeArguments || !generic) return
@@ -947,6 +953,12 @@ class Checker {
       const elem = this.resolveValueType(node.elementType, scope)
       return elem && arrayOf(elem)
     }
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "Map" && !scope.lookupType("Map")) {
+      if (node.typeArguments?.length !== 2) return this.error(node, "'Map' expects exactly 2 type arguments."), undefined
+      const key = this.resolveValueType(node.typeArguments[0]!, scope)
+      const value = this.resolveValueType(node.typeArguments[1]!, scope)
+      return key && value ? this.mapOf(key, value, node.typeArguments[0]!) : undefined
+    }
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "Array" && !scope.lookupType("Array")) {
       if (node.typeArguments?.length !== 1) return this.error(node, "'Array' expects exactly 1 type argument."), undefined
       const elem = this.resolveValueType(node.typeArguments[0]!, scope)
@@ -1001,6 +1013,12 @@ class Checker {
       this.memberDecls.set(shape, new Map(node.members.flatMap((m) => (m.name && ts.isIdentifier(m.name) ? [[m.name.text, m] as const] : []))))
     }
     return shape
+  }
+
+  private mapOf(key: Type, value: Type, node: ts.Node): MapType | undefined {
+    const hashable = isNumeric(key) || ["bool", "string", "literal", "struct", "array", "interface", "map"].includes(key.kind)
+    if (!hashable) return this.error(node, `Type '${typeToString(key)}' cannot be a Map key.`), undefined
+    return { kind: "map", key, value }
   }
 
   private literal(value: string): LiteralType {
@@ -1264,25 +1282,37 @@ class Checker {
       return this.error(list, "The loop variable must be declared with 'const' or 'let'."), undefined
     }
     const decl = list.declarations[0]!
-    if (!ts.isIdentifier(decl.name)) return this.error(decl.name, "Destructuring is not supported yet."), undefined
     if (decl.type) this.error(decl.type, "The loop variable cannot have a type annotation; its type comes from the iterable.")
 
     const value = this.checkExpr(stmt.expression, outer)
     if (value.k === "error") return undefined
     const iterable = this.toDefault(value, stmt.expression)
     const type = iterable.type
-    let elem: Type
-    if (type.kind === "array") elem = type.elem
-    else if (type.kind === "string") elem = types.i32
-    else return this.error(stmt.expression, `Type '${typeToString(type)}' is not iterable.`), undefined
+    const mutable = (list.flags & ts.NodeFlags.Let) !== 0
+    // Names and types of the loop variables: one, or `[key, value]` for a map.
+    let bindings: [ts.Identifier, Type][]
+    if (type.kind === "map") {
+      const pattern = decl.name
+      const names = ts.isArrayBindingPattern(pattern) ? pattern.elements.map((e) => (ts.isBindingElement(e) && ts.isIdentifier(e.name) && !e.dotDotDotToken && !e.initializer ? e.name : undefined)) : []
+      if (names.length !== 2 || !names[0] || !names[1]) return this.error(decl.name, "Iterate a Map with 'for (const [key, value] of map)'."), undefined
+      bindings = [[names[0], type.key], [names[1], type.value]]
+    } else {
+      if (!ts.isIdentifier(decl.name)) return this.error(decl.name, "Destructuring is not supported yet."), undefined
+      if (type.kind === "array") bindings = [[decl.name, type.elem]]
+      else if (type.kind === "string") bindings = [[decl.name, types.i32]]
+      else return this.error(stmt.expression, `Type '${typeToString(type)}' is not iterable.`), undefined
+    }
 
     this.invalidateAssigned(stmt.statement, outer)
     const scope = new Scope(outer)
-    const local = this.newLocal(decl.name.text, elem, (list.flags & ts.NodeFlags.Let) !== 0)
-    scope.declareValue(local.name, { k: "local", local, decl })
-    this.info.types.set(decl.name, elem)
+    const locals = bindings.map(([name, t]) => {
+      const local = this.newLocal(name.text, t, mutable)
+      if (!scope.declareValue(local.name, { k: "local", local, decl: name.parent })) this.error(name, `Duplicate name '${name.text}'.`)
+      this.info.types.set(name, t)
+      return local
+    })
     const loop = this.checkLoopBody(stmt.statement, scope)
-    return Object.assign(loop.ir, { k: "for-of" as const, id: loop.id, local, iterable, body: loop.body })
+    return Object.assign(loop.ir, { k: "for-of" as const, id: loop.id, local: locals[0]!, value: locals[1], iterable, body: loop.body })
   }
 
   private checkSwitch(stmt: ts.SwitchStatement, outer: Scope): ir.SwitchStmt | undefined {
@@ -1578,7 +1608,7 @@ class Checker {
       if (!self) return this.fail(node, this.fn?.fieldInit ? "Field initializers cannot use 'this'." : "'this' can only be used inside a class.")
       return typed({ k: "local", type: self.type, local: self })
     }
-    if (ts.isNewExpression(node)) return this.checkNew(node, scope)
+    if (ts.isNewExpression(node)) return this.checkNew(node, scope, expected)
     if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
       return typed(this.condition(node, scope).expr)
     }
@@ -1728,7 +1758,7 @@ class Checker {
       return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union"].includes(type.kind)
+    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
@@ -1955,10 +1985,18 @@ class Checker {
     }
   }
 
-  private checkNew(node: ts.NewExpression, scope: Scope): Operand {
+  private checkNew(node: ts.NewExpression, scope: Scope, expected?: Type): Operand {
     if (!ts.isIdentifier(node.expression)) return this.fail(node.expression, "Only named classes can be instantiated.")
     const name = node.expression.text
     const symbol = scope.lookupType(name)
+    if (name === "Map" && !symbol) {
+      if (node.arguments && node.arguments.length > 0) return this.fail(node.arguments[0]!, "'new Map' takes no arguments; add entries with 'set'.")
+      let type: MapType | undefined
+      if (node.typeArguments) type = this.resolveType(ts.factory.createTypeReferenceNode("Map", node.typeArguments), scope) as MapType | undefined
+      else if (expected?.kind === "map") type = expected
+      else return this.fail(node, "Cannot infer the types of the Map. Write 'new Map<K, V>()' or annotate the variable.")
+      return type ? typed({ k: "map", op: "new", type, mapType: type }) : errorOperand
+    }
     if (symbol && symbol.type === this.errorType) {
       this.info.definitions.set(node.expression, symbol.decl)
       const created = this.callFunc(this.basicErrorClass().ctor!, node.arguments ?? [], node, scope, "'new Error'")
@@ -2165,6 +2203,7 @@ class Checker {
   private member(value: ir.Expr, node: ts.PropertyAccessExpression): Operand {
     const name = node.name.text
     if (name === "length" && (value.type.kind === "string" || value.type.kind === "array")) return typed({ k: "len", type: types.i64, value })
+    if (name === "size" && value.type.kind === "map") return typed({ k: "map", op: "size", type: types.i64, mapType: value.type, map: value })
     if (value.type.kind === "struct") {
       const struct = value.type
       const field = findField(struct, name)
@@ -2329,6 +2368,23 @@ class Checker {
         return typed({ k: "iface-call", type: member.type.result, value, index, method: member.type, args: values })
       }
       if (member) return this.fail(callee.name, `Field '${name}' is not a method.`)
+    }
+    if (type.kind === "map") {
+      const arity: Record<string, number> = { get: 1, set: 2, has: 1, delete: 1, clear: 0, keys: 0, values: 0 }
+      const count = arity[name]
+      if (count === undefined) return this.fail(callee.name, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+      if (args.length !== count) return this.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+      const key = count > 0 ? this.coerce(this.checkExpr(args[0]!, scope, type.key), type.key, args[0]!) : undefined
+      const val = count > 1 ? this.coerce(this.checkExpr(args[1]!, scope, type.value), type.value, args[1]!) : undefined
+      const op = name as ir.MapOp["op"]
+      const result: Type =
+        op === "get" ? this.unionOf([type.value, types.null])
+        : op === "set" ? type
+        : op === "has" || op === "delete" ? types.bool
+        : op === "keys" ? arrayOf(type.key)
+        : op === "values" ? arrayOf(type.value)
+        : types.void
+      return typed({ k: "map", op, type: result, mapType: type, map: value, key, value: val })
     }
     if (type.kind === "array" && name === "push") {
       const values: ir.Expr[] = []
@@ -2648,6 +2704,8 @@ function zeroValue(type: Type): ir.Expr {
       return { k: "string", type, value: "" }
     case "array":
       return { k: "array", type, elems: [] }
+    case "map":
+      return { k: "map", op: "new", type, mapType: type }
     case "union":
       return { k: "null", type }
     default:
