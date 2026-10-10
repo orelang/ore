@@ -25,6 +25,12 @@ describe("numeric literals", () => {
     expect(errors("let a: i8 = -129")).toEqual(["Constant -129 overflows 'i8' (range -128..127)."])
   })
 
+  test("a failed constant conversion does not cascade", () => {
+    expect(errors("let x: i32 = 1; let y: f64 = x + 0.5")).toEqual([
+      "A floating-point constant is not assignable to integer type 'i32'. Use 'i32(...)' to truncate.",
+    ])
+  })
+
   test("float constants are not assignable to integers", () => {
     expect(errors("let a: i32 = 1.5")[0]).toContain("not assignable to integer type 'i32'")
   })

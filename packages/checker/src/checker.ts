@@ -708,14 +708,23 @@ class Checker {
     return value.k === "untyped-float" ? types.f64 : types.i64
   }
 
-  /** Brings two operands to a common type: an untyped side takes the type of the typed side. */
+  /**
+   * Brings two operands to a common type: an untyped side takes the type of
+   * the typed side. Returns undefined operands if that fails, so that the
+   * enclosing expression reports nothing more.
+   */
   private unify(a: Operand, b: Operand, aNode: ts.Node, bNode: ts.Node): [ir.Expr | undefined, ir.Expr | undefined] {
     if (a.k === "error" || b.k === "error") return [undefined, undefined]
     if (a.k === "typed" && b.k === "typed") return [a.expr, b.expr]
-    if (a.k === "typed") return [a.expr, this.coerce(b, typeOf(a.expr), bNode)]
-    if (b.k === "typed") return [this.coerce(a, typeOf(b.expr), aNode), b.expr]
-    const type = a.k === "untyped-float" || b.k === "untyped-float" ? types.f64 : types.i64
-    return [this.coerce(a, type, aNode), this.coerce(b, type, bNode)]
+    const before = this.diagnostics.length
+    let result: [ir.Expr, ir.Expr]
+    if (a.k === "typed") result = [a.expr, this.coerce(b, typeOf(a.expr), bNode)]
+    else if (b.k === "typed") result = [this.coerce(a, typeOf(b.expr), aNode), b.expr]
+    else {
+      const type = a.k === "untyped-float" || b.k === "untyped-float" ? types.f64 : types.i64
+      result = [this.coerce(a, type, aNode), this.coerce(b, type, bNode)]
+    }
+    return this.diagnostics.length === before ? result : [undefined, undefined]
   }
 
   // ---------------------------------------------------------------------------
