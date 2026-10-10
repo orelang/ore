@@ -155,7 +155,8 @@ function pure(e: ir.Expr): boolean {
     case "null":
       return true
     case "local":
-      return !e.local.assigned
+      // A global changes from zero to its value when the top-level code runs.
+      return !e.local.assigned && !e.local.global
     default:
       return false
   }

@@ -246,7 +246,7 @@ class FuncAnalysis {
 
   /** Where the initial value of a local flows: into the local, unless it is bound to other values later. */
   private binding(local: ir.Local): Flow {
-    return this.rebound(local) ? escapes : local
+    return this.rebound(local) || local.global ? escapes : local
   }
 
   /** Records that a value flows to `to`. */

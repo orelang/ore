@@ -19,7 +19,7 @@ test("ore init creates a project that ore run builds from package.json", async (
   mkdirSync(join(dir, "node_modules/greet"), { recursive: true })
   writeFileSync(join(dir, "node_modules/greet/package.json"), JSON.stringify({ name: "greet", main: "lib.ore" }))
   writeFileSync(join(dir, "node_modules/greet/lib.ore"), 'export function hello(name: string): string {\n  return `hi ${name}`\n}\n')
-  writeFileSync(join(dir, "src/main.ore"), 'import { hello } from "greet"\n\nexport function main() {\n  console.log(hello("ore"))\n}\n')
+  writeFileSync(join(dir, "src/main.ore"), 'import { hello } from "greet"\n\nconsole.log(hello("ore"))\n')
 
   const run = await ore(["run"], join(dir, "src"))
   expect(run.stderr).toBe("")

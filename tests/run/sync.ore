@@ -17,24 +17,22 @@ class Account {
     }
 }
 
-export function main() {
-    const account = new Account()
-    const group = new WaitGroup()
-    for (let i = 0; i < 50; i++) {
-        group.add(1)
-        task.spawn(() => {
-            for (let j = 0; j < 20; j++) account.deposit(1)
-            group.done()
-        })
-    }
-    group.wait()
-    console.log(account.balance)
-
-    // wait returns at once when nothing is pending.
-    new WaitGroup().wait()
-
-    const shared = new Mutex()
-    shared.lock()
-    shared.unlock()
-    shared.unlock()
+const account = new Account()
+const group = new WaitGroup()
+for (let i = 0; i < 50; i++) {
+    group.add(1)
+    task.spawn(() => {
+        for (let j = 0; j < 20; j++) account.deposit(1)
+        group.done()
+    })
 }
+group.wait()
+console.log(account.balance)
+
+// wait returns at once when nothing is pending.
+new WaitGroup().wait()
+
+const shared = new Mutex()
+shared.lock()
+shared.unlock()
+shared.unlock()

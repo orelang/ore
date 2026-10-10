@@ -34,6 +34,7 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   plan = planStack(module)
   for (const func of plan.ctorsAt) out.push(`static ${signature(func, true)};`)
   for (const itab of module.itabs) out.push(emitItab(itab))
+  for (const local of globals(module)) out.push(`static ${cType(local.type)} ${localName(local)};`)
   out.push("")
   const file = JSON.stringify(module.file)
   helpers.clear()
@@ -46,9 +47,21 @@ export function emitModule(module: ir.Module, options: EmitOptions = { debug: fa
   // Helpers created while emitting the bodies, such as hash functions of map keys.
   out.push(...helpers.values(), "")
   for (const body of bodies) out.push(body, "")
-  const main = module.functions.find((f) => f.sourceName === "main")
-  if (main) out.push(`void ore_entry(void) { ${main.name}(); }`, "")
+  out.push(`void ore_entry(void) { ${module.inits.map((f) => `${f.name}();`).join(" ")} }`, "")
   return out.join("\n")
+}
+
+/** Variables declared at the top level of modules: directly in their top-level code, or after a `using` there. */
+function globals(module: ir.Module): ir.Local[] {
+  const found: ir.Local[] = []
+  const visit = (stmts: ir.Stmt[]) => {
+    for (const s of stmts) {
+      if ((s.k === "let" || s.k === "using") && s.local.global) found.push(s.local)
+      if (s.k === "using") visit(s.body)
+    }
+  }
+  for (const init of module.inits) visit(init.body.body)
+  return found
 }
 
 const frame = "ore_frame_"
@@ -110,6 +123,7 @@ function access(local: ir.Local): string {
 /** C declaring a local with an initial value (zeroed without one), in a box if needed. */
 function declare(local: ir.Local, init: string | undefined): string {
   const t = cType(local.type)
+  if (local.global) return `${localName(local)} = ${init ?? `(${t}){0}`};`
   if (!boxed(local)) return `${t} ${localName(local)} = ${init ?? `(${t}){0}`};`
   // The box exists before the value is computed, so a closure in it can capture itself.
   const box = `${t} *${localName(local)} = ${slot(local) ?? `ore_rt_alloc(sizeof(${t}))`};`

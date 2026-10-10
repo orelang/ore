@@ -162,7 +162,7 @@ async function testCommand(args: string[]): Promise<number> {
     for (const [i, file] of files.entries()) {
       console.log(file)
       const output = join(dir, `test${i}`)
-      const result = await build(file, { output, test: true })
+      const result = await build(file, { output })
       report(result.diagnostics)
       const code = result.ok ? await Bun.spawn([output], { stdio: ["inherit", "inherit", "inherit"] }).exited : 1
       if (code !== 0) failed++
@@ -187,7 +187,7 @@ function init(args: string[]): number {
   const manifest = { name, version: "0.1.0", private: true, main: "src/main.ore" }
   writeFileSync(join(dir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`)
   if (!existsSync(join(dir, "src/main.ore"))) {
-    writeFileSync(join(dir, "src/main.ore"), `export function main() {\n    console.log("hello, ${name}")\n}\n`)
+    writeFileSync(join(dir, "src/main.ore"), `console.log("hello, ${name}")\n`)
   }
   console.log(`Created ${name} in ${dir}. Run it with 'ore run'.`)
   return 0

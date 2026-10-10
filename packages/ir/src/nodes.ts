@@ -12,6 +12,11 @@ export interface Module {
   /** Path of the source file, as given to the compiler. */
   file: string
   functions: Func[]
+  /**
+   * The top-level code of each source module, in the order the program runs
+   * it: every module after the modules it imports, the entry last.
+   */
+  inits: Func[]
   /** Every struct type used by the module. */
   structs: StructType[]
   /** Interface tables of structs converted to interfaces. */
@@ -63,6 +68,11 @@ export interface Local {
   captured?: boolean
   /** Assigned after its declaration. A captured local that is assigned lives in a heap box. */
   assigned?: boolean
+  /**
+   * Declared at the top level of a module: a global variable, set when the
+   * module's top-level code runs and zero before. Never captured.
+   */
+  global?: boolean
 }
 
 interface StmtBase {

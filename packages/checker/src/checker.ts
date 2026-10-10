@@ -44,16 +44,6 @@ export interface CheckInfo {
   definitions: Map<ts.Identifier, ts.Node>
 }
 
-export interface CheckOptions {
-  /** Require `export function main()`. */
-  entry: boolean
-  /**
-   * A test program: the entry module's top-level statements, such as
-   * `test(...)` calls, become its `main`.
-   */
-  test?: boolean
-}
-
 /** The modules of a program, as loaded by `@ore/project`. */
 export interface ProgramInput {
   /** Modules with each module after the modules it imports, the entry last. */
@@ -64,9 +54,9 @@ export interface ProgramInput {
 }
 
 /** Checks a single file, or a program of modules, into one IR module. */
-export function check(input: Source | ProgramInput, options: CheckOptions = { entry: true }): CheckResult {
+export function check(input: Source | ProgramInput): CheckResult {
   const program = "ast" in input ? { modules: [input], entry: input, imports: new Map() } : input
-  return new Checker(program).run(options)
+  return new Checker(program).run()
 }
 
 /** A module being checked. */
@@ -93,6 +83,8 @@ interface FuncContext {
   ctor?: boolean
   /** Checking field initializers, which cannot use `this`. */
   fieldInit?: boolean
+  /** Checking the top-level code of a module. */
+  topLevel?: boolean
   /** Enclosing loops and switches, innermost last. */
   loops: LoopContext[]
   nextLoopId: number
@@ -152,6 +144,8 @@ class Checker {
   private readonly module: ir.Module
   private nextLocalId = 0
   private fn: FuncContext | undefined
+  /** The scope of the module whose top-level code is being checked: its variables are globals. */
+  private globals: Scope | undefined
   /** Anonymous struct types by shape key. */
   private readonly shapes = new Map<string, StructType>()
   private nextStructId = 0
@@ -184,11 +178,11 @@ class Checker {
   private prefix = ""
 
   constructor(private readonly program: ProgramInput) {
-    this.module = { file: program.entry.path, functions: [], structs: [], itabs: [], unions: [] }
+    this.module = { file: program.entry.path, functions: [], inits: [], structs: [], itabs: [], unions: [] }
     for (const source of program.modules) this.sources.set(source.ast, source)
   }
 
-  run(options: CheckOptions): CheckResult {
+  run(): CheckResult {
     const builtins = builtinScope()
     this.builtins = builtins.scope
     this.sources.set(builtins.source.ast, builtins.source)
@@ -231,45 +225,82 @@ class Checker {
     for (const info of this.classes) this.declareClassMembers(info, info.scope)
     this.checkExports(modules)
 
-    // Pass 3: top-level constants in module and source order, field initializers, then bodies.
-    const testStatements: ts.Statement[] = []
+    // Pass 3: constants in module and source order, field initializers, the
+    // top-level code of each module, which declares its global variables, then
+    // bodies, which can use the globals.
+    const constants = new Set<ts.Statement>()
     each((stmt, m) => {
-      const inTest = options.test && m.source === this.program.entry
-      if (inTest && (ts.isExpressionStatement(stmt) || ts.isVariableStatement(stmt))) testStatements.push(stmt)
-      else if (ts.isVariableStatement(stmt)) this.checkTopLevelVariables(stmt, m.scope)
-      else if (!isDeclaration(stmt)) this.error(stmt, this.unsupportedTopLevel(stmt))
+      if (ts.isEnumDeclaration(stmt) || ts.isModuleDeclaration(stmt)) this.error(stmt, this.unsupportedTopLevel(stmt))
+      else if (ts.isVariableStatement(stmt) && this.isConstantStatement(stmt, m.scope) && this.checkTopLevelConstants(stmt, m.scope)) constants.add(stmt)
     })
     for (const info of this.classes) this.checkFieldInitializers(info, info.scope)
     for (const info of this.classes) this.checkImplements(info, info.scope)
+    for (const m of modules) this.checkTopLevel(m, (stmt) => !isDeclaration(stmt) && !constants.has(stmt) && !ts.isEnumDeclaration(stmt) && !ts.isModuleDeclaration(stmt))
     for (const [decl, func, scope] of bodies) this.checkFunctionBody(decl, func, scope)
     for (const info of this.classes) this.checkClassBodies(info, info.scope)
-    if (options.test) this.testMain(testStatements, this.modules.get(this.program.entry)!)
     while (this.pending.length > 0) this.pending.shift()!()
-
-    if (options.entry && !options.test) this.checkEntry(this.modules.get(this.program.entry)!)
+    this.localizeGlobals()
 
     const hasErrors = this.diagnostics.some((d) => d.severity === "error")
     return { module: hasErrors ? undefined : this.module, diagnostics: this.diagnostics, info: this.info }
   }
 
-  /** The `main` of a test program: its top-level statements in order. */
-  private testMain(statements: ts.Statement[], entry: ModuleInfo) {
+  /**
+   * The top-level code of a module, run when the program starts: its
+   * variables are globals, visible to the functions of the module.
+   */
+  private checkTopLevel(module: ModuleInfo, isCode: (stmt: ts.Statement) => boolean) {
     const func: ir.Func = {
-      name: "ore_fn_main",
-      sourceName: "main",
+      name: `ore_init_${module.prefix}`,
+      sourceName: "<top level>",
       line: 1,
-      file: entry.source.path,
+      file: module.source.path,
       type: { kind: "func", params: [], result: types.void },
       params: [],
       body: { k: "block", body: [] },
-      exported: true,
+      exported: false,
     }
+    this.prefix = module.prefix
+    this.globals = module.scope
     this.facts = [new Map()]
-    this.fn = { result: types.void, loops: [], nextLoopId: 0 }
-    const scope = new Scope(entry.scope)
-    for (const stmt of statements) this.checkStmt(stmt, scope, func.body.body)
+    this.fn = { result: types.void, loops: [], nextLoopId: 0, topLevel: true }
+    this.withFacts([], () => this.checkStatements(module.source.ast.statements.filter(isCode), module.scope, func.body.body))
     this.fn = undefined
+    this.globals = undefined
+    this.prefix = ""
     this.module.functions.push(func)
+    this.module.inits.push(func)
+  }
+
+  /**
+   * Top-level variables used only by the top-level code of their module stay
+   * locals of it, which are faster than globals and may live on the stack.
+   */
+  private localizeGlobals() {
+    const owners = new Map<ir.Local, ir.Func>()
+    for (const init of this.module.inits) visitLocals(init.body, (local) => local.global && owners.set(local, init))
+    const shared = new Set<ir.Local>()
+    for (const func of this.module.functions) visitLocals(func.body, (local) => local.global && owners.get(local) !== func && shared.add(local))
+    for (const local of owners.keys()) if (!shared.has(local)) local.global = false
+  }
+
+  /** Whether a top-level `const` statement declares only constants, known before any code runs. */
+  private isConstantStatement(stmt: ts.VariableStatement, scope: Scope): boolean {
+    const list = stmt.declarationList
+    if ((list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Using)) !== ts.NodeFlags.Const) return false
+    const constant = (e: ts.Expression): boolean => {
+      if (ts.isNumericLiteral(e) || isStringLiteralNode(e) || e.kind === ts.SyntaxKind.TrueKeyword || e.kind === ts.SyntaxKind.FalseKeyword) return true
+      if (ts.isParenthesizedExpression(e)) return constant(e.expression)
+      if (ts.isPrefixUnaryExpression(e)) return constant(e.operand)
+      if (ts.isBinaryExpression(e)) {
+        const op = e.operatorToken.kind
+        return !(op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) && constant(e.left) && constant(e.right)
+      }
+      if (ts.isConditionalExpression(e)) return constant(e.condition) && constant(e.whenTrue) && constant(e.whenFalse)
+      if (ts.isIdentifier(e)) return scope.lookupValue(e.text)?.k === "const"
+      return false
+    }
+    return list.declarations.every((d) => ts.isIdentifier(d.name) && d.initializer !== undefined && constant(d.initializer))
   }
 
   // ---------------------------------------------------------------------------
@@ -1060,53 +1091,32 @@ class Checker {
     return false
   }
 
-  private checkTopLevelVariables(stmt: ts.VariableStatement, scope: Scope) {
-    const list = stmt.declarationList
-    if (!(list.flags & ts.NodeFlags.Const)) {
-      return this.error(stmt, "Only 'const' declarations are allowed at the top level. Mutable globals are not supported.")
-    }
-    for (const decl of list.declarations) {
-      if (!ts.isIdentifier(decl.name)) {
-        this.error(decl.name, "Destructuring is not supported yet.")
-        continue
-      }
-      if (!decl.initializer) {
-        this.error(decl.name, "A 'const' declaration must be initialized.")
-        continue
-      }
+  /**
+   * Declares the constants of a top-level `const` statement whose initializers
+   * are made of literals and constants. Returns false, declaring nothing, when
+   * a value is not a constant after all, such as a literal converted to a
+   * union: the statement then declares global variables.
+   */
+  private checkTopLevelConstants(stmt: ts.VariableStatement, scope: Scope): boolean {
+    const errors = this.diagnostics.length
+    const constants: [ts.Identifier, Operand, Type | undefined, ts.VariableDeclaration][] = []
+    for (const decl of stmt.declarationList.declarations) {
       const declared = decl.type ? this.resolveValueType(decl.type, scope) : undefined
-      let value = this.checkExpr(decl.initializer, scope)
-      if (declared) value = { k: "typed", expr: this.coerce(value, declared, decl.initializer) }
-      if (value.k === "typed" && !isLiteral(value.expr)) {
-        this.error(decl.initializer, "A top-level constant must be initialized with a constant expression.")
-        continue
-      }
-      const name = decl.name.text
-      if (!scope.declareValue(name, { k: "const", value, type: declared, decl })) this.error(decl.name, `Duplicate declaration '${name}'.`)
+      let value = this.checkExpr(decl.initializer!, scope)
+      if (declared) value = { k: "typed", expr: this.coerce(value, declared, decl.initializer!) }
+      constants.push([decl.name as ts.Identifier, value, declared, decl])
     }
-  }
-
-  private checkEntry(entry: ModuleInfo) {
-    const main = entry.scope.ownValue("main")
-    if (!main || main.k !== "func") {
-      return this.diagnostics.push({
-        source: entry.source,
-        start: 0,
-        length: 0,
-        severity: "error",
-        message: "The entry file must declare 'export function main()'.",
-      })
+    if (this.diagnostics.length === errors && constants.some(([, value]) => value.k === "typed" && !isLiteral(value.expr))) return false
+    for (const [name, value, type, decl] of constants) {
+      if (!scope.declareValue(name.text, { k: "const", value, type, decl })) this.error(name, `Duplicate declaration '${name.text}'.`)
     }
-    const decl = main.decl as ts.FunctionDeclaration
-    if (!main.func.exported) this.error(decl.name!, "'main' must be exported.")
-    if (main.func.params.length > 0) this.error(decl.parameters[0]!, "'main' must not take parameters.")
-    if (main.func.type.result.kind !== "void") this.error(decl.type!, "'main' must not return a value.")
+    return true
   }
 
   private unsupportedTopLevel(stmt: ts.Statement): string {
     if (ts.isEnumDeclaration(stmt)) return "Enums are not supported in Ore. Use a union of literal types."
     if (ts.isModuleDeclaration(stmt)) return "Namespaces are not supported in Ore. Use modules."
-    return "Only declarations are allowed at the top level. Put statements in 'main'."
+    return "This declaration is not supported at the top level."
   }
 
   // ---------------------------------------------------------------------------
@@ -1389,6 +1399,7 @@ class Checker {
     if (value.k === "error") return this.checkStatements(rest, scope, out)
     const init = declared ? this.coerce(value, declared, decl.initializer) : this.toDefault(value, decl.initializer)
     const local = this.newLocal(decl.name.text, init.type, false)
+    if (scope === this.globals) local.global = true
     if (!scope.declareValue(local.name, { k: "local", local, decl })) this.error(decl.name, `Cannot redeclare '${local.name}' in the same scope.`)
     this.info.types.set(decl.name, local.type)
 
@@ -1579,6 +1590,7 @@ class Checker {
           init = zeroValue(type)
         }
         const local = this.newLocal(name, type, !isConst)
+        if (scope === this.globals) local.global = true
         symbol = { k: "local", local, decl }
         this.info.types.set(decl.name, type)
         out.push({ k: "let", local, init })
@@ -1737,6 +1749,10 @@ class Checker {
 
   private checkReturn(stmt: ts.ReturnStatement, scope: Scope): ir.ReturnStmt {
     const fn = this.fn!
+    if (fn.topLevel) {
+      this.error(stmt, "'return' is only allowed in a function. Use 'process.exit()' to end the program.")
+      return { k: "return" }
+    }
     if (fn.ctor) {
       if (stmt.expression) this.error(stmt.expression, "A constructor cannot return a value.")
       return { k: "return", value: { k: "local", type: fn.this!.type, local: fn.this! } }
@@ -1775,7 +1791,7 @@ class Checker {
 
   /** Records that closures, innermost first, capture a local of an enclosing function. */
   private capture(local: ir.Local, closures: ir.Func[]) {
-    if (closures.length === 0) return
+    if (closures.length === 0 || local.global) return
     local.captured = true
     for (const f of closures) if (!f.captures!.includes(local)) f.captures!.push(local)
   }
@@ -2326,6 +2342,7 @@ class Checker {
     const symbol = found?.symbol
     if (!symbol) return this.error(node, `Cannot find name '${node.text}'.`), undefined
     this.info.definitions.set(node, symbol.decl)
+    if (symbol.k === "const") return this.error(node, `Cannot assign to '${node.text}' because it is a constant.`), undefined
     if (symbol.k !== "local") return this.error(node, `Cannot assign to '${node.text}' because it is not a variable.`), undefined
     if (!symbol.local.mutable) return this.error(node, `Cannot assign to '${node.text}' because it is a constant.`), undefined
     this.capture(symbol.local, found!.closures)
@@ -3576,5 +3593,19 @@ function breaks(stmt: ir.Stmt, loopId: number, nested: boolean): boolean {
       return stmt.body.some((s) => breaks(s, loopId, nested))
     default:
       return false
+  }
+}
+
+/** Calls `visit` for every local used or declared in a subtree of IR, without entering other functions. */
+function visitLocals(node: unknown, visit: (local: ir.Local) => void, seen = new Set<object>()) {
+  if (!node || typeof node !== "object" || seen.has(node)) return
+  seen.add(node)
+  if (Array.isArray(node)) {
+    for (const n of node) visitLocals(n, visit, seen)
+    return
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "local" || key === "binding") visit(value as ir.Local)
+    else if (key !== "type" && key !== "func" && key !== "captures") visitLocals(value, visit, seen)
   }
 }

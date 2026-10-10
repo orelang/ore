@@ -1,1 +1,1 @@
-export { check, typeOf, type CheckInfo, type CheckOptions, type CheckResult } from "./checker"
+export { check, typeOf, type CheckInfo, type CheckResult } from "./checker"

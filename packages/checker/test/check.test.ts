@@ -131,18 +131,26 @@ describe("functions", () => {
   })
 })
 
-describe("entry point", () => {
-  test("main is required", () => {
-    const { source } = parse("test.ore", "function f() {}")
-    expect(check(source).diagnostics.map((d) => d.message)).toEqual(["The entry file must declare 'export function main()'."])
+describe("top level", () => {
+  function program(text: string) {
+    const { source } = parse("test.ore", text)
+    return check(source)
+  }
+
+  test("top-level statements are the program; variables are globals", () => {
+    const { module, diagnostics } = program("let count = 0\nfunction bump() { count++ }\nbump()\nconsole.log(count)")
+    expect(diagnostics).toEqual([])
+    const [init] = module!.inits
+    const decl = init!.body.body[0]!
+    expect(decl.k === "let" && decl.local.global).toBe(true)
   })
 
-  test("top-level statements are rejected", () => {
-    expect(errors("", "console.log(1)")[0]).toContain("Only declarations are allowed at the top level")
-  })
-
-  test("top-level constants", () => {
+  test("constants of literals are known before any code runs", () => {
     ok("let a: u8 = N; let b: f32 = N", "const N = 200")
-    expect(errors("", "let x = 1")[0]).toContain("Only 'const' declarations")
+    expect(errors("let a: u8 = N", "const N = 300")[0]).toContain("overflows")
+  })
+
+  test("'return' needs a function", () => {
+    expect(program("return").diagnostics.map((d) => d.message)[0]).toContain("'return' is only allowed in a function")
   })
 })

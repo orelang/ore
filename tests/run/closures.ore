@@ -46,70 +46,68 @@ class Polite {
   }
 }
 
-export function main() {
-  // Closures capture variables by reference and keep them alive.
-  const a = makeCounter()
-  const b = makeCounter()
-  a()
-  a()
-  console.log(a(), b())
+// Closures capture variables by reference and keep them alive.
+const a = makeCounter()
+const b = makeCounter()
+a()
+a()
+console.log(a(), b())
 
-  // Function values: top-level functions, arrows, composition.
-  console.log(apply(twice, 5), apply((x) => x + 1, 5), compose(twice, (x) => x - 1)(10))
-  const square = (x: int): int => x * x
-  const ops: ((x: int) => int)[] = [twice, square, (x) => -x]
-  let total = 0
-  for (const op of ops) total += op(3)
-  console.log(total)
+// Function values: top-level functions, arrows, composition.
+console.log(apply(twice, 5), apply((x) => x + 1, 5), compose(twice, (x) => x - 1)(10))
+const square = (x: int): int => x * x
+const ops: ((x: int) => int)[] = [twice, square, (x) => -x]
+let total = 0
+for (const op of ops) total += op(3)
+console.log(total)
 
-  // A shared variable is seen by every closure and by the enclosing function.
-  let shared = 1
-  const inc = () => {
-    shared += 10
-  }
-  inc()
-  inc()
-  console.log(shared)
-
-  // Each iteration of `for (let ...)` has its own variable.
-  const fs: (() => int)[] = []
-  for (let i = 0; i < 3; i++) fs.push(() => i * 100)
-  console.log(fs[0](), fs[1](), fs[2]())
-
-  // Methods as values keep their receiver; arrows keep `this`.
-  const button = new Button()
-  let seen = 0
-  button.onClick(() => {
-    seen += button.clicks
-  })
-  button.click()
-  button.click()
-  const label = button.label
-  console.log(seen, label())
-  const greeter: Greeter = new Polite()
-  const greet = greeter.greet
-  console.log(greet("Ada"))
-
-  // Nested functions are hoisted and may be recursive.
-  console.log(fib(10), isEven(10))
-  function fib(n: int): int {
-    return n < 2 ? n : fib(n - 1) + fib(n - 2)
-  }
-  function isEven(n: int): bool {
-    return n === 0 ? true : isOdd(n - 1)
-  }
-  function isOdd(n: int): bool {
-    return n === 0 ? false : isEven(n - 1)
-  }
-
-  // Function values can be null.
-  let callback: ((s: string) => void) | null = null
-  console.log(callback === null)
-  callback = (s) => console.log(`got ${s}`)
-  callback?.("event")
-  if (callback !== null) callback("again")
-  console.log(later())
+// A shared variable is seen by every closure and by the enclosing function.
+let shared = 1
+const inc = () => {
+  shared += 10
 }
+inc()
+inc()
+console.log(shared)
+
+// Each iteration of `for (let ...)` has its own variable.
+const fs: (() => int)[] = []
+for (let i = 0; i < 3; i++) fs.push(() => i * 100)
+console.log(fs[0](), fs[1](), fs[2]())
+
+// Methods as values keep their receiver; arrows keep `this`.
+const button = new Button()
+let seen = 0
+button.onClick(() => {
+  seen += button.clicks
+})
+button.click()
+button.click()
+const label = button.label
+console.log(seen, label())
+const greeter: Greeter = new Polite()
+const greet = greeter.greet
+console.log(greet("Ada"))
+
+// Nested functions are hoisted and may be recursive.
+console.log(fib(10), isEven(10))
+function fib(n: int): int {
+  return n < 2 ? n : fib(n - 1) + fib(n - 2)
+}
+function isEven(n: int): bool {
+  return n === 0 ? true : isOdd(n - 1)
+}
+function isOdd(n: int): bool {
+  return n === 0 ? false : isEven(n - 1)
+}
+
+// Function values can be null.
+let callback: ((s: string) => void) | null = null
+console.log(callback === null)
+callback = (s) => console.log(`got ${s}`)
+callback?.("event")
+if (callback !== null) callback("again")
+console.log(later())
 
 function later(): int {
   // A hoisted function sees variables declared after it in the block.

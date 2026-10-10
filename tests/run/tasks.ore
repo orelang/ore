@@ -5,53 +5,51 @@ function worker(id: int, jobs: Chan<int>, results: Chan<string>): void {
     }
 }
 
-export function main() {
-    // A pool of workers fed by a channel; results come back on another.
-    const jobs = new Chan<int>()
-    const results: Chan<string> = new Chan(10)
-    for (let id = 1; id <= 3; id++) task.spawn(() => worker(id, jobs, results))
-    task.spawn(() => {
-        for (const ms of [30, 10, 20, 5, 15, 25]) jobs.send(ms)
-        jobs.close()
-    })
-    const done: string[] = []
-    for (let i = 0; i < 6; i++) {
-        const r = results.receive()
-        if (r !== null) done.push(r)
-    }
-    console.log(done.length, done.every((r) => r.startsWith("worker")))
+// A pool of workers fed by a channel; results come back on another.
+const jobs = new Chan<int>()
+const results: Chan<string> = new Chan(10)
+for (let id = 1; id <= 3; id++) task.spawn(() => worker(id, jobs, results))
+task.spawn(() => {
+    for (const ms of [30, 10, 20, 5, 15, 25]) jobs.send(ms)
+    jobs.close()
+})
+const done: string[] = []
+for (let i = 0; i < 6; i++) {
+    const r = results.receive()
+    if (r !== null) done.push(r)
+}
+console.log(done.length, done.every((r) => r.startsWith("worker")))
 
-    // Unbuffered channels hand values over in order.
-    const ping = new Chan<string>()
-    const pong = new Chan<string>()
-    task.spawn(() => {
-        for (const msg of ping) pong.send(`${msg}!`)
-        pong.close()
-    })
-    for (const word of ["a", "b", "c"]) {
-        ping.send(word)
-        console.write(pong.receive(), "")
-    }
-    ping.close()
-    console.log(pong.receive())
+// Unbuffered channels hand values over in order.
+const ping = new Chan<string>()
+const pong = new Chan<string>()
+task.spawn(() => {
+    for (const msg of ping) pong.send(`${msg}!`)
+    pong.close()
+})
+for (const word of ["a", "b", "c"]) {
+    ping.send(word)
+    console.write(pong.receive(), "")
+}
+ping.close()
+console.log(pong.receive())
 
-    // Tasks interleave at yields and sleeps.
-    const log: string[] = []
-    task.spawn(() => {
-        for (let i = 0; i < 3; i++) {
-            log.push(`x${i}`)
-            task.yield()
-        }
-    })
+// Tasks interleave at yields and sleeps.
+const log: string[] = []
+task.spawn(() => {
     for (let i = 0; i < 3; i++) {
-        log.push(`m${i}`)
+        log.push(`x${i}`)
         task.yield()
     }
-    console.log(log.join(" "))
-
-    // A closed, drained channel gives null.
-    const one = new Chan<int>(1)
-    one.send(7)
-    one.close()
-    console.log(one.receive(), one.receive())
+})
+for (let i = 0; i < 3; i++) {
+    log.push(`m${i}`)
+    task.yield()
 }
+console.log(log.join(" "))
+
+// A closed, drained channel gives null.
+const one = new Chan<int>(1)
+one.send(7)
+one.close()
+console.log(one.receive(), one.receive())

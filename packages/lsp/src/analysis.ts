@@ -132,22 +132,21 @@ export class Analysis {
 
 /**
  * Analyzes a document with the modules it imports, read from the disk. Only
- * the document's own diagnostics are reported; it need not have `main`.
+ * the document's own diagnostics are reported.
  */
 export function analyze(path: string, text: string): Analysis {
   const program = loadProgram(path, { overrides: new Map([[resolve(path), text]]), absolutePaths: true })
   const entry = program.entry
   const own = (ds: Diagnostic[]) => ds.filter((d) => d.source === entry)
-  const options = { entry: false, test: path.endsWith(".test.ore") }
   if (!program.syntaxErrors) {
-    const checked = check(program, options)
+    const checked = check(program)
     return new Analysis(entry, own([...program.diagnostics, ...checked.diagnostics]), checked.info)
   }
   // With syntax errors, such as while typing `obj.`, only syntax errors are
   // reported, but types are still collected for completion where possible.
   let info: CheckInfo | undefined
   try {
-    info = check(program, options).info
+    info = check(program).info
   } catch {
     info = undefined
   }
