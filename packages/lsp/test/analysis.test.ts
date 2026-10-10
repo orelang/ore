@@ -118,3 +118,10 @@ test("completion lists functions of built-in namespaces", () => {
   expect(items.map((c) => c.label)).toEqual(["log", "write", "error"])
   expect(items[0]!.detail).toBe("log(...values: (numeric | bool | string)[]): void")
 })
+
+test("completion for maps", () => {
+  const text = `export function main() {\n  const m = new Map<string, int>()\n  m.size\n}\n`
+  const items = analyze("main.ore", text).completions(pos(text, "m.size", "m.", true))
+  expect(items.map((c) => c.label)).toEqual(["size", "get", "set", "has", "delete", "clear", "keys", "values"])
+  expect(items[1]!.detail).toBe("(key: string) => i64 | null")
+})

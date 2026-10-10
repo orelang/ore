@@ -165,6 +165,20 @@ function members(type: Type, inside: string | undefined): Completion[] {
         { label: "length", kind: "field", detail: "i64" },
         { label: "slice", kind: "method", detail: "(start?: int, end?: int) => string" },
       ]
+    case "map": {
+      const k = typeToString(type.key)
+      const v = typeToString(type.value)
+      return [
+        { label: "size", kind: "field", detail: "i64" },
+        { label: "get", kind: "method", detail: `(key: ${k}) => ${v} | null` },
+        { label: "set", kind: "method", detail: `(key: ${k}, value: ${v}) => ${typeToString(type)}` },
+        { label: "has", kind: "method", detail: `(key: ${k}) => bool` },
+        { label: "delete", kind: "method", detail: `(key: ${k}) => bool` },
+        { label: "clear", kind: "method", detail: "() => void" },
+        { label: "keys", kind: "method", detail: `() => ${k}[]` },
+        { label: "values", kind: "method", detail: `() => ${v}[]` },
+      ]
+    }
     default:
       return []
   }
