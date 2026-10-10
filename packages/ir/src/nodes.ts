@@ -147,7 +147,10 @@ export interface IncDec {
   prefix: boolean
 }
 
-/** Arithmetic and bitwise operations; both operands have the result type. */
+/**
+ * Arithmetic and bitwise operations. Both operands have the result type,
+ * except the right operand of `<<` / `>>`, which may be any integer type.
+ */
 export interface Arith {
   k: "arith"
   type: IntType | FloatType
