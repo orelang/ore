@@ -208,16 +208,28 @@ Native code is declared in package.json, also by dependencies:
 { "ore": { "link": ["sqlite3"], "sources": ["native/glue.c"] } }
 ```
 
-## Editor support: Zed
+## Editor support
 
-In Zed, run `zed: install dev extension` and select `editors/zed` (requires Rust
-installed with rustup). The extension highlights `.ore` files and starts
-`ore lsp` from `PATH`, which provides diagnostics, hover, go to definition and
-member completion. Another binary can be set in Zed settings:
+Both extensions run `ore lsp` from `PATH`, which provides diagnostics, hover,
+go to definition, member completion, find references and rename.
+
+**Zed.** Run `zed: install dev extension` and select `editors/zed` (requires
+Rust installed with rustup). Another binary can be set in Zed settings:
 
 ```json
 { "lsp": { "ore": { "binary": { "path": "/path/to/ore", "arguments": ["lsp"] } } } }
 ```
+
+**VS Code.** Build the extension and install it:
+
+```sh
+cd editors/vscode
+npm install
+npm run package                      # ore-0.1.0.vsix
+code --install-extension ore-0.1.0.vsix
+```
+
+Another binary can be set with the `ore.path` setting.
 
 ## Status
 
@@ -247,8 +259,6 @@ member completion. Another binary can be set in Zed settings:
 - No numeric literal types (`1 | 2`), static members or class inheritance;
   case mapping of strings covers ASCII only.
 - A generic function or class that is never used is parsed but not checked.
-- The language server has no rename or find references yet; only Zed has an
-  extension.
 
 ## Development
 
@@ -270,6 +280,7 @@ bench/run.sh                     # time the benchmarks in bench/ (release builds
 | `packages/cli` | The `ore` command, including `test` and `fmt` |
 | `packages/lsp` | Language server |
 | `editors/zed` | Zed extension |
+| `editors/vscode` | VS Code extension |
 | `runtime/` | C runtime; Boehm GC in `runtime/third_party/bdwgc` |
 | `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`) |
 | `tests/run` | Programs with expected output; directories are multi-module programs |

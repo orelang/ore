@@ -150,8 +150,8 @@ work.**
   `node_modules`, `package-lock.json`); standard modules as `ore:*`; FFI.
 - `ore test` (`*.test.ore`, `test("name", t => ...)`).
 - `ore fmt` (initially Prettier / dprint with the TS parser on `.ore`).
-- LSP: rename, references, semantic tokens.
-- VS Code extension (TextMate grammar reused from TS + LSP client).
+- Done: LSP find references and rename. Next: semantic tokens.
+- Done: VS Code extension (the TypeScript grammar of VS Code + an LSP client).
 
 ### Phase 7: Concurrency (4–6 weeks)
 - Done: M:1 scheduler with stackful tasks (assembly context switch on arm64
