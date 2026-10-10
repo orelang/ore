@@ -96,6 +96,11 @@ static inline i64 ore_rt_check_index(i64 i, i64 len) {
   return i;
 }
 
+/** Pointer to element `i`, bounds-checked. */
+static inline void *ore_rt_array_at(ore_array *a, i64 i, i64 elem_size) {
+  return (u8 *)a->data + elem_size * ore_rt_check_index(i, a->len);
+}
+
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 

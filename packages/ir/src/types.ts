@@ -37,8 +37,18 @@ export interface FuncType {
   readonly result: Type
 }
 
+/** `T[]`: a reference to a growable array. */
+export interface ArrayType {
+  readonly kind: "array"
+  readonly elem: Type
+}
+
 export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType
-export type Type = PrimitiveType | FuncType
+export type Type = PrimitiveType | FuncType | ArrayType
+
+export function arrayOf(elem: Type): ArrayType {
+  return { kind: "array", elem }
+}
 
 const int = (name: IntName, bits: IntType["bits"], signed: boolean): IntType => ({ kind: "int", name, bits, signed })
 
@@ -66,6 +76,7 @@ export function isNumeric(t: Type): t is IntType | FloatType {
 
 export function sameType(a: Type, b: Type): boolean {
   if (a === b) return true
+  if (a.kind === "array" && b.kind === "array") return sameType(a.elem, b.elem)
   if (a.kind !== "func" || b.kind !== "func") return false
   return a.params.length === b.params.length
     && a.params.every((p, i) => sameType(p, b.params[i]!))
@@ -79,6 +90,8 @@ export function typeToString(t: Type): string {
       return t.name
     case "func":
       return `(${t.params.map(typeToString).join(", ")}) => ${typeToString(t.result)}`
+    case "array":
+      return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
     default:
       return t.kind
   }

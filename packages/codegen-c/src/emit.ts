@@ -1,5 +1,5 @@
-import type * as ir from "@ore/ir"
-import type { FloatType, IntType, Type } from "@ore/ir"
+import * as ir from "@ore/ir"
+import { types, type FloatType, type IntType, type Type } from "@ore/ir"
 
 export interface EmitOptions {
   /**
@@ -61,9 +61,32 @@ export function cType(type: Type): string {
     case "void":
     case "never":
       return "void"
+    case "array":
+      return "ore_array *"
     case "func":
       throw new Error("function types are not supported by the C backend yet")
   }
+}
+
+let tempCounter = 0
+
+/** A fresh C identifier for a temporary; never clashes with locals, which end in `_<id>`. */
+function temp(): string {
+  return `t${tempCounter++}_`
+}
+
+/**
+ * An expression already emitted as C, used to reuse `emitExpr` logic on
+ * temporaries. Exists only inside the C backend.
+ */
+interface Raw {
+  k: "raw"
+  type: Type
+  code: string
+}
+
+function raw(code: string, type: Type): ir.Expr {
+  return { k: "raw", type, code } satisfies Raw as unknown as ir.Expr
 }
 
 /** Locals are suffixed with their id: unique per function and never a C keyword. */
@@ -143,6 +166,7 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
 const cCompare: Record<ir.CompareOp, string> = { "===": "==", "!==": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=" }
 
 function emitExpr(expr: ir.Expr): string {
+  if ((expr as unknown as Raw).k === "raw") return (expr as unknown as Raw).code
   switch (expr.k) {
     case "int":
       return intLiteral(expr.type, expr.value)
@@ -155,10 +179,15 @@ function emitExpr(expr: ir.Expr): string {
     case "local":
       return localName(expr.local)
     case "assign":
-      return `(${localName(expr.target)} = ${emitExpr(expr.value)})`
+      return emitAssign(expr)
     case "incdec": {
-      const name = localName(expr.target)
-      return expr.prefix ? `(${expr.op}${name})` : `(${name}${expr.op})`
+      if (expr.target.k === "local") {
+        const name = localName(expr.target.local)
+        return expr.prefix ? `(${expr.op}${name})` : `(${name}${expr.op})`
+      }
+      const p = temp()
+      const place = elementPointer(expr.target, expr.type, p)
+      return `({ ${place} ${expr.prefix ? `${expr.op}(*${p})` : `(*${p})${expr.op}`}; })`
     }
     case "arith":
       return emitArith(expr)
@@ -190,14 +219,36 @@ function emitExpr(expr: ir.Expr): string {
       if (expr.parts.length === 1) return toString(expr.parts[0]!)
       return `ore_rt_str_concat(${expr.parts.length}, (ore_string[]){${expr.parts.map(toString).join(", ")}})`
     case "index":
-      return `ore_rt_str_at(${emitExpr(expr.target)}, (i64)${emitExpr(expr.index)})`
+      if (expr.target.type.kind === "string") return `ore_rt_str_at(${emitExpr(expr.target)}, (i64)${emitExpr(expr.index)})`
+      return `(*(${cType(expr.type)} *)ore_rt_array_at(${emitExpr(expr.target)}, (i64)${emitExpr(expr.index)}, sizeof(${cType(expr.type)})))`
     case "len":
-      return `(${emitExpr(expr.value)}).len`
+      return expr.value.type.kind === "string" ? `(${emitExpr(expr.value)}).len` : `(${emitExpr(expr.value)})->len`
     case "slice": {
       const start = expr.start ? `(i64)${emitExpr(expr.start)}` : "0"
       const end = expr.end ? `(i64)${emitExpr(expr.end)}` : "ORE_SLICE_END"
-      return `ore_rt_str_slice(${emitExpr(expr.value)}, ${start}, ${end})`
+      if (expr.type.kind === "string") return `ore_rt_str_slice(${emitExpr(expr.value)}, ${start}, ${end})`
+      const elem = cType((expr.type as ir.ArrayType).elem)
+      return `ore_rt_array_slice(${emitExpr(expr.value)}, sizeof(${elem}), ${start}, ${end})`
     }
+    case "array": {
+      const elem = cType(expr.type.elem)
+      if (expr.elems.length === 0) return `ore_rt_array_new(sizeof(${elem}), 0)`
+      const a = temp()
+      const d = temp()
+      const stores = expr.elems.map((e, i) => `${d}[${i}] = ${emitExpr(e)};`).join(" ")
+      return `({ ore_array *${a} = ore_rt_array_new(sizeof(${elem}), ${expr.elems.length}); ${elem} *${d} = (${elem} *)${a}->data; ${stores} ${a}; })`
+    }
+    case "push": {
+      // Evaluate the array and all values before appending, as JavaScript does.
+      const elem = cType((expr.array.type as ir.ArrayType).elem)
+      const a = temp()
+      const values = expr.values.map((v) => [temp(), emitExpr(v)] as const)
+      const decls = values.map(([t, v]) => `${elem} ${t} = ${v};`).join(" ")
+      const pushes = values.map(([t]) => `*(${elem} *)ore_rt_array_push(${a}, sizeof(${elem})) = ${t};`).join(" ")
+      return `({ ore_array *${a} = ${emitExpr(expr.array)}; ${decls} ${pushes} ${a}->len; })`
+    }
+    case "pop":
+      return `(*(${cType(expr.type)} *)ore_rt_array_pop(${emitExpr(expr.array)}, sizeof(${cType(expr.type)})))`
   }
 }
 
@@ -217,6 +268,36 @@ function toString(expr: ir.Expr): string {
     default:
       throw new Error(`cannot format ${t.kind}`)
   }
+}
+
+/**
+ * Declares temporaries for an element's array and index, then a pointer `p`
+ * to the element. Returns C declarations to put in a statement expression.
+ */
+function elementPointer(target: Extract<ir.LValue, { k: "element" }>, type: Type, p: string, before = ""): string {
+  const a = temp()
+  const i = temp()
+  const t = cType(type)
+  return `ore_array *${a} = ${emitExpr(target.array)}; i64 ${i} = (i64)${emitExpr(target.index)}; ${before}${t} *${p} = ore_rt_array_at(${a}, ${i}, sizeof(${t}));`
+}
+
+function emitAssign(expr: ir.Assign): string {
+  const target = expr.target
+  if (target.k === "local") return `(${localName(target.local)} = ${emitExpr(expr.value)})`
+  // The array, index and value are evaluated before the element pointer is
+  // taken, since evaluating the value may grow the array.
+  const t = cType(expr.type)
+  const v = temp()
+  const p = temp()
+  const place = elementPointer(target, expr.type, p, `${t} ${v} = ${emitExpr(expr.value)}; `)
+  if (!expr.op) return `({ ${place} *${p} = ${v}; })`
+  const current = raw(`(*${p})`, expr.type)
+  const right = raw(v, expr.value.type)
+  const combined: ir.Expr =
+    expr.type.kind === "string"
+      ? { k: "concat", type: types.string, parts: [current, right] }
+      : { k: "arith", type: expr.type as ir.IntType | ir.FloatType, op: expr.op, left: current, right }
+  return `({ ${place} *${p} = ${emitExpr(combined)}; })`
 }
 
 function emitArith(expr: ir.Arith): string {

@@ -1,4 +1,4 @@
-import type { BoolType, FloatType, FuncType, IntType, StringType, Type } from "./types"
+import type { ArrayType, BoolType, FloatType, FuncType, IntType, StringType, Type } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -122,6 +122,9 @@ export type Expr =
   | Index
   | Len
   | Slice
+  | ArrayLit
+  | Push
+  | Pop
 
 export interface IntLit {
   k: "int"
@@ -153,17 +156,29 @@ export interface LocalRef {
   local: Local
 }
 
+/** A place that can be assigned to. */
+export type LValue =
+  | { k: "local"; local: Local }
+  /** A bounds-checked array element. */
+  | { k: "element"; array: Expr; index: Expr }
+
+/**
+ * Assignment. With `op` it is a compound assignment `target op= value`, where
+ * `value` is already converted as the right operand of `op` and the target is
+ * evaluated once. Compound assignments to locals are expanded by the checker.
+ */
 export interface Assign {
   k: "assign"
   type: Type
-  target: Local
+  target: LValue
+  op?: ArithOp
   value: Expr
 }
 
 export interface IncDec {
   k: "incdec"
   type: IntType | FloatType
-  target: Local
+  target: LValue
   op: "++" | "--"
   prefix: boolean
 }
@@ -247,7 +262,7 @@ export interface Concat {
   parts: Expr[]
 }
 
-/** Bounds-checked element read: a byte of a string. The index has any integer type. */
+/** Bounds-checked element read: an array element or a byte of a string. The index has any integer type. */
 export interface Index {
   k: "index"
   type: Type
@@ -255,18 +270,39 @@ export interface Index {
   index: Expr
 }
 
-/** Length of a string in bytes. */
+/** Length of an array, or of a string in bytes. */
 export interface Len {
   k: "len"
   type: IntType
   value: Expr
 }
 
-/** JavaScript `slice` on a string: a substring of byte offsets. */
+/** JavaScript `slice`: a substring of byte offsets, or a copy of a range of an array. */
 export interface Slice {
   k: "slice"
   type: Type
   value: Expr
   start?: Expr
   end?: Expr
+}
+
+export interface ArrayLit {
+  k: "array"
+  type: ArrayType
+  elems: Expr[]
+}
+
+/** `array.push(...values)`; evaluates to the new length. */
+export interface Push {
+  k: "push"
+  type: IntType
+  array: Expr
+  values: Expr[]
+}
+
+/** `array.pop()`; panics on an empty array. */
+export interface Pop {
+  k: "pop"
+  type: Type
+  array: Expr
 }

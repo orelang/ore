@@ -1,5 +1,5 @@
 import * as ir from "@ore/ir"
-import { intRange, isNumeric, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
+import { arrayOf, intRange, isNumeric, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
 import { diagnosticAt, type Diagnostic, type Source } from "@ore/syntax"
 import ts from "typescript"
 import { builtinScope } from "./builtins"
@@ -234,6 +234,15 @@ class Checker {
       case ts.SyntaxKind.UnknownKeyword:
         return this.error(node, "'unknown' is not supported yet."), undefined
     }
+    if (ts.isArrayTypeNode(node)) {
+      const elem = this.resolveValueType(node.elementType, scope)
+      return elem && arrayOf(elem)
+    }
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "Array" && !scope.lookupType("Array")) {
+      if (node.typeArguments?.length !== 1) return this.error(node, "'Array' expects exactly 1 type argument."), undefined
+      const elem = this.resolveValueType(node.typeArguments[0]!, scope)
+      return elem && arrayOf(elem)
+    }
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
       if (node.typeArguments) return this.error(node, "Generic types are not supported yet."), undefined
       const symbol = scope.lookupType(node.typeName.text)
@@ -360,7 +369,7 @@ class Checker {
       if (isConst && !decl.initializer) this.error(decl.name, "A 'const' declaration must be initialized.")
       if (!decl.type && !decl.initializer) this.error(decl.name, `Variable '${name}' needs a type annotation or an initializer.`)
 
-      const value = decl.initializer ? this.checkExpr(decl.initializer, scope) : undefined
+      const value = decl.initializer ? this.checkExpr(decl.initializer, scope, declared) : undefined
       let symbol: ValueSymbol
       let init: ir.Expr
       if (isConst && !declared && value && (value.k === "untyped-int" || value.k === "untyped-float")) {
@@ -434,7 +443,7 @@ class Checker {
       if (result.kind !== "void") this.error(stmt, `A return value of type '${typeToString(result)}' is required.`)
       return { k: "return" }
     }
-    const value = this.checkExpr(stmt.expression, scope)
+    const value = this.checkExpr(stmt.expression, scope, result)
     if (result.kind === "void") {
       this.error(stmt.expression, "A function without a return type annotation cannot return a value.")
       return { k: "return" }
@@ -449,15 +458,20 @@ class Checker {
   // ---------------------------------------------------------------------------
   // Expressions
 
-  private checkExpr(node: ts.Expression, scope: Scope): Operand {
-    const result = this.checkExprInner(node, scope)
+  /**
+   * Checks an expression. `expected` is the type required by the context; it
+   * only guides literals whose type cannot be inferred alone, like `[]`.
+   */
+  private checkExpr(node: ts.Expression, scope: Scope, expected?: Type): Operand {
+    const result = this.checkExprInner(node, scope, expected)
     if (result.k === "typed") this.info.types.set(node, typeOf(result.expr))
     else if (result.k !== "error") this.info.types.set(node, this.defaultType(result))
     return result
   }
 
-  private checkExprInner(node: ts.Expression, scope: Scope): Operand {
-    if (ts.isParenthesizedExpression(node)) return this.checkExpr(node.expression, scope)
+  private checkExprInner(node: ts.Expression, scope: Scope, expected: Type | undefined): Operand {
+    if (ts.isParenthesizedExpression(node)) return this.checkExpr(node.expression, scope, expected)
+    if (ts.isArrayLiteralExpression(node)) return this.checkArrayLiteral(node, scope, expected)
     // node.text is normalized ("5.0" becomes "5"); the source spelling decides int vs float.
     if (ts.isNumericLiteral(node)) return numericLiteral(node.getText(this.source.ast))
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -584,50 +598,65 @@ class Checker {
       return this.fail(node.operatorToken, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    if (ordered ? !(isNumeric(type) || type.kind === "string") : !(isNumeric(type) || type.kind === "bool" || type.kind === "string")) {
+    const equatable = isNumeric(type) || type.kind === "bool" || type.kind === "string" || type.kind === "array"
+    if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(node.operatorToken, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
     return typed({ k: "compare", type: types.bool, op, left: l, right: r })
   }
 
   private checkAssign(node: ts.BinaryExpression, op: ir.ArithOp | undefined, scope: Scope): Operand {
-    const local = this.assignTarget(node.left, scope)
-    const value = this.checkExpr(node.right, scope)
-    if (!local) return errorOperand
-    let expr: ir.Expr
-    if (op) {
-      const current: Operand = typed({ k: "local", type: local.type, local })
-      const combined = this.arith(op, current, value, node)
+    const target = this.assignTarget(node.left, scope)
+    const value = this.checkExpr(node.right, scope, op ? undefined : target?.type)
+    if (!target) return errorOperand
+    const { lvalue, type } = target
+    if (!op) return typed({ k: "assign", type, target: lvalue, value: this.coerce(value, type, node.right) })
+
+    if (lvalue.k === "local") {
+      // Reading a local has no side effects: expand `x op= v` to `x = x op v`.
+      const combined = this.arith(op, typed({ k: "local", type, local: lvalue.local }), value, node)
       if (combined.k !== "typed") return errorOperand
-      expr = combined.expr
-    } else {
-      expr = this.coerce(value, local.type, node.right)
+      return typed({ k: "assign", type, target: lvalue, value: combined.expr })
     }
-    return typed({ k: "assign", type: local.type, target: local, value: expr })
+    // Type-check `element op v` with a placeholder for the element, which must be evaluated once.
+    const placeholder: ir.Expr = { k: "local", type, local: { id: -1, name: "element", type, mutable: true } }
+    const combined = this.arith(op, typed(placeholder), value, node)
+    if (combined.k !== "typed") return errorOperand
+    const right = combined.expr.k === "arith" ? combined.expr.right : combined.expr.k === "concat" ? combined.expr.parts[1]! : undefined
+    if (!right) return errorOperand
+    return typed({ k: "assign", type, target: lvalue, op, value: right })
   }
 
-  private checkIncDec(target: ts.Expression, operator: ts.SyntaxKind, prefix: boolean, scope: Scope): Operand {
-    const local = this.assignTarget(target, scope)
-    if (!local) return errorOperand
+  private checkIncDec(node: ts.Expression, operator: ts.SyntaxKind, prefix: boolean, scope: Scope): Operand {
+    const target = this.assignTarget(node, scope)
+    if (!target) return errorOperand
     const op = operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"
-    if (!isNumeric(local.type)) return this.fail(target, `Operator '${op}' cannot be applied to type '${typeToString(local.type)}'.`)
-    return typed({ k: "incdec", type: local.type, target: local, op, prefix })
+    const type = target.type
+    if (!isNumeric(type)) return this.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
+    return typed({ k: "incdec", type, target: target.lvalue, op, prefix })
   }
 
-  private assignTarget(node: ts.Expression, scope: Scope): ir.Local | undefined {
+  private assignTarget(node: ts.Expression, scope: Scope): { lvalue: ir.LValue; type: Type } | undefined {
     if (ts.isParenthesizedExpression(node)) return this.assignTarget(node.expression, scope)
     if (ts.isElementAccessExpression(node)) {
       const target = this.checkExpr(node.expression, scope)
-      if (target.k === "typed" && target.expr.type.kind === "string") return this.error(node, "Strings are immutable."), undefined
+      if (target.k !== "typed") return undefined
+      const array = target.expr
+      if (array.type.kind === "string") return this.error(node, "Strings are immutable."), undefined
+      if (array.type.kind !== "array") return this.error(node.expression, `Type '${typeToString(array.type)}' cannot be indexed.`), undefined
+      const index = this.checkIndex(node.argumentExpression, scope)
+      if (!index) return undefined
+      this.info.types.set(node, array.type.elem)
+      return { lvalue: { k: "element", array, index }, type: array.type.elem }
     }
-    if (!ts.isIdentifier(node)) return this.error(node, "Only variables can be assigned to yet."), undefined
+    if (!ts.isIdentifier(node)) return this.error(node, "Only variables and array elements can be assigned to."), undefined
     const symbol = scope.lookupValue(node.text)
     if (!symbol) return this.error(node, `Cannot find name '${node.text}'.`), undefined
     this.info.definitions.set(node, symbol.decl)
     if (symbol.k !== "local") return this.error(node, `Cannot assign to '${node.text}' because it is not a variable.`), undefined
     if (!symbol.local.mutable) return this.error(node, `Cannot assign to '${node.text}' because it is a constant.`), undefined
     this.info.types.set(node, symbol.local.type)
-    return symbol.local
+    return { lvalue: { k: "local", local: symbol.local }, type: symbol.local.type }
   }
 
   private checkPrefixUnary(node: ts.PrefixUnaryExpression, scope: Scope): Operand {
@@ -715,12 +744,34 @@ class Checker {
         if (args.length !== func.params.length) {
           return this.fail(node, `Function '${func.sourceName}' expects ${func.params.length} argument(s), got ${args.length}.`)
         }
-        const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope), func.type.params[i]!, arg))
+        const values = args.map((arg, i) => this.coerce(this.checkExpr(arg, scope, func.type.params[i]), func.type.params[i]!, arg))
         return typed({ k: "call", type: func.type.result, func, args: values })
       }
       default:
         return this.fail(callee, `'${callee.text}' is not a function.`)
     }
+  }
+
+  private checkArrayLiteral(node: ts.ArrayLiteralExpression, scope: Scope, expected: Type | undefined): Operand {
+    for (const e of node.elements) {
+      if (ts.isSpreadElement(e)) return this.fail(e, "Spread elements are not supported yet.")
+      if (ts.isOmittedExpression(e)) return this.fail(node, "Array holes are not supported.")
+    }
+    if (expected?.kind === "array") {
+      const elems = node.elements.map((e) => this.coerce(this.checkExpr(e, scope, expected.elem), expected.elem, e))
+      return typed({ k: "array", type: expected, elems })
+    }
+    const values = node.elements.map((e) => this.checkExpr(e, scope))
+    if (values.some((v) => v.k === "error")) return errorOperand
+    // The element type is the type of the first typed element, else the default type of the constants.
+    const first = values.find((v) => v.k === "typed")
+    let elem: Type
+    if (first?.k === "typed") elem = first.expr.type
+    else if (values.length > 0) elem = values.some((v) => v.k === "untyped-float") ? types.f64 : types.i64
+    else return this.fail(node, "Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'.")
+    if (elem.kind === "void" || elem.kind === "never") return this.fail(node, `An array cannot contain values of type '${elem.kind}'.`)
+    const elems = values.map((v, i) => this.coerce(v, elem, node.elements[i]!))
+    return typed({ k: "array", type: arrayOf(elem), elems })
   }
 
   private checkTemplate(node: ts.TemplateExpression, scope: Scope): Operand {
@@ -754,7 +805,7 @@ class Checker {
     if (target.k === "error") return target
     const value = this.toDefault(target, node.expression)
     const name = node.name.text
-    if (name === "length" && value.type.kind === "string") return typed({ k: "len", type: types.i64, value })
+    if (name === "length" && (value.type.kind === "string" || value.type.kind === "array")) return typed({ k: "len", type: types.i64, value })
     return this.fail(node.name, `Property '${name}' does not exist on type '${typeToString(value.type)}'.`)
   }
 
@@ -766,6 +817,7 @@ class Checker {
     const index = this.checkIndex(node.argumentExpression, scope)
     if (!index) return errorOperand
     if (value.type.kind === "string") return typed({ k: "index", type: types.u8, target: value, index })
+    if (value.type.kind === "array") return typed({ k: "index", type: value.type.elem, target: value, index })
     return this.fail(node.expression, `Type '${typeToString(value.type)}' cannot be indexed.`)
   }
 
@@ -788,7 +840,19 @@ class Checker {
     const args = node.arguments
     const type = value.type
 
-    if (name === "slice" && type.kind === "string") {
+    if (type.kind === "array" && name === "push") {
+      const values: ir.Expr[] = []
+      for (const arg of args) {
+        if (ts.isSpreadElement(arg)) return this.fail(arg, "Spread arguments are not supported yet.")
+        values.push(this.coerce(this.checkExpr(arg, scope, type.elem), type.elem, arg))
+      }
+      return typed({ k: "push", type: types.i64, array: value, values })
+    }
+    if (type.kind === "array" && name === "pop") {
+      if (args.length > 0) return this.fail(node, `'pop' expects no arguments, got ${args.length}.`)
+      return typed({ k: "pop", type: type.elem, array: value })
+    }
+    if (name === "slice" && (type.kind === "string" || type.kind === "array")) {
       if (args.length > 2) return this.fail(node, `'slice' expects at most 2 arguments, got ${args.length}.`)
       const offsets = args.map((a) => this.checkIndex(a, scope, true))
       if (offsets.some((o) => !o)) return errorOperand
@@ -955,6 +1019,8 @@ function zeroValue(type: Type): ir.Expr {
       return { k: "bool", type, value: false }
     case "string":
       return { k: "string", type, value: "" }
+    case "array":
+      return { k: "array", type, elems: [] }
     default:
       return poison(type)
   }
