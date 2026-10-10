@@ -2,6 +2,7 @@
 import { check } from "@ore/checker"
 import { build, ToolError } from "@ore/driver"
 import { serve } from "@ore/lsp"
+import { fmtCommand } from "./fmt"
 import { findPackageRoot, loadProgram, readPackageJson } from "@ore/project"
 import { formatDiagnostic, type Diagnostic } from "@ore/syntax"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
@@ -21,6 +22,7 @@ Usage:
       --emit-c <path>            Also write the generated C
   ore check [file.ore]           Report errors without building
   ore test [paths...]            Run the tests in *.test.ore files (default: all below .)
+  ore fmt [--check] [paths...]   Format .ore files in place, or list unformatted ones
   ore init [directory]           Create a project: package.json and src/main.ore
   ore lsp                        Start the language server on stdio
 
@@ -42,6 +44,8 @@ async function main(argv: string[]): Promise<number> {
       return init(rest)
     case "test":
       return testCommand(rest)
+    case "fmt":
+      return fmtCommand(rest)
     case "lsp":
       serve(createConnection(process.stdin, process.stdout), pkg.version)
       return new Promise(() => {})
@@ -183,7 +187,7 @@ function init(args: string[]): number {
   const manifest = { name, version: "0.1.0", private: true, main: "src/main.ore" }
   writeFileSync(join(dir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`)
   if (!existsSync(join(dir, "src/main.ore"))) {
-    writeFileSync(join(dir, "src/main.ore"), `export function main() {\n  console.log("hello, ${name}")\n}\n`)
+    writeFileSync(join(dir, "src/main.ore"), `export function main() {\n    console.log("hello, ${name}")\n}\n`)
   }
   console.log(`Created ${name} in ${dir}. Run it with 'ore run'.`)
   return 0
