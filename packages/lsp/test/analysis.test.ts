@@ -111,3 +111,10 @@ test("hover on classes, methods and properties", () => {
   expect(analysis.hover(pos(classes, "console.log", "c.r", true))?.contents).toBe("```ore\n(property) Circle.r: f64\n```")
   expect(analysis.hover(pos(classes, "const s: Shape", "Shape"))?.contents).toBe("```ore\ninterface Shape {\n  area(): f64\n}\n```")
 })
+
+test("completion lists functions of built-in namespaces", () => {
+  const text = `export function main() {\n  console.\n}\n`
+  const items = analyze("main.ore", text).completions(pos(text, "  console.", "console.", true))
+  expect(items.map((c) => c.label)).toEqual(["log", "write", "error"])
+  expect(items[0]!.detail).toBe("log(...values: (numeric | bool | string)[]): void")
+})

@@ -79,8 +79,16 @@ export class Analysis {
       if (node.pos <= offset && offset <= node.end) ts.forEachChild(node, visit)
     }
     visit(this.source.ast)
-    const type = access && this.info.types.get(access.expression)
-    return type ? members(type, enclosingClass(access!)) : []
+    if (!access) return []
+    // A built-in namespace such as `console` lists its functions.
+    const target = ts.isIdentifier(access.expression) ? this.info.definitions.get(access.expression) : undefined
+    if (target && ts.isModuleDeclaration(target) && target.body && ts.isModuleBlock(target.body)) {
+      return target.body.statements.flatMap((s): Completion[] =>
+        ts.isFunctionDeclaration(s) && s.name ? [{ label: s.name.text, kind: "method", detail: signatureText(s) }] : [],
+      )
+    }
+    const type = this.info.types.get(access.expression)
+    return type ? members(type, enclosingClass(access)) : []
   }
 
   definition(position: Position): Location | undefined {
