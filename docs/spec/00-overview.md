@@ -415,10 +415,16 @@ task.spawn(() => results.send(work()))
 console.log(results.receive())
 ```
 
-- `task.spawn(fn)` starts a task. Tasks run on one OS thread and switch when
-  one waits on a channel, sleeps (`task.sleep(ms)`) or calls `task.yield()`;
-  there is no preemption. The program ends when `main` returns, as in Go.
-  When every task waits, the program panics with a deadlock.
+- `task.spawn(fn)` starts a task. Tasks run in parallel on several OS
+  threads, one per CPU by default (set with the `ORE_THREADS` environment
+  variable). A thread switches tasks when one waits on a channel, sleeps
+  (`task.sleep(ms)`) or calls `task.yield()`; there is no preemption, so a
+  task computing without waiting keeps its thread. The program ends when
+  `main` returns, as in Go. When every task waits, the program panics with a
+  deadlock.
+- Tasks share memory. As in Go, unsynchronized access to the same variable
+  from several tasks, with at least one write, is a data race and its result
+  is undefined; communicate through channels or use `ore:sync`.
 - `Chan<T>` is a channel: `new Chan<T>()` hands values over directly (send
   waits for a receiver), `new Chan<T>(n)` buffers `n` values. `send(v)`
   waits for room and panics on a closed channel; `receive()` waits for a
@@ -432,8 +438,13 @@ console.log(results.receive())
   `otherwise`, it runs instead of waiting when no case is ready.
 - Each task has a fixed stack (256 KiB; 8 MiB for `main`) with a guard page:
   overflowing it crashes the program.
-- File operations block all tasks. `async`, `await` and `Promise` are
+- A file operation blocks only its OS thread: the scheduler starts another
+  thread for the other tasks meanwhile. `async`, `await` and `Promise` are
   rejected.
+
+The standard module `ore:sync` provides `Mutex` (`lock`, `unlock`, and
+`acquire()` for `using guard = mutex.acquire()`) and `WaitGroup` (`add`,
+`done`, `wait`), both built on channels.
 
 ## 6. Removed TypeScript features
 

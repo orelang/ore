@@ -122,8 +122,9 @@ function copy(from: string, to: string): Error | null {
 **Built-ins in namespaces.** `console.log`, `process.args`, `Math.sqrt`,
 `Number.parseInt`, `fs.readFile`, `Date.now`. No bare globals.
 
-**Concurrency, like Go.** Green threads, channels and select, without
-`async` coloring:
+**Concurrency, like Go.** Green threads running in parallel on all CPUs,
+channels and select, without `async` coloring; `ore:sync` adds `Mutex` and
+`WaitGroup`:
 
 ```ts
 const results = new Chan<int>()
@@ -217,15 +218,17 @@ member completion. Another binary can be set in Zed settings:
 | 4. Unions, narrowing, errors, generics, Map | done |
 | 5. Closures, array methods, `using` | done |
 | 6. Modules, packages, standard library, C interop, `ore test`, `ore fmt` | done |
-| 7. Concurrency: tasks, `Chan<T>`, `select` on green threads (one OS thread) | done |
-| 7.5. Multi-threaded scheduler, non-blocking I/O | in progress |
+| 7. Concurrency: tasks, `Chan<T>`, `select` on green threads | done |
+| 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Precise GC, escape analysis, LLVM backend | planned |
 | 9. Self-hosting | planned |
 
 ### Known limitations
 
-- Tasks share one OS thread: they are concurrent but not parallel, and file
-  operations block every task (being addressed in 7.5).
+- Tasks are not preempted: a task that computes without waiting keeps its OS
+  thread. Data races are not detected.
+- There is no network API yet, so no netpoller; a file operation occupies a
+  whole OS thread while it runs.
 - A task has a fixed stack (256 KiB, 8 MiB for `main`); deep recursion in a
   task can overflow it.
 - No default or rest parameters, no generic methods, no numeric literal types
@@ -254,6 +257,6 @@ ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
 | `packages/lsp` | Language server |
 | `editors/zed` | Zed extension |
 | `runtime/` | C runtime; Boehm GC in `runtime/third_party/bdwgc` |
-| `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`) |
+| `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`) |
 | `tests/run` | Programs with expected output; directories are multi-module programs |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`) |

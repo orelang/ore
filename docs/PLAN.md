@@ -158,9 +158,14 @@ work.**
   and x86_64, mmap'ed stacks with guard pages), `task.spawn` / `sleep` /
   `yield`, `Chan<T>`, `task.select` with timeouts, deadlock detection. The
   GC scans suspended task stacks through a push-roots hook.
-- Next: M:N scheduler on several OS threads (GC_THREADS, work stealing,
-  locks in channels) and non-blocking I/O via kqueue / epoll, so that file
-  and network operations park only their task.
+- Done (7.5): M:N scheduler on `ORE_THREADS` OS threads (one per CPU by
+  default) with a shared run queue, Boehm GC built with GC_THREADS and
+  parallel marking, a lock per channel, select claimed by compare-and-swap,
+  and a handoff for blocking file operations (another thread takes over the
+  other tasks). `ore:sync` with `Mutex` and `WaitGroup`.
+- Next: a network API with a netpoller (kqueue / epoll) so that sockets park
+  only their task; per-thread run queues with work stealing if the shared
+  queue becomes a bottleneck.
 
 ### Phase 8: Performance and maturity
 - Custom precise GC (needs stack maps, so likely together with LLVM).
