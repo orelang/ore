@@ -1,6 +1,8 @@
 import { check, type CheckInfo } from "@ore/checker"
 import { typeToString, type Type } from "@ore/ir"
-import { parse, type Diagnostic, type Source } from "@ore/syntax"
+import { loadProgram } from "@ore/project"
+import { type Diagnostic, type Source } from "@ore/syntax"
+import { resolve } from "node:path"
 import ts from "typescript"
 
 export interface Position {
@@ -97,7 +99,8 @@ export class Analysis {
     if (!decl) return undefined
     const file = decl.getSourceFile()
     const name = (decl as ts.NamedDeclaration).name ?? decl
-    const target = { path: file.fileName, text: file.fileName === this.source.path ? undefined : file.text }
+    // Built-in declarations are not a file on disk; their text goes with the location.
+    const target = { path: file.fileName, text: file.fileName === builtinPath ? file.text : undefined }
     const start = name.getStart(file)
     const a = file.getLineAndCharacterOfPosition(start)
     const b = file.getLineAndCharacterOfPosition(name.getEnd())
@@ -127,21 +130,27 @@ export class Analysis {
   }
 }
 
+/**
+ * Analyzes a document with the modules it imports, read from the disk. Only
+ * the document's own diagnostics are reported; it need not have `main`.
+ */
 export function analyze(path: string, text: string): Analysis {
-  const parsed = parse(path, text)
-  if (parsed.diagnostics.length === 0) {
-    const checked = check(parsed.source)
-    return new Analysis(parsed.source, checked.diagnostics, checked.info)
+  const program = loadProgram(path, { overrides: new Map([[resolve(path), text]]), absolutePaths: true })
+  const entry = program.entry
+  const own = (ds: Diagnostic[]) => ds.filter((d) => d.source === entry)
+  if (!program.syntaxErrors) {
+    const checked = check(program, { entry: false })
+    return new Analysis(entry, own([...program.diagnostics, ...checked.diagnostics]), checked.info)
   }
   // With syntax errors, such as while typing `obj.`, only syntax errors are
   // reported, but types are still collected for completion where possible.
   let info: CheckInfo | undefined
   try {
-    info = check(parsed.source).info
+    info = check(program, { entry: false }).info
   } catch {
     info = undefined
   }
-  return new Analysis(parsed.source, parsed.diagnostics, info)
+  return new Analysis(entry, own(program.diagnostics), info)
 }
 
 function members(type: Type, inside: string | undefined): Completion[] {
@@ -228,6 +237,8 @@ function interfaceText(decl: ts.InterfaceDeclaration): string {
   const members = decl.members.map((m) => `  ${m.getText(file).replace(/[;,]$/, "")}`)
   return `interface ${decl.name.text} {\n${members.join("\n")}\n}`
 }
+
+const builtinPath = "std/builtin.d.ore"
 
 function code(text: string): string {
   return `\`\`\`ore\n${text}\n\`\`\``

@@ -90,7 +90,7 @@ function uriToPath(uri: string): string {
 
 /** Files without a path on disk (the embedded std) are materialized into the cache. */
 function locationUri(location: Location, current: string): string {
-  if (location.text === undefined) return current
+  if (location.text === undefined) return location.path === uriToPath(current) ? current : pathToFileURL(location.path).href
   const cache = process.env.ORE_CACHE ?? join(homedir(), ".cache", "ore")
   const path = join(cache, "lsp", location.path)
   mkdirSync(dirname(path), { recursive: true })

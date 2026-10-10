@@ -19,6 +19,8 @@ export interface Program {
 export interface LoadOptions {
   /** Texts of files that differ from the disk, such as documents open in an editor. */
   overrides?: Map<string, string>
+  /** Name modules by absolute paths instead of paths relative to the working directory. */
+  absolutePaths?: boolean
 }
 
 /** Parses an entry file and every module it imports, directly or not. */
@@ -49,13 +51,13 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
         diagnostics.push({ source, start, length: specifier.getEnd() - start, severity: "error", message: `Cannot find module '${specifier.text}'.` })
         continue
       }
-      resolved.set(specifier.text, visit(resolve(target), displayPath(target)))
+      resolved.set(specifier.text, visit(resolve(target), options.absolutePaths ? resolve(target) : displayPath(target)))
     }
     order.push(source)
     return source
   }
 
-  const entry = visit(resolve(entryPath), entryPath)
+  const entry = visit(resolve(entryPath), options.absolutePaths ? resolve(entryPath) : entryPath)
   return { modules: order, entry, imports, diagnostics, syntaxErrors }
 }
 

@@ -46,7 +46,7 @@ test("hover shows function signatures, including built-ins", () => {
 test("go to definition", () => {
   const analysis = analyze("main.ore", text)
   expect(analysis.definition(at("let total", "add"))).toEqual({
-    path: "main.ore",
+    path: require("node:path").resolve("main.ore"),
     text: undefined,
     range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
   })
@@ -124,4 +124,18 @@ test("completion for maps", () => {
   const items = analyze("main.ore", text).completions(pos(text, "m.size", "m.", true))
   expect(items.map((c) => c.label)).toEqual(["size", "get", "set", "has", "delete", "clear", "keys", "values"])
   expect(items[1]!.detail).toBe("(key: string) => i64 | null")
+})
+
+test("analysis follows imports from the disk and reports only the document's errors", () => {
+  const { mkdtempSync, writeFileSync } = require("node:fs") as typeof import("node:fs")
+  const { join } = require("node:path") as typeof import("node:path")
+  const dir = mkdtempSync(join(require("node:os").tmpdir(), "ore-lsp-"))
+  writeFileSync(join(dir, "lib.ore"), "export function twice(x: int): int {\n  return x * 2\n}\nconst broken: int = \"no\"\n")
+  const text = 'import { twice } from "./lib"\n\nconst x: string = twice(1)\n'
+  const analysis = analyze(join(dir, "main.ore"), text)
+  expect(analysis.diagnostics.map((d) => d.message)).toEqual(["Type 'i64' is not assignable to type 'string'."])
+  const def = analysis.definition(pos(text, "const x", "twice"))
+  expect(def?.path).toBe(join(dir, "lib.ore"))
+  expect(def?.text).toBeUndefined()
+  expect(analysis.hover(pos(text, "const x", "twice"))?.contents).toBe("```ore\nfunction twice(x: int): int\n```")
 })
