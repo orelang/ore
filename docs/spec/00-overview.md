@@ -10,18 +10,27 @@ described here is either unsupported or follows TypeScript syntax rules.
   restricts it and assigns native semantics.
 - A file is a module. Imports and exports use ES module syntax; see §8.
 
-## 2. Program entry
+## 2. Programs
 
 ```ts
-export function main() {
-  console.log("hello")
-}
+const name = process.args[0] ?? "world"
+console.log(`hello, ${name}`)
 ```
 
-- A program has exactly one `main` function exported from the entry file.
-- The top level of a file may contain only declarations: `function`, `class`,
-  `interface`, `type`, `const`, `import`, `export`, `declare`.
-  Top-level statements with side effects are rejected.
+- A program is the top-level code of its modules, as in a script: when it
+  starts, each module's top-level statements run in order, every module after
+  the modules it imports and the entry file last. The program ends when the
+  entry file's code ends, or with `process.exit()`. `return` is not allowed
+  at the top level. `main` is an ordinary name.
+- Function, class, interface and type declarations are hoisted: they can be
+  used anywhere in their module, before or after the declaration.
+- A top-level `const` made of literals and other such constants (`const
+  size = 64 * 1024`) is a compile-time constant, known before any code runs.
+- Other top-level `let` and `const` declarations are module variables. Used
+  by functions of the module (or exported), they are global variables, zero
+  until their declaration runs; tasks share them, so concurrent access needs
+  channels or `ore:sync`, as in Go. Variables used only by the top-level code
+  itself are ordinary locals of it.
 
 ## 3. Types
 
@@ -420,7 +429,7 @@ console.log(results.receive())
   variable). A thread switches tasks when one waits on a channel, sleeps
   (`task.sleep(ms)`) or calls `task.yield()`; there is no preemption, so a
   task computing without waiting keeps its thread. The program ends when
-  `main` returns, as in Go. When every task waits, the program panics with a
+  the entry file's top-level code ends, as when `main` returns in Go. When every task waits, the program panics with a
   deadlock.
 - Tasks share memory. As in Go, unsynchronized access to the same variable
   from several tasks, with at least one write, is a data race and its result
@@ -436,7 +445,7 @@ console.log(results.receive())
   one. Cases are `ch.onReceive((v) => ...)` (`v` is `null` once closed),
   `ch.onSend(value, () => ...)` and `task.after(ms, () => ...)`. With
   `otherwise`, it runs instead of waiting when no case is ready.
-- Each task has a fixed stack (256 KiB; 8 MiB for `main`) with a guard page:
+- Each task has a fixed stack (256 KiB; 8 MiB for the top-level code) with a guard page:
   overflowing it crashes the program.
 - A file operation blocks only its OS thread: the scheduler starts another
   thread for the other tasks meanwhile. `async`, `await` and `Promise` are
@@ -506,8 +515,8 @@ test("adds", () => {
 })
 ```
 
-Its top-level statements, including `const` declarations, form its `main`.
-A test fails when it panics, for example in a failed expectation
+A test file is a program like any other: its top-level `test(...)` calls run
+the tests in order. A test fails when it panics, for example in a failed expectation
 (`toBe`, `notToBe`, `fail`); the other tests still run. `ore test` runs every
 test file below the given paths, skipping `node_modules`, and exits with
 status 1 if any test fails.

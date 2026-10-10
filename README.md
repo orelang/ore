@@ -34,24 +34,22 @@ function parseSize(text: string, line: int): int | Error {
     return n
 }
 
-export function main() {
-    const shapes: Shape[] = [
-        { kind: "circle", r: 1 },
-        { kind: "rect", w: 2, h: 3 },
-    ]
-    const total = shapes.map(area).reduce((sum, a) => sum + a, 0.0)
-    console.log(`total area: ${total.toFixed(2)}`)
+const shapes: Shape[] = [
+    { kind: "circle", r: 1 },
+    { kind: "rect", w: 2, h: 3 },
+]
+const total = shapes.map(area).reduce((sum, a) => sum + a, 0.0)
+console.log(`total area: ${total.toFixed(2)}`)
 
-    const lines = ["12", "-4"]
-    for (let i = 0; i < lines.length; i++) {
-        const size = parseSize(lines[i], i + 1)
-        if (size instanceof Error) {
-            console.error(size.message)
-            continue
-        }
-        const bytes: u8 = u8(size)
-        console.log(bytes * 2)
+const lines = ["12", "-4"]
+for (let i = 0; i < lines.length; i++) {
+    const size = parseSize(lines[i], i + 1)
+    if (size instanceof Error) {
+        console.error(size.message)
+        continue
     }
+    const bytes: u8 = u8(size)
+    console.log(bytes * 2)
 }
 ```
 
@@ -118,6 +116,10 @@ function copy(from: string, to: string): Error | null {
     ...
 }
 ```
+
+**Scripts.** A program is the top-level code of its files, run in import
+order; there is no `main`. Top-level variables that functions use are
+globals.
 
 **Built-ins in namespaces.** `console.log`, `process.args`, `Math.sqrt`,
 `Number.parseInt`, `fs.readFile`, `Date.now`. No bare globals.
@@ -229,7 +231,7 @@ member completion. Another binary can be set in Zed settings:
   thread. Data races are not detected.
 - There is no network API yet, so no netpoller; a file operation occupies a
   whole OS thread while it runs.
-- A task has a fixed stack (256 KiB, 8 MiB for `main`); deep recursion in a
+- A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep recursion in a
   task can overflow it.
 - No default or rest parameters, no generic methods, no numeric literal types
   (`1 | 2`), no `JSON`; case mapping of strings covers ASCII only.

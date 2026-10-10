@@ -47,7 +47,7 @@ long-term goal.
 | Errors | Errors as values via unions: `function read(p: string): string \| IoError`, then `if (r instanceof Error) return r`. No unwinding needed. `process.panic()` for unrecoverable failures. `throw` / `try` rejected for now, possibly added later. |
 | Defer | `using f = open(...)`: TS 5.2 explicit resource management, calls `[Symbol.dispose]`. A direct analogue of Go's `defer` with valid syntax. |
 | Concurrency | Go-style, without function coloring: green threads (`spawn(() => ...)`), `Chan<T>`, `select([...])`. Blocking I/O parks the green thread. `async` / `await` are rejected. |
-| Entry point | `export function main()`. Top level allows only declarations and `const`. |
+| Entry point | The top-level code of the entry file, as in a script; modules run their top-level code on startup, imports first. |
 | FFI | `declare function` with a JSDoc tag `/** @extern("c") */`, plus `cstring` and `ptr<T>` types. Link flags in the manifest. |
 | Removed | `any`, `prototype`, `eval`, `delete`, dynamic keys, `with`, `arguments`, `var`, `==`. `unknown` stays as an explicitly boxed value with a type check. |
 
@@ -172,8 +172,9 @@ work.**
   boxes of captured locals that cannot outlive their function get a slot in
   its stack frame (`packages/codegen-c/src/escape.ts`); benchmarks in
   `bench/`.
-- Next for escape analysis: inlining small functions so that returned
-  objects can stay on the stack, and stack arrays of known size.
+- Done: inlining of small functions (a single `return`) in release builds,
+  so that objects they return can stay on the caller's stack.
+- Next for escape analysis: stack arrays of known size.
 - Custom precise GC (needs stack maps, so likely together with LLVM).
 - LLVM or Cranelift backend.
 - `try` / `catch` if it turns out to be needed.
