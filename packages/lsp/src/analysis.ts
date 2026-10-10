@@ -176,6 +176,16 @@ function members(type: Type, inside: string | undefined): Completion[] {
         { label: "length", kind: "field", detail: "i64" },
         { label: "slice", kind: "method", detail: "(start?: int, end?: int) => string" },
       ]
+    case "chan": {
+      const e = typeToString(type.elem)
+      return [
+        { label: "send", kind: "method", detail: `(value: ${e}) => void` },
+        { label: "receive", kind: "method", detail: `() => ${e} | null` },
+        { label: "close", kind: "method", detail: "() => void" },
+        { label: "onReceive", kind: "method", detail: `(handler: (value: ${e} | null) => void) => SelectCase` },
+        { label: "onSend", kind: "method", detail: `(value: ${e}, handler: () => void) => SelectCase` },
+      ]
+    }
     case "map": {
       const k = typeToString(type.key)
       const v = typeToString(type.value)
