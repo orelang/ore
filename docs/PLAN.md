@@ -123,8 +123,9 @@ Each phase ends when its golden tests pass.
 - Done early so the rest of the language is developed in its own editor.
 
 ### Phase 2: Memory and data (3 weeks)
-- Boehm GC, strings, template literals, slices, `for...of`, `Map`,
-  bounds checks, `panic` with a stack trace.
+- Boehm GC, strings, template literals, arrays, `for...of`, bounds checks,
+  `panic` with a stack trace.
+- `Map` moves to Phase 4: `get` returns `V | undefined`, which needs unions.
 
 ### Phase 3: Objects (3–4 weeks)
 - Classes, methods, constructors, object literals, structural interfaces with
@@ -134,6 +135,7 @@ Each phase ends when its golden tests pass.
 ### Phase 4: Type system (4 weeks)
 - Generic monomorphization, unions, nullables, narrowing, discriminated
   unions with exhaustiveness checks in `switch`.
+- `Map<K, V>` with `get` returning `V | undefined`.
 - Errors as values: `Error` type in std.
 
 **Phases 1–4 yield a genuinely useful language in about 3–4 months of focused
