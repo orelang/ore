@@ -55,7 +55,7 @@ interface FuncContext {
   ctor?: boolean
   /** Checking field initializers, which cannot use `this`. */
   fieldInit?: boolean
-  /** Enclosing loops, innermost last. */
+  /** Enclosing loops and switches, innermost last. */
   loops: LoopContext[]
   nextLoopId: number
   /** Label of a labeled statement whose loop has not been entered yet. */
@@ -84,6 +84,8 @@ interface InterfaceInfo {
 interface LoopContext {
   id: number
   label?: string
+  /** A switch can be exited with `break` but not continued. */
+  isSwitch?: boolean
   /** Shared with the IR loop so a labeled jump can mark it. */
   ir: { labeled: boolean }
 }
@@ -794,13 +796,19 @@ class Checker {
       if (stmt.label) {
         const loop = fn.loops.findLast((l) => l.label === stmt.label!.text)
         if (!loop) this.error(stmt.label, `Cannot find loop label '${stmt.label.text}'.`)
+        else if (word === "continue" && loop.isSwitch) this.error(stmt.label, `Cannot continue '${loop.label}': it labels a switch.`)
         else {
           loop.ir.labeled = true
           out.push({ k: word, target: loop.id })
         }
+      } else if (word === "break") {
+        if (fn.loops.length === 0) this.error(stmt, "'break' must be inside a loop or switch.")
+        out.push({ k: "break" })
       } else {
-        if (fn.loops.length === 0) this.error(stmt, `'${word}' must be inside a loop.`)
-        out.push({ k: word })
+        const loop = fn.loops.findLast((l) => !l.isSwitch)
+        if (!loop) this.error(stmt, "'continue' must be inside a loop.")
+        // Inside a switch, a plain C `continue` still targets the enclosing loop.
+        out.push({ k: "continue" })
       }
     } else if (ts.isReturnStatement(stmt)) {
       out.push(this.checkReturn(stmt, scope))
@@ -811,7 +819,8 @@ class Checker {
     } else if (ts.isThrowStatement(stmt) || ts.isTryStatement(stmt)) {
       this.error(stmt, "Exceptions are not supported in Ore. Return an error value, or call panic() for unrecoverable failures.")
     } else if (ts.isSwitchStatement(stmt)) {
-      this.error(stmt, "'switch' is not supported yet.")
+      const sw = this.checkSwitch(stmt, scope)
+      if (sw) out.push(sw)
     } else if (ts.isForOfStatement(stmt)) {
       const loop = this.checkForOf(stmt, scope)
       if (loop) out.push(loop)
@@ -820,8 +829,8 @@ class Checker {
     } else if (ts.isLabeledStatement(stmt)) {
       const label = stmt.label.text
       const inner = stmt.statement
-      if (!(ts.isWhileStatement(inner) || ts.isDoStatement(inner) || ts.isForStatement(inner) || ts.isForOfStatement(inner))) {
-        this.error(stmt.label, "Labels are only supported on loops.")
+      if (!(ts.isWhileStatement(inner) || ts.isDoStatement(inner) || ts.isForStatement(inner) || ts.isForOfStatement(inner) || ts.isSwitchStatement(inner))) {
+        this.error(stmt.label, "Labels are only supported on loops and switches.")
       } else if (fn.loops.some((l) => l.label === label)) {
         this.error(stmt.label, `Duplicate label '${label}'.`)
       } else {
@@ -933,6 +942,43 @@ class Checker {
     this.info.types.set(decl.name, elem)
     const loop = this.checkLoopBody(stmt.statement, scope)
     return Object.assign(loop.ir, { k: "for-of" as const, id: loop.id, local, iterable, body: loop.body })
+  }
+
+  private checkSwitch(stmt: ts.SwitchStatement, outer: Scope): ir.SwitchStmt | undefined {
+    const operand = this.checkExpr(stmt.expression, outer)
+    if (operand.k === "error") return undefined
+    const value = this.toDefault(operand, stmt.expression)
+    const type = value.type
+    if (!(isNumeric(type) || type.kind === "bool" || type.kind === "string")) {
+      return this.error(stmt.expression, `Cannot switch on a value of type '${typeToString(type)}'.`), undefined
+    }
+    const fn = this.fn!
+    const local = this.newLocal("switch", type, false)
+    const ref: ir.Expr = { k: "local", type, local }
+    const loop: LoopContext = { id: fn.nextLoopId++, label: fn.pendingLabel, isSwitch: true, ir: { labeled: false } }
+    fn.pendingLabel = undefined
+
+    // All clauses share one block scope, as in TypeScript.
+    const scope = new Scope(outer)
+    const clauses: ir.SwitchStmt["clauses"] = []
+    let hasDefault = false
+    for (const clause of stmt.caseBlock.clauses) {
+      let test: ir.Expr | undefined
+      if (ts.isCaseClause(clause)) {
+        const compared = this.compare("===", typed(ref), this.checkExpr(clause.expression, scope), clause.expression, stmt.expression, clause.expression)
+        test = compared.k === "typed" ? compared.expr : poison(types.bool)
+      } else if (hasDefault) {
+        this.error(clause, "A switch can have only one 'default' clause.")
+      } else {
+        hasDefault = true
+      }
+      fn.loops.push(loop)
+      const body: ir.Stmt[] = []
+      for (const s of clause.statements) this.checkStmt(s, scope, body)
+      fn.loops.pop()
+      clauses.push({ test, body })
+    }
+    return Object.assign(loop.ir, { k: "switch" as const, id: loop.id, local, value, clauses })
   }
 
   private checkLoopBody(stmt: ts.Statement, scope: Scope): LoopContext & { body: ir.Stmt } {
@@ -1056,7 +1102,7 @@ class Checker {
     const arith = arithOps.get(op)
     if (arith) return this.arith(arith, this.checkExpr(node.left, scope), this.checkExpr(node.right, scope), node)
     const compare = compareOps.get(op)
-    if (compare) return this.compare(compare, this.checkExpr(node.left, scope), this.checkExpr(node.right, scope), node)
+    if (compare) return this.compare(compare, this.checkExpr(node.left, scope), this.checkExpr(node.right, scope), node.operatorToken, node.left, node.right)
     if (op === K.CommaToken) return this.fail(node.operatorToken, "The comma operator is not supported in Ore.")
     if (op === K.QuestionQuestionToken) return this.fail(node.operatorToken, "'??' is not supported yet.")
     if (op === K.AsteriskAsteriskToken) return this.fail(node.operatorToken, "'**' is not supported yet.")
@@ -1106,23 +1152,23 @@ class Checker {
     return typed({ k: "arith", type, op, left: l, right: r })
   }
 
-  private compare(op: ir.CompareOp, left: Operand, right: Operand, node: ts.BinaryExpression): Operand {
+  private compare(op: ir.CompareOp, left: Operand, right: Operand, opNode: ts.Node, leftNode: ts.Node, rightNode: ts.Node): Operand {
     if (left.k === "error" || right.k === "error") return errorOperand
     if (left.k !== "typed" && right.k !== "typed") {
       const folded = foldBinary(op, left, right)
-      if (typeof folded === "string") return this.fail(node.operatorToken, folded)
+      if (typeof folded === "string") return this.fail(opNode, folded)
       return folded
     }
-    const [l, r] = this.unify(left, right, node.left, node.right)
+    const [l, r] = this.unify(left, right, leftNode, rightNode)
     if (!l || !r) return errorOperand
     const type = typeOf(l)
     if (!sameType(type, typeOf(r))) {
-      return this.fail(node.operatorToken, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
+      return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
     const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
-      return this.fail(node.operatorToken, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
+      return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
     return typed({ k: "compare", type: types.bool, op, left: l, right: r })
   }
@@ -1757,6 +1803,17 @@ function terminates(stmt: ir.Stmt): boolean {
       return stmt.cond === undefined && !breaks(stmt.body, stmt.id, false)
     case "expr":
       return stmt.expr.type.kind === "never"
+    case "switch": {
+      // Without a default, no clause may run. Otherwise execution ends at the
+      // end of the last clause, unless a break exits the switch.
+      const last = stmt.clauses.at(-1)
+      return (
+        stmt.clauses.some((c) => !c.test) &&
+        last !== undefined &&
+        last.body.some(terminates) &&
+        !stmt.clauses.some((c) => c.body.some((s) => breaks(s, stmt.id, false)))
+      )
+    }
     default:
       return false
   }
@@ -1774,6 +1831,8 @@ function breaks(stmt: ir.Stmt, loopId: number, nested: boolean): boolean {
     case "loop":
     case "for-of":
       return breaks(stmt.body, loopId, true)
+    case "switch":
+      return stmt.clauses.some((c) => c.body.some((s) => breaks(s, loopId, true)))
     default:
       return false
   }

@@ -52,7 +52,7 @@ interface StmtBase {
   line?: number
 }
 
-export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | BreakStmt | ContinueStmt | ReturnStmt
+export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | SwitchStmt | BreakStmt | ContinueStmt | ReturnStmt
 
 export interface Block extends StmtBase {
   k: "block"
@@ -107,7 +107,22 @@ export interface ForOfStmt extends StmtBase {
   body: Stmt
 }
 
-/** Exits the innermost loop, or the loop with id `target` for a labeled break. */
+/**
+ * `switch`: `value` is stored in `local`, then the `test` of each clause is
+ * evaluated in order until one is true (a clause without `test` is
+ * `default`, chosen when none matches). Execution starts at that clause and
+ * falls through the following ones until a `break`.
+ */
+export interface SwitchStmt extends StmtBase {
+  k: "switch"
+  id: number
+  labeled: boolean
+  local: Local
+  value: Expr
+  clauses: { test?: Expr; body: Stmt[] }[]
+}
+
+/** Exits the innermost loop or switch, or the one with id `target` for a labeled break. */
 export interface BreakStmt extends StmtBase {
   k: "break"
   target?: number

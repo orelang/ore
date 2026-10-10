@@ -202,6 +202,27 @@ function emitStmt(stmt: ir.Stmt, depth: number, ctx: Context): string {
       const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
       return `{\n${indent(depth + 1)}${head} {\n${body}\n${indent(depth + 1)}}\n${indent(depth)}}${after}`
     }
+    case "switch": {
+      // Find the clause index with the tests in order, then enter a C switch
+      // over the index, whose `case` labels fall through like Ore's.
+      const index = temp()
+      const tests = stmt.clauses.flatMap((c, i) => (c.test ? [`if (${emitExpr(c.test)}) ${index} = ${i};`] : []))
+      const fallback = stmt.clauses.findIndex((c) => !c.test)
+      const select = [...tests, `${index} = ${fallback};`].join(" else ")
+      const pad = indent(depth + 1)
+      const cases = stmt.clauses.flatMap((c, i) => [`${pad}case ${i}: {}`, ...c.body.map((s) => emitLine(s, depth, ctx))])
+      const after = stmt.labeled ? `\n${indent(depth)}break_${stmt.id}:;` : ""
+      return [
+        "{",
+        `${pad}${cType(stmt.local.type)} ${localName(stmt.local)} = ${emitExpr(stmt.value)};`,
+        `${pad}i32 ${index};`,
+        `${pad}${select}`,
+        `${pad}switch (${index}) {`,
+        ...cases,
+        `${pad}}`,
+        `${indent(depth)}}${after}`,
+      ].join("\n")
+    }
     case "break":
       return stmt.target === undefined ? "break;" : `goto break_${stmt.target};`
     case "continue":
