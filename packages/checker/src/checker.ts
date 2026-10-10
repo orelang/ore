@@ -3047,10 +3047,21 @@ class Checker {
       if (member) return this.fail(callee.name, `Field '${name}' is not a method.`)
     }
     if (type.kind === "chan") {
-      const arity: Record<string, number> = { send: 1, receive: 0, close: 0 }
+      const arity: Record<string, number> = { send: 1, receive: 0, close: 0, onReceive: 1, onSend: 2 }
       const count = arity[name]
       if (count === undefined) return this.fail(callee.name, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
       if (args.length !== count) return this.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+      if (name === "onReceive") {
+        const cb = this.callback(args[0]!, scope, [this.unionOf([type.elem, types.null])], types.void, true)
+        if (!cb) return errorOperand
+        return typed({ k: "chan", op: "on-receive", type: types.SelectCase, chanType: type, chan: value, handler: cb.expr, arity: cb.arity })
+      }
+      if (name === "onSend") {
+        const sent = this.coerce(this.checkExpr(args[0]!, scope, type.elem), type.elem, args[0]!)
+        const cb = this.callback(args[1]!, scope, [], types.void, true)
+        if (!cb) return errorOperand
+        return typed({ k: "chan", op: "on-send", type: types.SelectCase, chanType: type, chan: value, value: sent, handler: cb.expr, arity: 0 })
+      }
       const op = name as ir.ChanOp["op"]
       const sent = op === "send" ? this.coerce(this.checkExpr(args[0]!, scope, type.elem), type.elem, args[0]!) : undefined
       const result = op === "receive" ? this.unionOf([type.elem, types.null]) : types.void

@@ -8,6 +8,7 @@
 
 #include "ore.h"
 
+#include <alloca.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,10 +124,16 @@ struct ore_task {
   ore_task *all_next, *all_prev;
   /** When a sleeping task wakes, in milliseconds. */
   i64 wake_at;
-  /** For channel operations: the value being sent or received, and whether it succeeded. */
-  void *slot;
-  bool ok;
+  /** The select the task waits in, if any, so that a timer can time it out. */
+  struct select_state *select;
 };
+
+/** A select in progress: which case fired, or none yet. */
+typedef struct select_state {
+  i64 fired;
+} select_state;
+
+enum { SELECT_WAITING = -1, SELECT_TIMEOUT = -2 };
 
 static ore_task *current;
 static ore_task *main_task;
@@ -267,7 +274,18 @@ static void wake_timers(void) {
   while (timers && timers->wake_at <= now) {
     ore_task *t = timers;
     timers = t->next;
+    // A task waiting in a select times out unless a channel case fired first.
+    if (t->select && t->select->fired == SELECT_WAITING) t->select->fired = SELECT_TIMEOUT;
     enqueue(t);
+  }
+}
+
+static void timers_remove(ore_task *t) {
+  for (ore_task **p = &timers; *p; p = &(*p)->next) {
+    if (*p == t) {
+      *p = t->next;
+      return;
+    }
   }
 }
 
@@ -314,6 +332,9 @@ struct ore_waiter {
   void *slot;
   /** Whether the operation completed with a value (false when the channel closed). */
   bool ok;
+  /** For a select: its state and the index of this case. */
+  select_state *select;
+  i64 index;
   ore_waiter *next;
 };
 
@@ -323,10 +344,42 @@ static void wait_push(ore_waiter **queue, ore_waiter *w) {
   *queue = w;
 }
 
-static ore_waiter *wait_pop(ore_waiter **queue) {
-  ore_waiter *w = *queue;
-  if (w) *queue = w->next;
-  return w;
+static void wait_remove(ore_waiter **queue, ore_waiter *w) {
+  for (; *queue; queue = &(*queue)->next) {
+    if (*queue == w) {
+      *queue = w->next;
+      return;
+    }
+  }
+}
+
+/** Whether a waiter belongs to a select that another case already completed. */
+static bool stale(ore_waiter *w) { return w->select && w->select->fired != SELECT_WAITING; }
+
+/** Takes the first waiter that can still complete, dropping stale ones. */
+static ore_waiter *wait_take(ore_waiter **queue) {
+  for (ore_waiter *w; (w = *queue);) {
+    *queue = w->next;
+    if (stale(w)) continue;
+    if (w->select) {
+      // This case fires; the select stops waiting on its timer.
+      w->select->fired = w->index;
+      timers_remove(w->task);
+    }
+    return w;
+  }
+  return NULL;
+}
+
+static bool has_waiter(ore_waiter *queue) {
+  for (; queue; queue = queue->next) if (!stale(queue)) return true;
+  return false;
+}
+
+/** Completes a waiter's operation and makes its task runnable. */
+static void wake(ore_waiter *w, bool ok) {
+  w->ok = ok;
+  enqueue(w->task);
 }
 
 ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap) {
@@ -340,21 +393,52 @@ ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap) {
 
 static void *slot_at(ore_chan *c, i64 i) { return c->buf + ((c->head + i) % c->cap) * c->elem_size; }
 
-void ore_rt_chan_send(ore_chan *c, const void *value) {
+/** Whether a send would complete now; panics if the channel is closed. */
+static bool can_send(ore_chan *c) {
   if (c->closed) ore_rt_panic_cstr("send on closed channel");
-  ore_waiter *r = wait_pop(&c->receivers);
+  return has_waiter(c->receivers) || c->len < c->cap;
+}
+
+static bool can_recv(ore_chan *c) { return c->len > 0 || has_waiter(c->senders) || c->closed; }
+
+/** Sends without waiting; the caller checked can_send. */
+static void send_now(ore_chan *c, const void *value) {
+  ore_waiter *r = wait_take(&c->receivers);
   if (r) {
-    // A receiver is waiting: hand the value over directly.
     memcpy(r->slot, value, (size_t)c->elem_size);
-    r->ok = true;
-    enqueue(r->task);
-    return;
-  }
-  if (c->len < c->cap) {
+    wake(r, true);
+  } else {
     memcpy(slot_at(c, c->len++), value, (size_t)c->elem_size);
-    return;
   }
-  ore_waiter w = {current, (void *)value, false, NULL};
+}
+
+/** Receives without waiting; the caller checked can_recv. False once closed and empty. */
+static bool recv_now(ore_chan *c, void *out) {
+  if (c->len > 0) {
+    memcpy(out, slot_at(c, 0), (size_t)c->elem_size);
+    c->head = (c->head + 1) % c->cap;
+    c->len--;
+    // A waiting sender's value takes the freed place.
+    ore_waiter *s = wait_take(&c->senders);
+    if (s) {
+      memcpy(slot_at(c, c->len++), s->slot, (size_t)c->elem_size);
+      wake(s, true);
+    }
+    return true;
+  }
+  ore_waiter *s = wait_take(&c->senders);
+  if (s) {
+    memcpy(out, s->slot, (size_t)c->elem_size);
+    wake(s, true);
+    return true;
+  }
+  memset(out, 0, (size_t)c->elem_size);
+  return false;
+}
+
+void ore_rt_chan_send(ore_chan *c, const void *value) {
+  if (can_send(c)) return send_now(c, value);
+  ore_waiter w = {current, (void *)value, false, NULL, 0, NULL};
   wait_push(&c->senders, &w);
   current->state = TASK_BLOCKED;
   park();
@@ -362,31 +446,8 @@ void ore_rt_chan_send(ore_chan *c, const void *value) {
 }
 
 bool ore_rt_chan_recv(ore_chan *c, void *out) {
-  if (c->len > 0) {
-    memcpy(out, slot_at(c, 0), (size_t)c->elem_size);
-    c->head = (c->head + 1) % c->cap;
-    c->len--;
-    // A waiting sender's value takes the freed place.
-    ore_waiter *s = wait_pop(&c->senders);
-    if (s) {
-      memcpy(slot_at(c, c->len++), s->slot, (size_t)c->elem_size);
-      s->ok = true;
-      enqueue(s->task);
-    }
-    return true;
-  }
-  ore_waiter *s = wait_pop(&c->senders);
-  if (s) {
-    memcpy(out, s->slot, (size_t)c->elem_size);
-    s->ok = true;
-    enqueue(s->task);
-    return true;
-  }
-  if (c->closed) {
-    memset(out, 0, (size_t)c->elem_size);
-    return false;
-  }
-  ore_waiter w = {current, out, false, NULL};
+  if (can_recv(c)) return recv_now(c, out);
+  ore_waiter w = {current, out, false, NULL, 0, NULL};
   wait_push(&c->receivers, &w);
   current->state = TASK_BLOCKED;
   park();
@@ -397,6 +458,113 @@ bool ore_rt_chan_recv(ore_chan *c, void *out) {
 void ore_rt_chan_close(ore_chan *c) {
   if (c->closed) ore_rt_panic_cstr("close of closed channel");
   c->closed = true;
-  for (ore_waiter *w; (w = wait_pop(&c->receivers));) enqueue(w->task);
-  for (ore_waiter *w; (w = wait_pop(&c->senders));) enqueue(w->task);
+  for (ore_waiter *w; (w = wait_take(&c->receivers));) {
+    memset(w->slot, 0, (size_t)c->elem_size);
+    wake(w, false);
+  }
+  for (ore_waiter *w; (w = wait_take(&c->senders));) wake(w, false);
 }
+
+// ---------------------------------------------------------------------------
+// Select
+
+enum { CASE_RECV, CASE_SEND, CASE_AFTER };
+
+struct ore_select_case {
+  int kind;
+  ore_chan *chan;
+  i64 ms;
+  /** The value to send, or the received value. */
+  void *buf;
+  /** Whether a receive got a value (false when the channel closed). */
+  bool ok;
+  ore_closure handler;
+  /** Calls the handler of a receive case with the value. */
+  void (*dispatch)(ore_select_case *c);
+};
+
+ore_select_case *ore_rt_case_recv(ore_chan *c, ore_closure handler, void (*dispatch)(ore_select_case *)) {
+  ore_select_case *s = ore_rt_alloc(sizeof(ore_select_case));
+  *s = (ore_select_case){CASE_RECV, c, 0, ore_rt_alloc(c->elem_size), false, handler, dispatch};
+  return s;
+}
+
+ore_select_case *ore_rt_case_send(ore_chan *c, const void *value, ore_closure handler) {
+  ore_select_case *s = ore_rt_alloc(sizeof(ore_select_case));
+  *s = (ore_select_case){CASE_SEND, c, 0, ore_rt_alloc(c->elem_size), false, handler, NULL};
+  memcpy(s->buf, value, (size_t)c->elem_size);
+  return s;
+}
+
+ore_select_case *ore_rt_case_after(i64 ms, ore_closure handler) {
+  ore_select_case *s = ore_rt_alloc(sizeof(ore_select_case));
+  *s = (ore_select_case){CASE_AFTER, NULL, ms, NULL, false, handler, NULL};
+  return s;
+}
+
+static void run_case(ore_select_case *c) {
+  if (c->kind == CASE_RECV) c->dispatch(c);
+  else ((void (*)(void *))c->handler.fn)(c->handler.env);
+}
+
+void ore_rt_select(ore_array *cases, ore_closure otherwise) {
+  i64 n = cases->len;
+  ore_select_case **cs = cases->data;
+  // A case that can proceed now, starting at a random one for fairness.
+  i64 start = n > 0 ? (i64)(ore_rt_random() * (f64)n) : 0;
+  for (i64 k = 0; k < n; k++) {
+    ore_select_case *c = cs[(start + k) % n];
+    if (c->kind == CASE_RECV && can_recv(c->chan)) {
+      c->ok = recv_now(c->chan, c->buf);
+      return run_case(c);
+    }
+    if (c->kind == CASE_SEND && can_send(c->chan)) {
+      send_now(c->chan, c->buf);
+      return run_case(c);
+    }
+    if (c->kind == CASE_AFTER && c->ms <= 0) return run_case(c);
+  }
+  if (otherwise.fn) return ((void (*)(void *))otherwise.fn)(otherwise.env);
+
+  // Wait on every channel and on the earliest timeout at once.
+  select_state state = {SELECT_WAITING};
+  ore_waiter *waiters = n > 0 ? alloca((size_t)n * sizeof(ore_waiter)) : NULL;
+  ore_select_case *timeout = NULL;
+  for (i64 k = 0; k < n; k++) {
+    ore_select_case *c = cs[k];
+    if (c->kind == CASE_AFTER) {
+      if (!timeout || c->ms < timeout->ms) timeout = c;
+      continue;
+    }
+    waiters[k] = (ore_waiter){current, c->buf, false, &state, k, NULL};
+    wait_push(c->kind == CASE_RECV ? &c->chan->receivers : &c->chan->senders, &waiters[k]);
+  }
+  current->select = &state;
+  if (timeout) {
+    ore_task *t = current;
+    t->wake_at = now_ms() + timeout->ms;
+    ore_task **p = &timers;
+    while (*p && (*p)->wake_at <= t->wake_at) p = &(*p)->next;
+    t->next = *p;
+    *p = t;
+  }
+  current->state = TASK_BLOCKED;
+  park();
+  current->select = NULL;
+  for (i64 k = 0; k < n; k++) {
+    ore_select_case *c = cs[k];
+    if (c->kind != CASE_AFTER) wait_remove(c->kind == CASE_RECV ? &c->chan->receivers : &c->chan->senders, &waiters[k]);
+  }
+  if (state.fired == SELECT_TIMEOUT) return run_case(timeout);
+  ore_select_case *c = cs[state.fired];
+  if (c->kind == CASE_SEND && !waiters[state.fired].ok) ore_rt_panic_cstr("send on closed channel");
+  c->ok = waiters[state.fired].ok;
+  run_case(c);
+}
+
+void *ore_rt_case_value(ore_select_case *c, bool *ok) {
+  *ok = c->ok;
+  return c->buf;
+}
+
+ore_closure ore_rt_case_handler(ore_select_case *c) { return c->handler; }

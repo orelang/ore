@@ -313,6 +313,8 @@ export function cType(type: Type): string {
       return "ore_map *"
     case "chan":
       return "ore_chan *"
+    case "select-case":
+      return "ore_select_case *"
     case "func":
       return "ore_closure"
     case "null":
@@ -1022,7 +1024,27 @@ function emitChanOp(expr: ir.ChanOp): string {
       const none = inject(u, u.members.findIndex((m) => m.kind === "null"), "")
       return `({ ${t} v_; ore_rt_chan_recv(${emitExpr(expr.chan!)}, &v_) ? ${recast("v_", expr.chanType.elem, u)} : ${none}; })`
     }
+    case "on-receive":
+      return inOrder([expr.chan!, expr.handler!], ([c, h]) => `ore_rt_case_recv(${c}, ${h}, ${receiveDispatch(expr.chanType.elem, expr.handler!.type as ir.FuncType)})`)
+    case "on-send":
+      return `({ ore_chan *c_ = ${emitExpr(expr.chan!)}; ${t} v_ = ${emitExpr(expr.value!)}; ore_rt_case_send(c_, &v_, ${emitExpr(expr.handler!)}); })`
   }
+}
+
+/** A function calling the handler of a receive case with the value, as its `T | null` parameter. */
+function receiveDispatch(elem: Type, handler: ir.FuncType): string {
+  const param = handler.params[0] as UnionType | undefined
+  const name = `ore_dispatch_${ir.typeKey(param ?? elem).replace(/[^A-Za-z0-9]/g, (c) => `_${c.charCodeAt(0).toString(16)}`)}_${handler.params.length}`
+  if (!helpers.has(name)) {
+    const t = cType(elem)
+    let call = "((void (*)(void *))h.fn)(h.env);"
+    if (param) {
+      const none = inject(param, param.members.findIndex((m) => m.kind === "null"), "")
+      call = `${cType(param)} u = ok ? ${recast(`(*(${t} *)p)`, elem, param)} : ${none}; ((void (*)(void *, ${cType(param)}))h.fn)(h.env, u);`
+    }
+    helpers.set(name, `static void ${name}(ore_select_case *c) { bool ok; void *p = ore_rt_case_value(c, &ok); ore_closure h = ore_rt_case_handler(c); (void)p; ${call} }`)
+  }
+  return name
 }
 
 function emitMapOp(expr: ir.MapOp): string {
@@ -1216,6 +1238,8 @@ const builtins: Record<string, (a: string[], expr: ir.BuiltinCall) => string> = 
   "task.spawn": (a) => `ore_rt_spawn(${a[0]})`,
   "task.sleep": (a) => `ore_rt_sleep(${a[0]})`,
   "task.yield": () => "ore_rt_yield()",
+  "task.after": (a) => `ore_rt_case_after(${a[0]}, ${a[1]})`,
+  "task.select": (a) => `ore_rt_select(${a[0]}, ${a[1] ?? "((ore_closure){0})"})`,
   "process.getenv": (a) => `ore_rt_getenv(${a[0]})`,
 }
 

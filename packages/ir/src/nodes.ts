@@ -636,13 +636,17 @@ export interface StringMethod {
 
 /**
  * An operation of `Chan`: `new Chan(capacity)`, `send(value)`,
- * `receive()` (the value, or null once closed and empty) and `close()`.
+ * `receive()` (the value, or null once closed and empty), `close()`, and the
+ * select cases `onReceive(handler)` and `onSend(value, handler)`.
  */
 export interface ChanOp {
   k: "chan"
-  op: "new" | "send" | "receive" | "close"
+  op: "new" | "send" | "receive" | "close" | "on-receive" | "on-send"
   type: Type
   chanType: ChanType
   chan?: Expr
   value?: Expr
+  /** For select cases: the handler, and how many arguments it takes. */
+  handler?: Expr
+  arity?: number
 }

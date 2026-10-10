@@ -17,6 +17,8 @@ declare type u64 = intrinsic
 declare type f32 = intrinsic
 declare type f64 = intrinsic
 declare type bool = intrinsic
+/** A case of `task.select`, from `ch.onReceive`, `ch.onSend` or `task.after`. */
+declare type SelectCase = intrinsic
 /** An opaque C pointer, for external C functions. */
 declare type ptr = intrinsic
 
@@ -124,6 +126,14 @@ declare namespace task {
     function sleep(ms: int): void
     /** Lets other tasks run before the current one continues. */
     function yield(): void
+    /**
+     * Waits until one of the cases can proceed, then runs its handler; when
+     * several can, one is chosen at random. With `otherwise`, it runs that
+     * instead of waiting if no case can proceed now.
+     */
+    function select(cases: SelectCase[], otherwise?: () => void): void
+    /** A select case that proceeds after `ms` milliseconds. */
+    function after(ms: int, handler: () => void): SelectCase
 }
 
 /** Functions only for the standard library modules ("ore:..."). */

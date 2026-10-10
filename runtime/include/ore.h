@@ -58,42 +58,6 @@ f64 ore_rt_round(f64 x);
 /** A pseudo-random number in [0, 1). */
 f64 ore_rt_random(void);
 
-// Green threads (tasks), scheduled cooperatively on one OS thread.
-
-/** Runs `entry` as the main task and schedules tasks until it returns. */
-void ore_rt_run_main(void (*entry)(void));
-/** Starts a task running a closure without arguments. */
-void ore_rt_spawn(ore_closure body);
-/** Lets other runnable tasks run first. */
-void ore_rt_yield(void);
-/** Suspends the current task for `ms` milliseconds. */
-void ore_rt_sleep(i64 ms);
-/** The current task, for wait queues. */
-void *ore_rt_task_current(void);
-/** Suspends the current task until another wakes it with ore_rt_task_wake. */
-void ore_rt_task_block(void);
-void ore_rt_task_wake(void *task);
-
-// Channels, as in Go: a buffer of `cap` values (none for a rendezvous) and
-// queues of tasks waiting to send or receive.
-
-typedef struct ore_waiter ore_waiter;
-
-typedef struct {
-  i64 elem_size, cap, len, head;
-  u8 *buf;
-  bool closed;
-  ore_waiter *receivers, *senders;
-} ore_chan;
-
-ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap);
-/** Sends the value at `value`, blocking until there is room or a receiver; panics if closed. */
-void ore_rt_chan_send(ore_chan *c, const void *value);
-/** Receives into `out`, blocking until there is a value; false (and zeroes) once closed and empty. */
-bool ore_rt_chan_recv(ore_chan *c, void *out);
-/** Closes a channel: waiting receivers get nothing, waiting senders panic. */
-void ore_rt_chan_close(ore_chan *c);
-
 /** A new heap box holding a copy of the `size` bytes at `p`; used for per-iteration loop variables. */
 void *ore_rt_box_copy(void *p, i64 size);
 
@@ -360,5 +324,57 @@ static inline u64 ore_shift_count(i64 n) {
 
 static inline f64 ore_fmod(f64 a, f64 b) { return __builtin_fmod(a, b); }
 static inline f32 ore_fmodf(f32 a, f32 b) { return __builtin_fmodf(a, b); }
+
+// Green threads (tasks), scheduled cooperatively on one OS thread.
+
+/** Runs `entry` as the main task and schedules tasks until it returns. */
+void ore_rt_run_main(void (*entry)(void));
+/** Starts a task running a closure without arguments. */
+void ore_rt_spawn(ore_closure body);
+/** Lets other runnable tasks run first. */
+void ore_rt_yield(void);
+/** Suspends the current task for `ms` milliseconds. */
+void ore_rt_sleep(i64 ms);
+/** The current task, for wait queues. */
+void *ore_rt_task_current(void);
+/** Suspends the current task until another wakes it with ore_rt_task_wake. */
+void ore_rt_task_block(void);
+void ore_rt_task_wake(void *task);
+
+// Channels, as in Go: a buffer of `cap` values (none for a rendezvous) and
+// queues of tasks waiting to send or receive.
+
+typedef struct ore_waiter ore_waiter;
+
+typedef struct {
+  i64 elem_size, cap, len, head;
+  u8 *buf;
+  bool closed;
+  ore_waiter *receivers, *senders;
+} ore_chan;
+
+ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap);
+/** Sends the value at `value`, blocking until there is room or a receiver; panics if closed. */
+void ore_rt_chan_send(ore_chan *c, const void *value);
+/** Receives into `out`, blocking until there is a value; false (and zeroes) once closed and empty. */
+bool ore_rt_chan_recv(ore_chan *c, void *out);
+/** Closes a channel: waiting receivers get nothing, waiting senders panic. */
+void ore_rt_chan_close(ore_chan *c);
+
+/** A case of a select: a receive, a send, or a timeout, with its handler. */
+typedef struct ore_select_case ore_select_case;
+
+ore_select_case *ore_rt_case_recv(ore_chan *c, ore_closure handler, void (*dispatch)(ore_select_case *));
+ore_select_case *ore_rt_case_send(ore_chan *c, const void *value, ore_closure handler);
+ore_select_case *ore_rt_case_after(i64 ms, ore_closure handler);
+/** The received value of a receive case, and whether there was one, for its dispatch function. */
+void *ore_rt_case_value(ore_select_case *c, bool *ok);
+/** The handler of a case. */
+ore_closure ore_rt_case_handler(ore_select_case *c);
+/**
+ * Runs the handler of one case that can proceed, waiting for one unless
+ * `otherwise` (a closure, or one without code) runs instead.
+ */
+void ore_rt_select(ore_array *cases, ore_closure otherwise);
 
 #endif

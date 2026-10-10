@@ -111,6 +111,11 @@ export interface ChanType {
   readonly elem: Type
 }
 
+/** A case of `task.select`. */
+export interface SelectCaseType {
+  readonly kind: "select-case"
+}
+
 /** An opaque C pointer, for handles passed to and from external C functions. */
 export interface PtrType {
   readonly kind: "ptr"
@@ -139,7 +144,7 @@ export interface MapType {
   readonly value: Type
 }
 
-export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType | LiteralType | PtrType
+export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType | LiteralType | PtrType | SelectCaseType
 export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType | MapType | ChanType
 
 export function findField(t: StructType, name: string): Field | undefined {
@@ -174,6 +179,7 @@ export const types = {
   never: { kind: "never" } as NeverType,
   null: { kind: "null" } as NullType,
   ptr: { kind: "ptr" } as PtrType,
+  SelectCase: { kind: "select-case" } as SelectCaseType,
 } as const
 
 export function isNumeric(t: Type): t is IntType | FloatType {
@@ -235,6 +241,8 @@ export function typeToString(t: Type): string {
       return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
     case "chan":
       return `Chan<${typeToString(t.elem)}>`
+    case "select-case":
+      return "SelectCase"
     default:
       return t.kind
   }

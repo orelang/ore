@@ -1,0 +1,58 @@
+function ticker(out: Chan<int>, every: int, count: int): void {
+    for (let i = 1; i <= count; i++) {
+        task.sleep(every)
+        out.send(i)
+    }
+    out.close()
+}
+
+export function main() {
+    // Nothing is ready: the default runs.
+    const idle = new Chan<int>()
+    task.select([idle.onReceive((v) => console.log("unexpected", v))], () => console.log("nothing ready"))
+
+    // Multiplex two channels until both are closed, with a timeout per wait.
+    const fast = new Chan<int>()
+    const slow = new Chan<string | int>()
+    task.spawn(() => ticker(fast, 5, 3))
+    task.spawn(() => {
+        task.sleep(40)
+        slow.send("slow 1")
+        slow.close()
+    })
+    let fastOpen = true
+    let slowOpen = true
+    let fastSum = 0
+    const events: string[] = []
+    while (fastOpen || slowOpen) {
+        const cases: SelectCase[] = [task.after(100, () => events.push("timeout"))]
+        if (fastOpen) {
+            cases.push(
+                fast.onReceive((v) => {
+                    if (v === null) fastOpen = false
+                    else fastSum += v
+                }),
+            )
+        }
+        if (slowOpen) {
+            cases.push(
+                slow.onReceive((v) => {
+                    if (v === null) slowOpen = false
+                    else events.push(`${v}`)
+                }),
+            )
+        }
+        task.select(cases)
+    }
+    console.log(fastSum, events.join(", "))
+
+    // A send case proceeds when a receiver arrives; a timeout fires when none does.
+    const results = new Chan<int>()
+    task.spawn(() => {
+        task.sleep(10)
+        console.log("received", results.receive())
+    })
+    task.select([results.onSend(42, () => console.log("sent")), task.after(1000, () => console.log("too slow"))])
+    task.select([results.onSend(7, () => console.log("sent again")), task.after(20, () => console.log("timed out"))])
+    task.sleep(5)
+}
