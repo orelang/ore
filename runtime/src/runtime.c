@@ -1,3 +1,6 @@
+// POSIX and GNU declarations of glibc (clock_gettime, mmap flags, ...), hidden by -std=c11.
+#define _GNU_SOURCE
+
 #include "ore.h"
 
 #include <math.h>
@@ -767,6 +770,13 @@ ore_string ore_rt_str_from_f32(f32 v) {
   char buf[64];
   format_float(buf, v, 9, true);
   return str_copy(buf, strlen(buf));
+}
+
+f64 ore_rt_cbrt(f64 x) {
+  if (x == 0 || !isfinite(x)) return cbrt(x);
+  f64 y = cbrt(x);
+  // One Newton step corrects the last bit.
+  return y - (y * y * y - x) / (3 * y * y);
 }
 
 // -----------------------------------------------------------------------------

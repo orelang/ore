@@ -1,6 +1,9 @@
 // TCP on non-blocking sockets. An operation that would block parks its task
 // until the poller sees the socket ready (ore_rt_net_wait), then retries.
 
+// POSIX and GNU declarations of glibc (clock_gettime, mmap flags, ...), hidden by -std=c11.
+#define _GNU_SOURCE
+
 #include "ore.h"
 
 #include <errno.h>

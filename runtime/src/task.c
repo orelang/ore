@@ -19,6 +19,9 @@
 // parks, and a poller thread (kqueue or epoll) makes it runnable when the
 // socket is, so waiting on the network occupies no worker.
 
+// POSIX and GNU declarations of glibc (clock_gettime, mmap flags, ...), hidden by -std=c11.
+#define _GNU_SOURCE
+
 #include "ore.h"
 
 #include <alloca.h>
