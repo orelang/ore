@@ -1,0 +1,16 @@
+// threads: 8
+
+// Tasks that yield and end at once: the worker that requeues a yielding task
+// must not touch it afterwards, as another worker may already run it to its end.
+const done = new Chan<int>(64)
+const count = 5000
+for (let i = 0; i < count; i++) {
+    task.spawn(() => {
+        task.yield()
+        task.yield()
+        done.send(1)
+    })
+}
+let total = 0
+for (let i = 0; i < count; i++) total += done.receive() ?? 0
+console.log(total)

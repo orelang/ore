@@ -15,6 +15,12 @@
 // of the scheduler) that its wakers need, and releases it only after it has
 // left its stack, in the worker's scheduler loop (`park`).
 //
+// Thread-local variables after a switch: a task may resume on another worker,
+// but compilers compute the address of a thread-local variable once per
+// function (on arm64, from a thread pointer register they keep). Code that
+// runs on a task stack after `park` returns reads them only through
+// `fresh_top`, which computes the address again on the current thread.
+//
 // Network I/O: sockets are non-blocking. A task whose socket is not ready
 // parks, and a poller thread (kqueue or epoll) makes it runnable when the
 // socket is, so waiting on the network occupies no worker.
@@ -287,11 +293,18 @@ static void task_free(ore_task *t) {
   GC_free(t);
 }
 
+/** The current OS thread's `ore_rt_top`, never cached across a task switch (see the top of the file). */
+__attribute__((noinline)) static ore_frame **fresh_top(void) {
+  __asm__ volatile("" ::: "memory");
+  return &ore_rt_top;
+}
+
 /**
  * Suspends the current task. Once it has left its stack, the worker calls
  * `then(arg)`: typically releasing the lock that a waker of the task needs.
+ * Never inlined, so callers keep no thread-local addresses from before it.
  */
-static void park(void (*then)(void *), void *arg) {
+__attribute__((noinline)) static void park(void (*then)(void *), void *arg) {
   ore_task *t = current;
   t->top = ore_rt_top;
   after_park = then;
@@ -302,12 +315,12 @@ static void park(void (*then)(void *), void *arg) {
   ore_ctx_switch(&t->sp, scheduler_sp);
   // Resumed, maybe by another worker, which took the switch lock to get here.
   pthread_rwlock_unlock(&switch_lock);
-  ore_rt_top = t->top;
+  *fresh_top() = t->top;
 }
 
 static void unlock_mutex(void *m) { pthread_mutex_unlock(m); }
 
-void ore_task_main(ore_task *t) {
+__attribute__((noinline)) void ore_task_main(ore_task *t) {
   pthread_rwlock_unlock(&switch_lock);
   ((void (*)(void *))t->body.fn)(t->body.env);
   if (t == main_task) {
@@ -446,10 +459,13 @@ static void schedule(void) {
     // The task parked or ended, holding the switch lock.
     pthread_rwlock_unlock(&switch_lock);
     current = NULL;
+    // Decided before `then` runs: once it makes the task runnable, another
+    // worker may run it to its end and free it.
+    bool done = t->state == TASK_DONE;
     void (*then)(void *) = after_park;
     after_park = NULL;
     if (then) then(after_park_arg);
-    if (t->state == TASK_DONE) task_free(t);
+    if (done) task_free(t);
   }
 }
 
