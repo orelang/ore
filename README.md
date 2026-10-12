@@ -253,8 +253,7 @@ Another binary can be set with the `ore.path` setting.
 - Tasks are not preempted: a task that computes without waiting keeps its OS
   thread. Data races are not detected.
 - A file operation occupies a whole OS thread while it runs (the network does
-  not). The netpoller is tested on macOS (kqueue); the Linux (epoll) path is
-  not yet.
+  not).
 - A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
   recursion in a task can overflow it.
 - No numeric literal types (`1 | 2`), static members or class inheritance;
@@ -268,7 +267,11 @@ bun test                         # unit and golden tests
 bun run typecheck
 ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
 bench/run.sh                     # time the benchmarks in bench/ (release builds)
+ci/test-linux.sh                 # the tests in Linux containers (arm64 and amd64), with Docker
+ci/stress.sh                     # run the concurrent programs many times
 ```
+
+The tests run on macOS and Linux, on arm64 and x86-64.
 
 | Path | Contents |
 |---|---|
@@ -287,3 +290,4 @@ bench/run.sh                     # time the benchmarks in bench/ (release builds
 | `tests/run` | Programs with expected output; directories are multi-module programs |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`) |
 | `bench/` | Benchmarks |
+| `ci/` | Linux test environment and stress tests |
