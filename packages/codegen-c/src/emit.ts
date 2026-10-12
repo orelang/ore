@@ -1349,7 +1349,8 @@ function fallibleValue(expr: ir.BuiltinCall, t: string, call: string): string {
   return `({ ${t} v_; ore_string m_; ${call} ? ${ok} : ${fail}; })`
 }
 
-for (const f of ["sqrt", "cbrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot", "floor", "ceil", "trunc"]) {
+builtins["Math.cbrt"] = (a) => `ore_rt_cbrt(${a[0]})`
+for (const f of ["sqrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot", "floor", "ceil", "trunc"]) {
   builtins[`Math.${f}`] = (a) => `${f}(${a.join(", ")})`
 }
 

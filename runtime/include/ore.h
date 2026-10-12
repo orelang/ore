@@ -55,6 +55,8 @@ i64 ore_rt_now(void);
 
 /** Math.round: half up, toward +Infinity, as in JavaScript. */
 f64 ore_rt_round(f64 x);
+/** Cube root, exact for perfect cubes on every libm (glibc's is off by one unit). */
+f64 ore_rt_cbrt(f64 x);
 /** A pseudo-random number in [0, 1). */
 f64 ore_rt_random(void);
 
