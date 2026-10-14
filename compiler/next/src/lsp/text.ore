@@ -1,0 +1,156 @@
+// Positions in documents: LSP counts lines and UTF-16 code units in a line,
+// Ore strings are UTF-8 bytes. Lines end at "\n", "\r\n" or "\r", as in LSP.
+// Also file URIs and paths.
+
+/** A zero-based line and UTF-16 offset in that line, as in LSP. */
+export type Position = { line: int; character: int }
+
+export type Range = { start: Position; end: Position }
+
+const LF = 10
+const CR = 13
+
+/** The number of bytes of the UTF-8 character that starts with byte `b`; 1 for a stray continuation byte. */
+function charLength(b: u8): int {
+    if (b < 0xc0) return 1
+    if (b < 0xe0) return 2
+    if (b < 0xf0) return 3
+    return 4
+}
+
+/** The byte offset after the line break at `i`, or `i` if there is none. */
+function afterBreak(text: string, i: int): int {
+    if (i >= text.length) return i
+    if (text[i] === LF) return i + 1
+    if (text[i] === CR) return i + 1 < text.length && text[i + 1] === LF ? i + 2 : i + 1
+    return i
+}
+
+/** The byte offset where a line starts; the end of the text after the last line. */
+function lineStart(text: string, line: int): int {
+    let i = 0
+    let current = 0
+    while (current < line) {
+        while (i < text.length && text[i] !== LF && text[i] !== CR) i++
+        if (i >= text.length) return text.length
+        i = afterBreak(text, i)
+        current++
+    }
+    return i
+}
+
+/**
+ * The byte offset of a position. A character past the end of its line is the
+ * end of the line, a line past the last one is the end of the text, and a
+ * position inside a character (between the two units of a surrogate pair) is
+ * its start.
+ */
+export function offsetAt(text: string, position: Position): int {
+    if (position.line < 0) return 0
+    let i = lineStart(text, position.line)
+    let units = 0
+    while (i < text.length && text[i] !== LF && text[i] !== CR) {
+        const n = charLength(text[i])
+        const width = n === 4 ? 2 : 1
+        if (units + width > position.character) break
+        units += width
+        i = Math.min(i + n, text.length)
+    }
+    return i
+}
+
+/** The position of a byte offset, clamped to the text. */
+export function positionAt(text: string, offset: int): Position {
+    const target = Math.max(0, Math.min(offset, text.length))
+    let line = 0
+    let start = 0
+    let i = 0
+    while (i < target) {
+        const b = text[i]
+        if (b === LF || b === CR) {
+            const next = afterBreak(text, i)
+            // An offset between "\r" and "\n" belongs to the line they end.
+            if (next > target) break
+            line++
+            start = next
+            i = next
+        } else i++
+    }
+    let character = 0
+    let j = start
+    while (j < target) {
+        const n = charLength(text[j])
+        if (j + n > target) break
+        character += n === 4 ? 2 : 1
+        j += n
+    }
+    return { line, character }
+}
+
+/** The range of a span of bytes. */
+export function rangeOf(text: string, start: int, end: int): Range {
+    return { start: positionAt(text, start), end: positionAt(text, end) }
+}
+
+// ---------------------------------------------------------------------------
+// URIs
+
+const hex = "0123456789ABCDEF"
+
+function hexValue(byte: u8): int {
+    const b = i64(byte)
+    if (b >= 48 && b <= 57) return b - 48
+    if (b >= 65 && b <= 70) return b - 55
+    if (b >= 97 && b <= 102) return b - 87
+    return -1
+}
+
+/** A string of bytes. */
+function fromBytes(bytes: u8[]): string {
+    const p = unsafe.allocBytes(bytes.length)
+    for (let i = 0; i < bytes.length; i++) unsafe.store<u8>(unsafe.add(p, i), bytes[i])
+    return unsafe.makeString(p, bytes.length)
+}
+
+/** Decodes `%XX` escapes, which are UTF-8 bytes. */
+export function percentDecode(s: string): string {
+    if (!s.includes("%")) return s
+    const bytes: u8[] = []
+    let i = 0
+    while (i < s.length) {
+        if (s[i] === 37 && i + 2 < s.length && hexValue(s[i + 1]) >= 0 && hexValue(s[i + 2]) >= 0) {
+            bytes.push(u8(hexValue(s[i + 1]) * 16 + hexValue(s[i + 2])))
+            i += 3
+        } else {
+            bytes.push(s[i])
+            i++
+        }
+    }
+    return fromBytes(bytes)
+}
+
+/** The path of a `file:` URI; other URIs are returned as they are. */
+export function uriToPath(uri: string): string {
+    if (!uri.startsWith("file://")) return uri
+    // file:///a/b, or file://host/a/b for a host other than localhost.
+    let path = uri.slice(7)
+    const slash = path.indexOf("/")
+    if (slash > 0) path = path.slice(slash)
+    return percentDecode(path)
+}
+
+/** Whether a byte is kept as it is in the path of a URI. */
+function plain(b: u8): bool {
+    return (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b === 45 || b === 46 || b === 95 || b === 126 || b === 47
+}
+
+/** The `file:` URI of an absolute path. */
+export function pathToUri(path: string): string {
+    let uri = "file://"
+    for (let i = 0; i < path.length; i++) {
+        const b = i64(path[i])
+        if (plain(path[i])) uri += path.slice(i, i + 1)
+        else uri += `%${hex.slice(b / 16, b / 16 + 1)}${hex.slice(b % 16, b % 16 + 1)}`
+    }
+    return uri
+}
