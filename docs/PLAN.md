@@ -189,7 +189,13 @@ work.**
 - `JSON.parse` / `JSON.stringify`.
 
 ### Phase 9: Self-hosting
-- Rewrite the compiler in Ore, the best stress test of the language.
+- Rewrite the compiler in Ore, the best stress test of the language, in
+  `selfhost/`.
+- Done: the lexer (`selfhost/src/lexer.ore`). `tests/selfhost.test.ts`
+  checks that its tokens equal the TypeScript scanner's on every .ore file of
+  the repository.
+- Next: the parser, checked the same way against the TypeScript parser's
+  tree; then the checker and the C backend.
 
 ## 5. Risks and mitigations
 

@@ -1,0 +1,388 @@
+// The lexer: splits source text into tokens as the TypeScript scanner does,
+// skipping whitespace and comments. Offsets are in bytes of the UTF-8 text.
+
+import { keywords, type Kind } from "./tokens"
+
+export type Token = { kind: Kind; start: int; end: int }
+
+// Bytes of ASCII characters.
+const TAB = 9
+const LF = 10
+const VT = 11
+const FF = 12
+const CR = 13
+const SPACE = 32
+const BANG = 33
+const DQUOTE = 34
+const HASH = 35
+const DOLLAR = 36
+const PERCENT = 37
+const AMP = 38
+const SQUOTE = 39
+const LPAREN = 40
+const RPAREN = 41
+const STAR = 42
+const PLUS = 43
+const COMMA = 44
+const MINUS = 45
+const DOT = 46
+const SLASH = 47
+const ZERO = 48
+const ONE = 49
+const SEVEN = 55
+const NINE = 57
+const COLON = 58
+const SEMI = 59
+const LT = 60
+const EQ = 61
+const GT = 62
+const QUESTION = 63
+const AT = 64
+const UPPER_A = 65
+const UPPER_F = 70
+const UPPER_Z = 90
+const LBRACKET = 91
+const BACKSLASH = 92
+const RBRACKET = 93
+const CARET = 94
+const UNDERSCORE = 95
+const BACKTICK = 96
+const LOWER_A = 97
+const LOWER_B = 98
+const LOWER_E = 101
+const LOWER_F = 102
+const LOWER_N = 110
+const LOWER_O = 111
+const LOWER_X = 120
+const LOWER_Z = 122
+const LBRACE = 123
+const BAR = 124
+const RBRACE = 125
+const TILDE = 126
+
+function isDigit(c: u8): bool {
+    return c >= ZERO && c <= NINE
+}
+
+function isHexDigit(c: u8): bool {
+    return isDigit(c) || (c >= UPPER_A && c <= UPPER_F) || (c >= LOWER_A && c <= LOWER_F)
+}
+
+function isIdentifierStart(c: u8): bool {
+    // Bytes of non-ASCII characters are taken as letters.
+    return (
+        (c >= LOWER_A && c <= LOWER_Z) || (c >= UPPER_A && c <= UPPER_Z) || c === DOLLAR || c === UNDERSCORE || c >= 128
+    )
+}
+
+function isIdentifierPart(c: u8): bool {
+    return isIdentifierStart(c) || isDigit(c)
+}
+
+/** Tokens of a source text, ending with EndOfFileToken. */
+export function tokenize(text: string): Token[] {
+    const lexer = new Lexer(text)
+    const tokens: Token[] = []
+    for (;;) {
+        const token = lexer.next()
+        tokens.push(token)
+        if (token.kind === "EndOfFileToken") return tokens
+    }
+}
+
+export class Lexer {
+    private pos = 0
+    /** For each template literal being read: the `{` opened inside its current substitution. */
+    private templates: int[] = []
+
+    constructor(readonly text: string) {}
+
+    next(): Token {
+        this.skipTrivia()
+        const start = this.pos
+        const kind = this.scan()
+        return { kind, start, end: this.pos }
+    }
+
+    private at(offset: int): u8 {
+        const i = this.pos + offset
+        return i < this.text.length ? this.text[i] : 0
+    }
+
+    private skipTrivia() {
+        // A `#!` line at the start of a file.
+        if (this.pos === 0 && this.at(0) === HASH && this.at(1) === BANG) this.skipLine()
+        while (this.pos < this.text.length) {
+            const c = this.at(0)
+            if (c === SPACE || c === TAB || c === LF || c === CR || c === VT || c === FF) {
+                this.pos++
+            } else if (c === SLASH && this.at(1) === SLASH) {
+                this.skipLine()
+            } else if (c === SLASH && this.at(1) === STAR) {
+                const close = this.text.indexOf("*/", this.pos + 2)
+                this.pos = close < 0 ? this.text.length : close + 2
+            } else if (c === 0xc2 && this.at(1) === 0xa0) {
+                // No-break space.
+                this.pos += 2
+            } else if (c === 0xef && this.at(1) === 0xbb && this.at(2) === 0xbf) {
+                // Byte order mark.
+                this.pos += 3
+            } else {
+                return
+            }
+        }
+    }
+
+    private skipLine() {
+        while (this.pos < this.text.length && this.at(0) !== LF && this.at(0) !== CR) this.pos++
+    }
+
+    /** One of two kinds: the second when the next byte is `c`, which is consumed. */
+    private either(c: u8, without: Kind, with_: Kind): Kind {
+        if (this.at(0) !== c) return without
+        this.pos++
+        return with_
+    }
+
+    private scan(): Kind {
+        if (this.pos >= this.text.length) return "EndOfFileToken"
+        const c = this.at(0)
+        this.pos++
+        if (isIdentifierStart(c)) return this.identifier()
+        if (isDigit(c)) return this.number(c)
+        switch (c) {
+            case DQUOTE:
+            case SQUOTE:
+                return this.string(c)
+            case BACKTICK:
+                return this.template(true)
+            case LBRACE:
+                if (this.templates.length > 0) this.templates[this.templates.length - 1]++
+                return "OpenBraceToken"
+            case RBRACE: {
+                const depth = this.templates.length
+                if (depth > 0 && this.templates[depth - 1] === 0) {
+                    this.templates.pop()
+                    return this.template(false)
+                }
+                if (depth > 0) this.templates[depth - 1]--
+                return "CloseBraceToken"
+            }
+            case LPAREN:
+                return "OpenParenToken"
+            case RPAREN:
+                return "CloseParenToken"
+            case LBRACKET:
+                return "OpenBracketToken"
+            case RBRACKET:
+                return "CloseBracketToken"
+            case SEMI:
+                return "SemicolonToken"
+            case COMMA:
+                return "CommaToken"
+            case COLON:
+                return "ColonToken"
+            case TILDE:
+                return "TildeToken"
+            case AT:
+                return "AtToken"
+            case DOT:
+                if (isDigit(this.at(0))) return this.number(c)
+                if (this.at(0) === DOT && this.at(1) === DOT) {
+                    this.pos += 2
+                    return "DotDotDotToken"
+                }
+                return "DotToken"
+            case HASH:
+                if (isIdentifierStart(this.at(0))) {
+                    this.identifier()
+                    return "PrivateIdentifier"
+                }
+                return "HashToken"
+            case QUESTION:
+                // `?.` but not `?.5`, which is `?` and a number.
+                if (this.at(0) === DOT && !isDigit(this.at(1))) {
+                    this.pos++
+                    return "QuestionDotToken"
+                }
+                if (this.at(0) === QUESTION) {
+                    this.pos++
+                    return this.either(EQ, "QuestionQuestionToken", "QuestionQuestionEqualsToken")
+                }
+                return "QuestionToken"
+            case EQ:
+                if (this.at(0) === GT) {
+                    this.pos++
+                    return "EqualsGreaterThanToken"
+                }
+                if (this.at(0) === EQ) {
+                    this.pos++
+                    return this.either(EQ, "EqualsEqualsToken", "EqualsEqualsEqualsToken")
+                }
+                return "EqualsToken"
+            case BANG:
+                if (this.at(0) === EQ) {
+                    this.pos++
+                    return this.either(EQ, "ExclamationEqualsToken", "ExclamationEqualsEqualsToken")
+                }
+                return "ExclamationToken"
+            case PLUS:
+                if (this.at(0) === PLUS) {
+                    this.pos++
+                    return "PlusPlusToken"
+                }
+                return this.either(EQ, "PlusToken", "PlusEqualsToken")
+            case MINUS:
+                if (this.at(0) === MINUS) {
+                    this.pos++
+                    return "MinusMinusToken"
+                }
+                return this.either(EQ, "MinusToken", "MinusEqualsToken")
+            case STAR:
+                if (this.at(0) === STAR) {
+                    this.pos++
+                    return this.either(EQ, "AsteriskAsteriskToken", "AsteriskAsteriskEqualsToken")
+                }
+                return this.either(EQ, "AsteriskToken", "AsteriskEqualsToken")
+            case SLASH:
+                // Regular expressions are read only where the parser expects them.
+                return this.either(EQ, "SlashToken", "SlashEqualsToken")
+            case PERCENT:
+                return this.either(EQ, "PercentToken", "PercentEqualsToken")
+            case CARET:
+                return this.either(EQ, "CaretToken", "CaretEqualsToken")
+            case AMP:
+                if (this.at(0) === AMP) {
+                    this.pos++
+                    return this.either(EQ, "AmpersandAmpersandToken", "AmpersandAmpersandEqualsToken")
+                }
+                return this.either(EQ, "AmpersandToken", "AmpersandEqualsToken")
+            case BAR:
+                if (this.at(0) === BAR) {
+                    this.pos++
+                    return this.either(EQ, "BarBarToken", "BarBarEqualsToken")
+                }
+                return this.either(EQ, "BarToken", "BarEqualsToken")
+            case LT:
+                if (this.at(0) === LT) {
+                    this.pos++
+                    return this.either(EQ, "LessThanLessThanToken", "LessThanLessThanEqualsToken")
+                }
+                return this.either(EQ, "LessThanToken", "LessThanEqualsToken")
+            case GT:
+                // Always alone: the parser joins `>>` and `>=` where they are operators,
+                // so that `Map<K, Chan<V>>` closes two type argument lists.
+                return "GreaterThanToken"
+        }
+        return "Unknown"
+    }
+
+    private identifier(): Kind {
+        const start = this.pos - 1
+        while (this.pos < this.text.length && isIdentifierPart(this.at(0))) this.pos++
+        return keywords.get(this.text.slice(start, this.pos)) ?? "Identifier"
+    }
+
+    /** A number starting with `first`, already consumed. */
+    private number(first: u8): Kind {
+        if (first === ZERO) {
+            const c = this.at(0)
+            const radix =
+                c === LOWER_X || c === LOWER_X - 32
+                    ? 16
+                    : c === LOWER_O || c === LOWER_O - 32
+                      ? 8
+                      : c === LOWER_B || c === LOWER_B - 32
+                        ? 2
+                        : 0
+            if (radix > 0) {
+                this.pos++
+                this.digits(radix)
+                return this.bigIntSuffix()
+            }
+        }
+        if (first !== DOT) {
+            this.digits(10)
+            if (this.at(0) === LOWER_N) {
+                this.pos++
+                return "BigIntLiteral"
+            }
+            if (this.at(0) === DOT) {
+                this.pos++
+                this.digits(10)
+            }
+        } else {
+            this.digits(10)
+        }
+        const e = this.at(0)
+        if (e === LOWER_E || e === LOWER_E - 32) {
+            const sign = this.at(1)
+            const offset = sign === PLUS || sign === MINUS ? 2 : 1
+            if (isDigit(this.at(offset))) {
+                this.pos += offset
+                this.digits(10)
+            }
+        }
+        return "NumericLiteral"
+    }
+
+    private bigIntSuffix(): Kind {
+        if (this.at(0) !== LOWER_N) return "NumericLiteral"
+        this.pos++
+        return "BigIntLiteral"
+    }
+
+    /** Digits of a radix, with `_` separators between them. */
+    private digits(radix: int) {
+        for (;;) {
+            const c = this.at(0)
+            const ok =
+                radix === 16
+                    ? isHexDigit(c)
+                    : radix === 10
+                      ? isDigit(c)
+                      : radix === 8
+                        ? c >= ZERO && c <= SEVEN
+                        : c === ZERO || c === ONE
+            if (ok || (c === UNDERSCORE && this.pos + 1 < this.text.length)) this.pos++
+            else return
+        }
+    }
+
+    /** A string closed by `quote`; an unterminated one ends at the line end. */
+    private string(quote: u8): Kind {
+        while (this.pos < this.text.length) {
+            const c = this.at(0)
+            if (c === quote) {
+                this.pos++
+                return "StringLiteral"
+            }
+            if (c === LF || c === CR) return "StringLiteral"
+            this.pos += c === BACKSLASH ? 2 : 1
+        }
+        this.pos = this.text.length
+        return "StringLiteral"
+    }
+
+    /**
+     * The rest of a template literal up to its end or its next substitution:
+     * from its start (`head`) or from the `}` closing a substitution.
+     */
+    private template(head: bool): Kind {
+        while (this.pos < this.text.length) {
+            const c = this.at(0)
+            if (c === BACKTICK) {
+                this.pos++
+                return head ? "NoSubstitutionTemplateLiteral" : "TemplateTail"
+            }
+            if (c === DOLLAR && this.at(1) === LBRACE) {
+                this.pos += 2
+                this.templates.push(0)
+                return head ? "TemplateHead" : "TemplateMiddle"
+            }
+            this.pos += c === BACKSLASH ? 2 : 1
+        }
+        this.pos = this.text.length
+        return head ? "NoSubstitutionTemplateLiteral" : "TemplateTail"
+    }
+}
