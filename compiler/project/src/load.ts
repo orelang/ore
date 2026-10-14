@@ -1,6 +1,6 @@
-import { parse, type Diagnostic, type Source } from "@ore/syntax"
-import { readFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { importsText, parse, type Diagnostic, type Source } from "@ore/syntax"
+import { existsSync, readFileSync, statSync } from "node:fs"
+import { dirname, resolve } from "node:path"
 import ts from "typescript"
 import { resolveImport, runtimeModules, stdModules } from "./resolve"
 
@@ -10,6 +10,8 @@ export interface Program {
   entry: Source
   /** For each module, the module each import specifier resolves to. */
   imports: Map<Source, Map<string, Source>>
+  /** For each module, the contents of the files it imports as text (`with { type: "text" }`), by specifier. */
+  texts: Map<Source, Map<string, string>>
   /** Syntax errors and unresolved imports. */
   diagnostics: Diagnostic[]
   /** Whether any module has syntax errors, so that it cannot be checked. */
@@ -27,6 +29,7 @@ export interface LoadOptions {
 export function loadProgram(entryPath: string, options: LoadOptions = {}): Program {
   const byPath = new Map<string, Source>()
   const imports = new Map<Source, Map<string, Source>>()
+  const texts = new Map<Source, Map<string, string>>()
   const diagnostics: Diagnostic[] = []
   const order: Source[] = []
   let syntaxErrors = false
@@ -42,9 +45,23 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
     if (parsed.diagnostics.length > 0) syntaxErrors = true
     const resolved = new Map<string, Source>()
     imports.set(source, resolved)
+    const textsOfModule = new Map<string, string>()
+    texts.set(source, textsOfModule)
     for (const stmt of source.ast.statements) {
       const specifier = moduleSpecifier(stmt)
       if (!specifier) continue
+      // A file imported as text is embedded in the program, not loaded as a module.
+      if (ts.isImportDeclaration(stmt) && importsText(stmt)) {
+        const file = resolve(dirname(path), specifier.text)
+        const contents = options.overrides?.get(file) ?? (existsSync(file) && statSync(file).isFile() ? readFileSync(file, "utf8") : undefined)
+        if (contents === undefined) {
+          const start = specifier.getStart(source.ast)
+          diagnostics.push({ source, start, length: specifier.getEnd() - start, severity: "error", message: `Cannot find file '${specifier.text}'.` })
+        } else {
+          textsOfModule.set(specifier.text, contents)
+        }
+        continue
+      }
       const target = resolveImport(specifier.text, path)
       if (!target) {
         const start = specifier.getStart(source.ast)
@@ -61,7 +78,7 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
   // The runtime comes first, so that its top-level code runs before any other.
   for (const name of runtimeModules) visit(name, name)
   const entry = visit(resolve(entryPath), options.absolutePaths ? resolve(entryPath) : entryPath)
-  return { modules: order, entry, imports, diagnostics, syntaxErrors }
+  return { modules: order, entry, imports, texts, diagnostics, syntaxErrors }
 }
 
 function moduleSpecifier(stmt: ts.Statement): ts.StringLiteral | undefined {

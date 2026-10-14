@@ -27,6 +27,8 @@ export interface ProgramInput {
   entry: Source
   /** For each module, the module each import specifier resolves to. */
   imports: Map<Source, Map<string, Source>>
+  /** For each module, the contents of the files it imports as text, by specifier. */
+  texts?: Map<Source, Map<string, string>>
 }
 
 /** A module being checked. */

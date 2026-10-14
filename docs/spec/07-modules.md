@@ -18,6 +18,14 @@
 - A project is an npm package: package.json `main` is the entry module, and
   dependencies are installed by npm and locked in `package-lock.json`.
 
+## Files as text
+
+`import name from "./file" with { type: "text" }` reads a file, relative to
+the importing module, when the program is compiled, and declares `name` as a
+string constant with its contents. The file is embedded in the program; it is
+not needed at run time. The syntax is TypeScript's import attributes, as Bun
+reads them.
+
 ## External C functions
 
 `declare function name(params): result` at the top level of a module declares

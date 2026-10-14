@@ -2,7 +2,7 @@
 import * as ir from "@ore/ir"
 import { checkAssigned } from "./assigned"
 import { isNumeric, membersOf, sameType, typeKey, types, typeToString, type InterfaceType, type StructType, type Type } from "@ore/ir"
-import type { Source } from "@ore/syntax"
+import { importsText, type Source } from "@ore/syntax"
 import ts from "typescript"
 import type { Operand } from "./operand"
 import { Scope, type Exported, type Generic, type ValueSymbol } from "./symbols"
@@ -269,6 +269,7 @@ export abstract class DeclarationChecker extends CheckerBase {
   }
 
   protected declareImport(stmt: ts.ImportDeclaration, module: ModuleInfo) {
+    if (importsText(stmt)) return this.declareTextImport(stmt, module)
     const target = this.importedModule(stmt.moduleSpecifier, module)
     const clause = stmt.importClause
     if (!target || !clause) return
@@ -296,6 +297,24 @@ export abstract class DeclarationChecker extends CheckerBase {
         if (decl) this.info.definitions.set(element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName : element.name, decl)
       })
     }
+  }
+
+  /**
+   * `import name from "./file" with { type: "text" }`: the file's contents,
+   * read when the program is compiled, as a string constant.
+   */
+  protected declareTextImport(stmt: ts.ImportDeclaration, module: ModuleInfo) {
+    const clause = stmt.importClause
+    const specifier = stmt.moduleSpecifier as ts.StringLiteral
+    if (!clause?.name || clause.namedBindings) {
+      return this.error(stmt, `A text import has one name: 'import text from "${specifier.text}" with { type: "text" }'.`)
+    }
+    // The loader reported a missing file.
+    const contents = this.program.texts?.get(module.source)?.get(specifier.text)
+    if (contents === undefined) return
+    const value: Operand = { k: "typed", expr: { k: "string", type: types.string, value: contents } }
+    const name = clause.name.text
+    if (!module.scope.declareValue(name, { k: "const", value, type: types.string, decl: clause })) this.error(clause.name, `Duplicate declaration '${name}'.`)
   }
 
   /** Reports exports of names that a module does not declare. */
