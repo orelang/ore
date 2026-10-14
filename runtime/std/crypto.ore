@@ -1,0 +1,182 @@
+// The "ore:crypto" module: SHA-256 (FIPS 180-4).
+//
+//   import { sha256, Sha256 } from "ore:crypto"
+//
+//   sha256("abc")                                   // "ba7816bf…"
+//   new Sha256().update("a").update("bc").hex()     // the same digest
+
+/** The SHA-256 digest of the UTF-8 bytes of `data`, as 64 lowercase hex characters. */
+export function sha256(data: string): string {
+    return new Sha256().update(data).hex()
+}
+
+const roundConstants: u32[] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+    0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+    0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+    0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+    0xc67178f2,
+]
+
+const hexDigits = "0123456789abcdef"
+
+// Layout of the scratch memory of a hasher: the eight state words, the
+// partial block waiting for more input, and the message schedule.
+const stateAt = 0
+const blockAt = 32
+const scheduleAt = 96
+const scratchSize = 352
+
+/**
+ * An incremental SHA-256 hasher: the strings passed to `update` are hashed
+ * as one stream of bytes, so `new Sha256().update(a).update(b).hex()` equals
+ * `sha256(a + b)`.
+ */
+export class Sha256 {
+    /**
+     * Scratch memory (see `stateAt`) held as a string because the collector
+     * does not trace a `ptr`; it is never read as text.
+     */
+    private scratch: string
+    /** Bytes in the partial block. */
+    private pending = 0
+    /** Bytes hashed so far, for the length in the padding. */
+    private total = 0
+    private finished = false
+
+    constructor() {
+        this.scratch = unsafe.makeString(unsafe.allocBytes(scratchSize), scratchSize)
+        const state = unsafe.stringData(this.scratch)
+        const initial: u32[] = [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        ]
+        for (let i = 0; i < 8; i++) unsafe.store<u32>(unsafe.add(state, stateAt + 4 * i), initial[i])
+    }
+
+    /** Hashes the bytes of `data` after those already given; returns this hasher. Panics after `hex`. */
+    update(data: string): Sha256 {
+        if (this.finished) process.panic("Sha256.update after hex")
+        this.feed(unsafe.stringData(data), data.length)
+        this.total += data.length
+        return this
+    }
+
+    /** Finishes the hash and returns the digest as 64 lowercase hex characters; later calls return it again. */
+    hex(): string {
+        const base = unsafe.stringData(this.scratch)
+        if (!this.finished) {
+            this.finished = true
+            const bits = u64(this.total) << 3
+            const block = unsafe.add(base, blockAt)
+            unsafe.store<u8>(unsafe.add(block, this.pending), 0x80)
+            this.pending++
+            // The 8-byte length must end a block: if it does not fit after
+            // the 0x80, the padding takes a block of its own.
+            if (this.pending > 56) {
+                unsafe.fill(unsafe.add(block, this.pending), 0, 64 - this.pending)
+                compress(base, block)
+                this.pending = 0
+            }
+            unsafe.fill(unsafe.add(block, this.pending), 0, 56 - this.pending)
+            for (let i = 0; i < 8; i++) unsafe.store<u8>(unsafe.add(block, 56 + i), u8(bits >> (56 - 8 * i)))
+            compress(base, block)
+            this.pending = 0
+        }
+        const out = unsafe.allocBytes(64)
+        for (let i = 0; i < 8; i++) {
+            const word = unsafe.load<u32>(unsafe.add(base, stateAt + 4 * i))
+            for (let j = 0; j < 8; j++) {
+                unsafe.store<u8>(unsafe.add(out, 8 * i + j), hexDigits[i64((word >> (28 - 4 * j)) & 15)])
+            }
+        }
+        return unsafe.makeString(out, 64)
+    }
+
+    private feed(data: ptr, length: int): void {
+        const base = unsafe.stringData(this.scratch)
+        const block = unsafe.add(base, blockAt)
+        let at = 0
+        if (this.pending > 0) {
+            const take = Math.min(64 - this.pending, length)
+            unsafe.copy(unsafe.add(block, this.pending), data, take)
+            this.pending += take
+            at = take
+            if (this.pending < 64) return
+            compress(base, block)
+            this.pending = 0
+        }
+        // Whole blocks are hashed where they are, without a copy.
+        while (length - at >= 64) {
+            compress(base, unsafe.add(data, at))
+            at += 64
+        }
+        if (at < length) {
+            unsafe.copy(block, unsafe.add(data, at), length - at)
+            this.pending = length - at
+        }
+    }
+}
+
+function loadBigEndian(p: ptr): u32 {
+    return (
+        (u32(unsafe.load<u8>(p)) << 24) |
+        (u32(unsafe.load<u8>(unsafe.add(p, 1))) << 16) |
+        (u32(unsafe.load<u8>(unsafe.add(p, 2))) << 8) |
+        u32(unsafe.load<u8>(unsafe.add(p, 3)))
+    )
+}
+
+function rotr(x: u32, n: u32): u32 {
+    return (x >> n) | (x << (32 - n))
+}
+
+/** Hashes the 64 bytes at `block` into the state in the scratch memory at `base`. */
+function compress(base: ptr, block: ptr): void {
+    const w = unsafe.add(base, scheduleAt)
+    for (let i = 0; i < 16; i++) unsafe.store<u32>(unsafe.add(w, 4 * i), loadBigEndian(unsafe.add(block, 4 * i)))
+    for (let i = 16; i < 64; i++) {
+        const w15 = unsafe.load<u32>(unsafe.add(w, 4 * (i - 15)))
+        const w2 = unsafe.load<u32>(unsafe.add(w, 4 * (i - 2)))
+        const s0 = rotr(w15, 7) ^ rotr(w15, 18) ^ (w15 >> 3)
+        const s1 = rotr(w2, 17) ^ rotr(w2, 19) ^ (w2 >> 10)
+        const sum =
+            unsafe.load<u32>(unsafe.add(w, 4 * (i - 16))) + s0 + unsafe.load<u32>(unsafe.add(w, 4 * (i - 7))) + s1
+        unsafe.store<u32>(unsafe.add(w, 4 * i), sum)
+    }
+    const state = unsafe.add(base, stateAt)
+    let a = unsafe.load<u32>(state)
+    let b = unsafe.load<u32>(unsafe.add(state, 4))
+    let c = unsafe.load<u32>(unsafe.add(state, 8))
+    let d = unsafe.load<u32>(unsafe.add(state, 12))
+    let e = unsafe.load<u32>(unsafe.add(state, 16))
+    let f = unsafe.load<u32>(unsafe.add(state, 20))
+    let g = unsafe.load<u32>(unsafe.add(state, 24))
+    let h = unsafe.load<u32>(unsafe.add(state, 28))
+    for (let i = 0; i < 64; i++) {
+        const s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
+        const choose = (e & f) ^ (~e & g)
+        const t1 = h + s1 + choose + roundConstants[i] + unsafe.load<u32>(unsafe.add(w, 4 * i))
+        const s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
+        const majority = (a & b) ^ (a & c) ^ (b & c)
+        const t2 = s0 + majority
+        h = g
+        g = f
+        f = e
+        e = d + t1
+        d = c
+        c = b
+        b = a
+        a = t1 + t2
+    }
+    unsafe.store<u32>(state, unsafe.load<u32>(state) + a)
+    unsafe.store<u32>(unsafe.add(state, 4), unsafe.load<u32>(unsafe.add(state, 4)) + b)
+    unsafe.store<u32>(unsafe.add(state, 8), unsafe.load<u32>(unsafe.add(state, 8)) + c)
+    unsafe.store<u32>(unsafe.add(state, 12), unsafe.load<u32>(unsafe.add(state, 12)) + d)
+    unsafe.store<u32>(unsafe.add(state, 16), unsafe.load<u32>(unsafe.add(state, 16)) + e)
+    unsafe.store<u32>(unsafe.add(state, 20), unsafe.load<u32>(unsafe.add(state, 20)) + f)
+    unsafe.store<u32>(unsafe.add(state, 24), unsafe.load<u32>(unsafe.add(state, 24)) + g)
+    unsafe.store<u32>(unsafe.add(state, 28), unsafe.load<u32>(unsafe.add(state, 28)) + h)
+}

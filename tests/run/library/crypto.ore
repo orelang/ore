@@ -1,0 +1,36 @@
+import { sha256, Sha256 } from "ore:crypto"
+
+// The NIST FIPS 180-4 examples.
+console.log(sha256(""))
+console.log(sha256("abc"))
+console.log(sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+console.log(
+    sha256(
+        "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+    ),
+)
+const million = "a".repeat(1_000_000)
+console.log(sha256(million))
+
+// The bytes of a string are its UTF-8 encoding.
+console.log(sha256("héllo, мир, 世界 🌍"))
+
+// Around the block boundaries: the length must fit after the 0x80 byte.
+for (const n of [55, 56, 63, 64, 65, 119, 120, 128]) console.log(n, sha256("x".repeat(n)))
+
+// The incremental hasher hashes its inputs as one stream.
+const parts = ["header\n", "src/main.ore", "x".repeat(61), "мир", "", "a".repeat(200)]
+const hasher = new Sha256()
+for (const part of parts) hasher.update(part)
+const digest = hasher.hex()
+console.log(digest === sha256(parts.join("")), digest === hasher.hex())
+
+// Feeding one byte at a time crosses every boundary.
+const bytewise = new Sha256()
+for (let i = 0; i < 130; i++) bytewise.update("x")
+console.log(bytewise.hex() === sha256("x".repeat(130)))
+
+// Chunks that are not a multiple of the block size.
+const chunked = new Sha256()
+for (let i = 0; i < million.length; i += 1007) chunked.update(million.substring(i, Math.min(i + 1007, million.length)))
+console.log(chunked.hex() === sha256(million))
