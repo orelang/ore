@@ -468,6 +468,9 @@ export class Parser {
                 break
             case "ExportKeyword":
                 return this.exportStatement()
+            case "AsyncKeyword":
+                if (next.kind === "FunctionKeyword" && !next.newline) return this.declaration(this.modifiers(), start)
+                break
             case "DeclareKeyword":
             case "AbstractKeyword":
                 if (!next.newline && (next.kind.endsWith("Keyword") || next.kind === "Identifier"))
@@ -1209,9 +1212,13 @@ export class Parser {
                 return this.arrayLiteral()
             case "OpenBraceToken":
                 return this.objectLiteral()
+            case "AsyncKeyword":
+                if (this.peek(1).kind !== "FunctionKeyword" || this.peek(1).newline) break
+            // An `async function` expression.
             case "FunctionKeyword": {
+                const modifier = this.at("AsyncKeyword") ? this.tokenNode() : null
                 this.next()
-                const node = new Node("FunctionExpression", start, start)
+                const node = new Node("FunctionExpression", start, start).add(modifier)
                 if (this.at("AsteriskToken")) node.add(this.tokenNode())
                 if (this.isIdentifier(this.kind())) node.add(this.identifier())
                 this.signature(node)
@@ -1307,6 +1314,24 @@ export class Parser {
     /** An arrow function, or null, consuming nothing, when none starts here. */
     private arrowFunction(): Node | null {
         const start = this.token().start
+        const next = this.peek(1)
+        // `async x => ...`, `async (x) => ...`
+        if (
+            this.at("AsyncKeyword") &&
+            !next.newline &&
+            (next.kind === "OpenParenToken" || next.kind === "LessThanToken" || this.isIdentifier(next.kind))
+        ) {
+            return this.speculate(() => {
+                const modifier = this.tokenNode()
+                const arrow = this.arrowFunction()
+                if (arrow === null || arrow.kind !== "ArrowFunction") return null
+                const children = [modifier]
+                for (const child of arrow.children) children.push(child)
+                arrow.children = children
+                arrow.start = start
+                return arrow
+            })
+        }
         const k = this.kind()
         if (this.isIdentifier(k) && this.peek(1).kind === "EqualsGreaterThanToken" && !this.peek(1).newline) {
             const name = this.identifier()
