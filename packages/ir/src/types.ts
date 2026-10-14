@@ -135,6 +135,8 @@ export interface UnionType {
   /** Unique per program; used for names in generated code. */
   readonly id: number
   readonly members: readonly Type[]
+  /** The type alias that first named this union, for messages; not part of its identity. */
+  name?: string
 }
 
 /** `Map<K, V>`: a reference to a hash map that keeps insertion order. */
@@ -234,6 +236,7 @@ export function typeToString(t: Type): string {
     case "interface":
       return t.name
     case "union":
+      if (t.name) return t.name
       return t.members.map((m) => (m.kind === "func" ? `(${typeToString(m)})` : typeToString(m))).join(" | ")
     case "literal":
       return JSON.stringify(t.value)

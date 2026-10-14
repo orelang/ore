@@ -154,3 +154,14 @@ describe("top level", () => {
     expect(program("return").diagnostics.map((d) => d.message)[0]).toContain("'return' is only allowed in a function")
   })
 })
+
+describe("contextual types", () => {
+  test("branches of ?: take an expected literal union", () => {
+    ok('const a: Dir = n > 0 ? "up" : "down"', 'type Dir = "up" | "down"\nconst n = 1')
+    expect(errors('const a: Dir = n > 0 ? "up" : "left"', 'type Dir = "up" | "down"\nconst n = 1')[0]).toContain("'Dir'")
+  })
+
+  test("messages name a union by its alias", () => {
+    expect(errors('const k: Kind = "c"', 'type Kind = "a" | "b"')).toEqual(["Type 'string' is not assignable to type 'Kind'."])
+  })
+})

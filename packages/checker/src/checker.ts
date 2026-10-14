@@ -440,8 +440,8 @@ class Checker {
     if (decl.typeParameters) return this.declareGeneric(decl, scope)
     const type = this.resolveType(decl.type, scope)
     if (!type) return
-    // An anonymous object type is displayed by the first alias that names it.
-    if (type.kind === "struct" && type.name === undefined) type.name = decl.name.text
+    // An anonymous object type or a union is displayed by the first alias that names it.
+    if ((type.kind === "struct" || type.kind === "union") && type.name === undefined) type.name = decl.name.text
     if (!scope.declareType(decl.name.text, { type, decl })) this.error(decl.name, `Duplicate type '${decl.name.text}'.`)
   }
 
@@ -2415,7 +2415,7 @@ class Checker {
     if (ts.isPrefixUnaryExpression(node)) return this.checkPrefixUnary(node, scope)
     if (ts.isPostfixUnaryExpression(node)) return this.checkIncDec(node.operand, node.operator, false, scope)
     if (ts.isCallExpression(node)) return this.checkCall(node, scope)
-    if (ts.isConditionalExpression(node)) return this.checkConditional(node, scope)
+    if (ts.isConditionalExpression(node)) return this.checkConditional(node, scope, expected)
     if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
       return this.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
     }
@@ -2749,11 +2749,20 @@ class Checker {
     return typed({ k: "unary", type, op, operand: operand.expr })
   }
 
-  private checkConditional(node: ts.ConditionalExpression, scope: Scope): Operand {
+  private checkConditional(node: ts.ConditionalExpression, scope: Scope, expected?: Type): Operand {
     const condition = this.condition(node.condition, scope)
     const cond = condition.expr
-    const whenTrue = this.withFacts(condition.whenTrue, () => this.checkExpr(node.whenTrue, scope))
-    const whenFalse = this.withFacts(condition.whenFalse, () => this.checkExpr(node.whenFalse, scope))
+    // Both branches are checked against the expected type, so that `c ? "a" : "b"` can be a literal type.
+    const whenTrue = this.withFacts(condition.whenTrue, () => this.checkExpr(node.whenTrue, scope, expected))
+    const whenFalse = this.withFacts(condition.whenFalse, () => this.checkExpr(node.whenFalse, scope, expected))
+    // Branches that both fit the expected type take it, such as literals of a literal union.
+    if (expected && whenTrue.k !== "error" && whenFalse.k !== "error") {
+      const before = this.diagnostics.length
+      const then = this.coerce(whenTrue, expected, node.whenTrue)
+      const otherwise = this.coerce(whenFalse, expected, node.whenFalse)
+      if (this.diagnostics.length === before) return typed({ k: "cond", type: expected, cond, then, else: otherwise })
+      this.diagnostics.length = before
+    }
     let [then, otherwise] = this.unify(whenTrue, whenFalse, node.whenTrue, node.whenFalse)
     if (!then || !otherwise) return errorOperand
     let type = typeOf(then)
