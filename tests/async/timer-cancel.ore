@@ -1,0 +1,33 @@
+// cancel() before, during and after a timer, and twice.
+
+const never = time.timeout(() => console.log("never"), 5)
+never.cancel()
+never.cancel()
+
+const fired = time.timeout(() => console.log("fired"), 1)
+time.timeout(() => {
+    fired.cancel()
+    console.log("cancel after firing is harmless")
+}, 10)
+
+let count = 0
+const interval = time.interval(() => {
+    count++
+    console.log("interval", count)
+}, 15)
+time.timeout(() => {
+    interval.cancel()
+    console.log("interval cancelled by another timer")
+}, 50)
+
+const immediate = time.immediate(() => console.log("never immediate"))
+immediate.cancel()
+
+// A timer cancelled by one due at the same time, created earlier.
+let second = time.timeout(() => console.log("never second"), 20)
+time.timeout(() => {}, 0)
+const first = time.timeout(() => second.cancel(), 20)
+second.cancel()
+// The canceller is due at the same time and was created first, so it runs first.
+second = time.timeout(() => console.log("never: cancelled by an earlier timer due at the same time"), 20)
+time.timeout(() => console.log("done"), 80)

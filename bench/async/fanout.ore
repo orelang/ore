@@ -1,0 +1,15 @@
+// 10k async calls in flight at once, each awaiting several delays.
+
+async function work(id: int): Promise<int> {
+    let total = id
+    for (let i = 0; i < 5; i++) {
+        await time.delay(1)
+        total += i
+    }
+    return total
+}
+
+const pending: Promise<int>[] = []
+for (let i = 0; i < 10_000; i++) pending.push(work(i))
+const results = await Promise.all(pending)
+console.log(results.reduce((a, b) => a + b, 0))

@@ -1,0 +1,14 @@
+// reference: none, Bun has no channels
+// threads: 4
+
+// Waiting on a channel blocks the event loop, as synchronous I/O does in
+// Node: timers due meanwhile run after it.
+
+const channel = new Chan<int>()
+task.spawn(() => {
+    time.sleep(10)
+    channel.send(7)
+})
+time.timeout(() => console.log("timer due during the receive"), 0)
+task.microtask(() => console.log("microtask queued before the receive"))
+console.log("received", channel.receive())

@@ -1,0 +1,104 @@
+// reference: none, Bun has no tasks
+// threads: 8
+
+// Promises resolved by tasks on other OS threads; async code stays on the
+// single-threaded event loop.
+
+// A promise resolved by a task wakes the event loop.
+const fromTask = new Promise<int>((resolve) => {
+    task.spawn(() => {
+        time.sleep(10)
+        resolve(42)
+    })
+})
+console.log("waiting for a task")
+console.log("from task", await fromTask)
+
+// Many tasks resolve many promises at once.
+const promises: Promise<int>[] = []
+for (let i = 0; i < 1000; i++) {
+    promises.push(new Promise<int>((resolve) => task.spawn(() => resolve(i * 2))))
+}
+const values = await Promise.all(promises)
+console.log(
+    "all from tasks",
+    values.length,
+    values.reduce((a, b) => a + b, 0),
+)
+
+// Tasks racing to resolve one promise: one value wins, its reactions run once.
+let reactions = 0
+const raced = new Promise<int>((resolve) => {
+    for (let t = 0; t < 16; t++) task.spawn(() => resolve(t))
+})
+raced.then(() => reactions++)
+const winner = await raced
+await time.delay(20)
+console.log("raced", winner >= 0 && winner < 16, reactions)
+
+// Async code is single-threaded: between awaits nothing else runs, so these
+// increments need no lock, however many threads there are.
+let counter = 0
+async function increment(times: int) {
+    for (let i = 0; i < times; i++) {
+        const before = counter
+        counter = before + 1
+        await null
+    }
+}
+const workers: Promise<void>[] = []
+for (let w = 0; w < 100; w++) workers.push(increment(1000))
+await Promise.all(workers)
+console.log("counter", counter)
+
+// An async function called by a task runs on the event loop, not beside it.
+let inLoop = 0
+let overlapped = false
+async function exclusive(): Promise<int> {
+    inLoop++
+    if (inLoop > 1) overlapped = true
+    time.sleep(1)
+    inLoop--
+    await null
+    return 1
+}
+const calls: Promise<int>[] = []
+const handed = new Chan<Promise<int>>(64)
+for (let t = 0; t < 32; t++) task.spawn(() => handed.send(exclusive()))
+for (let t = 0; t < 32; t++) calls.push(handed.receive() ?? Promise.resolve(0))
+const ran = await Promise.all(calls)
+console.log("called from tasks", ran.length, "overlapped", overlapped)
+
+// A timer and a task: the loop sleeps until whichever comes first.
+const order: string[] = []
+time.timeout(() => order.push("timer"), 50)
+await new Promise<void>((resolve) =>
+    task.spawn(() => {
+        time.sleep(5)
+        order.push("task")
+        resolve()
+    }),
+)
+order.push("resolved")
+await time.delay(60)
+console.log(order.join(" "))
+
+// Pending promises kept alive only by tasks survive garbage collection.
+const kept: Promise<int>[] = []
+for (let i = 0; i < 200; i++) {
+    kept.push(
+        new Promise<int>((resolve) =>
+            task.spawn(() => {
+                let junk = 0
+                for (let k = 0; k < 200; k++) junk += [k, k].length
+                time.sleep(1)
+                resolve(junk)
+            }),
+        ),
+    )
+}
+const sums = await Promise.all(kept)
+console.log(
+    "kept alive",
+    sums.reduce((a, b) => a + b, 0),
+)

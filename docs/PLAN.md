@@ -200,7 +200,15 @@ work.**
   single-threaded, `task.spawn` is parallel.
 - Done: the test suite `tests/async/`, whose expected outputs come from Bun
   running the same files (`tests/async/bun-shim.ts` maps `time` and `task`
-  to Web APIs).
+  to Web APIs), and benchmarks in `bench/async/` with Bun's times as the
+  target (about 20-60 ns per await, microtask or timer). Tests with tasks,
+  channels and the end of the program have hand-written outputs.
+- Decided by the tests: a promise resolved from a task wakes the event loop;
+  an async function called from a task runs on the event loop; waiting on a
+  channel blocks the loop; the program ends when the loop has nothing left
+  (pending timers keep it, unsettled promises do not, running tasks are
+  stopped); an unsettled top-level await with nothing pending exits with
+  status 13 as in Node, and a deadlock with tasks panics as before.
 - Next: the runtime event loop, then the compiler.
 
 ### Phase 9: Self-hosting

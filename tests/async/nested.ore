@@ -1,0 +1,44 @@
+// Nested promises flatten; deep chains and recursion use no stack.
+
+const nested = Promise.resolve(Promise.resolve(Promise.resolve(1)))
+nested.then((v) => console.log("nested resolve", v))
+
+async function inner(n: int): Promise<int> {
+    await null
+    return n * 2
+}
+async function middle(n: int): Promise<int> {
+    return inner(n + 1)
+}
+async function outer(n: int): Promise<int> {
+    const m = await middle(n)
+    return middle(m)
+}
+outer(1).then((v) => console.log("async returning async", v))
+
+Promise.resolve(1)
+    .then((a) => Promise.resolve(a + 1).then((b) => Promise.resolve(b + 1)))
+    .then((c) => console.log("then returning a chain", c))
+
+Promise.all([Promise.resolve(1), inner(2), Promise.resolve(Promise.resolve(3))]).then((all) =>
+    console.log("all of nested", all.join(",")),
+)
+
+// 100k chained thens, then 10k levels of async recursion.
+let chain = Promise.resolve(0)
+for (let i = 0; i < 100_000; i++) chain = chain.then((v) => v + 1)
+chain.then((v) => console.log("chain", v))
+
+async function depth(n: int): Promise<int> {
+    if (n === 0) return 0
+    await null
+    return 1 + (await depth(n - 1))
+}
+depth(10_000).then((v) => console.log("recursion", v))
+
+async function fib(n: int): Promise<int> {
+    if (n < 2) return n
+    const [a, b] = await Promise.all([fib(n - 1), fib(n - 2)])
+    return a + b
+}
+fib(18).then((v) => console.log("fib", v))

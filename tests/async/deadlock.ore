@@ -1,0 +1,14 @@
+// reference: none, Bun has no tasks
+// exit: 2
+// stderr: all tasks are asleep - deadlock!
+
+// Top-level code awaiting a promise that only a task could settle, but the
+// task waits forever on a channel.
+const never = new Chan<int>()
+const promise = new Promise<int>((resolve) =>
+    task.spawn(() => {
+        resolve(never.receive() ?? 0)
+    }),
+)
+console.log("before")
+console.log(await promise)

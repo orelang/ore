@@ -1,0 +1,46 @@
+// Promise behaviour fixed by the spec: identity, ordering of reactions,
+// settling once, executors running at once.
+
+const p = Promise.resolve(1)
+console.log("resolve of a promise is the promise", Promise.resolve(p) === p)
+
+// Reactions of one promise run in the order they were added, also when added
+// after it settled.
+p.then(() => console.log("first then"))
+p.then(() => console.log("second then"))
+p.then(() => {
+    console.log("third then")
+    p.then(() => console.log("then added inside a then"))
+})
+
+// Only the first resolve counts.
+new Promise<string>((resolve) => {
+    resolve("first")
+    resolve("second")
+}).then((v) => console.log("settled once:", v))
+
+// A promise resolved later: its reactions wait.
+let later: (value: string) => void = (v) => {}
+const pending = new Promise<string>((resolve) => {
+    console.log("executor runs synchronously")
+    later = resolve
+})
+pending.then((v) => console.log("pending resolved", v))
+console.log("before resolving")
+later("now")
+later("again")
+console.log("after resolving")
+
+// then without a callback for the value passes it along.
+Promise.resolve(7)
+    .then((v) => v * 2)
+    .then((v) => console.log("doubled", v))
+
+// await on a settled promise still yields to queued microtasks.
+async function yields() {
+    task.microtask(() => console.log("queued before await"))
+    await p
+    console.log("after await of a settled promise")
+}
+yields()
+console.log("sync end")

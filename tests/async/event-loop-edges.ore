@@ -1,0 +1,42 @@
+// Microtasks drain before timers, however many there are; immediates queued
+// from immediates and microtasks; sleep blocks the loop. Phases are spaced by
+// delays, so that no rule depends on how much time passed.
+
+// Ten thousand microtasks, each queueing the next, all before a timer due now.
+let queued = 0
+const flood = () => {
+    queued++
+    if (queued < 10_000) task.microtask(flood)
+    else console.log("microtasks done", queued)
+}
+time.timeout(() => console.log("timeout after flood"), 0)
+task.microtask(flood)
+await time.delay(20)
+
+// Immediates: a microtask from an immediate runs before the next immediate;
+// an immediate queued by an immediate waits for the next turn.
+time.immediate(() => {
+    console.log("immediate 1")
+    task.microtask(() => console.log("microtask from immediate 1"))
+    time.immediate(() => console.log("immediate from immediate"))
+})
+time.immediate(() => console.log("immediate 2"))
+task.microtask(() => time.immediate(() => console.log("immediate from microtask")))
+await time.delay(20)
+
+// Delays in sequence.
+await time.delay(0)
+console.log("delay 0")
+await time.delay(1)
+console.log("delay 1")
+
+// Blocking the loop: timers due meanwhile run after it, microtasks first, then
+// the timers by their deadlines.
+time.timeout(() => {
+    console.log("timeout 10")
+    time.timeout(() => console.log("timeout 15, queued before sleep"), 5)
+    time.sleep(30)
+    task.microtask(() => console.log("microtask after sleep"))
+    console.log("slept")
+}, 10)
+time.timeout(() => console.log("timeout 25, due during sleep"), 25)

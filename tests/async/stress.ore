@@ -1,0 +1,42 @@
+// Many promises, awaits, microtasks and timers at once.
+
+async function add(a: int, b: int): Promise<int> {
+    return a + b
+}
+
+async function main() {
+    let sum = 0
+    for (let i = 0; i < 200_000; i++) sum = await add(sum, i % 3)
+    console.log("awaits", sum)
+
+    const many: Promise<int>[] = []
+    for (let i = 0; i < 50_000; i++) many.push(add(i, 1))
+    const all = await Promise.all(many)
+    console.log("all", all.length, all[0], all[all.length - 1])
+
+    let timers = 0
+    await new Promise<void>((resolve) => {
+        for (let i = 0; i < 20_000; i++) {
+            time.timeout(() => {
+                timers++
+                if (timers === 20_000) resolve()
+            }, i % 5)
+        }
+    })
+    console.log("timers", timers)
+
+    // Promises waiting on promises that resolve in reverse order.
+    const resolvers: ((v: int) => void)[] = []
+    const waiting: Promise<int>[] = []
+    for (let i = 0; i < 1000; i++) waiting.push(new Promise<int>((resolve) => resolvers.push(resolve)))
+    for (let i = resolvers.length - 1; i >= 0; i--) resolvers[i](i)
+    const values = await Promise.all(waiting)
+    console.log(
+        "reverse",
+        values[0],
+        values[999],
+        values.reduce((a, b) => a + b, 0),
+    )
+}
+
+main()
