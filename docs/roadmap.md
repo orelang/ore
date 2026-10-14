@@ -20,7 +20,9 @@ once its Ore version passes the tests. Only libc and the GC stay outside Ore.
   writes `0.000001`), with Ryu about 44 times faster than the C version and
   close to Bun.
   JSON: the string builder, the parser and the decoding helpers, the same
-  as the C version in every message and as fast.
+  as the C version in every message and as fast. Numbers: `parseInt`,
+  `parseFloat` and `toFixed` now as JavaScript computes them (the C version
+  rounded `(2.5).toFixed(0)` to `2` and read `parseFloat("0x10")` as 16).
 - Next: printing, the network, the scheduler and channels;
   printing moves with the scheduler, since the C runtime's own output
   (panics, `ore test`) must keep its order with it.

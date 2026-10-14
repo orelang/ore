@@ -12,7 +12,7 @@
 import { pow5BitCount, pow5InvBitCount, pow5InvSplit, pow5Split } from "ore:runtime/float-tables"
 
 /** A non-negative big integer: 32-bit limbs, least significant first, no leading zero limbs. */
-class Big {
+export class Big {
     limbs: u32[] = []
 
     copy(): Big {
@@ -94,6 +94,45 @@ class Big {
         return this
     }
 
+    /** Divides by 2^n, rounding down. */
+    shiftRight(n: int): Big {
+        const words = n / 32
+        const bits = u64(n % 32)
+        const out = new Big()
+        for (let i = words; i < this.limbs.length; i++) {
+            const low = u64(this.limbs[i]) >> bits
+            const high =
+                i + 1 < this.limbs.length && bits !== 0 ? (u64(this.limbs[i + 1]) << (32 - bits)) & 0xffffffff : 0
+            out.limbs.push(u32(low | high))
+        }
+        while (out.limbs.length > 0 && out.limbs[out.limbs.length - 1] === 0) out.limbs.pop()
+        return out
+    }
+
+    /** Divides by a small number in place, and returns the remainder. */
+    divide(d: u32): u32 {
+        let rest: u64 = 0
+        for (let i = this.limbs.length - 1; i >= 0; i--) {
+            const v = (rest << 32) | u64(this.limbs[i])
+            this.limbs[i] = u32(v / u64(d))
+            rest = v % u64(d)
+        }
+        while (this.limbs.length > 0 && this.limbs[this.limbs.length - 1] === 0) this.limbs.pop()
+        return u32(rest)
+    }
+
+    /** The decimal digits; this becomes zero. */
+    decimal(): string {
+        if (this.limbs.length === 0) return "0"
+        const chunks: string[] = []
+        while (this.limbs.length > 0) {
+            const chunk = this.divide(1000000000)
+            chunks.push(this.limbs.length > 0 ? `${chunk}`.padStart(9, "0") : `${chunk}`)
+        }
+        chunks.reverse()
+        return chunks.join("")
+    }
+
     /** Negative, zero or positive as this is less than, equal to or greater than other. */
     compare(other: Big): int {
         if (this.limbs.length !== other.limbs.length) return this.limbs.length - other.limbs.length
@@ -104,7 +143,7 @@ class Big {
     }
 }
 
-function big(value: u64): Big {
+export function big(value: u64): Big {
     const b = new Big()
     let v = value
     while (v !== 0) {
@@ -461,7 +500,7 @@ function digitsValue(d: Digits): u64 {
 }
 
 //ore:runtime ore_rt_str_from_f64
-function strFromF64(v: f64): string {
+export function strFromF64(v: f64): string {
     if (v !== v) return "NaN"
     if (v === 0) return "0"
     const bits = unsafe.bitcast<u64>(v)

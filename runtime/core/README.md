@@ -26,5 +26,6 @@ Rules for this code:
 | `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript (Ryu for f64) |
 | `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |
 | `json.ore` | The string builder, the JSON parser and the helpers of the generated encoders and decoders |
+| `number.ore` | `parseInt`, `parseFloat` and `toFixed` as JavaScript computes them, `Math.round`, `Math.cbrt`, `process.getenv` |
 
 Next: printing, the network, the scheduler.

@@ -23,7 +23,6 @@ static void *alloc_atomic(i64 size);
 static ore_string str_copy(const char *s, size_t n);
 static ore_array *array_new(i64 elem_size, i64 len);
 static void *array_push(ore_array *a, i64 elem_size);
-static bool is_space(u8 c);
 
 static int arg_count;
 static char **arg_values;
@@ -138,56 +137,6 @@ ore_array *ore_rt_args(void) {
   return a;
 }
 
-ore_string ore_rt_getenv(ore_string name) {
-  const char *v = getenv(c_string(name));
-  return v ? str_copy(v, strlen(v)) : (ore_string){0};
-}
-
-bool ore_rt_parse_int(ore_string s, i64 radix, i64 *out) {
-  i64 i = 0;
-  while (i < s.len && is_space(s.ptr[i])) i++;
-  bool negative = false;
-  if (i < s.len && (s.ptr[i] == '+' || s.ptr[i] == '-')) negative = s.ptr[i++] == '-';
-  if ((radix == 0 || radix == 16) && i + 1 < s.len && s.ptr[i] == '0' && (s.ptr[i + 1] == 'x' || s.ptr[i + 1] == 'X')) {
-    radix = 16;
-    i += 2;
-  }
-  if (radix == 0) radix = 10;
-  if (radix < 2 || radix > 36) return false;
-  u64 value = 0;
-  i64 start = i;
-  for (; i < s.len; i++) {
-    u8 c = s.ptr[i];
-    int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'z' ? c - 'a' + 10 : c >= 'A' && c <= 'Z' ? c - 'A' + 10 : 99;
-    if (d >= radix) break;
-    value = value * (u64)radix + (u64)d;
-  }
-  if (i == start) return false;
-  *out = negative ? -(i64)value : (i64)value;
-  return true;
-}
-
-bool ore_rt_parse_float(ore_string s, f64 *out) {
-  char *text = c_string(s);
-  char *end;
-  f64 v = strtod(text, &end);
-  // strtod also reads "nan", "inf" and hex floats, which parseFloat does not.
-  const char *p = text;
-  while (is_space((u8)*p)) p++;
-  if (*p == '+' || *p == '-') p++;
-  if (end == text || !(*p == '.' || (*p >= '0' && *p <= '9') || strncmp(p, "Infinity", 8) == 0)) return false;
-  if (strncmp(p, "Infinity", 8) == 0) v = text[p - text - 1] == '-' ? -INFINITY : INFINITY;
-  *out = v;
-  return true;
-}
-
-ore_string ore_rt_str_fixed(f64 x, i64 digits) {
-  if (digits < 0 || digits > 100) ore_rt_panic_cstr("toFixed() digits out of range");
-  char buf[512];
-  int n = snprintf(buf, sizeof buf, "%.*f", (int)digits, x);
-  return str_copy(buf, (size_t)n);
-}
-
 static ore_string error_message(const char *what, ore_string path) {
   char buf[512];
   int n = snprintf(buf, sizeof buf, "%s %.*s: %s", what, (int)path.len, (const char *)path.ptr, strerror(errno));
@@ -250,11 +199,6 @@ i64 ore_rt_now(void) {
   return (i64)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-f64 ore_rt_round(f64 x) {
-  f64 r = floor(x);
-  return x - r >= 0.5 ? r + 1 : r;
-}
-
 // xorshift64*, per OS thread, seeded from the time and the thread.
 static _Thread_local u64 random_state;
 
@@ -266,12 +210,6 @@ f64 ore_rt_random(void) {
   return (f64)((random_state * 0x2545f4914f6cdd1dull) >> 11) / 9007199254740992.0;
 }
 
-void *ore_rt_box_copy(void *p, i64 size) {
-  void *box = ore_rt_alloc(size);
-  memcpy(box, p, (size_t)size);
-  return box;
-}
-
 /** Memory that never holds pointers, so the GC does not scan it. Not zeroed. */
 static void *alloc_atomic(i64 size) {
   void *p = GC_malloc_atomic(size > 0 ? (size_t)size : 1);
@@ -281,8 +219,6 @@ static void *alloc_atomic(i64 size) {
 
 // ---------------------------------------------------------------------------
 // Strings
-
-static bool is_space(u8 c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
 
 /**
  * A copy of `n` bytes as a string, followed by a NUL that is not part of it:
@@ -360,9 +296,3 @@ void ore_rt_print_space(void) { fputc(' ', stream()); }
 
 void ore_rt_print_newline(void) { fputc('\n', stream()); }
 
-f64 ore_rt_cbrt(f64 x) {
-  if (x == 0 || !isfinite(x)) return cbrt(x);
-  f64 y = cbrt(x);
-  // One Newton step corrects the last bit.
-  return y - (y * y * y - x) / (3 * y * y);
-}

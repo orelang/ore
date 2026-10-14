@@ -39,12 +39,6 @@ typedef struct {
   void *env;
 } ore_closure;
 
-/** JavaScript parseInt: true and the value if there are digits. */
-bool ore_rt_parse_int(ore_string s, i64 radix, i64 *out);
-/** JavaScript parseFloat: true and the value if a number starts the string. */
-bool ore_rt_parse_float(ore_string s, f64 *out);
-/** x with `digits` digits after the point. */
-ore_string ore_rt_str_fixed(f64 x, i64 digits);
 /** Reads a whole file; on failure, false and the error message in `out`. */
 bool ore_rt_read_file(ore_string path, ore_string *out);
 /** Writes a whole file; on failure, false and the error message in `err`. */
@@ -53,15 +47,9 @@ bool ore_rt_file_exists(ore_string path);
 /** Milliseconds since the Unix epoch. */
 i64 ore_rt_now(void);
 
-/** Math.round: half up, toward +Infinity, as in JavaScript. */
-f64 ore_rt_round(f64 x);
-/** Cube root, exact for perfect cubes on every libm (glibc's is off by one unit). */
-f64 ore_rt_cbrt(f64 x);
 /** A pseudo-random number in [0, 1). */
 f64 ore_rt_random(void);
 
-/** A new heap box holding a copy of the `size` bytes at `p`; used for per-iteration loop variables. */
-void *ore_rt_box_copy(void *p, i64 size);
 
 // Entry point emitted by the compiler; calls the user's `main`.
 void ore_entry(void);
@@ -152,8 +140,6 @@ ore_string ore_rt_from_cstring(const char *p);
 
 /** The command-line arguments after the program name, as an array of strings. */
 ore_array *ore_rt_args(void);
-/** An environment variable; a string without a pointer when unset. */
-ore_string ore_rt_getenv(ore_string name);
 
 /** Directs printing to stdout (1) or stderr (2). */
 void ore_rt_print_to(int fd);

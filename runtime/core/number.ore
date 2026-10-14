@@ -1,0 +1,156 @@
+// Numbers: Number.parseInt, Number.parseFloat and toFixed with JavaScript's
+// results, Math.round and Math.cbrt; and small helpers of the process.
+
+import { big, strFromF64 } from "ore:runtime/float"
+
+/** Reads decimal text exactly, rounding to the nearest f64; from libc. */
+declare function strtod(text: ptr, end: ptr): f64
+declare function cbrt(x: f64): f64
+declare function getenv(name: string): ptr
+
+function isSpace(c: u8): bool {
+    return c === 0x20 || (c >= 0x09 && c <= 0x0d)
+}
+
+function nil(): ptr {
+    return unsafe.fromInt(0)
+}
+
+function infinity(): f64 {
+    const zero: f64 = 0
+    return 1 / zero
+}
+
+/** The value of a digit in bases up to 36, or 99. */
+function digitValue(c: u8): int {
+    if (c >= 0x30 && c <= 0x39) return i64(c - 0x30)
+    if (c >= 0x61 && c <= 0x7a) return i64(c - 0x61) + 10
+    if (c >= 0x41 && c <= 0x5a) return i64(c - 0x41) + 10
+    return 99
+}
+
+/** Number.parseInt: leading spaces, a sign, "0x" for base 16 (or base 0), then digits up to the first that is not one. */
+//ore:runtime ore_rt_parse_int
+function parseInt(s: string, base: int, out: ptr): bool {
+    let i = 0
+    while (i < s.length && isSpace(s[i])) i++
+    let negative = false
+    if (i < s.length && (s[i] === 0x2b || s[i] === 0x2d)) {
+        negative = s[i] === 0x2d
+        i++
+    }
+    let radix = base
+    if (
+        (radix === 0 || radix === 16) &&
+        i + 1 < s.length &&
+        s[i] === 0x30 &&
+        (s[i + 1] === 0x78 || s[i + 1] === 0x58)
+    ) {
+        radix = 16
+        i += 2
+    }
+    if (radix === 0) radix = 10
+    if (radix < 2 || radix > 36) return false
+    let value: u64 = 0
+    const start = i
+    while (i < s.length) {
+        const d = digitValue(s[i])
+        if (d >= radix) break
+        value = value * u64(radix) + u64(d)
+        i++
+    }
+    if (i === start) return false
+    unsafe.store<i64>(out, negative ? i64(u64(0) - value) : i64(value))
+    return true
+}
+
+/** Number.parseFloat: the longest decimal prefix after spaces, or Infinity; not "nan", "inf" or hex, which strtod also reads. */
+//ore:runtime ore_rt_parse_float
+function parseFloat(s: string, out: ptr): bool {
+    let i = 0
+    while (i < s.length && isSpace(s[i])) i++
+    let j = i
+    if (j < s.length && (s[j] === 0x2b || s[j] === 0x2d)) j++
+    if (s.slice(j, j + 8) === "Infinity") {
+        unsafe.store<f64>(out, j > i && s[i] === 0x2d ? -infinity() : infinity())
+        return true
+    }
+    if (j >= s.length || !(s[j] === 0x2e || (s[j] >= 0x30 && s[j] <= 0x39))) return false
+    // A NUL-terminated copy, for strtod.
+    const text = unsafe.allocBytes(s.length - i + 1)
+    unsafe.copy(text, unsafe.add(unsafe.stringData(s), i), s.length - i)
+    const end = unsafe.alloc(8)
+    const v = strtod(text, end)
+    // strtod reads hex after "0x"; parseFloat stops at the "x".
+    if (unsafe.toInt(unsafe.load<ptr>(end)) === unsafe.toInt(text)) return false
+    const hex = s[j] === 0x30 && j + 1 < s.length && (s[j + 1] === 0x78 || s[j + 1] === 0x58)
+    unsafe.store<f64>(out, hex ? (j > i && s[i] === 0x2d ? -0.0 : 0.0) : v)
+    return true
+}
+
+/**
+ * Number.prototype.toFixed: x rounded to `digits` decimals, the larger of two
+ * equally close results, computed exactly on the binary value of x.
+ */
+//ore:runtime ore_rt_str_fixed
+function toFixed(x: f64, digits: int): string {
+    if (digits < 0 || digits > 100) process.panic("toFixed() digits out of range")
+    if (x !== x || x >= 1e21 || x <= -1e21) return strFromF64(x)
+    const negative = x < 0
+    const a = negative ? -x : x
+    // a = mantissa × 2^e exactly.
+    // Without the sign bit, which -0 keeps.
+    const bits = unsafe.bitcast<u64>(a) & 0x7fffffffffffffff
+    const biased = i64(bits >> 52)
+    const mantissa = biased === 0 ? bits & 0xfffffffffffff : (bits & 0xfffffffffffff) | (u64(1) << 52)
+    const e = biased === 0 ? -1074 : biased - 1075
+    // n = round(a × 10^digits), halves up.
+    const scaled = big(mantissa).timesPow10(digits)
+    const n =
+        e >= 0
+            ? scaled.shiftLeft(e)
+            : scaled
+                  .shiftLeft(1)
+                  .plus(big(1).shiftLeft(-e))
+                  .shiftRight(1 - e)
+    let text = n.decimal()
+    if (digits > 0) {
+        text = text.padStart(digits + 1, "0")
+        text = `${text.slice(0, text.length - digits)}.${text.slice(text.length - digits)}`
+    }
+    return negative ? `-${text}` : text
+}
+
+//ore:runtime ore_rt_round
+function round(x: f64): f64 {
+    const r = Math.floor(x)
+    return x - r >= 0.5 ? r + 1 : r
+}
+
+//ore:runtime ore_rt_cbrt
+function cubeRoot(x: f64): f64 {
+    if (x === 0 || x !== x || x === infinity() || x === -infinity()) return cbrt(x)
+    const y = cbrt(x)
+    // One Newton step corrects the last bit of libm's result.
+    return y - (y * y * y - x) / (3 * y * y)
+}
+
+/** An environment variable, or a string without a pointer (null) when unset. */
+//ore:runtime ore_rt_getenv
+function getEnv(name: string): string {
+    const p = getenv(name)
+    if (unsafe.toInt(p) === 0) return unsafe.makeString(nil(), 0)
+    let n = 0
+    while (unsafe.load<u8>(unsafe.add(p, n)) !== 0) n++
+    const copy = unsafe.allocBytes(n)
+    unsafe.copy(copy, p, n)
+    return unsafe.makeString(copy, n)
+}
+
+/** A heap copy of `size` bytes, for a value that closures capture. */
+//ore:runtime ore_rt_box_copy
+function boxCopy(p: ptr, size: int): ptr {
+    const box = unsafe.alloc(size)
+    unsafe.copy(box, p, size)
+    return box
+}
