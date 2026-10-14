@@ -219,7 +219,7 @@ console.log(JSON.stringify({ name: "api", port: 80, tags: ["v1"] }))   // {"name
 
 **Green threads and channels.** Tasks run in parallel on all CPUs and talk
 through channels and `select`; waiting parks the task, not the OS thread.
-`ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP, `ore:crypto` SHA-256.
+`ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP, `ore:crypto` SHA-256, `ore:path` paths.
 
 ```ts
 const results = new Chan<int>()
@@ -387,9 +387,9 @@ Every directory below has a README with the details.
 | `compiler/driver` | Compilation pipeline, clang, runtime and GC cache |
 | `compiler/lsp` | Language server |
 | `compiler/cli` | The `ore` command, including `test` and `fmt` |
-| `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer and the parser) |
+| `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer, the parser and the loading of modules) |
 | `runtime/core` | The runtime written in Ore (`ore:runtime/...`), part of every program |
-| `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`) |
+| `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`, `ore:path`) |
 | `runtime/third_party/bdwgc` | The Boehm garbage collector (submodule) |
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |

@@ -9,7 +9,9 @@ The standard library.
 - Modules imported as `ore:<name>`: `ore:sync` (`Mutex`, `WaitGroup`),
   `ore:net` (TCP `listen`, `Listener`, `Conn`), `ore:test` (`test`,
   `expect`, used by `ore test`), `ore:crypto` (`sha256`, the incremental
-  `Sha256`).
+  `Sha256`), `ore:path` (`join`, `dirname`, `basename`, `extname`,
+  `normalize`, `isAbsolute`, `resolve`, `relative`, `sep`, `delimiter`,
+  with the POSIX semantics of Node's `node:path`).
 
 The namespace `internal` is the private interface between these modules and
 the runtime; a module that starts with `//ore:internal` may use it too.

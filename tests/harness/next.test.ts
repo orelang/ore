@@ -12,10 +12,17 @@
  *
  * Roles: for the same files, the role of each node (the name of the property
  * of its parent that holds it, "-" for the root) must equal the TypeScript AST's.
+ *
+ * Modules: for each program of tests/ (the entries of golden.test.ts) and the
+ * Ore compiler itself, the modules loaded in order, their imports and text
+ * imports must equal those of @ore/project, and so must the formatted
+ * diagnostics when there is no syntax error.
  */
 import { build } from "@ore/driver"
+import { loadProgram } from "@ore/project"
+import { formatDiagnostic } from "@ore/syntax"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import ts from "typescript"
@@ -110,6 +117,31 @@ function typescriptRoles(path: string, text: string): string[] | undefined {
   return lines
 }
 
+/** Program entries below a directory: NAME.ore, or NAME/main.ore for a program of several modules. */
+function entries(dir: string): string[] {
+  return readdirSync(dir)
+    .flatMap((name) => {
+      const path = join(dir, name)
+      if (name.endsWith(".ore")) return [path]
+      if (!statSync(path).isDirectory()) return []
+      return existsSync(join(path, "main.ore")) ? [join(path, "main.ore")] : entries(path)
+    })
+    .sort()
+}
+
+/** What `ore-next modules` prints for a program, from @ore/project; null diagnostics when there are syntax errors. */
+function typescriptModules(entry: string): { modules: string[]; diagnostics: string[] | null } {
+  const program = loadProgram(entry)
+  const modules: string[] = []
+  for (const source of program.modules) {
+    modules.push(source.path)
+    for (const [specifier, target] of program.imports.get(source) ?? []) modules.push(`  import ${specifier} ${target.path}`)
+    for (const [specifier, text] of program.texts.get(source) ?? []) modules.push(`  text ${specifier} ${Buffer.byteLength(text)}`)
+  }
+  const diagnostics = program.syntaxErrors ? null : program.diagnostics.flatMap((d) => formatDiagnostic(d).split("\n"))
+  return { modules, diagnostics }
+}
+
 async function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([binary, ...args], { stdout: "pipe", stderr: "pipe" })
   const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()])
@@ -153,6 +185,25 @@ describe("next roles", () => {
       const { stdout, stderr } = await run("roles", file)
       expect(stderr).toBe("")
       expect(stdout.trimEnd().split("\n")).toEqual(expected)
+    })
+  }
+})
+
+describe("next modules", () => {
+  const programs = [...entries(join(root, "tests/run")), ...entries(join(root, "tests/diag")), join(root, "compiler/next/src/main.ore")]
+  for (const file of programs) {
+    // Relative to the working directory, as the command line gives it.
+    const entry = relative(process.cwd(), file)
+    test(relative(root, file), async () => {
+      const expected = typescriptModules(entry)
+      const { code, stdout, stderr } = await run("modules", entry)
+      expect(stderr).toBe("")
+      expect(code).toBe(0)
+      // The modules, then the diagnostics.
+      const lines = stdout.trimEnd().split("\n")
+      const count = expected.modules.length
+      expect(lines.slice(0, count)).toEqual(expected.modules)
+      if (expected.diagnostics !== null) expect(lines.slice(count)).toEqual(expected.diagnostics)
     })
   }
 })

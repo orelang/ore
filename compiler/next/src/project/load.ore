@@ -1,0 +1,130 @@
+// Loading a program: the entry file and every module it imports, parsed.
+
+import { dirname, resolve } from "ore:path"
+import { Diagnostic } from "../syntax/diagnostic"
+import { importsText, moduleSpecifier, stringValue } from "../syntax/imports"
+import { parse } from "../syntax/parse"
+import { type Source } from "../syntax/source"
+import { isFile, resolveImport, runtimeModules, stdModules } from "./resolve"
+
+export class Program {
+    constructor(
+        /** Modules with each module after the modules it imports, the entry last (cycles aside). */
+        readonly modules: Source[],
+        readonly entry: Source,
+        /** For each module, the module each import specifier resolves to. */
+        readonly imports: Map<Source, Map<string, Source>>,
+        /** For each module, the contents of the files it imports as text (`with { type: "text" }`), by specifier. */
+        readonly texts: Map<Source, Map<string, string>>,
+        /** Syntax errors and unresolved imports. */
+        readonly diagnostics: Diagnostic[],
+        /** Whether any module has syntax errors, so that it cannot be checked. */
+        readonly syntaxErrors: bool,
+    ) {}
+}
+
+export class LoadOptions {
+    /** Texts of files that differ from the disk, such as documents open in an editor. */
+    overrides = new Map<string, string>()
+    /** Name modules by absolute paths instead of paths relative to the working directory. */
+    absolutePaths = false
+}
+
+/**
+ * Parses an entry file and every module it imports, directly or not. An
+ * Error when a file cannot be read; unresolved imports are diagnostics.
+ */
+export function loadProgram(entryPath: string, given?: LoadOptions): Program | Error {
+    // A default value `new LoadOptions()` crashes the TypeScript checker: the
+    // constructor is not declared yet when the parameters are.
+    const options = given ?? new LoadOptions()
+    const loader = new Loader(options)
+    // The runtime comes first, so that its top-level code runs before any other.
+    for (const name of runtimeModules) {
+        const runtime = loader.visit(name, name)
+        if (runtime instanceof Error) return runtime
+    }
+    const entry = loader.visit(resolve(entryPath), options.absolutePaths ? resolve(entryPath) : entryPath)
+    if (entry instanceof Error) return entry
+    return new Program(loader.order, entry, loader.imports, loader.texts, loader.diagnostics, loader.syntaxErrors)
+}
+
+class Loader {
+    byPath = new Map<string, Source>()
+    imports = new Map<Source, Map<string, Source>>()
+    texts = new Map<Source, Map<string, string>>()
+    diagnostics: Diagnostic[] = []
+    order: Source[] = []
+    syntaxErrors = false
+
+    constructor(readonly options: LoadOptions) {}
+
+    private read(path: string): string | Error {
+        const std = stdModules.get(path)
+        if (std !== null) return std
+        const override = this.options.overrides.get(path)
+        if (override !== null) return override
+        return fs.readFile(path)
+    }
+
+    /** Parses the module at a path (or an "ore:" name) once, then the modules it imports. */
+    visit(path: string, display: string): Source | Error {
+        const existing = this.byPath.get(path)
+        if (existing !== null) return existing
+        const text = this.read(path)
+        if (text instanceof Error) return text
+        const parsed = parse(display, text)
+        const source = parsed.source
+        this.byPath.set(path, source)
+        for (const d of parsed.diagnostics) this.diagnostics.push(d)
+        if (parsed.diagnostics.length > 0) this.syntaxErrors = true
+        const resolved = new Map<string, Source>()
+        this.imports.set(source, resolved)
+        const textsOfModule = new Map<string, string>()
+        this.texts.set(source, textsOfModule)
+        for (const stmt of source.ast.list("statements")) {
+            const specifier = moduleSpecifier(stmt)
+            if (specifier === null) continue
+            const name = stringValue(specifier)
+            // A file imported as text is embedded in the program, not loaded as a module.
+            if (stmt.kind === "ImportDeclaration" && importsText(stmt)) {
+                const file = resolve(dirname(path), name)
+                let contents = this.options.overrides.get(file)
+                if (contents === null && isFile(file)) {
+                    const read = fs.readFile(file)
+                    if (read instanceof Error) return read
+                    contents = read
+                }
+                if (contents === null) this.error(source, specifier.start, specifier.end, `Cannot find file '${name}'.`)
+                else textsOfModule.set(name, contents)
+                continue
+            }
+            const target = resolveImport(name, path)
+            if (target instanceof Error) {
+                this.error(source, specifier.start, specifier.end, target.message)
+                continue
+            }
+            if (target === null) {
+                this.error(source, specifier.start, specifier.end, `Cannot find module '${name}'.`)
+                continue
+            }
+            const std = stdModules.has(target)
+            const key = std ? target : resolve(target)
+            const module = this.visit(key, std || this.options.absolutePaths ? key : displayPath(target))
+            if (module instanceof Error) return module
+            resolved.set(name, module)
+        }
+        this.order.push(source)
+        return source
+    }
+
+    private error(source: Source, start: int, end: int, message: string) {
+        this.diagnostics.push(new Diagnostic(source, start, end - start, "error", message))
+    }
+}
+
+/** A path relative to the working directory when below it, for messages and stack traces. */
+function displayPath(path: string): string {
+    const cwd = process.cwd()
+    return path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path
+}
