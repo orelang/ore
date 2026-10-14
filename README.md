@@ -254,7 +254,7 @@ Another binary can be set with the `ore.path` setting.
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis and inlining (done); precise GC, LLVM backend | in progress |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Self-hosting: lexer (done), parser, checker, backend in `selfhost/` | in progress |
+| 9. Self-hosting: lexer and parser (done), checker, backend in `selfhost/` | in progress |
 
 ### Known limitations
 
@@ -293,7 +293,7 @@ The tests run on macOS and Linux, on arm64 and x86-64.
 | `packages/lsp` | Language server |
 | `editors/zed` | Zed extension |
 | `editors/vscode` | VS Code extension |
-| `selfhost/` | The compiler written in Ore (so far the lexer) |
+| `selfhost/` | The compiler written in Ore (so far the lexer and the parser) |
 | `runtime/` | C runtime; Boehm GC in `runtime/third_party/bdwgc` |
 | `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`) |
 | `tests/run` | Programs with expected output; directories are multi-module programs |

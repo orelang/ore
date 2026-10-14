@@ -3,7 +3,8 @@
 
 import { keywords, type Kind } from "./tokens"
 
-export type Token = { kind: Kind; start: int; end: int }
+/** A token and whether a line break comes before it, which ends a statement without `;`. */
+export type Token = { kind: Kind; start: int; end: int; newline: bool }
 
 // Bytes of ASCII characters.
 const TAB = 9
@@ -98,10 +99,10 @@ export class Lexer {
     constructor(readonly text: string) {}
 
     next(): Token {
-        this.skipTrivia()
+        const newline = this.skipTrivia()
         const start = this.pos
         const kind = this.scan()
-        return { kind, start, end: this.pos }
+        return { kind, start, end: this.pos, newline }
     }
 
     private at(offset: int): u8 {
@@ -109,18 +110,27 @@ export class Lexer {
         return i < this.text.length ? this.text[i] : 0
     }
 
-    private skipTrivia() {
+    /** Skips whitespace and comments; returns whether they contain a line break. */
+    private skipTrivia(): bool {
+        let newline = false
         // A `#!` line at the start of a file.
         if (this.pos === 0 && this.at(0) === HASH && this.at(1) === BANG) this.skipLine()
         while (this.pos < this.text.length) {
             const c = this.at(0)
-            if (c === SPACE || c === TAB || c === LF || c === CR || c === VT || c === FF) {
+            if (c === LF || c === CR) {
+                newline = true
+                this.pos++
+            } else if (c === SPACE || c === TAB || c === VT || c === FF) {
                 this.pos++
             } else if (c === SLASH && this.at(1) === SLASH) {
                 this.skipLine()
             } else if (c === SLASH && this.at(1) === STAR) {
                 const close = this.text.indexOf("*/", this.pos + 2)
-                this.pos = close < 0 ? this.text.length : close + 2
+                const end = close < 0 ? this.text.length : close + 2
+                // A comment over several lines counts as a line break.
+                const comment = this.text.slice(this.pos, end)
+                if (comment.includes("\n") || comment.includes("\r")) newline = true
+                this.pos = end
             } else if (c === 0xc2 && this.at(1) === 0xa0) {
                 // No-break space.
                 this.pos += 2
@@ -128,9 +138,10 @@ export class Lexer {
                 // Byte order mark.
                 this.pos += 3
             } else {
-                return
+                return newline
             }
         }
+        return newline
     }
 
     private skipLine() {

@@ -1,14 +1,28 @@
-// ore-selfhost: for now, prints the tokens of a file, one per line: kind, start and end byte.
+// ore-selfhost: for now, prints the tokens or the syntax tree of a file.
+//
+//   ore-selfhost tokens <file.ore>   one token per line: kind, start and end byte
+//   ore-selfhost tree <file.ore>     the syntax tree in pre-order: kind, start and end byte
 
+import { dump } from "./ast"
 import { tokenize } from "./lexer"
+import { parse } from "./parser"
 
-if (process.args.length !== 1) {
-    console.error("usage: ore-selfhost <file.ore>")
+if (process.args.length !== 2 || (process.args[0] !== "tokens" && process.args[0] !== "tree")) {
+    console.error("usage: ore-selfhost tokens|tree <file.ore>")
     process.exit(2)
 }
-const text = fs.readFile(process.args[0])
+const text = fs.readFile(process.args[1])
 if (text instanceof Error) {
     console.error(text.message)
     process.exit(1)
 }
-for (const token of tokenize(text)) console.log(token.kind, token.start, token.end)
+if (process.args[0] === "tokens") {
+    for (const token of tokenize(text)) console.log(token.kind, token.start, token.end)
+} else {
+    const parser = parse(text)
+    for (const error of parser.errors) console.error(error)
+    const lines: string[] = []
+    if (parser.file !== null) dump(parser.file, lines)
+    for (const line of lines) console.log(line)
+    if (parser.errors.length > 0) process.exit(1)
+}

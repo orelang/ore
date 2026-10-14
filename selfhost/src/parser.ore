@@ -1,0 +1,1494 @@
+// The parser: builds the syntax tree of a source file from its tokens, with
+// the node kinds, spans and children of the TypeScript parser for the syntax
+// that Ore uses.
+
+import { Node, type NodeKind } from "./ast"
+import { tokenize, type Token } from "./lexer"
+import { type Kind } from "./tokens"
+
+/** Parses a source text; syntax errors are in `errors`. */
+export function parse(text: string): Parser {
+    const parser = new Parser(text)
+    parser.parseSourceFile()
+    return parser
+}
+
+/** Keywords that cannot be identifiers. */
+const reserved = [
+    "BreakKeyword",
+    "CaseKeyword",
+    "CatchKeyword",
+    "ClassKeyword",
+    "ConstKeyword",
+    "ContinueKeyword",
+    "DebuggerKeyword",
+    "DefaultKeyword",
+    "DeleteKeyword",
+    "DoKeyword",
+    "ElseKeyword",
+    "EnumKeyword",
+    "ExportKeyword",
+    "ExtendsKeyword",
+    "FalseKeyword",
+    "FinallyKeyword",
+    "ForKeyword",
+    "FunctionKeyword",
+    "IfKeyword",
+    "ImportKeyword",
+    "InKeyword",
+    "InstanceOfKeyword",
+    "NewKeyword",
+    "NullKeyword",
+    "ReturnKeyword",
+    "SuperKeyword",
+    "SwitchKeyword",
+    "ThisKeyword",
+    "ThrowKeyword",
+    "TrueKeyword",
+    "TryKeyword",
+    "TypeOfKeyword",
+    "VarKeyword",
+    "VoidKeyword",
+    "WhileKeyword",
+    "WithKeyword",
+]
+
+/** Keywords that name built-in types. */
+const keywordTypes = [
+    "AnyKeyword",
+    "UnknownKeyword",
+    "StringKeyword",
+    "NumberKeyword",
+    "BigIntKeyword",
+    "BooleanKeyword",
+    "SymbolKeyword",
+    "ObjectKeyword",
+    "NeverKeyword",
+    "UndefinedKeyword",
+    "VoidKeyword",
+]
+
+/** Keywords that modify declarations and class members. */
+const modifierKinds = [
+    "ExportKeyword",
+    "DefaultKeyword",
+    "DeclareKeyword",
+    "AbstractKeyword",
+    "AsyncKeyword",
+    "ConstKeyword",
+    "PublicKeyword",
+    "PrivateKeyword",
+    "ProtectedKeyword",
+    "ReadonlyKeyword",
+    "StaticKeyword",
+    "OverrideKeyword",
+    "AccessorKeyword",
+]
+
+const assignmentOperators = [
+    "EqualsToken",
+    "PlusEqualsToken",
+    "MinusEqualsToken",
+    "AsteriskEqualsToken",
+    "AsteriskAsteriskEqualsToken",
+    "SlashEqualsToken",
+    "PercentEqualsToken",
+    "LessThanLessThanEqualsToken",
+    "GreaterThanGreaterThanEqualsToken",
+    "GreaterThanGreaterThanGreaterThanEqualsToken",
+    "AmpersandEqualsToken",
+    "BarEqualsToken",
+    "CaretEqualsToken",
+    "AmpersandAmpersandEqualsToken",
+    "BarBarEqualsToken",
+    "QuestionQuestionEqualsToken",
+]
+
+/** The precedence of a binary operator (higher binds tighter), or 0. */
+function precedence(kind: NodeKind): int {
+    switch (kind) {
+        case "QuestionQuestionToken":
+            return 4
+        case "BarBarToken":
+            return 5
+        case "AmpersandAmpersandToken":
+            return 6
+        case "BarToken":
+            return 7
+        case "CaretToken":
+            return 8
+        case "AmpersandToken":
+            return 9
+        case "EqualsEqualsToken":
+        case "ExclamationEqualsToken":
+        case "EqualsEqualsEqualsToken":
+        case "ExclamationEqualsEqualsToken":
+            return 10
+        case "LessThanToken":
+        case "GreaterThanToken":
+        case "LessThanEqualsToken":
+        case "GreaterThanEqualsToken":
+        case "InstanceOfKeyword":
+        case "InKeyword":
+        case "AsKeyword":
+        case "SatisfiesKeyword":
+            return 11
+        case "LessThanLessThanToken":
+        case "GreaterThanGreaterThanToken":
+        case "GreaterThanGreaterThanGreaterThanToken":
+            return 12
+        case "PlusToken":
+        case "MinusToken":
+            return 13
+        case "AsteriskToken":
+        case "SlashToken":
+        case "PercentToken":
+            return 14
+        case "AsteriskAsteriskToken":
+            return 15
+    }
+    return 0
+}
+
+/** An operator made of one or more tokens, such as `>>=` from `>`, `>` and `=`. */
+type Operator = { kind: NodeKind; tokens: int }
+
+export class Parser {
+    private tokens: Token[]
+    private i = 0
+    /** The end of the last token consumed. */
+    private last = 0
+    /** Inside the initializer of a `for`, where `in` is not an operator. */
+    private noIn = false
+    errors: string[] = []
+    file: Node | null = null
+
+    constructor(readonly text: string) {
+        this.tokens = tokenize(text)
+    }
+
+    // -------------------------------------------------------------------------
+    // Tokens
+
+    private token(): Token {
+        return this.tokens[this.i]
+    }
+
+    private kind(): Kind {
+        return this.tokens[this.i].kind
+    }
+
+    private peek(n: int): Token {
+        const i = this.i + n
+        return i < this.tokens.length ? this.tokens[i] : this.tokens[this.tokens.length - 1]
+    }
+
+    private next(): Token {
+        const token = this.tokens[this.i]
+        if (token.kind !== "EndOfFileToken") this.i++
+        this.last = token.end
+        return token
+    }
+
+    private at(kind: Kind): bool {
+        return this.kind() === kind
+    }
+
+    private eat(kind: Kind): bool {
+        if (!this.at(kind)) return false
+        this.next()
+        return true
+    }
+
+    private expect(kind: Kind): bool {
+        if (this.eat(kind)) return true
+        this.error(`'${kind}' expected`)
+        return false
+    }
+
+    private error(message: string) {
+        const t = this.token()
+        this.errors.push(`${message}, got '${t.kind}' at ${t.start}`)
+    }
+
+    /** The current token as a node. */
+    private tokenNode(): Node {
+        const t = this.next()
+        const node = new Node(t.kind, t.start, t.end)
+        node.text = this.text.slice(t.start, t.end)
+        return node
+    }
+
+    /** A node from `start` to the end of the last token consumed. */
+    private finish(node: Node, start: int): Node {
+        node.start = start
+        node.end = this.last
+        return node
+    }
+
+    private make(kind: NodeKind, start: int): Node {
+        return new Node(kind, start, this.last)
+    }
+
+    /** A node of children already parsed, from `start` to the end of the last token consumed. */
+    private node(kind: NodeKind, start: int, children: (Node | null)[]): Node {
+        const node = new Node(kind, start, 0)
+        for (const child of children) node.add(child)
+        node.end = this.last
+        return node
+    }
+
+    /** Runs a parse that may not apply; undoes it when it fails or reports errors. */
+    private speculate(parse: () => Node | null): Node | null {
+        const i = this.i
+        const last = this.last
+        const errors = this.errors.length
+        const noIn = this.noIn
+        const node = parse()
+        if (node !== null && this.errors.length === errors) return node
+        this.i = i
+        this.last = last
+        this.noIn = noIn
+        this.errors = this.errors.slice(0, errors)
+        return null
+    }
+
+    /** Ends a statement: at `;`, before `}` or the end, or at a line break. */
+    private semicolon() {
+        if (this.eat("SemicolonToken")) return
+        const k = this.kind()
+        if (k === "CloseBraceToken" || k === "EndOfFileToken" || this.token().newline) return
+        this.error("';' expected")
+    }
+
+    private canEndStatement(): bool {
+        const k = this.kind()
+        return k === "SemicolonToken" || k === "CloseBraceToken" || k === "EndOfFileToken" || this.token().newline
+    }
+
+    // -------------------------------------------------------------------------
+    // Names
+
+    private isIdentifier(kind: Kind): bool {
+        return kind === "Identifier" || (kind.endsWith("Keyword") && !reserved.includes(kind))
+    }
+
+    private identifier(): Node {
+        if (this.isIdentifier(this.kind())) return this.nameNode()
+        this.error("Identifier expected")
+        return new Node("Identifier", this.token().start, this.token().start)
+    }
+
+    /** An identifier where any keyword is allowed, such as after `.`. */
+    private identifierName(): Node {
+        const k = this.kind()
+        if (k === "Identifier" || k.endsWith("Keyword")) return this.nameNode()
+        if (k === "PrivateIdentifier") return this.tokenNode()
+        this.error("Identifier expected")
+        return new Node("Identifier", this.token().start, this.token().start)
+    }
+
+    private nameNode(): Node {
+        const t = this.next()
+        const node = new Node("Identifier", t.start, t.end)
+        node.text = this.text.slice(t.start, t.end)
+        return node
+    }
+
+    /** The name of a property: an identifier or keyword, a string, a number, `#name` or `[expression]`. */
+    private propertyName(): Node {
+        const k = this.kind()
+        if (k === "StringLiteral" || k === "NumericLiteral" || k === "PrivateIdentifier") return this.tokenNode()
+        if (k === "OpenBracketToken") {
+            const start = this.next().start
+            const expression = this.assignment()
+            this.expect("CloseBracketToken")
+            return this.make("ComputedPropertyName", start).add(expression)
+        }
+        return this.identifierName()
+    }
+
+    private isPropertyNameStart(kind: Kind): bool {
+        return (
+            kind === "Identifier" ||
+            kind.endsWith("Keyword") ||
+            kind === "StringLiteral" ||
+            kind === "NumericLiteral" ||
+            kind === "PrivateIdentifier" ||
+            kind === "OpenBracketToken"
+        )
+    }
+
+    /** An identifier or a destructuring pattern. */
+    private bindingName(): Node {
+        if (this.at("OpenBraceToken")) return this.objectBindingPattern()
+        if (this.at("OpenBracketToken")) return this.arrayBindingPattern()
+        return this.identifier()
+    }
+
+    private objectBindingPattern(): Node {
+        const start = this.next().start
+        const pattern = new Node("ObjectBindingPattern", start, start)
+        while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+            const elementStart = this.token().start
+            const element = new Node("BindingElement", elementStart, elementStart)
+            if (this.at("DotDotDotToken")) {
+                element.add(this.tokenNode())
+                element.add(this.bindingName())
+            } else {
+                const name = this.propertyName()
+                if (this.eat("ColonToken")) element.add(name).add(this.bindingName())
+                else element.add(name)
+            }
+            if (this.eat("EqualsToken")) element.add(this.assignment())
+            pattern.add(this.finish(element, elementStart))
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseBraceToken")
+        return this.finish(pattern, start)
+    }
+
+    private arrayBindingPattern(): Node {
+        const start = this.next().start
+        const pattern = new Node("ArrayBindingPattern", start, start)
+        while (!this.at("CloseBracketToken") && !this.at("EndOfFileToken")) {
+            if (this.at("CommaToken")) {
+                // A hole: an empty node at the end of the previous token, as in TypeScript.
+                pattern.add(new Node("OmittedExpression", this.last, this.last))
+                this.next()
+                continue
+            }
+            const elementStart = this.token().start
+            const element = new Node("BindingElement", elementStart, elementStart)
+            if (this.at("DotDotDotToken")) element.add(this.tokenNode())
+            element.add(this.bindingName())
+            if (this.eat("EqualsToken")) element.add(this.assignment())
+            pattern.add(this.finish(element, elementStart))
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseBracketToken")
+        return this.finish(pattern, start)
+    }
+
+    // -------------------------------------------------------------------------
+    // Statements
+
+    parseSourceFile(): Node {
+        const start = this.token().start
+        const file = new Node("SourceFile", start, this.text.length)
+        while (!this.at("EndOfFileToken")) {
+            const before = this.i
+            file.add(this.statement())
+            if (this.i === before) this.next()
+        }
+        file.add(this.tokenNode())
+        file.end = this.text.length
+        this.file = file
+        return file
+    }
+
+    private statement(): Node {
+        const start = this.token().start
+        const next = this.peek(1)
+        switch (this.kind()) {
+            case "OpenBraceToken":
+                return this.block()
+            case "SemicolonToken":
+                this.next()
+                return this.make("EmptyStatement", start)
+            case "VarKeyword":
+            case "ConstKeyword":
+                return this.variableStatement([], start)
+            case "LetKeyword":
+                if (this.isIdentifier(next.kind) || next.kind === "OpenBraceToken" || next.kind === "OpenBracketToken")
+                    return this.variableStatement([], start)
+                break
+            case "UsingKeyword":
+                if (this.isIdentifier(next.kind) && !next.newline) return this.variableStatement([], start)
+                break
+            case "IfKeyword":
+                return this.ifStatement()
+            case "ForKeyword":
+                return this.forStatement()
+            case "WhileKeyword": {
+                this.next()
+                this.expect("OpenParenToken")
+                const condition = this.expression()
+                this.expect("CloseParenToken")
+                const body = this.statement()
+                return this.make("WhileStatement", start).add(condition).add(body)
+            }
+            case "DoKeyword": {
+                this.next()
+                const body = this.statement()
+                this.expect("WhileKeyword")
+                this.expect("OpenParenToken")
+                const condition = this.expression()
+                this.expect("CloseParenToken")
+                this.eat("SemicolonToken")
+                return this.make("DoStatement", start).add(body).add(condition)
+            }
+            case "ReturnKeyword": {
+                this.next()
+                const value = this.canEndStatement() ? null : this.expression()
+                this.semicolon()
+                return this.make("ReturnStatement", start).add(value)
+            }
+            case "BreakKeyword":
+            case "ContinueKeyword": {
+                const kind: NodeKind = this.at("BreakKeyword") ? "BreakStatement" : "ContinueStatement"
+                this.next()
+                const label = this.isIdentifier(this.kind()) && !this.token().newline ? this.identifier() : null
+                this.semicolon()
+                return this.make(kind, start).add(label)
+            }
+            case "ThrowKeyword": {
+                this.next()
+                const value = this.expression()
+                this.semicolon()
+                return this.make("ThrowStatement", start).add(value)
+            }
+            case "SwitchKeyword":
+                return this.switchStatement()
+            case "TryKeyword":
+                return this.tryStatement()
+            case "FunctionKeyword":
+            case "ClassKeyword":
+            case "EnumKeyword":
+                return this.declaration([], start)
+            case "InterfaceKeyword":
+            case "TypeKeyword":
+            case "NamespaceKeyword":
+            case "ModuleKeyword":
+                if (!next.newline && (this.isIdentifier(next.kind) || next.kind === "StringLiteral"))
+                    return this.declaration([], start)
+                break
+            case "ImportKeyword":
+                if (next.kind !== "OpenParenToken" && next.kind !== "DotToken") return this.importDeclaration()
+                break
+            case "ExportKeyword":
+                return this.exportStatement()
+            case "DeclareKeyword":
+            case "AbstractKeyword":
+                if (!next.newline && (next.kind.endsWith("Keyword") || next.kind === "Identifier"))
+                    return this.declaration(this.modifiers(), start)
+                break
+        }
+        if (this.isIdentifier(this.kind()) && next.kind === "ColonToken") {
+            const label = this.identifier()
+            this.next()
+            const body = this.statement()
+            return this.make("LabeledStatement", start).add(label).add(body)
+        }
+        const expression = this.expression()
+        this.semicolon()
+        return this.make("ExpressionStatement", start).add(expression)
+    }
+
+    private block(): Node {
+        const start = this.token().start
+        this.expect("OpenBraceToken")
+        const block = new Node("Block", start, start)
+        while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+            const before = this.i
+            block.add(this.statement())
+            if (this.i === before) this.next()
+        }
+        this.expect("CloseBraceToken")
+        return this.finish(block, start)
+    }
+
+    private ifStatement(): Node {
+        const start = this.next().start
+        this.expect("OpenParenToken")
+        const condition = this.expression()
+        this.expect("CloseParenToken")
+        const node = new Node("IfStatement", start, start).add(condition).add(this.statement())
+        if (this.eat("ElseKeyword")) node.add(this.statement())
+        return this.finish(node, start)
+    }
+
+    private forStatement(): Node {
+        const start = this.next().start
+        this.expect("OpenParenToken")
+        let initializer: Node | null = null
+        if (!this.at("SemicolonToken")) {
+            this.noIn = true
+            const k = this.kind()
+            const next = this.peek(1)
+            const declares =
+                k === "VarKeyword" ||
+                k === "ConstKeyword" ||
+                ((k === "LetKeyword" || k === "UsingKeyword") &&
+                    (this.isIdentifier(next.kind) ||
+                        next.kind === "OpenBraceToken" ||
+                        next.kind === "OpenBracketToken"))
+            initializer = declares ? this.variableDeclarationList() : this.expression()
+            this.noIn = false
+        }
+        if (initializer !== null && (this.at("OfKeyword") || this.at("InKeyword"))) {
+            const kind: NodeKind = this.at("OfKeyword") ? "ForOfStatement" : "ForInStatement"
+            this.next()
+            const iterable = kind === "ForOfStatement" ? this.assignment() : this.expression()
+            this.expect("CloseParenToken")
+            const body = this.statement()
+            return this.make(kind, start).add(initializer).add(iterable).add(body)
+        }
+        this.expect("SemicolonToken")
+        const condition = this.at("SemicolonToken") ? null : this.expression()
+        this.expect("SemicolonToken")
+        const update = this.at("CloseParenToken") ? null : this.expression()
+        this.expect("CloseParenToken")
+        const body = this.statement()
+        return this.make("ForStatement", start).add(initializer).add(condition).add(update).add(body)
+    }
+
+    private switchStatement(): Node {
+        const start = this.next().start
+        this.expect("OpenParenToken")
+        const value = this.expression()
+        this.expect("CloseParenToken")
+        const blockStart = this.token().start
+        this.expect("OpenBraceToken")
+        const caseBlock = new Node("CaseBlock", blockStart, blockStart)
+        while (this.at("CaseKeyword") || this.at("DefaultKeyword")) {
+            const clauseStart = this.token().start
+            const isCase = this.at("CaseKeyword")
+            this.next()
+            const clause = new Node(isCase ? "CaseClause" : "DefaultClause", clauseStart, clauseStart)
+            if (isCase) clause.add(this.expression())
+            this.expect("ColonToken")
+            while (
+                !this.at("CaseKeyword") &&
+                !this.at("DefaultKeyword") &&
+                !this.at("CloseBraceToken") &&
+                !this.at("EndOfFileToken")
+            ) {
+                const before = this.i
+                clause.add(this.statement())
+                if (this.i === before) this.next()
+            }
+            caseBlock.add(this.finish(clause, clauseStart))
+        }
+        this.expect("CloseBraceToken")
+        return this.node("SwitchStatement", start, [value, this.finish(caseBlock, blockStart)])
+    }
+
+    private tryStatement(): Node {
+        const start = this.next().start
+        const node = new Node("TryStatement", start, start).add(this.block())
+        if (this.at("CatchKeyword")) {
+            const catchStart = this.next().start
+            const clause = new Node("CatchClause", catchStart, catchStart)
+            if (this.eat("OpenParenToken")) {
+                const declarationStart = this.token().start
+                const declaration = new Node("VariableDeclaration", declarationStart, declarationStart).add(
+                    this.bindingName(),
+                )
+                if (this.eat("ColonToken")) declaration.add(this.type())
+                clause.add(this.finish(declaration, declarationStart))
+                this.expect("CloseParenToken")
+            }
+            node.add(this.finish(clause.add(this.block()), catchStart))
+        }
+        if (this.eat("FinallyKeyword")) node.add(this.block())
+        return this.finish(node, start)
+    }
+
+    private variableStatement(modifiers: Node[], start: int): Node {
+        const list = this.variableDeclarationList()
+        this.semicolon()
+        return this.make("VariableStatement", start).addAll(modifiers).add(list)
+    }
+
+    /** `let`, `const`, `var` or `using` and declarations, without the `;`. */
+    private variableDeclarationList(): Node {
+        const start = this.next().start
+        const list = new Node("VariableDeclarationList", start, start)
+        for (;;) {
+            const declarationStart = this.token().start
+            const declaration = new Node("VariableDeclaration", declarationStart, declarationStart).add(
+                this.bindingName(),
+            )
+            if (this.at("ExclamationToken")) declaration.add(this.tokenNode())
+            if (this.eat("ColonToken")) declaration.add(this.type())
+            if (this.eat("EqualsToken")) declaration.add(this.assignment())
+            list.add(this.finish(declaration, declarationStart))
+            if (!this.eat("CommaToken")) break
+        }
+        return this.finish(list, start)
+    }
+
+    // -------------------------------------------------------------------------
+    // Declarations
+
+    /** Modifier keywords before a declaration or class member. */
+    private modifiers(): Node[] {
+        const found: Node[] = []
+        while (modifierKinds.includes(this.kind())) {
+            const next = this.peek(1)
+            // A modifier is followed, on the same line, by what it modifies.
+            const follows =
+                next.kind === "Identifier" ||
+                next.kind.endsWith("Keyword") ||
+                next.kind === "OpenBracketToken" ||
+                next.kind === "OpenBraceToken" ||
+                next.kind === "AsteriskToken" ||
+                next.kind === "PrivateIdentifier" ||
+                next.kind === "StringLiteral" ||
+                next.kind === "NumericLiteral"
+            if (!follows || next.newline) break
+            // `const` modifies only `enum`; otherwise it starts a declaration.
+            if (this.at("ConstKeyword") && next.kind !== "EnumKeyword") break
+            found.push(this.tokenNode())
+        }
+        return found
+    }
+
+    private declaration(modifiers: Node[], start: int): Node {
+        switch (this.kind()) {
+            case "FunctionKeyword":
+                return this.functionDeclaration(modifiers, start)
+            case "ClassKeyword":
+                return this.classDeclaration(modifiers, start)
+            case "InterfaceKeyword":
+                return this.interfaceDeclaration(modifiers, start)
+            case "TypeKeyword":
+                return this.typeAliasDeclaration(modifiers, start)
+            case "EnumKeyword":
+                return this.enumDeclaration(modifiers, start)
+            case "NamespaceKeyword":
+            case "ModuleKeyword":
+            case "GlobalKeyword":
+                return this.moduleDeclaration(modifiers, start)
+            case "VarKeyword":
+            case "LetKeyword":
+            case "ConstKeyword":
+            case "UsingKeyword":
+                return this.variableStatement(modifiers, start)
+        }
+        this.error("Declaration expected")
+        const expression = this.expression()
+        this.semicolon()
+        return this.make("ExpressionStatement", start).add(expression)
+    }
+
+    private functionDeclaration(modifiers: Node[], start: int): Node {
+        this.next()
+        const node = new Node("FunctionDeclaration", start, start).addAll(modifiers)
+        if (this.at("AsteriskToken")) node.add(this.tokenNode())
+        node.add(this.identifier())
+        this.signature(node)
+        if (this.at("OpenBraceToken")) node.add(this.block())
+        else this.semicolon()
+        return this.finish(node, start)
+    }
+
+    /** Type parameters, parameters and the return type of a function, added to `node`. */
+    private signature(node: Node) {
+        if (this.at("LessThanToken")) node.addAll(this.typeParameters())
+        node.addAll(this.parameters())
+        if (this.eat("ColonToken")) node.add(this.type())
+    }
+
+    private typeParameters(): Node[] {
+        this.expect("LessThanToken")
+        const list: Node[] = []
+        while (!this.at("GreaterThanToken") && !this.at("EndOfFileToken")) {
+            const start = this.token().start
+            const parameter = new Node("TypeParameter", start, start).addAll(this.modifiers()).add(this.identifier())
+            if (this.eat("ExtendsKeyword")) parameter.add(this.type())
+            if (this.eat("EqualsToken")) parameter.add(this.type())
+            list.push(this.finish(parameter, start))
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("GreaterThanToken")
+        return list
+    }
+
+    private parameters(): Node[] {
+        this.expect("OpenParenToken")
+        const list: Node[] = []
+        while (!this.at("CloseParenToken") && !this.at("EndOfFileToken")) {
+            const start = this.token().start
+            const parameter = new Node("Parameter", start, start).addAll(this.modifiers())
+            if (this.at("DotDotDotToken")) parameter.add(this.tokenNode())
+            parameter.add(this.at("ThisKeyword") ? this.nameNode() : this.bindingName())
+            if (this.at("QuestionToken")) parameter.add(this.tokenNode())
+            if (this.eat("ColonToken")) parameter.add(this.type())
+            if (this.eat("EqualsToken")) parameter.add(this.assignment())
+            list.push(this.finish(parameter, start))
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseParenToken")
+        return list
+    }
+
+    private heritageClauses(node: Node) {
+        while (this.at("ExtendsKeyword") || this.at("ImplementsKeyword")) {
+            const start = this.next().start
+            const clause = new Node("HeritageClause", start, start)
+            for (;;) {
+                const typeStart = this.token().start
+                let expression = this.identifier()
+                while (this.eat("DotToken"))
+                    expression = this.node("PropertyAccessExpression", typeStart, [expression, this.identifierName()])
+                const type = new Node("ExpressionWithTypeArguments", typeStart, typeStart).add(expression)
+                if (this.at("LessThanToken")) type.addAll(this.typeArguments())
+                clause.add(this.finish(type, typeStart))
+                if (!this.eat("CommaToken")) break
+            }
+            node.add(this.finish(clause, start))
+        }
+    }
+
+    private classDeclaration(modifiers: Node[], start: int): Node {
+        this.next()
+        const node = new Node("ClassDeclaration", start, start).addAll(modifiers)
+        if (this.isIdentifier(this.kind()) && !this.at("ImplementsKeyword")) node.add(this.identifier())
+        if (this.at("LessThanToken")) node.addAll(this.typeParameters())
+        this.heritageClauses(node)
+        this.expect("OpenBraceToken")
+        while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+            const before = this.i
+            node.add(this.classMember())
+            if (this.i === before) this.next()
+        }
+        this.expect("CloseBraceToken")
+        return this.finish(node, start)
+    }
+
+    private classMember(): Node {
+        const start = this.token().start
+        if (this.eat("SemicolonToken")) return this.make("SemicolonClassElement", start)
+        const modifiers = this.modifiers()
+        const next = this.peek(1)
+        if (this.at("ConstructorKeyword") && next.kind === "OpenParenToken") {
+            this.next()
+            const node = new Node("Constructor", start, start).addAll(modifiers)
+            this.signature(node)
+            if (this.at("OpenBraceToken")) node.add(this.block())
+            else this.semicolon()
+            return this.finish(node, start)
+        }
+        if ((this.at("GetKeyword") || this.at("SetKeyword")) && this.isPropertyNameStart(next.kind) && !next.newline) {
+            const kind: NodeKind = this.at("GetKeyword") ? "GetAccessor" : "SetAccessor"
+            this.next()
+            const node = new Node(kind, start, start).addAll(modifiers).add(this.propertyName())
+            this.signature(node)
+            if (this.at("OpenBraceToken")) node.add(this.block())
+            else this.semicolon()
+            return this.finish(node, start)
+        }
+        const asterisk = this.at("AsteriskToken") ? this.tokenNode() : null
+        const name = this.propertyName()
+        const optional = this.at("QuestionToken") || this.at("ExclamationToken") ? this.tokenNode() : null
+        if (asterisk !== null || this.at("OpenParenToken") || this.at("LessThanToken")) {
+            const node = new Node("MethodDeclaration", start, start)
+                .addAll(modifiers)
+                .add(asterisk)
+                .add(name)
+                .add(optional)
+            this.signature(node)
+            if (this.at("OpenBraceToken")) node.add(this.block())
+            else this.semicolon()
+            return this.finish(node, start)
+        }
+        const node = new Node("PropertyDeclaration", start, start).addAll(modifiers).add(name).add(optional)
+        if (this.eat("ColonToken")) node.add(this.type())
+        if (this.eat("EqualsToken")) node.add(this.assignment())
+        this.semicolon()
+        return this.finish(node, start)
+    }
+
+    private interfaceDeclaration(modifiers: Node[], start: int): Node {
+        this.next()
+        const node = new Node("InterfaceDeclaration", start, start).addAll(modifiers).add(this.identifier())
+        if (this.at("LessThanToken")) node.addAll(this.typeParameters())
+        this.heritageClauses(node)
+        node.addAll(this.typeMembers())
+        return this.finish(node, start)
+    }
+
+    private typeAliasDeclaration(modifiers: Node[], start: int): Node {
+        this.next()
+        const node = new Node("TypeAliasDeclaration", start, start).addAll(modifiers).add(this.identifier())
+        if (this.at("LessThanToken")) node.addAll(this.typeParameters())
+        this.expect("EqualsToken")
+        // `intrinsic` is a type only here.
+        const next = this.peek(1).kind
+        if (this.at("IntrinsicKeyword") && next !== "DotToken" && next !== "LessThanToken") node.add(this.tokenNode())
+        else node.add(this.type())
+        this.semicolon()
+        return this.finish(node, start)
+    }
+
+    private enumDeclaration(modifiers: Node[], start: int): Node {
+        this.next()
+        const node = new Node("EnumDeclaration", start, start).addAll(modifiers).add(this.identifier())
+        this.expect("OpenBraceToken")
+        while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+            const memberStart = this.token().start
+            const member = new Node("EnumMember", memberStart, memberStart).add(this.propertyName())
+            if (this.eat("EqualsToken")) member.add(this.assignment())
+            node.add(this.finish(member, memberStart))
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseBraceToken")
+        return this.finish(node, start)
+    }
+
+    private moduleDeclaration(modifiers: Node[], start: int): Node {
+        const node = new Node("ModuleDeclaration", start, start).addAll(modifiers)
+        if (this.at("GlobalKeyword")) node.add(this.nameNode())
+        else {
+            this.next()
+            node.add(this.at("StringLiteral") ? this.tokenNode() : this.identifier())
+        }
+        if (this.at("OpenBraceToken")) {
+            const blockStart = this.next().start
+            const body = new Node("ModuleBlock", blockStart, blockStart)
+            while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+                const before = this.i
+                body.add(this.statement())
+                if (this.i === before) this.next()
+            }
+            this.expect("CloseBraceToken")
+            node.add(this.finish(body, blockStart))
+        } else {
+            this.semicolon()
+        }
+        return this.finish(node, start)
+    }
+
+    private importDeclaration(): Node {
+        const start = this.next().start
+        const node = new Node("ImportDeclaration", start, start)
+        if (!this.at("StringLiteral")) {
+            const clauseStart = this.token().start
+            const clause = new Node("ImportClause", clauseStart, clauseStart)
+            // `import type { ... }`
+            if (
+                this.at("TypeKeyword") &&
+                (this.peek(1).kind === "OpenBraceToken" || this.peek(1).kind === "AsteriskToken")
+            )
+                this.next()
+            if (this.isIdentifier(this.kind()) && !this.at("FromKeyword")) {
+                clause.add(this.identifier())
+                this.eat("CommaToken")
+            }
+            if (this.at("AsteriskToken")) {
+                const namespaceStart = this.next().start
+                this.expect("AsKeyword")
+                clause.add(this.node("NamespaceImport", namespaceStart, [this.identifier()]))
+            } else if (this.at("OpenBraceToken")) {
+                clause.add(this.namedBindings("NamedImports", "ImportSpecifier"))
+            }
+            node.add(this.finish(clause, clauseStart))
+            this.expect("FromKeyword")
+        }
+        if (this.at("StringLiteral")) node.add(this.tokenNode())
+        else this.error("Module specifier expected")
+        this.semicolon()
+        return this.finish(node, start)
+    }
+
+    /** `{ a, b as c }` of an import or export. */
+    private namedBindings(kind: NodeKind, element: NodeKind): Node {
+        const start = this.next().start
+        const node = new Node(kind, start, start)
+        while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+            const elementStart = this.token().start
+            // An inline `type` modifier is part of the element but not a node.
+            if (this.at("TypeKeyword") && this.isIdentifier(this.peek(1).kind) && this.peek(1).kind !== "AsKeyword")
+                this.next()
+            const first = this.identifierName()
+            const specifier = new Node(element, elementStart, elementStart)
+            if (this.eat("AsKeyword")) specifier.add(first).add(this.identifierName())
+            else specifier.add(first)
+            node.add(this.finish(specifier, elementStart))
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseBraceToken")
+        return this.finish(node, start)
+    }
+
+    private exportStatement(): Node {
+        const start = this.token().start
+        const next = this.peek(1).kind
+        if (
+            next === "OpenBraceToken" ||
+            next === "AsteriskToken" ||
+            (next === "TypeKeyword" && this.peek(2).kind === "OpenBraceToken")
+        ) {
+            this.next()
+            if (this.at("TypeKeyword")) this.next()
+            const node = new Node("ExportDeclaration", start, start)
+            if (this.eat("AsteriskToken")) {
+                // `export * from "m"`
+            } else {
+                node.add(this.namedBindings("NamedExports", "ExportSpecifier"))
+            }
+            if (this.eat("FromKeyword")) {
+                if (this.at("StringLiteral")) node.add(this.tokenNode())
+                else this.error("Module specifier expected")
+            }
+            this.semicolon()
+            return this.finish(node, start)
+        }
+        if (next === "DefaultKeyword" || next === "EqualsToken") {
+            const third = this.peek(2).kind
+            if (
+                next === "EqualsToken" ||
+                (third !== "FunctionKeyword" && third !== "ClassKeyword" && third !== "InterfaceKeyword")
+            ) {
+                const modifiers: Node[] = []
+                this.next()
+                if (this.at("DefaultKeyword")) modifiers.push(this.tokenNode())
+                else this.next()
+                const node = new Node("ExportAssignment", start, start).addAll(modifiers).add(this.assignment())
+                this.semicolon()
+                return this.finish(node, start)
+            }
+        }
+        return this.declaration(this.modifiers(), start)
+    }
+
+    // -------------------------------------------------------------------------
+    // Expressions
+
+    expression(): Node {
+        const start = this.token().start
+        let left = this.assignment()
+        while (this.at("CommaToken")) {
+            const operator = this.tokenNode()
+            left = this.node("BinaryExpression", start, [left, operator, this.assignment()])
+        }
+        return left
+    }
+
+    private assignment(): Node {
+        const arrow = this.arrowFunction()
+        if (arrow !== null) return arrow
+        const start = this.token().start
+        const left = this.conditional()
+        const operator = this.operator()
+        if (operator !== null && assignmentOperators.includes(operator.kind)) {
+            const node = this.operatorNode(operator)
+            return this.node("BinaryExpression", start, [left, node, this.assignment()])
+        }
+        return left
+    }
+
+    /** The binary or assignment operator at the current token, joining `>` with what follows. */
+    private operator(): Operator | null {
+        const k = this.kind()
+        if (k !== "GreaterThanToken") return { kind: k, tokens: 1 }
+        // `>` tokens that touch form `>>`, `>>>`, `>=`, `>>=` and `>>>=`.
+        let count = 1
+        while (
+            count < 3 &&
+            this.peek(count).kind === "GreaterThanToken" &&
+            this.peek(count).start === this.peek(count - 1).end
+        )
+            count++
+        const equals = this.peek(count).kind === "EqualsToken" && this.peek(count).start === this.peek(count - 1).end
+        const kinds: NodeKind[] = equals
+            ? [
+                  "GreaterThanEqualsToken",
+                  "GreaterThanGreaterThanEqualsToken",
+                  "GreaterThanGreaterThanGreaterThanEqualsToken",
+              ]
+            : ["GreaterThanToken", "GreaterThanGreaterThanToken", "GreaterThanGreaterThanGreaterThanToken"]
+        return { kind: kinds[count - 1], tokens: equals ? count + 1 : count }
+    }
+
+    private operatorNode(operator: Operator): Node {
+        const start = this.token().start
+        for (let n = 0; n < operator.tokens; n++) this.next()
+        const node = new Node(operator.kind, start, this.last)
+        node.text = this.text.slice(start, this.last)
+        return node
+    }
+
+    private conditional(): Node {
+        const start = this.token().start
+        const condition = this.binary(0)
+        if (!this.at("QuestionToken")) return condition
+        const question = this.tokenNode()
+        const noIn = this.noIn
+        this.noIn = false
+        const whenTrue = this.assignment()
+        this.noIn = noIn
+        const colon = this.at("ColonToken") ? this.tokenNode() : null
+        if (colon === null) this.error("':' expected")
+        const whenFalse = this.assignment()
+        return this.make("ConditionalExpression", start)
+            .add(condition)
+            .add(question)
+            .add(whenTrue)
+            .add(colon)
+            .add(whenFalse)
+    }
+
+    private binary(minimum: int): Node {
+        const start = this.token().start
+        let left = this.unary()
+        for (;;) {
+            const operator = this.operator()
+            if (operator === null) break
+            if (this.noIn && operator.kind === "InKeyword") break
+            const level = precedence(operator.kind)
+            if (level === 0) break
+            // `**` groups to the right, the others to the left.
+            if (operator.kind === "AsteriskAsteriskToken" ? level < minimum : level <= minimum) break
+            if (operator.kind === "AsKeyword" || operator.kind === "SatisfiesKeyword") {
+                if (this.token().newline) break
+                this.next()
+                left = this.node(operator.kind === "AsKeyword" ? "AsExpression" : "BinaryExpression", start, [
+                    left,
+                    this.type(),
+                ])
+                continue
+            }
+            const node = this.operatorNode(operator)
+            const right = this.binary(level)
+            left = this.make("BinaryExpression", start).add(left).add(node).add(right)
+        }
+        return left
+    }
+
+    private unary(): Node {
+        const start = this.token().start
+        switch (this.kind()) {
+            case "PlusPlusToken":
+            case "MinusMinusToken":
+            case "PlusToken":
+            case "MinusToken":
+            case "TildeToken":
+            case "ExclamationToken": {
+                this.next()
+                const operand = this.unary()
+                return this.make("PrefixUnaryExpression", start).add(operand)
+            }
+            case "TypeOfKeyword":
+            case "VoidKeyword":
+            case "DeleteKeyword":
+            case "AwaitKeyword": {
+                const kind: NodeKind = this.at("TypeOfKeyword")
+                    ? "TypeOfExpression"
+                    : this.at("VoidKeyword")
+                      ? "VoidExpression"
+                      : this.at("DeleteKeyword")
+                        ? "DeleteExpression"
+                        : "AwaitExpression"
+                this.next()
+                const operand = this.unary()
+                return this.make(kind, start).add(operand)
+            }
+        }
+        const expression = this.leftHandSide()
+        if ((this.at("PlusPlusToken") || this.at("MinusMinusToken")) && !this.token().newline) {
+            this.next()
+            return this.make("PostfixUnaryExpression", start).add(expression)
+        }
+        return expression
+    }
+
+    private leftHandSide(): Node {
+        const start = this.token().start
+        let expression = this.at("NewKeyword") ? this.newExpression() : this.primary()
+        for (;;) {
+            if (this.at("DotToken")) {
+                this.next()
+                expression = this.node("PropertyAccessExpression", start, [expression, this.identifierName()])
+            } else if (this.at("QuestionDotToken")) {
+                const question = this.tokenNode()
+                if (this.at("OpenBracketToken")) {
+                    this.next()
+                    const argument = this.expression()
+                    this.expect("CloseBracketToken")
+                    expression = this.make("ElementAccessExpression", start).add(expression).add(question).add(argument)
+                } else if (this.at("OpenParenToken")) {
+                    const args = this.arguments()
+                    expression = this.make("CallExpression", start).add(expression).add(question).addAll(args)
+                } else {
+                    const name = this.identifierName()
+                    expression = this.make("PropertyAccessExpression", start).add(expression).add(question).add(name)
+                }
+            } else if (this.at("OpenBracketToken")) {
+                this.next()
+                const argument = this.expression()
+                this.expect("CloseBracketToken")
+                expression = this.make("ElementAccessExpression", start).add(expression).add(argument)
+            } else if (this.at("ExclamationToken") && !this.token().newline) {
+                this.next()
+                expression = this.make("NonNullExpression", start).add(expression)
+            } else if (this.at("OpenParenToken")) {
+                const args = this.arguments()
+                expression = this.make("CallExpression", start).add(expression).addAll(args)
+            } else if (this.at("LessThanToken")) {
+                const typeArguments = this.typeArgumentsInExpression()
+                if (typeArguments === null) break
+                const args = this.arguments()
+                expression = this.make("CallExpression", start).add(expression).addAll(typeArguments).addAll(args)
+            } else {
+                break
+            }
+        }
+        return expression
+    }
+
+    private newExpression(): Node {
+        const start = this.next().start
+        const targetStart = this.token().start
+        let target = this.primary()
+        while (this.eat("DotToken"))
+            target = this.node("PropertyAccessExpression", targetStart, [target, this.identifierName()])
+        const node = new Node("NewExpression", start, start).add(target)
+        if (this.at("LessThanToken")) {
+            const typeArguments = this.speculate(() => {
+                const list = this.typeArguments()
+                return new Node("SyntaxList", 0, 0).addAll(list)
+            })
+            if (typeArguments !== null) node.addAll(typeArguments.children)
+        }
+        if (this.at("OpenParenToken")) node.addAll(this.arguments())
+        return this.finish(node, start)
+    }
+
+    private arguments(): Node[] {
+        this.expect("OpenParenToken")
+        const list: Node[] = []
+        while (!this.at("CloseParenToken") && !this.at("EndOfFileToken")) {
+            if (this.at("DotDotDotToken")) {
+                const start = this.next().start
+                list.push(this.node("SpreadElement", start, [this.assignment()]))
+            } else {
+                list.push(this.assignment())
+            }
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseParenToken")
+        return list
+    }
+
+    /** `<T, U>` before `(` in a call; null, consuming nothing, when `<` is a comparison. */
+    private typeArgumentsInExpression(): Node[] | null {
+        const list = this.speculate(() => {
+            const types = this.typeArguments()
+            if (!this.at("OpenParenToken")) return null
+            return new Node("SyntaxList", 0, 0).addAll(types)
+        })
+        return list === null ? null : list.children
+    }
+
+    private primary(): Node {
+        const start = this.token().start
+        const k = this.kind()
+        switch (k) {
+            case "NumericLiteral":
+            case "BigIntLiteral":
+            case "StringLiteral":
+            case "NoSubstitutionTemplateLiteral":
+            case "ThisKeyword":
+            case "SuperKeyword":
+            case "TrueKeyword":
+            case "FalseKeyword":
+            case "NullKeyword":
+                return this.tokenNode()
+            case "TemplateHead":
+                return this.template()
+            case "OpenParenToken": {
+                this.next()
+                const expression = this.expression()
+                this.expect("CloseParenToken")
+                return this.make("ParenthesizedExpression", start).add(expression)
+            }
+            case "OpenBracketToken":
+                return this.arrayLiteral()
+            case "OpenBraceToken":
+                return this.objectLiteral()
+            case "FunctionKeyword": {
+                this.next()
+                const node = new Node("FunctionExpression", start, start)
+                if (this.at("AsteriskToken")) node.add(this.tokenNode())
+                if (this.isIdentifier(this.kind())) node.add(this.identifier())
+                this.signature(node)
+                node.add(this.block())
+                return this.finish(node, start)
+            }
+        }
+        return this.identifier()
+    }
+
+    private template(): Node {
+        const start = this.token().start
+        const node = new Node("TemplateExpression", start, start).add(this.tokenNode())
+        for (;;) {
+            const spanStart = this.token().start
+            const expression = this.expression()
+            const k = this.kind()
+            if (k !== "TemplateMiddle" && k !== "TemplateTail") {
+                this.error("Template continuation expected")
+                break
+            }
+            const literal = this.tokenNode()
+            node.add(this.make("TemplateSpan", spanStart).add(expression).add(literal))
+            if (k === "TemplateTail") break
+        }
+        return this.finish(node, start)
+    }
+
+    private arrayLiteral(): Node {
+        const start = this.next().start
+        const node = new Node("ArrayLiteralExpression", start, start)
+        while (!this.at("CloseBracketToken") && !this.at("EndOfFileToken")) {
+            if (this.at("CommaToken")) {
+                node.add(new Node("OmittedExpression", this.last, this.last))
+                this.next()
+                continue
+            }
+            if (this.at("DotDotDotToken")) {
+                const spreadStart = this.next().start
+                node.add(this.node("SpreadElement", spreadStart, [this.assignment()]))
+            } else {
+                node.add(this.assignment())
+            }
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseBracketToken")
+        return this.finish(node, start)
+    }
+
+    private objectLiteral(): Node {
+        const start = this.next().start
+        const node = new Node("ObjectLiteralExpression", start, start)
+        while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+            const memberStart = this.token().start
+            if (this.at("DotDotDotToken")) {
+                this.next()
+                node.add(this.node("SpreadAssignment", memberStart, [this.assignment()]))
+            } else {
+                const next = this.peek(1)
+                const accessor =
+                    (this.at("GetKeyword") || this.at("SetKeyword")) &&
+                    this.isPropertyNameStart(next.kind) &&
+                    !next.newline
+                if (accessor) {
+                    const kind: NodeKind = this.at("GetKeyword") ? "GetAccessor" : "SetAccessor"
+                    this.next()
+                    const member = new Node(kind, memberStart, memberStart).add(this.propertyName())
+                    this.signature(member)
+                    member.add(this.block())
+                    node.add(this.finish(member, memberStart))
+                } else {
+                    const name = this.propertyName()
+                    if (this.at("OpenParenToken") || this.at("LessThanToken")) {
+                        const member = new Node("MethodDeclaration", memberStart, memberStart).add(name)
+                        this.signature(member)
+                        member.add(this.block())
+                        node.add(this.finish(member, memberStart))
+                    } else if (this.eat("ColonToken")) {
+                        node.add(this.node("PropertyAssignment", memberStart, [name, this.assignment()]))
+                    } else {
+                        const member = new Node("ShorthandPropertyAssignment", memberStart, memberStart).add(name)
+                        if (this.at("EqualsToken")) member.add(this.tokenNode()).add(this.assignment())
+                        node.add(this.finish(member, memberStart))
+                    }
+                }
+            }
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("CloseBraceToken")
+        return this.finish(node, start)
+    }
+
+    /** An arrow function, or null, consuming nothing, when none starts here. */
+    private arrowFunction(): Node | null {
+        const start = this.token().start
+        const k = this.kind()
+        if (this.isIdentifier(k) && this.peek(1).kind === "EqualsGreaterThanToken" && !this.peek(1).newline) {
+            const name = this.identifier()
+            const parameter = new Node("Parameter", name.start, name.end).add(name)
+            const arrow = this.tokenNode()
+            const body = this.arrowBody()
+            return this.make("ArrowFunction", start).add(parameter).add(arrow).add(body)
+        }
+        if (k !== "OpenParenToken" && k !== "LessThanToken") return null
+        return this.speculate(() => {
+            const node = new Node("ArrowFunction", start, start)
+            this.signature(node)
+            if (!this.at("EqualsGreaterThanToken") || this.token().newline) return null
+            node.add(this.tokenNode())
+            node.add(this.arrowBody())
+            return this.finish(node, start)
+        })
+    }
+
+    private arrowBody(): Node {
+        if (this.at("OpenBraceToken")) return this.block()
+        const noIn = this.noIn
+        this.noIn = false
+        const body = this.assignment()
+        this.noIn = noIn
+        return body
+    }
+
+    // -------------------------------------------------------------------------
+    // Types
+
+    type(): Node {
+        if (this.at("LessThanToken")) return this.functionType()
+        if (this.at("OpenParenToken")) {
+            const functionType = this.speculate(() => this.functionType())
+            if (functionType !== null) return functionType
+        }
+        return this.unionType()
+    }
+
+    private functionType(): Node {
+        const start = this.token().start
+        const node = new Node("FunctionType", start, start)
+        if (this.at("LessThanToken")) node.addAll(this.typeParameters())
+        node.addAll(this.parameters())
+        this.expect("EqualsGreaterThanToken")
+        node.add(this.type())
+        return this.finish(node, start)
+    }
+
+    private unionType(): Node {
+        const start = this.token().start
+        const leading = this.eat("BarToken")
+        const first = this.intersectionType()
+        if (!this.at("BarToken") && !leading) return first
+        const node = new Node("UnionType", start, start).add(first)
+        while (this.eat("BarToken")) node.add(this.intersectionType())
+        return this.finish(node, start)
+    }
+
+    private intersectionType(): Node {
+        const start = this.token().start
+        const first = this.postfixType()
+        if (!this.at("AmpersandToken")) return first
+        const node = new Node("IntersectionType", start, start).add(first)
+        while (this.eat("AmpersandToken")) node.add(this.postfixType())
+        return this.finish(node, start)
+    }
+
+    private postfixType(): Node {
+        const start = this.token().start
+        let type = this.primaryType()
+        while (this.at("OpenBracketToken") && !this.token().newline) {
+            this.next()
+            if (this.eat("CloseBracketToken")) {
+                type = this.make("ArrayType", start).add(type)
+            } else {
+                const index = this.type()
+                this.expect("CloseBracketToken")
+                type = this.make("IndexedAccessType", start).add(type).add(index)
+            }
+        }
+        return type
+    }
+
+    private primaryType(): Node {
+        const start = this.token().start
+        const k = this.kind()
+        if (keywordTypes.includes(k) && this.peek(1).kind !== "DotToken") return this.tokenNode()
+        switch (k) {
+            case "NullKeyword":
+            case "TrueKeyword":
+            case "FalseKeyword":
+            case "StringLiteral":
+            case "NumericLiteral":
+            case "BigIntLiteral":
+            case "NoSubstitutionTemplateLiteral":
+                return this.node("LiteralType", start, [this.tokenNode()])
+            case "MinusToken": {
+                this.next()
+                const literal = this.tokenNode()
+                const negative = this.make("PrefixUnaryExpression", start).add(literal)
+                return this.make("LiteralType", start).add(negative)
+            }
+            case "TypeOfKeyword": {
+                this.next()
+                const nameStart = this.token().start
+                let name = this.identifier()
+                while (this.eat("DotToken")) name = this.node("QualifiedName", nameStart, [name, this.identifierName()])
+                return this.node("TypeQuery", start, [name])
+            }
+            case "KeyOfKeyword":
+            case "UniqueKeyword":
+            case "ReadonlyKeyword": {
+                this.next()
+                return this.node("TypeOperator", start, [this.postfixType()])
+            }
+            case "OpenParenToken": {
+                this.next()
+                const inner = this.type()
+                this.expect("CloseParenToken")
+                return this.make("ParenthesizedType", start).add(inner)
+            }
+            case "OpenBraceToken": {
+                const node = new Node("TypeLiteral", start, start).addAll(this.typeMembers())
+                return this.finish(node, start)
+            }
+            case "OpenBracketToken": {
+                this.next()
+                const node = new Node("TupleType", start, start)
+                while (!this.at("CloseBracketToken") && !this.at("EndOfFileToken")) {
+                    node.add(this.type())
+                    if (!this.eat("CommaToken")) break
+                }
+                this.expect("CloseBracketToken")
+                return this.finish(node, start)
+            }
+        }
+        let name = this.identifier()
+        while (this.at("DotToken")) {
+            this.next()
+            name = this.node("QualifiedName", start, [name, this.identifierName()])
+        }
+        const reference = new Node("TypeReference", start, start).add(name)
+        if (this.at("LessThanToken") && !this.token().newline) reference.addAll(this.typeArguments())
+        return this.finish(reference, start)
+    }
+
+    private typeArguments(): Node[] {
+        this.expect("LessThanToken")
+        const list: Node[] = []
+        while (!this.at("GreaterThanToken") && !this.at("EndOfFileToken")) {
+            list.push(this.type())
+            if (!this.eat("CommaToken")) break
+        }
+        this.expect("GreaterThanToken")
+        return list
+    }
+
+    /** `{ members }` of an interface or object type. */
+    private typeMembers(): Node[] {
+        this.expect("OpenBraceToken")
+        const members: Node[] = []
+        while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+            const start = this.token().start
+            const before = this.i
+            const modifiers = this.modifiers()
+            const name = this.propertyName()
+            const question = this.at("QuestionToken") ? this.tokenNode() : null
+            const method = this.at("OpenParenToken") || this.at("LessThanToken")
+            const member = new Node(method ? "MethodSignature" : "PropertySignature", start, start)
+                .addAll(modifiers)
+                .add(name)
+                .add(question)
+            if (method) this.signature(member)
+            else if (this.eat("ColonToken")) member.add(this.type())
+            // The separator belongs to the member.
+            if (!this.eat("SemicolonToken")) this.eat("CommaToken")
+            members.push(this.finish(member, start))
+            if (this.i === before) this.next()
+        }
+        this.expect("CloseBraceToken")
+        return members
+    }
+}

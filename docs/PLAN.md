@@ -191,11 +191,13 @@ work.**
 ### Phase 9: Self-hosting
 - Rewrite the compiler in Ore, the best stress test of the language, in
   `selfhost/`.
-- Done: the lexer (`selfhost/src/lexer.ore`). `tests/selfhost.test.ts`
-  checks that its tokens equal the TypeScript scanner's on every .ore file of
-  the repository.
-- Next: the parser, checked the same way against the TypeScript parser's
-  tree; then the checker and the C backend.
+- Done: the lexer and the parser (`selfhost/src/lexer.ore`, `parser.ore`).
+  `tests/selfhost.test.ts` checks, on every .ore file of the repository, that
+  the tokens equal the TypeScript scanner's and the tree (kinds, spans and
+  children) equals the TypeScript parser's.
+- Next: the checker and the C backend.
+- Language gaps found so far: definite assignment (`let x: T` assigned on
+  every path before use) is not supported.
 
 ## 5. Risks and mitigations
 

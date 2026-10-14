@@ -1,0 +1,144 @@
+// The syntax tree, in the shape of the TypeScript compiler's: the same node
+// kinds (ts.SyntaxKind names), spans, and children in the order of
+// ts.forEachChild.
+
+import { type Kind } from "./tokens"
+
+export type NodeKind =
+    | Kind
+    | "SourceFile"
+    /** A list of nodes, used while parsing. */
+    | "SyntaxList"
+    // Statements
+    | "Block"
+    | "EmptyStatement"
+    | "VariableStatement"
+    | "VariableDeclarationList"
+    | "VariableDeclaration"
+    | "ExpressionStatement"
+    | "IfStatement"
+    | "DoStatement"
+    | "WhileStatement"
+    | "ForStatement"
+    | "ForInStatement"
+    | "ForOfStatement"
+    | "ContinueStatement"
+    | "BreakStatement"
+    | "ReturnStatement"
+    | "SwitchStatement"
+    | "CaseBlock"
+    | "CaseClause"
+    | "DefaultClause"
+    | "LabeledStatement"
+    | "ThrowStatement"
+    | "TryStatement"
+    | "CatchClause"
+    // Declarations
+    | "FunctionDeclaration"
+    | "ClassDeclaration"
+    | "InterfaceDeclaration"
+    | "TypeAliasDeclaration"
+    | "EnumDeclaration"
+    | "EnumMember"
+    | "ModuleDeclaration"
+    | "ModuleBlock"
+    | "ImportDeclaration"
+    | "ImportClause"
+    | "NamespaceImport"
+    | "NamedImports"
+    | "ImportSpecifier"
+    | "ExportDeclaration"
+    | "NamedExports"
+    | "ExportSpecifier"
+    | "ExportAssignment"
+    | "HeritageClause"
+    | "ExpressionWithTypeArguments"
+    | "Parameter"
+    | "TypeParameter"
+    | "PropertyDeclaration"
+    | "MethodDeclaration"
+    | "Constructor"
+    | "GetAccessor"
+    | "SetAccessor"
+    | "SemicolonClassElement"
+    | "ComputedPropertyName"
+    | "ObjectBindingPattern"
+    | "ArrayBindingPattern"
+    | "BindingElement"
+    // Expressions
+    | "BinaryExpression"
+    | "PrefixUnaryExpression"
+    | "PostfixUnaryExpression"
+    | "CallExpression"
+    | "NewExpression"
+    | "PropertyAccessExpression"
+    | "ElementAccessExpression"
+    | "ParenthesizedExpression"
+    | "ArrowFunction"
+    | "FunctionExpression"
+    | "ObjectLiteralExpression"
+    | "PropertyAssignment"
+    | "ShorthandPropertyAssignment"
+    | "SpreadAssignment"
+    | "ArrayLiteralExpression"
+    | "SpreadElement"
+    | "OmittedExpression"
+    | "ConditionalExpression"
+    | "NonNullExpression"
+    | "AsExpression"
+    | "TypeOfExpression"
+    | "VoidExpression"
+    | "DeleteExpression"
+    | "AwaitExpression"
+    | "TemplateExpression"
+    | "TemplateSpan"
+    | "QualifiedName"
+    // Types
+    | "TypeReference"
+    | "ArrayType"
+    | "UnionType"
+    | "IntersectionType"
+    | "LiteralType"
+    | "FunctionType"
+    | "TypeLiteral"
+    | "PropertySignature"
+    | "MethodSignature"
+    | "ParenthesizedType"
+    | "TypeQuery"
+    | "TypeOperator"
+    | "IndexedAccessType"
+    | "TupleType"
+    | "GreaterThanGreaterThanToken"
+    | "GreaterThanGreaterThanGreaterThanToken"
+    | "GreaterThanEqualsToken"
+    | "GreaterThanGreaterThanEqualsToken"
+    | "GreaterThanGreaterThanGreaterThanEqualsToken"
+
+/** A node of the syntax tree: its kind, its span in bytes, and its children. */
+export class Node {
+    children: Node[] = []
+    /** The text of an identifier or a literal, as written. */
+    text: string = ""
+
+    constructor(
+        readonly kind: NodeKind,
+        public start: int,
+        public end: int,
+    ) {}
+
+    add(child: Node | null): Node {
+        if (child !== null) this.children.push(child)
+        return this
+    }
+
+    addAll(children: Node[]): Node {
+        for (const child of children) this.children.push(child)
+        return this
+    }
+}
+
+/** Writes a tree in pre-order, one node per line: its kind, start and end. */
+export function dump(node: Node, out: string[]) {
+    out.push(`${node.kind} ${node.start} ${node.end}`)
+    for (const child of node.children) dump(child, out)
+}
