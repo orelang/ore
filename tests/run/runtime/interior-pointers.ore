@@ -1,0 +1,13 @@
+// A slice of a string points into the middle of the original's bytes; it must
+// keep them alive after the original is gone, through many collections.
+
+const views: string[] = []
+for (let i = 0; i < 3000; i++) {
+    const whole = `${i}:the original string, long enough to be its own object:${i}`
+    views.push(whole.slice(whole.indexOf(":") + 1, whole.lastIndexOf(":")))
+}
+let garbage = 0
+for (let i = 0; i < 200000; i++) garbage += `${i}${i}${i}`.length
+let wrong = 0
+for (const v of views) if (v !== "the original string, long enough to be its own object") wrong++
+console.log("wrong", wrong, garbage > 0)
