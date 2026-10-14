@@ -16,7 +16,13 @@ export abstract class FunctionEmitter extends EmitterBase {
   /** The C type of a value crossing into C, with the extension attributes clang uses. */
   protected externType(type: Type, param: boolean): string {
     if (type.kind === "string") return "ptr"
-    const ext = type.kind === "bool" ? "zeroext" : type.kind === "int" && type.bits < 32 ? (type.signed ? "signext" : "zeroext") : undefined
+    // Integers narrower than 32 bits are widened to the register by whoever
+    // produces them on x86-64 and on Apple's arm64, which LLVM is told with
+    // zeroext and signext. AAPCS64 on Linux leaves the upper bits undefined, so
+    // there the attributes would let LLVM skip the masking it needs.
+    const widened = !(process.platform === "linux" && process.arch === "arm64")
+    const small = type.kind === "bool" || (type.kind === "int" && type.bits < 32)
+    const ext = !widened || !small ? undefined : type.kind === "int" && type.signed ? "signext" : "zeroext"
     // LLVM writes parameter attributes after the type and result attributes before it.
     if (ext) return param ? `${this.lt(type)} ${ext}` : `${ext} ${this.lt(type)}`
     return param || type.kind !== "void" ? this.lt(type) : "void"
