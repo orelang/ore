@@ -277,8 +277,11 @@ static ore_task *task_new(ore_closure body, size_t stack_size) {
   frame[0] = t;                                // x19
   frame[11] = (void *)ore_task_trampoline;     // x30
 #else
-  void **frame = (void **)(top - 8 - 7 * 8);
-  memset(frame, 0, 8 * 8);
+  // Six saved registers and the return address into the trampoline; after
+  // `ret`, rsp is 16-byte aligned, as the ABI requires before the trampoline's
+  // `call` (aligned SSE stores in callees such as snprintf fault otherwise).
+  void **frame = (void **)(top - 9 * 8);
+  memset(frame, 0, 9 * 8);
   frame[4] = t;                                // rbx
   frame[6] = (void *)ore_task_trampoline;      // return address
 #endif
