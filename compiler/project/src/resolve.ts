@@ -15,12 +15,14 @@ import runtimeProgram from "../../../runtime/core/program.ore" with { type: "tex
 import runtimeMap from "../../../runtime/core/map.ore" with { type: "text" }
 import runtimeString from "../../../runtime/core/string.ore" with { type: "text" }
 import runtimeTask from "../../../runtime/core/task.ore" with { type: "text" }
+import cryptoModule from "../../../runtime/std/crypto.ore" with { type: "text" }
 import netModule from "../../../runtime/std/net.ore" with { type: "text" }
 import syncModule from "../../../runtime/std/sync.ore" with { type: "text" }
 import testModule from "../../../runtime/std/test.ore" with { type: "text" }
 
 /** Standard library modules, imported as "ore:name" and embedded in the compiler. */
 export const stdModules: Record<string, string> = {
+  "ore:crypto": cryptoModule,
   "ore:net": netModule,
   "ore:sync": syncModule,
   "ore:test": testModule,
