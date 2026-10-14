@@ -1,16 +1,18 @@
-// ore-next: for now, prints the tokens or the syntax tree of a file.
+// ore-next: for now, prints the tokens or the syntax tree of a file, or formats it.
 //
 //   ore-next tokens <file.ore>   one token per line: kind, start and end byte
 //   ore-next tree <file.ore>     the syntax tree in pre-order: kind, start and end byte
 //   ore-next roles <file.ore>    the same, each node after its role in its parent ("-" for the root)
+//   ore-next fmt <file.ore>      the file formatted in the Ore style, as `ore fmt` formats it
 
+import { format } from "./fmt/print"
 import { dump, dumpRoles } from "./syntax/ast"
 import { tokenize } from "./syntax/lexer"
 import { parse } from "./syntax/parser"
 
 const mode = process.args.length === 2 ? process.args[0] : ""
-if (mode !== "tokens" && mode !== "tree" && mode !== "roles") {
-    console.error("usage: ore-next tokens|tree|roles <file.ore>")
+if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "fmt") {
+    console.error("usage: ore-next tokens|tree|roles|fmt <file.ore>")
     process.exit(2)
 }
 const text = fs.readFile(process.args[1])
@@ -18,7 +20,14 @@ if (text instanceof Error) {
     console.error(text.message)
     process.exit(1)
 }
-if (mode === "tokens") {
+if (mode === "fmt") {
+    const formatted = format(text)
+    if (formatted instanceof Error) {
+        console.error(formatted.message)
+        process.exit(1)
+    }
+    console.write(formatted)
+} else if (mode === "tokens") {
     for (const token of tokenize(text)) console.log(token.kind, token.start, token.end)
 } else {
     const parser = parse(text)

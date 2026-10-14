@@ -1,0 +1,1289 @@
+// Comments: the text utilities of prettier, the attachment of each comment
+// to a node (leading, trailing or dangling) with prettier's handlers for
+// special places, and the printing of comments.
+
+import {
+    breakParent,
+    concat,
+    type Doc,
+    empty,
+    hardline,
+    indent,
+    join,
+    label,
+    LABEL,
+    line,
+    lineSuffix,
+    literalline,
+    markAsRoot,
+    text,
+} from "./doc"
+import { type Comment, ENode, locEnd, locStart } from "./estree"
+
+/** The text being formatted, and the same with comments blanked out. */
+export class Context {
+    text = ""
+    blank = ""
+    comments: Comment[] = []
+}
+
+export const ctx = new Context()
+
+// -----------------------------------------------------------------------------
+// Text
+
+const LF = 10
+const CR = 13
+const SPACE = 32
+const TAB = 9
+const SLASH = 47
+const STAR = 42
+const COMMA = 44
+const SEMI = 59
+
+function isNewline(c: u8): bool {
+    return c === LF || c === CR
+}
+
+function isWhitespace(c: u8): bool {
+    return c === SPACE || c === TAB || c === LF || c === CR || c === 11 || c === 12
+}
+
+/** Skips spaces and tabs from `i`, forward or backwards; -1 or the length at the ends. */
+export function skipSpaces(s: string, i: int, backwards: bool): int {
+    let j = i
+    while (j >= 0 && j < s.length) {
+        const c = s[j]
+        if (c !== SPACE && c !== TAB) return j
+        j = backwards ? j - 1 : j + 1
+    }
+    return j
+}
+
+function skipToLineEnd(s: string, i: int): int {
+    let j = i
+    while (j >= 0 && j < s.length) {
+        const c = s[j]
+        if (c !== SPACE && c !== TAB && c !== COMMA && c !== SEMI) return j
+        j++
+    }
+    return j
+}
+
+function skipInlineComment(s: string, i: int): int {
+    if (i + 1 < s.length && s[i] === SLASH && s[i + 1] === STAR) {
+        for (let j = i + 2; j + 1 < s.length; j++) if (s[j] === STAR && s[j + 1] === SLASH) return j + 2
+    }
+    return i
+}
+
+function skipTrailingComment(s: string, i: int): int {
+    if (i + 1 < s.length && s[i] === SLASH && s[i + 1] === SLASH) {
+        let j = i
+        while (j < s.length && !isNewline(s[j])) j++
+        return j
+    }
+    return i
+}
+
+/** Skips one line break at `i`, forward or backwards. */
+export function skipNewline(s: string, i: int, backwards: bool): int {
+    if (i < 0 || i >= s.length) return i
+    const c = s[i]
+    if (backwards) {
+        if (i > 0 && s[i - 1] === CR && c === LF) return i - 2
+        if (isNewline(c)) return i - 1
+    } else {
+        if (c === CR && i + 1 < s.length && s[i + 1] === LF) return i + 2
+        if (isNewline(c)) return i + 1
+    }
+    return i
+}
+
+/** Whether a line break follows `i` (or precedes it, backwards) after spaces. */
+export function hasNewline(s: string, i: int, backwards: bool): bool {
+    const n = skipSpaces(s, backwards ? i - 1 : i, backwards)
+    return n !== skipNewline(s, n, backwards)
+}
+
+/** The last index of `sub` in `s` at or before `pos`, as JavaScript's lastIndexOf with a position. */
+export function lastIndexBefore(s: string, sub: string, pos: int): int {
+    const end = pos + sub.length
+    return s.slice(0, end < s.length ? end : s.length).lastIndexOf(sub)
+}
+
+export function hasNewlineInRange(s: string, start: int, end: int): bool {
+    for (let i = start; i < end && i < s.length; i++) if (s[i] === LF) return true
+    return false
+}
+
+/** The index of the next character that is not a space, a line break or in a comment. */
+export function nextNonSpaceIndex(s: string, i: int): int {
+    let prev = -2
+    let j = i
+    while (j !== prev) {
+        prev = j
+        j = skipSpaces(s, j, false)
+        j = skipInlineComment(s, j)
+        j = skipTrailingComment(s, j)
+        j = skipNewline(s, j, false)
+    }
+    return j
+}
+
+/** The next character that is not a space, a line break or in a comment, or "". */
+export function nextNonSpaceChar(s: string, i: int): string {
+    const j = nextNonSpaceIndex(s, i)
+    return j < s.length ? s.slice(j, j + 1) : ""
+}
+
+/** Whether the line after the one at `i` is empty. */
+export function isNextLineEmpty(s: string, i: int): bool {
+    let prev = -2
+    let j = i
+    while (j !== prev) {
+        prev = j
+        j = skipToLineEnd(s, j)
+        j = skipInlineComment(s, j)
+        j = skipSpaces(s, j, false)
+    }
+    j = skipTrailingComment(s, j)
+    j = skipNewline(s, j, false)
+    return hasNewline(s, j, false)
+}
+
+/** Whether the line before the one at `i` is empty. */
+export function isPreviousLineEmpty(s: string, i: int): bool {
+    let j = i - 1
+    j = skipSpaces(s, j, true)
+    j = skipNewline(s, j, true)
+    j = skipSpaces(s, j, true)
+    return j !== skipNewline(s, j, true)
+}
+
+/** Whether an empty line follows a node. */
+export function nextLineEmptyAfter(node: ENode): bool {
+    const end = locEnd(node)
+    if (isNextLineEmpty(ctx.text, end)) return true
+    return node.end !== end && isNextLineEmpty(ctx.text, node.end)
+}
+
+// -----------------------------------------------------------------------------
+// Queries
+
+export const LEADING = 2
+export const TRAILING = 4
+export const DANGLING = 8
+export const BLOCK = 16
+export const LINE = 32
+export const FIRST = 128
+export const LAST = 256
+
+function matches(c: Comment, flags: int, i: int, count: int): bool {
+    if ((flags & LEADING) !== 0 && !c.leading) return false
+    if ((flags & TRAILING) !== 0 && !c.trailing) return false
+    if ((flags & DANGLING) !== 0 && (c.leading || c.trailing)) return false
+    if ((flags & BLOCK) !== 0 && !c.block) return false
+    if ((flags & LINE) !== 0 && c.block) return false
+    if ((flags & FIRST) !== 0 && i !== 0) return false
+    if ((flags & LAST) !== 0 && i !== count - 1) return false
+    return true
+}
+
+/** Whether a node has comments matching flags. */
+export function hasComment(node: ENode | null, flags = 0): bool {
+    if (node === null) return false
+    const comments = node.comments
+    for (let i = 0; i < comments.length; i++) if (matches(comments[i], flags, i, comments.length)) return true
+    return false
+}
+
+/** The comments of a node matching flags. */
+export function commentsOf(node: ENode | null, flags = 0): Comment[] {
+    const found: Comment[] = []
+    if (node === null) return found
+    const comments = node.comments
+    for (let i = 0; i < comments.length; i++)
+        if (matches(comments[i], flags, i, comments.length)) found.push(comments[i])
+    return found
+}
+
+export function isBlockComment(c: Comment): bool {
+    return c.block
+}
+
+/** A line comment, or a block comment on one line. */
+export function isLineOrSingleLineBlock(c: Comment): bool {
+    return !c.block || !hasNewlineInRange(ctx.text, c.start, c.end)
+}
+
+/** Whether a comment is a JSDoc type cast, `/** @type {T} *\/`. */
+export function isTypeCastComment(c: Comment): bool {
+    if (!c.block || !c.value.startsWith("*")) return false
+    return c.value.includes("@type") || c.value.includes("@satisfies")
+}
+
+// -----------------------------------------------------------------------------
+// Attachment
+
+function attach(node: ENode, c: Comment) {
+    node.comments.push(c)
+    c.printed = false
+}
+
+export function addLeading(node: ENode, c: Comment) {
+    c.leading = true
+    c.trailing = false
+    attach(node, c)
+}
+
+export function addTrailing(node: ENode, c: Comment) {
+    c.leading = false
+    c.trailing = true
+    attach(node, c)
+}
+
+export function addDangling(node: ENode, c: Comment, marker = "") {
+    c.leading = false
+    c.trailing = false
+    c.marker = marker
+    attach(node, c)
+}
+
+/** Whether a node can take comments, as prettier's canAttachComment for estree. */
+function canAttach(n: ENode): bool {
+    switch (n.type) {
+        case "TemplateElement":
+        case "TSEmptyBodyFunctionExpression":
+        case "ChainExpression":
+        case "Hole":
+            return false
+    }
+    const parent = n.parent
+    if (parent !== null) {
+        if (
+            parent.type === "Property" &&
+            parent.shorthand &&
+            parent.get("key") === n &&
+            !isMethodLike(parent) &&
+            parent.get("value") !== n
+        )
+            return false
+        if (parent.type === "ImportSpecifier" && sameSpecifier(parent) && parent.get("local") === n) return false
+        if (parent.type === "ExportSpecifier" && sameSpecifier(parent) && parent.get("exported") === n) return false
+        if (
+            n.type === "FunctionExpression" &&
+            parent.type === "MethodDefinition" &&
+            n.all("params").length === 0 &&
+            !n.has("returnType") &&
+            !n.has("typeParameters") &&
+            n.has("body")
+        )
+            return false
+        if (n.type === "TSTypeAnnotation" && parent.type === "TSPropertySignature") return false
+    }
+    if (n.type === "EmptyStatement") return isStatementBody(n)
+    return true
+}
+
+/** A method, getter or setter of an object literal. */
+export function isMethodLike(n: ENode): bool {
+    return n.method || n.kind === "get" || n.kind === "set"
+}
+
+/** `import { a }`: an import or export specifier whose two names are one. */
+export function sameSpecifier(n: ENode): bool {
+    const local = n.get("local")
+    const other = n.get(n.type === "ImportSpecifier" ? "imported" : "exported")
+    if (local === null || other === null) return false
+    if (local.type !== other.type || local.start !== other.start || local.end !== other.end) return false
+    return local.type === "Identifier" ? local.name === other.name : local.raw === other.raw
+}
+
+/** An empty statement that is the body of an `if` or a loop. */
+export function isStatementBody(n: ENode): bool {
+    const parent = n.parent
+    if (parent === null) return false
+    switch (parent.type) {
+        case "IfStatement":
+            return n.key === "consequent" || n.key === "alternate"
+        case "DoWhileStatement":
+        case "ForInStatement":
+        case "ForOfStatement":
+        case "ForStatement":
+        case "LabeledStatement":
+        case "WhileStatement":
+            return n.key === "body"
+    }
+    return false
+}
+
+const sortedCache = new Map<ENode, ENode[]>()
+
+/** The descendants of a node that can take comments and have no such ancestor below it, by position. */
+function sortedChildren(node: ENode): ENode[] {
+    const cached = sortedCache.get(node)
+    if (cached !== null) return cached
+    const out: ENode[] = []
+    for (const child of node.kids) {
+        if (canAttach(child)) out.push(child)
+        else for (const d of sortedChildren(child)) out.push(d)
+    }
+    out.sort((a, b) => {
+        const s = locStart(a) - locStart(b)
+        return s !== 0 ? s : locEnd(a) - locEnd(b)
+    })
+    sortedCache.set(node, out)
+    return out
+}
+
+/** Sets the enclosing, preceding and following nodes of a comment. */
+function decorate(node: ENode, c: Comment, enclosing: ENode | null) {
+    const children = sortedChildren(node)
+    let preceding: ENode | null = null
+    let following: ENode | null = null
+    let lo = 0
+    let hi = children.length
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        const child = children[mid]
+        const start = locStart(child)
+        const end = locEnd(child)
+        if (start <= c.start && c.end <= end) {
+            decorate(child, c, child)
+            return
+        }
+        if (end <= c.start) {
+            preceding = child
+            lo = mid + 1
+            continue
+        }
+        if (c.end <= start) {
+            following = child
+            hi = mid
+            continue
+        }
+        process.panic("fmt: a comment overlaps a node")
+    }
+    if (enclosing !== null && enclosing.type === "TemplateLiteral") {
+        const quasis = enclosing.all("quasis")
+        const index = quasiIndex(quasis, c.start)
+        if (preceding !== null && quasiIndex(quasis, locStart(preceding)) !== index) preceding = null
+        if (following !== null && quasiIndex(quasis, locStart(following)) !== index) following = null
+    }
+    c.enclosing = enclosing
+    c.preceding = preceding
+    c.following = following
+}
+
+function quasiIndex(quasis: ENode[], pos: int): int {
+    const p = pos - 1
+    for (let i = 1; i < quasis.length; i++) if (p < locStart(quasis[i])) return i - 1
+    return 0
+}
+
+/** Whether a text has only spaces and tabs, no line break. */
+function isInlineSpace(s: string): bool {
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i]
+        if (c === LF || !isWhitespace(c)) return false
+    }
+    return true
+}
+
+/** Attaches the comments of a file to its nodes. */
+export function attachComments(ast: ENode, comments: Comment[]) {
+    for (const c of comments) decorate(ast, c, null)
+    const s = ctx.text
+    let ties: Comment[] = []
+    for (let i = 0; i < comments.length; i++) {
+        const c = comments[i]
+        // Own line: a line break before the comment, or before comments on its line with the same preceding node.
+        let start = c.start
+        if (c.preceding !== null)
+            for (let j = i - 1; j >= 0; j--) {
+                const other = comments[j]
+                if (other.preceding !== c.preceding || !isInlineSpace(s.slice(other.end, start))) break
+                start = other.start
+            }
+        let placement = "remaining"
+        if (hasNewline(s, start, true)) placement = "ownLine"
+        else {
+            let end = c.end
+            if (c.following !== null)
+                for (let j = i + 1; j < comments.length; j++) {
+                    const other = comments[j]
+                    if (other.following !== c.following || !isInlineSpace(s.slice(end, other.start))) break
+                    end = other.end
+                }
+            if (hasNewline(s, end, false)) placement = "endOfLine"
+        }
+        c.placement = placement
+        const preceding = c.preceding
+        const following = c.following
+        const enclosing = c.enclosing
+        if (placement === "ownLine") {
+            if (handleOwnLine(c, ast)) continue
+            if (following !== null) addLeading(following, c)
+            else if (preceding !== null) addTrailing(preceding, c)
+            else addDangling(enclosing !== null ? enclosing : ast, c)
+        } else if (placement === "endOfLine") {
+            if (handleEndOfLine(c, ast)) continue
+            if (preceding !== null) addTrailing(preceding, c)
+            else if (following !== null) addLeading(following, c)
+            else addDangling(enclosing !== null ? enclosing : ast, c)
+        } else {
+            if (handleRemaining(c, ast)) continue
+            if (preceding !== null && following !== null) {
+                if (ties.length > 0 && ties[ties.length - 1].following !== following) {
+                    breakTies(ties)
+                    ties = []
+                }
+                ties.push(c)
+            } else if (preceding !== null) addTrailing(preceding, c)
+            else if (following !== null) addLeading(following, c)
+            else addDangling(enclosing !== null ? enclosing : ast, c)
+        }
+    }
+    breakTies(ties)
+}
+
+/** Places comments between two nodes: those followed only by spaces and `(` lead the following node. */
+function breakTies(ties: Comment[]) {
+    const count = ties.length
+    if (count === 0) return
+    const preceding = ties[0].preceding!
+    const following = ties[0].following!
+    let gapEnd = locStart(following)
+    let i = count
+    for (; i > 0; --i) {
+        const c = ties[i - 1]
+        const gap = ctx.text.slice(c.end, gapEnd)
+        let ok = true
+        for (let k = 0; k < gap.length; k++) {
+            const ch = gap[k]
+            if (!isWhitespace(ch) && ch !== 40) {
+                ok = false
+                break
+            }
+        }
+        if (ok) gapEnd = c.start
+        else break
+    }
+    for (let k = 0; k < count; k++) {
+        if (k < i) addTrailing(preceding, ties[k])
+        else addLeading(following, ties[k])
+    }
+    for (const n of [preceding, following]) if (n.comments.length > 1) n.comments.sort((a, b) => a.start - b.start)
+}
+
+// -----------------------------------------------------------------------------
+// Handlers
+
+function isFunctionLike(n: ENode | null): bool {
+    if (n === null) return false
+    switch (n.type) {
+        case "ArrowFunctionExpression":
+        case "FunctionExpression":
+        case "FunctionDeclaration":
+        case "TSDeclareFunction":
+        case "TSMethodSignature":
+        case "TSFunctionType":
+            return true
+    }
+    return false
+}
+
+function isCallLike(n: ENode | null): bool {
+    return n !== null && (n.type === "CallExpression" || n.type === "NewExpression")
+}
+
+function isClassLike(n: ENode | null): bool {
+    return n !== null && (n.type === "ClassDeclaration" || n.type === "TSInterfaceDeclaration")
+}
+
+function isClassMember(n: ENode | null): bool {
+    if (n === null) return false
+    switch (n.type) {
+        case "PropertyDefinition":
+        case "TSAbstractPropertyDefinition":
+        case "TSAbstractMethodDefinition":
+        case "MethodDefinition":
+        case "TSParameterProperty":
+            return true
+    }
+    return false
+}
+
+/** The first statement (or member) of a block, or the block itself, takes a comment. */
+function addBlockFirst(block: ENode, c: Comment) {
+    const items = block.type === "ObjectExpression" ? block.all("properties") : block.all("body")
+    for (const item of items)
+        if (item.type !== "EmptyStatement") {
+            addLeading(item, c)
+            return
+        }
+    addDangling(block, c)
+}
+
+function addBlockOrNot(n: ENode, c: Comment) {
+    if (n.type === "BlockStatement") addBlockFirst(n, c)
+    else addLeading(n, c)
+}
+
+function nextChar(pos: int): string {
+    return nextNonSpaceChar(ctx.text, pos)
+}
+
+/** Comments in empty parentheses: `f(/* c *\/)`, `function f(/* c *\/) {}`. */
+function handleEmptyParens(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (enclosing === null) return false
+    if (isCallLike(enclosing) && enclosing.all("arguments").length === 0 && inEmptyParens(enclosing, c)) {
+        addDangling(enclosing, c)
+        return true
+    }
+    let fn: ENode | null = null
+    if (isFunctionLike(enclosing)) fn = enclosing
+    else if (enclosing.type === "MethodDefinition" || enclosing.type === "TSAbstractMethodDefinition")
+        fn = enclosing.get("value")
+    else if (enclosing.type === "Property" && isMethodLike(enclosing)) fn = enclosing.get("value")
+    if (fn !== null && fn.all("params").length === 0 && inEmptyParens(fn, c)) {
+        addDangling(fn, c)
+        return true
+    }
+    return false
+}
+
+function inEmptyParens(n: ENode, c: Comment): bool {
+    if (c.start >= locEnd(n) || c.end <= locStart(n)) return false
+    const b = ctx.blank
+    return b.slice(0, c.start).trimEnd().endsWith("(") && b.slice(c.end).trimStart().startsWith(")")
+}
+
+function handleConditional(c: Comment): bool {
+    const preceding = c.preceding
+    const enclosing = c.enclosing
+    const sameLine = preceding !== null && !hasNewlineInRange(ctx.text, locEnd(preceding), c.start)
+    if (
+        (preceding === null || !sameLine) &&
+        enclosing !== null &&
+        enclosing.type === "ConditionalExpression" &&
+        c.following !== null
+    ) {
+        addLeading(c.following, c)
+        return true
+    }
+    return false
+}
+
+function handleLastFunctionArg(c: Comment): bool {
+    const preceding = c.preceding
+    const enclosing = c.enclosing
+    const following = c.following
+    if (preceding !== null && enclosing !== null) {
+        const t = preceding.type
+        const isParam =
+            t === "Identifier" ||
+            t === "AssignmentPattern" ||
+            t === "ObjectPattern" ||
+            t === "ArrayPattern" ||
+            t === "RestElement" ||
+            t === "TSParameterProperty"
+        const inFunction =
+            isFunctionLike(enclosing) ||
+            ((enclosing.type === "MethodDefinition" || enclosing.type === "TSAbstractMethodDefinition") &&
+                enclosing.at("value").type === "TSEmptyBodyFunctionExpression")
+        if (isParam && inFunction && nextChar(c.end) === ")") {
+            addTrailing(preceding, c)
+            return true
+        }
+    }
+    if (!c.block && following !== null && following.type === "BlockStatement" && enclosing !== null) {
+        const fn =
+            enclosing.type === "FunctionDeclaration" ||
+            enclosing.type === "FunctionExpression" ||
+            enclosing.type === "MethodDefinition"
+        const body = enclosing.type === "MethodDefinition" ? enclosing.at("value").get("body") : enclosing.get("body")
+        if (fn && body === following && nextNonSpaceIndex(ctx.text, c.end) === locStart(following)) {
+            addBlockFirst(following, c)
+            return true
+        }
+    }
+    return false
+}
+
+function handleMemberExpression(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (
+        enclosing !== null &&
+        enclosing.type === "MemberExpression" &&
+        following !== null &&
+        following.type === "Identifier"
+    ) {
+        addLeading(enclosing, c)
+        return true
+    }
+    return false
+}
+
+function handleIf(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    const preceding = c.preceding
+    if (enclosing === null || enclosing.type !== "IfStatement" || following === null) return false
+    if (nextChar(c.end) === ")") {
+        addTrailing(preceding!, c)
+        return true
+    }
+    if (following === enclosing.get("consequent")) {
+        addLeading(following, c)
+        return true
+    }
+    if (preceding === enclosing.get("consequent") && following === enclosing.get("alternate")) {
+        const consequent = enclosing.at("consequent")
+        const elseAt = ctx.blank.indexOf("else", locEnd(consequent))
+        if (c.start >= elseAt) addLeading(following, c)
+        else if (
+            preceding!.type !== "BlockStatement" &&
+            isLineOrSingleLineBlock(c) &&
+            !hasNewlineInRange(ctx.text, locEnd(preceding!), c.start)
+        )
+            addTrailing(preceding!, c)
+        else addDangling(enclosing, c)
+        return true
+    }
+    return false
+}
+
+function handleWhile(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (enclosing === null || enclosing.type !== "WhileStatement" || following === null) return false
+    if (nextChar(c.end) === ")") {
+        addTrailing(c.preceding!, c)
+        return true
+    }
+    if (enclosing.get("body") === following) {
+        addLeading(following, c)
+        return true
+    }
+    return false
+}
+
+function handleTry(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (
+        enclosing === null ||
+        (enclosing.type !== "TryStatement" && enclosing.type !== "CatchClause") ||
+        following === null
+    )
+        return false
+    if (enclosing.type === "CatchClause" && c.preceding !== null) {
+        addTrailing(c.preceding, c)
+        return true
+    }
+    if (following.type === "BlockStatement") {
+        addBlockFirst(following, c)
+        return true
+    }
+    if (following.type === "TryStatement") {
+        addBlockOrNot(following.at("finalizer"), c)
+        return true
+    }
+    if (following.type === "CatchClause") {
+        addBlockOrNot(following.at("body"), c)
+        return true
+    }
+    return false
+}
+
+function handleClass(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    const preceding = c.preceding
+    if (!isClassLike(enclosing)) return false
+    const cls = enclosing!
+    const body = cls.get("body")
+    if (body !== null && following === body) {
+        addBlockFirst(body, c)
+        return true
+    }
+    if (following !== null) {
+        const superClass = cls.get("superClass")
+        if (
+            superClass !== null &&
+            following === superClass &&
+            preceding !== null &&
+            (preceding === cls.get("id") || preceding === cls.get("typeParameters"))
+        ) {
+            addTrailing(preceding, c)
+            return true
+        }
+        for (const role of ["implements", "extends"]) {
+            const list = cls.all(role)
+            if (list.length > 0 && following === list[0]) {
+                if (
+                    preceding !== null &&
+                    (preceding === cls.get("id") || preceding === cls.get("typeParameters") || preceding === superClass)
+                )
+                    addTrailing(preceding, c)
+                else addDangling(cls, c, role)
+                return true
+            }
+        }
+    }
+    return false
+}
+
+function handleFor(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (enclosing === null || following === null) return false
+    const t = enclosing.type
+    if (
+        (t === "ForInStatement" || t === "ForOfStatement" || t === "ForStatement") &&
+        following === enclosing.get("body")
+    ) {
+        const paren = lastIndexBefore(ctx.blank, ")", locStart(following))
+        if (c.start > paren) {
+            addLeading(following, c)
+            return true
+        }
+    }
+    return false
+}
+
+function isUnion(n: ENode | null): bool {
+    return n !== null && n.type === "TSUnionType"
+}
+
+function handleUnion(c: Comment): bool {
+    if (isUnion(c.enclosing)) {
+        if (c.preceding !== null) {
+            addTrailing(c.preceding, c)
+            return true
+        }
+        return false
+    }
+    return false
+}
+
+function handleOnlyComments(c: Comment, ast: ENode, isLast: bool): bool {
+    if (ast.all("body").length === 0) {
+        if (isLast) addDangling(ast, c)
+        else addLeading(ast, c)
+        return true
+    }
+    return false
+}
+
+function handleImportSpecifier(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (enclosing !== null && (enclosing.type === "ImportSpecifier" || enclosing.type === "ExportSpecifier")) {
+        addLeading(enclosing, c)
+        return true
+    }
+    const preceding = c.preceding
+    if (preceding !== null && enclosing !== null) {
+        const isImport = preceding.type === "ImportSpecifier" && enclosing.type === "ImportDeclaration"
+        const isExport = preceding.type === "ExportSpecifier" && enclosing.type === "ExportNamedDeclaration"
+        if ((isImport || isExport) && hasNewline(ctx.text, c.end, false)) {
+            addTrailing(preceding, c)
+            return true
+        }
+    }
+    return false
+}
+
+function handleAssignmentPattern(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (enclosing !== null && enclosing.type === "AssignmentPattern") {
+        addLeading(enclosing, c)
+        return true
+    }
+    return false
+}
+
+function handleMethodName(c: Comment): bool {
+    const enclosing = c.enclosing
+    const preceding = c.preceding
+    if (
+        enclosing !== null &&
+        preceding !== null &&
+        nextChar(c.end) === "(" &&
+        (enclosing.type === "Property" || enclosing.type === "TSAbstractMethodDefinition") &&
+        preceding.type === "Identifier" &&
+        enclosing.get("key") === preceding &&
+        nextChar(locEnd(preceding)) !== ":"
+    ) {
+        addTrailing(preceding, c)
+        return true
+    }
+    if (isClassMember(enclosing) && c.following === null && c.placement === "remaining") {
+        addTrailing(nextChar(c.end) === "(" ? preceding! : enclosing!, c)
+        return true
+    }
+    return false
+}
+
+function handleLabeled(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (enclosing !== null && enclosing.type === "LabeledStatement") {
+        addLeading(enclosing, c)
+        return true
+    }
+    return false
+}
+
+function handlePatternTypeAnnotation(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (
+        enclosing !== null &&
+        (enclosing.type === "ObjectPattern" || enclosing.type === "ArrayPattern") &&
+        following !== null &&
+        following.type === "TSTypeAnnotation"
+    ) {
+        if (c.preceding !== null) addTrailing(c.preceding, c)
+        else addDangling(enclosing, c)
+        return true
+    }
+    return false
+}
+
+function isAsLike(n: ENode | null): bool {
+    return n !== null && (n.type === "TSAsExpression" || n.type === "TSSatisfiesExpression")
+}
+
+function handleAs(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (isAsLike(enclosing) && c.preceding === enclosing!.get("expression") && !isLineOrSingleLineBlock(c)) {
+        if (c.following !== null) addLeading(c.following, c)
+        else addTrailing(enclosing!, c)
+        return true
+    }
+    return false
+}
+
+/** A one-line block comment just before a union (in a type annotation) leads its first type. */
+function unionLeading(n: ENode | null, c: Comment): bool {
+    if (!isUnion(n) || !c.block || hasNewlineInRange(ctx.text, c.start, c.end)) return false
+    const between = ctx.blank.slice(c.end, locStart(n!))
+    for (let i = 0; i < between.length; i++) if (between[i] !== SPACE && between[i] !== TAB) return false
+    return true
+}
+
+function leadUnionOrNode(n: ENode, c: Comment): bool {
+    addLeading(unionLeading(n, c) ? n.all("types")[0] : n, c)
+    return true
+}
+
+function handleUnionLeading(c: Comment): bool {
+    const following = c.following
+    if (unionLeading(following, c)) {
+        addLeading(following!.all("types")[0], c)
+        return true
+    }
+    return false
+}
+
+function handleTypeCast(c: Comment): bool {
+    if (c.following !== null && isTypeCastComment(c)) {
+        addLeading(c.following, c)
+        return true
+    }
+    return false
+}
+
+function handleCallArguments(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (!isCallLike(enclosing)) return false
+    const call = enclosing!
+    const args = call.all("arguments")
+    if (call.get("callee") !== c.preceding || args.length === 0) return false
+    const close = locEnd(call) - 1
+    if (ctx.text[close] !== 41 || c.end > close) return false
+    const typeArguments = call.get("typeArguments")
+    const open = ctx.blank.indexOf("(", locEnd(typeArguments !== null ? typeArguments : call.at("callee")))
+    if (open < 0 || c.start <= open) return false
+    addLeading(args[0], c)
+    return true
+}
+
+function handleProperty(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (enclosing !== null && enclosing.type === "Property" && !isMethodLike(enclosing)) {
+        addLeading(enclosing, c)
+        return true
+    }
+    return false
+}
+
+function handleVariableDeclarator(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (enclosing === null || following === null) return false
+    const t = enclosing.type
+    if (
+        (t === "VariableDeclarator" || t === "AssignmentExpression" || t === "TSTypeAliasDeclaration") &&
+        c.placement === "endOfLine"
+    ) {
+        const ft = following.type
+        if (
+            ft === "ObjectExpression" ||
+            ft === "ArrayExpression" ||
+            ft === "TemplateLiteral" ||
+            ft === "TSTypeLiteral" ||
+            c.block
+        )
+            return leadUnionOrNode(following, c)
+    }
+    if (t === "TSTypeAliasDeclaration") {
+        const equals = ctx.blank.indexOf("=", locEnd(enclosing.at("id")))
+        if (c.start >= equals) return leadUnionOrNode(following, c)
+    }
+    return false
+}
+
+function handleSwitchDefault(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (enclosing === null || enclosing.type !== "SwitchCase" || enclosing.has("test") || following === null)
+        return false
+    const consequent = enclosing.all("consequent")
+    if (consequent.length === 0 || following !== consequent[0]) return false
+    if (following.type === "BlockStatement" && !c.block) addBlockFirst(following, c)
+    else addDangling(enclosing, c)
+    return true
+}
+
+function handleUnionInArray(c: Comment): bool {
+    const preceding = c.preceding
+    const enclosing = c.enclosing
+    if (
+        isUnion(preceding) &&
+        enclosing !== null &&
+        ((enclosing.type === "TSArrayType" && c.following === null) ||
+            enclosing.type === "TSIntersectionType" ||
+            isUnion(enclosing))
+    ) {
+        const types = preceding!.all("types")
+        addTrailing(types[types.length - 1], c)
+        return true
+    }
+    return false
+}
+
+function handleArrowBody(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (
+        enclosing === null ||
+        enclosing.type !== "ArrowFunctionExpression" ||
+        following === null ||
+        c.preceding === null
+    )
+        return false
+    const arrow = lastIndexBefore(ctx.blank, "=>", locStart(enclosing.at("body")))
+    if (c.end < arrow) return false
+    addBlockOrNot(following, c)
+    return true
+}
+
+function handleAfterExpression(c: Comment): bool {
+    const enclosing = c.enclosing
+    const preceding = c.preceding
+    if (c.following !== null || enclosing === null || preceding === null) return false
+    if (enclosing.type === "ExpressionStatement" && enclosing.get("expression") === preceding) {
+        addTrailing(enclosing, c)
+        return true
+    }
+    const isSequence = preceding.type === "SequenceExpression"
+    const isAssignment = preceding.type === "AssignmentExpression"
+    if (
+        (isSequence || isAssignment) &&
+        ((enclosing.type === "ArrowFunctionExpression" && enclosing.get("body") === preceding) ||
+            (enclosing.type === "VariableDeclarator" && enclosing.get("init") === preceding) ||
+            (enclosing.type === "ReturnStatement" && enclosing.get("argument") === preceding) ||
+            (enclosing.type === "AssignmentExpression" && enclosing.get("right") === preceding))
+    ) {
+        if (isSequence) {
+            const expressions = preceding.all("expressions")
+            addTrailing(expressions[expressions.length - 1], c)
+        } else addTrailing(preceding.at("right"), c)
+        return true
+    }
+    return false
+}
+
+function handlePropertySignatureUnion(c: Comment): bool {
+    const enclosing = c.enclosing
+    const following = c.following
+    if (
+        enclosing !== null &&
+        enclosing.type === "TSPropertySignature" &&
+        following !== null &&
+        (isUnion(following) || following.type === "TSIntersectionType")
+    ) {
+        addLeading(following, c)
+        return true
+    }
+    return false
+}
+
+function handleBeforeArrow(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (enclosing === null || enclosing.type !== "ArrowFunctionExpression") return false
+    const i = nextNonSpaceIndex(ctx.text, c.end)
+    if (ctx.text.slice(i, i + 2) === "=>") {
+        addDangling(enclosing, c, "commentBeforeArrow")
+        return true
+    }
+    return false
+}
+
+function handleFunctionName(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (nextChar(c.end) !== "(") return false
+    if (
+        c.preceding !== null &&
+        enclosing !== null &&
+        (enclosing.type === "FunctionDeclaration" ||
+            enclosing.type === "FunctionExpression" ||
+            enclosing.type === "MethodDefinition")
+    ) {
+        addTrailing(c.preceding, c)
+        return true
+    }
+    return false
+}
+
+function handleSignatureEnd(c: Comment): bool {
+    const enclosing = c.enclosing
+    if (
+        c.following === null &&
+        enclosing !== null &&
+        (enclosing.type === "TSMethodSignature" ||
+            enclosing.type === "TSDeclareFunction" ||
+            enclosing.type === "TSAbstractMethodDefinition") &&
+        (c.preceding === null || c.preceding !== enclosing.get("returnType")) &&
+        nextChar(c.end) === ";"
+    ) {
+        addTrailing(enclosing, c)
+        return true
+    }
+    return false
+}
+
+function handleOwnLine(c: Comment, ast: ENode): bool {
+    return (
+        handleEmptyParens(c) ||
+        handleConditional(c) ||
+        handleLastFunctionArg(c) ||
+        handleMemberExpression(c) ||
+        handleIf(c) ||
+        handleWhile(c) ||
+        handleTry(c) ||
+        handleClass(c) ||
+        handleFor(c) ||
+        handleUnion(c) ||
+        handleOnlyComments(c, ast, c === ctx.comments[ctx.comments.length - 1]) ||
+        handleImportSpecifier(c) ||
+        handleAssignmentPattern(c) ||
+        handleMethodName(c) ||
+        handleLabeled(c) ||
+        handlePatternTypeAnnotation(c) ||
+        handleAs(c) ||
+        handleUnionLeading(c)
+    )
+}
+
+function handleEndOfLine(c: Comment, ast: ENode): bool {
+    return (
+        handleEmptyParens(c) ||
+        handleTypeCast(c) ||
+        handleLastFunctionArg(c) ||
+        handleConditional(c) ||
+        handleImportSpecifier(c) ||
+        handleIf(c) ||
+        handleWhile(c) ||
+        handleTry(c) ||
+        handleClass(c) ||
+        handleFor(c) ||
+        handleLabeled(c) ||
+        handleCallArguments(c) ||
+        handleProperty(c) ||
+        handleOnlyComments(c, ast, c === ctx.comments[ctx.comments.length - 1]) ||
+        handleVariableDeclarator(c) ||
+        handleSwitchDefault(c) ||
+        handleUnionInArray(c) ||
+        handleArrowBody(c) ||
+        handleAfterExpression(c) ||
+        handlePropertySignatureUnion(c) ||
+        handleAs(c)
+    )
+}
+
+function handleRemaining(c: Comment, ast: ENode): bool {
+    return (
+        handleEmptyParens(c) ||
+        handleIf(c) ||
+        handleWhile(c) ||
+        handleFor(c) ||
+        handleMethodName(c) ||
+        handleOnlyComments(c, ast, c === ctx.comments[ctx.comments.length - 1]) ||
+        handleVariableDeclarator(c) ||
+        handleBeforeArrow(c) ||
+        handleFunctionName(c) ||
+        handleSignatureEnd(c) ||
+        handleAfterExpression(c) ||
+        handleAs(c) ||
+        handleUnionLeading(c)
+    )
+}
+
+// -----------------------------------------------------------------------------
+// Printing
+
+/** The lines of a block comment whose lines all start with `*`, trimmed, or an empty list. */
+function jsdocLines(c: Comment): string[] {
+    if (!c.block || !c.value.includes("\n")) return []
+    const lines: string[] = []
+    for (const raw of `*${c.value}*`.split("\n")) {
+        const l = raw.trimStart()
+        if (!l.startsWith("*")) return []
+        lines.push(l)
+    }
+    return lines
+}
+
+/** A text with its line breaks as literal lines. */
+export function literalText(s: string): Doc {
+    if (!s.includes("\n")) return text(s)
+    const parts: Doc[] = []
+    const lines = s.split("\n")
+    for (let i = 0; i < lines.length; i++) {
+        if (i > 0) parts.push(literalline)
+        parts.push(text(lines[i]))
+    }
+    return concat(parts)
+}
+
+export function printComment(c: Comment): Doc {
+    c.printed = true
+    if (!c.block) return text(ctx.text.slice(c.start, c.end).trimEnd())
+    const lines = jsdocLines(c)
+    if (lines.length > 0) {
+        const doubleSpaces = c.value[0] === STAR && c.value.length > 1 && c.value[1] !== STAR
+        const parts: Doc[] = [text("/")]
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i]
+            if (i === 0) parts.push(text(l.trimEnd()), hardline)
+            else if (i === lines.length - 1) parts.push(text(" " + l))
+            else {
+                const trimmed = l.trimEnd()
+                if (doubleSpaces && trimmed !== "*" && l.endsWith("  "))
+                    parts.push(text(" " + trimmed), text("  "), markAsRoot(literalline))
+                else parts.push(text(" " + trimmed), hardline)
+            }
+        }
+        parts.push(text("/"))
+        return concat(parts)
+    }
+    return concat([text("/*"), literalText(c.value), text("*/")])
+}
+
+function printLeadingComment(c: Comment): Doc {
+    const parts: Doc[] = [printComment(c)]
+    const s = ctx.text
+    if (c.block) {
+        if (hasNewline(s, c.end, false)) parts.push(hasNewline(s, c.start, true) ? hardline : line)
+        else parts.push(text(" "))
+    } else parts.push(hardline)
+    const i = skipNewline(s, skipSpaces(s, c.end, false), false)
+    if (hasNewline(s, i, false)) parts.push(hardline)
+    return concat(parts)
+}
+
+class TrailingState {
+    constructor(
+        readonly doc: Doc,
+        readonly isBlock: bool,
+        readonly hasLineSuffix: bool,
+    ) {}
+}
+
+function printTrailingComment(c: Comment, previous: TrailingState | null): TrailingState {
+    const printed = printComment(c)
+    const s = ctx.text
+    if ((previous !== null && previous.hasLineSuffix && !previous.isBlock) || hasNewline(s, c.start, true)) {
+        const emptyBefore = isPreviousLineEmpty(s, c.start)
+        return new TrailingState(lineSuffix(concat([hardline, emptyBefore ? hardline : empty, printed])), c.block, true)
+    }
+    if (!c.block || (previous !== null && previous.hasLineSuffix))
+        return new TrailingState(concat([lineSuffix(concat([text(" "), printed])), breakParent]), c.block, true)
+    return new TrailingState(concat([text(" "), printed]), c.block, false)
+}
+
+/** The leading comments of a node, printed. */
+export function printLeading(node: ENode): Doc {
+    const parts: Doc[] = []
+    for (const c of node.comments) if (c.leading) parts.push(printLeadingComment(c))
+    return parts.length === 0 ? empty : concat(parts)
+}
+
+export function printLeadingFiltered(node: ENode, keep: Comment | null, skip: Comment | null): Doc {
+    const parts: Doc[] = []
+    for (const c of node.comments)
+        if (c.leading && (keep === null || c === keep) && c !== skip) parts.push(printLeadingComment(c))
+    return parts.length === 0 ? empty : concat(parts)
+}
+
+/** The trailing comments of a node, printed. */
+export function printTrailing(node: ENode): Doc {
+    const parts: Doc[] = []
+    let previous: TrailingState | null = null
+    for (const c of node.comments)
+        if (c.trailing) {
+            previous = printTrailingComment(c, previous)
+            parts.push(previous.doc)
+        }
+    return parts.length === 0 ? empty : concat(parts)
+}
+
+/** A document with the leading and trailing comments of its node, keeping its label. */
+export function printComments(node: ENode, doc: Doc): Doc {
+    return printCommentsFiltered(node, doc, null)
+}
+
+export function printCommentsFiltered(node: ENode, doc: Doc, skip: Comment | null): Doc {
+    let hasLeading = false
+    let hasTrailing = false
+    for (const c of node.comments) {
+        if (c === skip) continue
+        if (c.leading) hasLeading = true
+        if (c.trailing) hasTrailing = true
+    }
+    if (!hasLeading && !hasTrailing) return doc
+    const leading = printLeadingFiltered(node, null, skip)
+    const trailing = printTrailing(node)
+    if (doc.kind === LABEL) return label(doc.label, concat([leading, doc.contents!, trailing]))
+    return concat([leading, doc, trailing])
+}
+
+/** The dangling comments of a node (with a marker, or none), joined by hard lines. */
+export function printDangling(node: ENode, indented: bool, marker = ""): Doc {
+    const parts: Doc[] = []
+    for (const c of node.comments) if (!c.leading && !c.trailing && c.marker === marker) parts.push(printComment(c))
+    if (parts.length === 0) return empty
+    const joined = join(hardline, parts)
+    return indented ? indent(concat([hardline, joined])) : joined
+}
+
+export function hasDangling(node: ENode, marker = ""): bool {
+    for (const c of node.comments) if (!c.leading && !c.trailing && c.marker === marker) return true
+    return false
+}
