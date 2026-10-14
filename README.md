@@ -80,7 +80,7 @@ The [specification](docs/spec) describes the language, the
 ## The language at a glance
 
 **Numbers are machine numbers.** `i8`…`i64`, `u8`…`u64`, `f32`, `f64`
-(`int` is `i64`, `number` is `f64`). Literals adapt to their type, as in Go;
+(`int` is `i64`, `number` is `f64`). Literals adapt to their type;
 types never mix without a conversion, integers wrap and divide as integers.
 
 ```ts
@@ -166,7 +166,7 @@ function last<T>(items: T[]): T | null {
 console.log(last([1, 2, 3]), last(["x", "y"]), last<f64>([]))   // 3 y null
 ```
 
-**Closures, defaults, destructuring,** as in TypeScript; closures capture
+**Closures, defaults, destructuring;** closures capture
 variables by reference.
 
 ```ts
@@ -181,10 +181,12 @@ const { x, y } = { x: next(), y: 1 }
 console.log(x, y, [3, 1, 2].map((v) => v * x).join(" "))   // 12 1 36 12 24
 ```
 
-**`using` instead of `defer`.** A value with `[Symbol.dispose]()` is disposed
-at the end of its block, on every path out of it. This is the `using`
-declaration of TC39's [Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management),
-as shipped in [TypeScript 5.2](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management).
+**Resources with `using`.** A value declared with `using` is disposed at the
+end of its block, on every path out of it: return, `break`, `continue` or
+the end of a loop iteration. Disposing calls its `[Symbol.dispose]()` method,
+so files, locks and connections clean up after themselves. The syntax is the
+`using` declaration of TC39's [Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)
+proposal, as shipped in [TypeScript 5.2](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management).
 
 ```ts
 class Section {
@@ -214,9 +216,9 @@ if (config instanceof Error) console.log(config.message)   // JSON: expected an 
 console.log(JSON.stringify({ name: "api", port: 80, tags: ["v1"] }))   // {"name":"api","port":80,"tags":["v1"]}
 ```
 
-**Concurrency, like Go.** Green threads on all CPUs, channels and `select`;
-waiting parks the task, not the OS thread. `ore:sync` adds `Mutex` and
-`WaitGroup`, `ore:net` TCP.
+**Green threads and channels.** Tasks run in parallel on all CPUs and talk
+through channels and `select`; waiting parks the task, not the OS thread.
+`ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP.
 
 ```ts
 const results = new Chan<int>()
