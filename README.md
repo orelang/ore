@@ -42,8 +42,10 @@ for (let i = 0; i < 3; i++) done.receive()
 console.log(`total: ${total}`)
 ```
 
-```sh
-ore build prices.ore && ./prices
+```console
+$ ore build prices.ore && ./prices
+no item -1
+total: 1000
 ```
 
 ## How it works
