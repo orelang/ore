@@ -232,6 +232,10 @@ export abstract class ExpressionChecker extends StatementChecker {
     }
     let [l, r] = this.unify(left, right, leftNode, rightNode)
     if (!l || !r) return errorOperand
+    // Two string constants, such as `target.os === "darwin"`, compare at compile time.
+    if ((op === "===" || op === "!==") && l.k === "string" && r.k === "string") {
+      return typed({ k: "bool", type: types.bool, value: (l.value === r.value) === (op === "===") })
+    }
     // A member compares with a union containing it.
     if (!sameType(l.type, r.type) && r.type.kind === "union") l = this.coerce(typed(l), r.type, leftNode)
     else if (!sameType(l.type, r.type) && l.type.kind === "union") r = this.coerce(typed(r), l.type, rightNode)

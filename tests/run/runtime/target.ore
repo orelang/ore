@@ -1,0 +1,11 @@
+// The target platform is known at compile time; the branch not taken is not
+// compiled, so it may hold assembly for another architecture.
+
+const os = target.os === "darwin" || target.os === "linux" ? "known os" : "unknown os"
+console.log(os, target.arch === "arm64" || target.arch === "x86_64")
+
+function stackPointer(): uint {
+    if (target.arch === "arm64") return unsafe.asm<uint>("mov $0, sp", "=r")
+    else return unsafe.asm<uint>("movq %rsp, $0", "=r")
+}
+console.log(stackPointer() > 0)

@@ -141,6 +141,12 @@ export abstract class FunctionEmitter extends EmitterBase {
         return
       }
       case "if": {
+        // A condition known at compile time, such as one on `target.arch`, compiles only the branch taken.
+        if (stmt.cond.k === "bool") {
+          const taken = stmt.cond.value ? stmt.then : stmt.else
+          if (taken) this.body(taken)
+          return
+        }
         const cond = this.expr(stmt.cond)
         const then = this.b.label("then")
         const otherwise = this.b.label("else")

@@ -7,6 +7,12 @@ import { Scope, type ValueSymbol } from "./symbols"
 /** Values of built-in constants, declared without values in builtin.d.ore. */
 const constants: Record<string, number> = { "Math.PI": Math.PI, "Math.E": Math.E }
 
+/** The platform the compiler builds for: the one it runs on. */
+const targetConstants: Record<string, string> = {
+  "target.os": process.platform === "darwin" ? "darwin" : "linux",
+  "target.arch": process.arch === "arm64" ? "arm64" : "x86_64",
+}
+
 /**
  * Builds the root scope from the type aliases and functions of
  * `runtime/std/builtin.d.ore`. Its interfaces are declared by the checker.
@@ -36,10 +42,15 @@ export function builtinScope(): { scope: Scope; source: Source } {
           for (const d of member.declarationList.declarations) {
             const name = `${ns}.${(d.name as ts.Identifier).text}`
             const value = constants[name]
+            const text = targetConstants[name]
             // A value known only at run time, such as `process.args`, is a call of a built-in.
             const expr: Expr =
-              value !== undefined ? { k: "float", type: types.f64, value } : { k: "builtin", type: arrayOf(types.string), name, args: [] }
-            if (value === undefined && name !== "process.args") throw new Error(`unknown builtin constant ${name}`)
+              value !== undefined
+                ? { k: "float", type: types.f64, value }
+                : text !== undefined
+                  ? { k: "string", type: types.string, value: text }
+                  : { k: "builtin", type: arrayOf(types.string), name, args: [] }
+            if (value === undefined && text === undefined && name !== "process.args") throw new Error(`unknown builtin constant ${name}`)
             members.set((d.name as ts.Identifier).text, { k: "const", value: { k: "typed", expr }, type: expr.type, decl: d })
           }
         }

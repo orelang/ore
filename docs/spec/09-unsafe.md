@@ -41,3 +41,18 @@ errors.
 
 Tasks move between OS threads when they wait, so a thread-local variable is
 for code that knows which thread it runs on, such as the scheduler.
+
+## The target
+
+`target.os` (`"darwin"` or `"linux"`) and `target.arch` (`"arm64"` or
+`"x86_64"`) name the platform the program is compiled for. A comparison of
+string constants is evaluated at compile time, and an `if` whose condition is
+a constant compiles only the branch taken, so the other branch may hold
+assembly or system constants of another platform:
+
+```ts
+function stackPointer(): uint {
+    if (target.arch === "arm64") return unsafe.asm<uint>("mov $0, sp", "=r")
+    else return unsafe.asm<uint>("movq %rsp, $0", "=r")
+}
+```
