@@ -5,6 +5,7 @@
 // Every `new` calls `alloc`, inlined into the program, so it stays a call to
 // the collector and a test; the panic is out of line.
 
+import { flushOutput } from "ore:runtime/io"
 import { GC_malloc, GC_malloc_atomic } from "ore:runtime/os"
 import { blockingEnter, blockingExit, randomState, wallClockMs } from "ore:runtime/task"
 
@@ -176,6 +177,55 @@ function writeAll(path: string, data: string, err: ptr): bool {
 //ore:runtime ore_rt_file_exists
 function fileExists(path: string): bool {
     return access(path, accessExists) === 0
+}
+
+/** "read: Bad file descriptor": what failed and errno's message. */
+function fdFailure(what: string): string {
+    const reason = fromCString(strerror(errno()))
+    return `${what}: ${reason}`
+}
+
+/** fs.read: up to `max` bytes from a file descriptor, waiting for some, in `out`; "" at the end. */
+//ore:runtime ore_rt_fd_read
+function fdRead(fd: int, max: int, out: ptr): bool {
+    if (max <= 0) {
+        unsafe.store<string>(out, "read: the size must be positive")
+        return false
+    }
+    const buffer = bytes(max)
+    blockingEnter()
+    let n: i64 = 0
+    while (true) {
+        n = read(i32(fd), buffer, u64(max))
+        if (n >= 0 || errno() !== eintr) break
+    }
+    blockingExit()
+    if (n < 0) {
+        unsafe.store<string>(out, fdFailure("read"))
+        return false
+    }
+    unsafe.store<string>(out, unsafe.makeString(buffer, n))
+    return true
+}
+
+/** fs.write: all of `data` to a file descriptor, after what console printed to 1 or 2. */
+//ore:runtime ore_rt_fd_write
+function fdWrite(fd: int, data: string, err: ptr): bool {
+    if (fd === 1 || fd === 2) flushOutput()
+    blockingEnter()
+    let done = 0
+    let ok = true
+    while (done < data.length) {
+        const n = write(i32(fd), unsafe.add(unsafe.stringData(data), done), u64(data.length - done))
+        if (n >= 0) done += n
+        else if (errno() !== eintr) {
+            ok = false
+            break
+        }
+    }
+    blockingExit()
+    if (!ok) unsafe.store<string>(err, fdFailure("write"))
+    return ok
 }
 
 // ---------------------------------------------------------------------------

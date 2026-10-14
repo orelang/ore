@@ -304,6 +304,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.fallible(e, (out) => this.rtBool("ore_rt_read_file", [a[0]!, out]), STR)
       case "fs.writeFile":
         return this.fallible(e, (out) => this.rtBool("ore_rt_write_file", [a[0]!, a[1]!, out]), undefined)
+      case "fs.read":
+        return this.fallible(e, (out) => this.rtBool("ore_rt_fd_read", [a[0]!, a[1]!, out]), STR)
+      case "fs.write":
+        return this.fallible(e, (out) => this.rtBool("ore_rt_fd_write", [a[0]!, a[1]!, out]), undefined)
       case "fs.exists":
         return this.rtBool("ore_rt_file_exists", [a[0]!])
       case "Date.now":

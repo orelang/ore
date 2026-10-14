@@ -108,6 +108,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
+| `fs.read(fd, max)` | up to `max` bytes from a file descriptor (0 is stdin), waiting for some; `""` at the end; or an `Error` |
+| `fs.write(fd, data)` | writes all of `data` to a file descriptor, unbuffered; `null`, or an `Error` |
 | `Date.now()` | milliseconds since the Unix epoch |
 | `JSON.stringify(value, indent?)` | the JSON text of a value |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
