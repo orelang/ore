@@ -294,6 +294,8 @@ export abstract class StatementChecker extends ClassChecker {
           unassigned = true
         }
         const local = this.newLocal(name, type, !isConst)
+        // Its type is unknown: uses of it report nothing more.
+        if (!declared && value?.k === "error") this.poisoned.add(local)
         if (scope === this.globals) local.global = true
         if (scope === this.globals && ts.isVariableStatement(decl.parent.parent) && this.directives(decl.parent.parent).some((d) => d.name === "threadlocal")) {
           this.threadLocal(decl, local)

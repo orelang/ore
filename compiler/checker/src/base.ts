@@ -116,6 +116,8 @@ export abstract class CheckerBase {
 
   protected readonly declNodes = new Map<ir.Local, ts.Node>()
 
+  /** Variables whose initializer has an error, so that their type is unknown. */
+  protected readonly poisoned = new Set<ir.Local>()
   /** Variables already reported as read before assigned. */
   protected readonly readEarly = new Set<ir.Local>()
 

@@ -110,6 +110,7 @@ export abstract class ExpressionChecker extends StatementChecker {
     switch (symbol.k) {
       case "local": {
         const local = symbol.local
+        if (this.poisoned.has(local)) return errorOperand
         if (this.untyped.has(local)) {
           // Its type comes from its first assignment, which has not been seen yet.
           this.readEarly.add(local)
