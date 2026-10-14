@@ -242,21 +242,9 @@ void ore_rt_blocking_exit(void);
 // The string builder and JSON are in runtime/core/json.ore.
 
 // -----------------------------------------------------------------------------
-// Network (TCP), on non-blocking sockets
+// Network (TCP): runtime/core/net.ore, on non-blocking sockets
 
-/** Parks the current task until a socket is ready for reading or writing. */
+/** Parks the current task until a socket is ready for reading or writing (runtime/core/poll.ore). */
 void ore_rt_net_wait(int fd, bool write);
-
-// Each returns whether it succeeded; on failure, `err` holds the message.
-bool ore_rt_net_listen(ore_string host, i64 port, i64 *fd, ore_string *err);
-bool ore_rt_net_connect(ore_string host, i64 port, i64 *fd, ore_string *err);
-bool ore_rt_net_accept(i64 listener, i64 *fd, ore_string *err);
-/** Reads up to `max` bytes into `data` ("" at the end of the stream), or the error into it. */
-bool ore_rt_net_read(i64 fd, i64 max, ore_string *data);
-/** Writes all of `data`, or the error into `err`. */
-bool ore_rt_net_write(i64 fd, ore_string data, ore_string *err);
-void ore_rt_net_close(i64 fd);
-/** The local port of a socket. */
-i64 ore_rt_net_port(i64 fd);
 
 #endif

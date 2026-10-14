@@ -5,7 +5,6 @@ import { join } from "node:path"
 import headerText from "../../../runtime/c/ore.h" with { type: "text" }
 import { abiWrappers } from "@ore/codegen"
 import runtimeSource from "../../../runtime/c/runtime.c" with { type: "text" }
-import netSource from "../../../runtime/c/net.c" with { type: "text" }
 import { clang } from "./clang"
 import { prepareGc } from "./gc"
 
@@ -23,7 +22,7 @@ export function cacheDir(): string {
 export const header: string = headerText
 
 /** The C sources of the runtime, embedded in the compiler, and the wrappers the LLVM backend calls. */
-const sources: Record<string, string> = { "runtime.c": runtimeSource, "net.c": netSource, "abi.c": abiWrappers(headerText) }
+const sources: Record<string, string> = { "runtime.c": runtimeSource, "abi.c": abiWrappers(headerText) }
 
 /**
  * Materializes the embedded runtime into the cache and compiles it once per
