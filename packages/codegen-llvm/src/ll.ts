@@ -120,7 +120,7 @@ export function sizeOf(ty: string): string {
   return `ptrtoint (ptr getelementptr (${ty}, ptr null, i32 1) to i64)`
 }
 
-/** Quotes a global name when it has characters outside LLVM's plain identifiers. */
+/** A global name, with characters outside LLVM's plain identifiers spelled as `_xHH_`. */
 export function globalName(name: string): string {
-  return /^[A-Za-z_.$][A-Za-z0-9_.$]*$/.test(name) ? `@${name}` : `@"${name}"`
+  return `@${name.replace(/[^A-Za-z0-9_.$]/g, (c) => `_x${c.codePointAt(0)!.toString(16)}_`)}`
 }
