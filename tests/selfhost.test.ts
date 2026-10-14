@@ -29,7 +29,7 @@ function oreFiles(dir: string): string[] {
   })
 }
 
-const files = ["tests", "std", "compiler/next", "bench"].flatMap((d) => oreFiles(join(root, d))).sort()
+const files = ["tests", "runtime", "compiler/next", "bench"].flatMap((d) => oreFiles(join(root, d))).sort()
 
 /** The first name of each SyntaxKind value: the real kinds come before markers such as FirstToken. */
 const kindNames = new Map<number, string>()

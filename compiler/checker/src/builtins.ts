@@ -1,7 +1,7 @@
 import { arrayOf, types, type Expr, type Type } from "@ore/ir"
 import { parse, type Source } from "@ore/syntax"
 import ts from "typescript"
-import builtinText from "../../../std/builtin.d.ore" with { type: "text" }
+import builtinText from "../../../runtime/std/builtin.d.ore" with { type: "text" }
 import { Scope, type ValueSymbol } from "./symbols"
 
 /** Values of built-in constants, declared without values in builtin.d.ore. */
@@ -9,10 +9,10 @@ const constants: Record<string, number> = { "Math.PI": Math.PI, "Math.E": Math.E
 
 /**
  * Builds the root scope from the type aliases and functions of
- * `std/builtin.d.ore`. Its interfaces are declared by the checker.
+ * `runtime/std/builtin.d.ore`. Its interfaces are declared by the checker.
  */
 export function builtinScope(): { scope: Scope; source: Source } {
-  const { source, diagnostics } = parse("std/builtin.d.ore", builtinText)
+  const { source, diagnostics } = parse("runtime/std/builtin.d.ore", builtinText)
   if (diagnostics.length > 0) throw new Error(`invalid builtin.d.ore: ${diagnostics[0]!.message}`)
   const scope = new Scope()
 

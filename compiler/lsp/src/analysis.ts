@@ -15,7 +15,7 @@ export interface Range {
   end: Position
 }
 
-/** A location in the analyzed file, or in a file such as `std/builtin.d.ore`. */
+/** A location in the analyzed file, or in a file such as `runtime/std/builtin.d.ore`. */
 export interface Location {
   path: string
   /** Text of the target file, for files that are not on disk. */
@@ -332,7 +332,7 @@ function interfaceText(decl: ts.InterfaceDeclaration): string {
   return `interface ${decl.name.text} {\n${members.join("\n")}\n}`
 }
 
-const builtinPath = "std/builtin.d.ore"
+const builtinPath = "runtime/std/builtin.d.ore"
 
 function code(text: string): string {
   return `\`\`\`ore\n${text}\n\`\`\``

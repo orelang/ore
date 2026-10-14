@@ -501,7 +501,7 @@ class ModuleEmitter {
     this.slots = new Map()
     for (const node of this.plan.slots.get(func) ?? []) this.slots.set(node, this.b.alloca(this.slotType(node)))
     // The runtime keeps no frames, as when it was C: stack traces show the program's code.
-    if (this.options.debug && func.file !== "ore:runtime") {
+    if (this.options.debug && !func.file?.startsWith("ore:runtime/")) {
       const frame = this.b.alloca(FRAME)
       const prev = this.b.value("ptr", `load ptr, ptr ${this.top()}`)
       this.b.emit(`store ptr ${prev.v}, ptr ${this.field(frame, FRAME, 0)}`)

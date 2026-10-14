@@ -89,7 +89,7 @@ void *ore_rt_alloc(i64 size);
 /** Allocates zeroed, garbage-collected memory that is never scanned for pointers. */
 void *ore_rt_alloc_bytes(i64 size);
 
-// Strings. Comparison, search and the string methods are in std/runtime.ore.
+// Strings. Comparison, search and the string methods are in runtime/core/string.ore.
 
 ore_string ore_rt_str_from_i64(i64 v);
 ore_string ore_rt_str_from_u64(u64 v);

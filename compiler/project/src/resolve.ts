@@ -1,15 +1,20 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
-import netModule from "../../../std/net.ore" with { type: "text" }
-import runtimeModule from "../../../std/runtime.ore" with { type: "text" }
-import syncModule from "../../../std/sync.ore" with { type: "text" }
-import testModule from "../../../std/test.ore" with { type: "text" }
+import runtimeString from "../../../runtime/core/string.ore" with { type: "text" }
+import netModule from "../../../runtime/std/net.ore" with { type: "text" }
+import syncModule from "../../../runtime/std/sync.ore" with { type: "text" }
+import testModule from "../../../runtime/std/test.ore" with { type: "text" }
 
 /** Standard library modules, imported as "ore:name" and embedded in the compiler. */
-export const stdModules: Record<string, string> = { "ore:net": netModule, "ore:sync": syncModule, "ore:test": testModule, "ore:runtime": runtimeModule }
+export const stdModules: Record<string, string> = {
+  "ore:net": netModule,
+  "ore:sync": syncModule,
+  "ore:test": testModule,
+  "ore:runtime/string": runtimeString,
+}
 
-/** The runtime written in Ore, part of every program. */
-export const runtimeModuleName = "ore:runtime"
+/** The modules of the runtime written in Ore (runtime/core), part of every program, in load order. */
+export const runtimeModules = ["ore:runtime/string"]
 
 export interface PackageJson {
   name?: string

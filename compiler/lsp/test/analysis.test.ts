@@ -51,7 +51,7 @@ test("go to definition", () => {
     range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } },
   })
   const builtin = analysis.definition(at("console.log", "log"))
-  expect(builtin?.path).toBe("std/builtin.d.ore")
+  expect(builtin?.path).toBe("runtime/std/builtin.d.ore")
   expect(builtin?.text).toContain("declare namespace console")
 })
 
