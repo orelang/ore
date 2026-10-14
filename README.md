@@ -66,22 +66,28 @@ total area: 9.14
 bad size '-4'
 ```
 
-## Where Ore is now
+## How it works
 
-Early development: the language below works today, on macOS and Linux, arm64
-and x86-64. The current goal is **an Ore that is written in Ore**: no C left
-in the runtime, then the compiler itself, then a garbage collector of its own,
-and only then `async`/`await`.
+- **Compiler.** Ore files are parsed by the TypeScript parser; Ore's own
+  checker resolves names and types and lowers the program to a typed IR, with
+  generics instantiated per type, closures with explicit captures, tagged
+  unions and interface tables. Escape analysis keeps objects that never leave
+  their function on the stack, and release builds inline small functions.
+  The IR becomes LLVM IR, which clang compiles together with the runtime into
+  one native binary.
+- **Runtime.** Part of it is written in Ore and compiled with the program, so
+  it inlines into user code: strings, arrays, maps, number formatting. The
+  rest is C: the M:N scheduler of green threads (stackful, on a pool of OS
+  threads), channels and `select`, a netpoller on kqueue or epoll, JSON and
+  printing. Memory is managed by the Boehm garbage collector, built with
+  threads and parallel marking.
+- **Tooling.** One `ore` binary builds, runs, checks, tests and formats code
+  and serves the language server. Debug builds keep stack traces for panics.
+- **Platforms.** macOS and Linux, arm64 and x86-64.
 
-| Now | |
-|---|---|
-| Runtime in Ore | Strings, arrays, maps, number formatting are done and run faster than the C they replaced (up to 2.4×); JSON, printing, the network and the scheduler are next |
-| Compiler in Ore | The lexer and the parser are done and match TypeScript's on every file of the repository; the checker and the backend come after the runtime |
-| Low-level layer | Done: `unsafe` (raw memory, atomics, inline assembly) and `//ore:` directives, the tools the runtime is written with |
-
-The [roadmap](docs/roadmap.md) has the order and the details, the
-[spec](docs/spec) the language, the [architecture](docs/architecture.md) how
-it is built.
+The [specification](docs/spec) describes the language, the
+[architecture](docs/architecture.md) the implementation, the
+[roadmap](docs/roadmap.md) what comes next.
 
 ## The language at a glance
 
@@ -279,7 +285,7 @@ Another binary can be set with the `ore.path` setting.
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Runtime in Ore: strings, arrays, maps (done); printing, JSON, network, scheduler | in progress |
+| 9. Runtime in Ore: strings, arrays, maps, number formatting (done); JSON, printing, network, scheduler | in progress |
 | 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
 | 11. Own precise garbage collector | planned |
 | 12. Promises and `async`/`await` | planned |
