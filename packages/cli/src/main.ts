@@ -19,7 +19,7 @@ Usage:
   ore build [file.ore]           Build a native binary
       -o, --output <path>        Output path (default: package name or file name)
       --release                  Optimize instead of building with debug info
-      --emit-c <path>            Also write the generated C
+      --emit-llvm <path>         Also write the generated LLVM IR
   ore check [file.ore]           Report errors without building
   ore test [paths...]            Run the tests in *.test.ore files (default: all below .)
   ore fmt [--check] [paths...]   Format .ore files in place, or list unformatted ones
@@ -72,7 +72,7 @@ async function buildCommand(args: string[]): Promise<number> {
     options: {
       output: { type: "string", short: "o" },
       release: { type: "boolean" },
-      "emit-c": { type: "string" },
+      "emit-llvm": { type: "string" },
     },
   })
   const target = entry(positionals)
@@ -81,7 +81,7 @@ async function buildCommand(args: string[]): Promise<number> {
   const result = await build(target.file, {
     output: values.output ?? target.name,
     release: values.release,
-    emitC: values["emit-c"],
+    emitLlvm: values["emit-llvm"],
   })
   report(result.diagnostics)
   return result.ok ? 0 : 1

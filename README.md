@@ -288,8 +288,7 @@ The tests run on macOS and Linux, on arm64 and x86-64.
 | `packages/checker` | Type checker producing IR |
 | `packages/ir` | Type model and typed IR |
 | `packages/opt` | Optimizations on the IR: escape analysis, inlining |
-| `packages/codegen-c` | IR to C |
-| `packages/codegen-llvm` | IR to LLVM IR (`ORE_BACKEND=llvm`), on its way to replace the C backend |
+| `packages/codegen-llvm` | IR to LLVM IR, built by clang |
 | `packages/driver` | Compilation pipeline, clang, runtime and GC cache |
 | `packages/cli` | The `ore` command, including `test` and `fmt` |
 | `packages/lsp` | Language server |

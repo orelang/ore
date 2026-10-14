@@ -60,7 +60,8 @@ ore/
     syntax/               # wrapper over ts.createSourceFile, AST facade, positions
     checker/              # name resolution, types, literals, inference, narrowing, diagnostics
     ir/                   # typed IR + lowering (monomorphization, unions, closures, itabs)
-    codegen-c/            # IR -> C
+    opt/                  # IR optimizations: escape analysis, inlining
+    codegen-llvm/         # IR -> LLVM IR
     driver/               # pipeline, cache, clang invocation, runtime linking
     cli/                  # the `ore` binary
     lsp/                  # language server (vscode-languageserver over stdio), uses checker
@@ -171,7 +172,7 @@ work.**
 ### Phase 8: Performance and maturity
 - Done: escape analysis. Object literals, constructor calls, closures and
   boxes of captured locals that cannot outlive their function get a slot in
-  its stack frame (`packages/codegen-c/src/escape.ts`); benchmarks in
+  its stack frame (`packages/opt/src/escape.ts`); benchmarks in
   `bench/`.
 - Done: inlining of small functions (a single `return`) in release builds,
   so that objects they return can stay on the caller's stack.
@@ -180,10 +181,10 @@ work.**
 
 The road from here, in this order:
 
-1. **LLVM backend** (`packages/codegen-llvm`): the same IR compiled to textual
-   LLVM IR, built by clang, at first calling the C runtime. Golden tests and
-   CI run on both backends until the LLVM one passes everything; then the C
-   backend is removed.
+1. **LLVM backend** (`packages/codegen-llvm`, done): the same IR compiled to
+   textual LLVM IR, built by clang, calling the C runtime through generated
+   `ore_abi_*` wrappers. It passed every test on both platforms, and the C
+   backend was removed.
 2. **Low-level layer** for the standard library, like Go's `unsafe`: raw
    memory (pointer arithmetic, typed loads and stores, sizes), atomics,
    thread-local variables, inline assembly and function attributes.
