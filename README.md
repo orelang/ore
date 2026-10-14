@@ -28,22 +28,22 @@ const done = new Chan<bool>()
 let total: u64 = 0
 
 for (const id of [3, -1, 7]) {
-    task.spawn(async () => {                  // green threads, in parallel on all CPUs
-        const p = await price(id)             // and async inside them
-        if (p instanceof Error) console.error(p.message)   // errors are values
+    task.spawn(async () => {
+        const p = await price(id)
+        if (p instanceof Error) console.error(p.message)
         else {
-            using guard = lock.acquire()      // released at the end of the block
-            total += p                        // a machine integer
+            using guard = lock.acquire()
+            total += p
         }
         done.send(true)
     })
 }
 for (let i = 0; i < 3; i++) done.receive()
-console.log(`total: ${total}`)               // no item -1, total: 1000
+console.log(`total: ${total}`)
 ```
 
 ```sh
-ore build prices.ore && ./prices   # one native binary
+ore build prices.ore && ./prices
 ```
 
 ## How it works
