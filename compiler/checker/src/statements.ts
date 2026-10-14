@@ -310,6 +310,9 @@ export abstract class StatementChecker extends ClassChecker {
           this.unassigned.add(local)
           this.declNodes.set(local, decl.name)
           out.push({ k: "let", local })
+        } else if (local.global && !value && (isNumeric(type) || type.kind === "bool" || type.kind === "ptr")) {
+          // Such a global is zero bits before any code runs, so the declaration does not store it again.
+          out.push({ k: "let", local })
         } else {
           out.push({ k: "let", local, init })
         }

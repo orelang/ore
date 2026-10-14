@@ -360,7 +360,8 @@ export abstract class EmitterBase {
   /** Declares a local with a value (zero without one): a slot, or a box when closures capture and assign it. */
   protected declare(local: ir.Local, init: V | undefined) {
     if (local.global && this.globals.has(local)) {
-      this.store(init ?? this.zero(local.type), this.globalPlace(local), local.type)
+      // A global without a value is zero from the start, and may already have been set by functions.
+      if (init) this.store(init, this.globalPlace(local), local.type)
       return
     }
     const mt = this.mt(local.type)
