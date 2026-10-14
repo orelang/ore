@@ -29,7 +29,8 @@ Rules for this code:
 | `json.ore` | The string builder, the JSON parser and the helpers of the generated encoders and decoders |
 | `number.ore` | `parseInt`, `parseFloat` and `toFixed` as JavaScript computes them, `Math.round`, `Math.cbrt`, `process.getenv` |
 | `os.ore` | libc, pthreads and the GC's hooks, with the sizes and constants of each platform |
-| `task.ore` | The M:N scheduler: tasks on mapped stacks, the context switch in assembly, workers, timers, the GC's view of task stacks |
+| `task.ore` | The M:N scheduler: tasks on mapped stacks, the context switch in assembly, workers, timers, the GC's view of task stacks; per-worker state of the clock and `Math.random` |
+| `sys.ore` | Allocation (`ore_rt_alloc`, inlined into every `new`), files, `Date.now`, `Math.random`, C strings, conversion of interface values to narrower interfaces |
 | `chan.ore` | Channels and `select` |
 | `poll.ore` | Waiting for sockets: the kqueue or epoll poller thread |
 | `net.ore` | TCP on non-blocking sockets: listen, connect, accept, read, write, with the socket layouts and constants of each platform |

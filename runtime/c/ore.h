@@ -39,17 +39,8 @@ typedef struct {
   void *env;
 } ore_closure;
 
-/** Reads a whole file; on failure, false and the error message in `out`. */
-bool ore_rt_read_file(ore_string path, ore_string *out);
-/** Writes a whole file; on failure, false and the error message in `err`. */
-bool ore_rt_write_file(ore_string path, ore_string data, ore_string *err);
-bool ore_rt_file_exists(ore_string path);
-/** Milliseconds since the Unix epoch. */
-i64 ore_rt_now(void);
-
-/** A pseudo-random number in [0, 1). */
-f64 ore_rt_random(void);
-
+// Allocation, files, the clock, random numbers, C strings and the conversion
+// of interfaces are in runtime/core/sys.ore.
 
 // Entry point emitted by the compiler; calls the user's `main`.
 void ore_entry(void);
@@ -71,11 +62,6 @@ extern _Thread_local ore_frame *ore_rt_top;
 // Panics are in runtime/core/program.ore, which exports these two for C.
 _Noreturn void ore_rt_panic_cstr(const char *message);
 _Noreturn void ore_rt_panic_index(i64 index, i64 length);
-
-/** Allocates zeroed, garbage-collected memory. */
-void *ore_rt_alloc(i64 size);
-/** Allocates zeroed, garbage-collected memory that is never scanned for pointers. */
-void *ore_rt_alloc_bytes(i64 size);
 
 // Strings. Comparison, search and the string methods are in runtime/core/string.ore.
 
@@ -104,21 +90,13 @@ static inline void *ore_iface_field(ore_iface v, i64 i) { return (u8 *)v.data + 
 /** Whether an interface value refers to an instance of the struct with type id `id`. */
 static inline bool ore_iface_is(ore_iface v, uintptr_t id) { return v.itab && (uintptr_t)v.itab[0] == id; }
 
-/** Converts to a narrower interface: member `k` of the new table is member `indices[k]` of the old one. */
-ore_iface ore_rt_iface_project(ore_iface v, i64 count, const i32 *indices);
-
 // Maps and hashing are in runtime/core/map.ore.
 
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 
-/** A NUL-terminated copy of a string, for C. */
-const char *ore_rt_cstring(ore_string s);
-/** A copy of a NUL-terminated C string; empty for NULL. */
-ore_string ore_rt_from_cstring(const char *p);
-
-// Printing, the program's entry and arguments, and the test runner are in
-// runtime/core (io.ore and program.ore).
+// Printing, the program's entry and arguments, the test runner and C strings
+// are in runtime/core (io.ore, program.ore and sys.ore).
 
 // Integer division and remainder: division by zero panics, MIN / -1 wraps.
 #define ORE_DEF_DIV_SIGNED(T)                                                        \

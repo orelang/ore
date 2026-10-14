@@ -25,13 +25,15 @@ once its Ore version passes the tests. Only libc and the GC stay outside Ore.
   rounded `(2.5).toFixed(0)` to `2` and read `parseFloat("0x10")` as 16).
   The scheduler: tasks with the context switch in assembly, workers,
   timers, channels, `select` and the network poller, about as fast as the C
-  version.
+  version. Allocation, inlined into every `new`, at least as fast as the C
+  version; files, the clock, `Math.random`, C strings and the conversion of
+  interface values; TCP sockets.
   Printing, panics, the `ore test` runner (each test in its own task, so a
   panic ends only that test) and the program's entry point. Indexing arrays
   and strings now inlines its bounds check, which made a loop over an array
-  17 times faster.
-- Next: the network functions and the system functions (files, time,
-  random numbers), then the last C (interface helpers);
+  17 times faster. No C file is left in the runtime.
+- Next: the inline helpers of interface values that `ore.h` still gives
+  generated code, then the compiler in Ore;
   printing moves with the scheduler, since the C runtime's own output
   (panics, `ore test`) must keep its order with it.
 - Also: the system part of the standard library that the compiler in Ore

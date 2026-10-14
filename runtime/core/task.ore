@@ -41,6 +41,7 @@ import {
     GC_set_stackbottom,
     cpuCount,
     deadlineIn,
+    epochMs,
     gcEventPostStartWorld,
     gcEventPreStopWorld,
     getenv,
@@ -160,11 +161,12 @@ export function scheduler(): Scheduler {
 //  32 the current task, or null
 //  40 a timespec, for clocks and deadlines (16 bytes)
 //  56 a mutex to unlock after the current task has left its stack, or null
+//  64 the state of Math.random's generator, zero until first used
 
 //ore:threadlocal
 let worker: ptr
 
-const workerSize = 64
+const workerSize = 72
 
 //ore:noinline
 function workerBlock(): ptr {
@@ -188,6 +190,16 @@ function setCurrent(w: ptr, t: ptr): void {
 
 function now(): int {
     return nowMs(unsafe.add(workerBlock(), 40))
+}
+
+/** Milliseconds since the Unix epoch, read through this worker's timespec. */
+export function wallClockMs(): int {
+    return epochMs(unsafe.add(workerBlock(), 40))
+}
+
+/** The 8 bytes of this worker's random number generator. */
+export function randomState(): ptr {
+    return unsafe.add(workerBlock(), 64)
 }
 
 /** A new worker block for this thread; allocates no collected memory. */

@@ -1,0 +1,234 @@
+// What generated code asks of the system: memory from the collector, files,
+// the wall clock, random numbers, C strings, and the conversion of interface
+// values to narrower interfaces.
+//
+// Every `new` calls `alloc`, inlined into the program, so it stays a call to
+// the collector and a test; the panic is out of line.
+
+import { GC_malloc, GC_malloc_atomic } from "ore:runtime/os"
+import { blockingEnter, blockingExit, randomState, wallClockMs } from "ore:runtime/task"
+
+declare function open(path: string, flags: i32): i32
+declare function creat(path: string, mode: u32): i32
+declare function read(fd: i32, buffer: ptr, size: u64): i64
+declare function write(fd: i32, buffer: ptr, size: u64): i64
+declare function close(fd: i32): i32
+declare function access(path: string, mode: i32): i32
+declare function strerror(code: i32): ptr
+declare function strlen(s: ptr): u64
+declare function time(result: ptr): i64
+/** The address of this thread's errno: __error on macOS, __errno_location on Linux. */
+declare function __error(): ptr
+declare function __errno_location(): ptr
+
+// ---------------------------------------------------------------------------
+// Memory
+
+//ore:cold
+//ore:noinline
+function outOfMemory(): void {
+    process.panic("out of memory")
+}
+
+/** Zeroed collected memory, scanned for pointers. */
+//ore:runtime ore_rt_alloc
+function alloc(size: int): ptr {
+    const p = GC_malloc(u64(size > 0 ? size : 1))
+    if (unsafe.toInt(p) === 0) outOfMemory()
+    return p
+}
+
+/** Collected memory that holds no pointers, so the collector never scans it; not zeroed. */
+function bytes(size: int): ptr {
+    const p = GC_malloc_atomic(u64(size > 0 ? size : 1))
+    if (unsafe.toInt(p) === 0) outOfMemory()
+    return p
+}
+
+/** Zeroed collected memory that is never scanned for pointers. */
+//ore:runtime ore_rt_alloc_bytes
+function allocBytes(size: int): ptr {
+    const p = bytes(size)
+    unsafe.fill(p, 0, size > 0 ? size : 1)
+    return p
+}
+
+// ---------------------------------------------------------------------------
+// C strings
+
+/** A NUL-terminated copy of a string, for C. */
+//ore:runtime ore_rt_cstring
+function cString(s: string): ptr {
+    const p = bytes(s.length + 1)
+    unsafe.copy(p, unsafe.stringData(s), s.length)
+    unsafe.store<u8>(unsafe.add(p, s.length), 0)
+    return p
+}
+
+/**
+ * A copy of a NUL-terminated C string; empty for null. The copy keeps the NUL
+ * after its end, so that C functions such as strtod that read it stop there.
+ */
+//ore:runtime ore_rt_from_cstring
+function fromCString(p: ptr): string {
+    if (unsafe.toInt(p) === 0) return ""
+    const n = i64(strlen(p))
+    const copy = bytes(n + 1)
+    unsafe.copy(copy, p, n + 1)
+    return unsafe.makeString(copy, n)
+}
+
+// ---------------------------------------------------------------------------
+// Files
+
+const oRdonly: i32 = 0
+const accessExists: i32 = 0
+const eintr: i32 = 4
+
+function oCloexec(): i32 {
+    return target.os === "darwin" ? 0x1000000 : 0x80000
+}
+
+function errno(): i32 {
+    return unsafe.load<i32>(target.os === "darwin" ? __error() : __errno_location())
+}
+
+/** "cannot open a.txt: No such file or directory": what failed, the path and errno's message. */
+function failure(what: string, path: string): string {
+    const reason = fromCString(strerror(errno()))
+    return `${what} ${path}: ${reason}`
+}
+
+/** Reads a whole file; on failure, false and the message in `out`. File I/O blocks the worker, so another one runs the other tasks. */
+//ore:runtime ore_rt_read_file
+function readFile(path: string, out: ptr): bool {
+    blockingEnter()
+    const ok = readAll(path, out)
+    blockingExit()
+    return ok
+}
+
+function readAll(path: string, out: ptr): bool {
+    const fd = open(path, oRdonly | oCloexec())
+    if (fd < 0) {
+        unsafe.store<string>(out, failure("cannot open", path))
+        return false
+    }
+    let size = 4096
+    let length = 0
+    let data = bytes(size)
+    while (true) {
+        const n = read(fd, unsafe.add(data, length), u64(size - length))
+        if (n === 0) break
+        if (n < 0) {
+            if (errno() === eintr) continue
+            unsafe.store<string>(out, failure("cannot read", path))
+            close(fd)
+            return false
+        }
+        length += n
+        if (length === size) {
+            const bigger = bytes(size * 2)
+            unsafe.copy(bigger, data, length)
+            data = bigger
+            size *= 2
+        }
+    }
+    close(fd)
+    unsafe.store<string>(out, unsafe.makeString(data, length))
+    return true
+}
+
+/** Writes a whole file, created or truncated; on failure, false and the message in `err`. */
+//ore:runtime ore_rt_write_file
+function writeFile(path: string, data: string, err: ptr): bool {
+    blockingEnter()
+    const ok = writeAll(path, data, err)
+    blockingExit()
+    return ok
+}
+
+function writeAll(path: string, data: string, err: ptr): bool {
+    // creat is open with O_WRONLY | O_CREAT | O_TRUNC; open itself takes the
+    // mode as a variadic argument, which macOS on arm64 passes on the stack.
+    const fd = creat(path, 0x1b6)
+    if (fd < 0) {
+        unsafe.store<string>(err, failure("cannot open", path))
+        return false
+    }
+    let done = 0
+    while (done < data.length) {
+        const n = write(fd, unsafe.add(unsafe.stringData(data), done), u64(data.length - done))
+        if (n >= 0) done += n
+        else if (errno() !== eintr) {
+            unsafe.store<string>(err, failure("cannot write", path))
+            close(fd)
+            return false
+        }
+    }
+    if (close(fd) !== 0) {
+        unsafe.store<string>(err, failure("cannot write", path))
+        return false
+    }
+    return true
+}
+
+//ore:runtime ore_rt_file_exists
+function fileExists(path: string): bool {
+    return access(path, accessExists) === 0
+}
+
+// ---------------------------------------------------------------------------
+// Time and random numbers
+
+/** Date.now: milliseconds since the Unix epoch. */
+//ore:runtime ore_rt_now
+function now(): int {
+    return wallClockMs()
+}
+
+/**
+ * Math.random: xorshift64*, with a state per OS thread (in the worker's
+ * block), seeded from the time and the state's address.
+ */
+//ore:runtime ore_rt_random
+function random(): f64 {
+    const state = randomState()
+    let x = unsafe.load<u64>(state)
+    if (x === 0) x = ((u64(time(unsafe.fromInt(0))) ^ u64(unsafe.toInt(state))) * 0x9e3779b97f4a7c15) | 1
+    x ^= x >> 12
+    x ^= x << 25
+    x ^= x >> 27
+    unsafe.store<u64>(state, x)
+    return f64((x * 0x2545f4914f6cdd1d) >> 11) / 9007199254740992.0
+}
+
+// ---------------------------------------------------------------------------
+// Interfaces
+
+/** Any interface value: two words, the object and its table. */
+interface Value {}
+
+/**
+ * Converts an interface value to a narrower interface: entry `k + 1` of the
+ * new table is entry `indices[k] + 1` of the old one (an i32 each), and entry
+ * 0, the type id, is kept.
+ */
+//ore:runtime ore_rt_iface_project
+function project(v: Value, count: int, indices: ptr): Value {
+    // Ore has no stack memory to take the address of, so the new table (at
+    // least two words) is first the cell through which the value's two words
+    // are read and the result's written, before it is filled.
+    const table = alloc((count > 0 ? count + 1 : 2) * 8)
+    unsafe.store<Value>(table, v)
+    const data = unsafe.load<ptr>(table)
+    const old = unsafe.load<ptr>(unsafe.add(table, 8))
+    unsafe.store<ptr>(unsafe.add(table, 8), table)
+    const result = unsafe.load<Value>(table)
+    unsafe.store<ptr>(table, unsafe.load<ptr>(old))
+    for (let k = 0; k < count; k++) {
+        const index = i64(unsafe.load<i32>(unsafe.add(indices, k * 4)))
+        unsafe.store<ptr>(unsafe.add(table, (k + 1) * 8), unsafe.load<ptr>(unsafe.add(old, (index + 1) * 8)))
+    }
+    return result
+}
