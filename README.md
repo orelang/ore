@@ -16,54 +16,25 @@ as values, generics by monomorphization, green threads with channels and a
 garbage collector. Programs compile through LLVM to a single native binary.
 
 ```ts
-type Shape = { kind: "circle"; r: f64 } | { kind: "rect"; w: f64; h: f64 }
+const level: u8 = 250
+console.log(level + 10, 7 / 2, 7.0 / 2)      // 4 3 3.5: machine integers
 
-function area(s: Shape): f64 {
-    switch (s.kind) {
-        case "circle":
-            return Math.PI * s.r * s.r
-        case "rect":
-            return s.w * s.h
-    }
-}
-
-class ParseError {
-    constructor(
-        readonly message: string,
-        readonly line: int,
-    ) {}
-}
-
-function parseSize(text: string, line: int): int | Error {
+function parsePort(text: string): int | Error {
     const n = Number.parseInt(text)
-    if (n === null || n < 0) return new ParseError(`bad size '${text}'`, line)
+    if (n === null || n > 65535) return new Error(`bad port '${text}'`)
     return n
 }
 
-const shapes: Shape[] = [
-    { kind: "circle", r: 1 },
-    { kind: "rect", w: 2, h: 3 },
-]
-const total = shapes.map(area).reduce((sum, a) => sum + a, 0.0)
-console.log(`total area: ${total.toFixed(2)}`)
+const port = parsePort("8080")
+if (port instanceof Error) process.panic(port.message)  // errors are values
 
-const lines = ["12", "-4"]
-for (let i = 0; i < lines.length; i++) {
-    const size = parseSize(lines[i], i + 1)
-    if (size instanceof Error) {
-        console.error(size.message)
-        continue
-    }
-    const bytes: u8 = u8(size)
-    console.log(bytes * 2)
-}
+const replies = new Chan<int>()
+task.spawn(() => replies.send(port + 1))    // a green thread, no async
+console.log(replies.receive())             // 8081
 ```
 
-```
-$ ore run
-total area: 9.14
-24
-bad size '-4'
+```sh
+ore build server.ore && ./server   # one native binary, nothing to install next to it
 ```
 
 ## How it works
@@ -91,87 +62,150 @@ The [specification](docs/spec) describes the language, the
 
 ## The language at a glance
 
-**Numbers.** `i8`…`i64`, `u8`…`u64`, `f32`, `f64`; `int` is `i64` and
-`number` is `f64`. Literals are untyped constants, as in Go: `let b: u8 = 255`
-works, `let b: u8 = 256` is a compile error. Types never mix implicitly; convert
-with `f64(x)`, `i32(y)`. Integer overflow wraps, and `7 / 2` is `3`.
+**Numbers are machine numbers.** `i8`…`i64`, `u8`…`u64`, `f32`, `f64`
+(`int` is `i64`, `number` is `f64`). Literals adapt to their type, as in Go;
+types never mix without a conversion, integers wrap and divide as integers.
 
-**Strings and arrays.** Strings are immutable UTF-8 with JavaScript methods
-(`split`, `trim`, `replaceAll`, `padStart`, …) on byte offsets. Arrays are
-references with `push`, `map`, `filter`, `reduce`, `find`, `sort` and the rest;
-`Map<K, V>` keeps insertion order.
+```ts
+let n = 7      // int
+let x = 7.0    // f64
+console.log(n / 2, x / 2, f64(n) / 2)    // 3 3.5 3.5
+n + x          // error: Operator '+' cannot be applied to types 'i64' and 'f64'. Convert one side explicitly
+const b: u8 = 256                        // error: Constant 256 overflows 'u8' (range 0..255).
+```
 
-**Objects.** Object types (`{ x: f64 }`) are structural records; classes are
-nominal, without inheritance, with `private`, `readonly` and parameter
-properties. Interfaces are structural and accept any class or object with the
-members, including fields:
+**Strings are UTF-8 bytes.** Immutable, with the JavaScript methods on byte
+offsets; `for...of` walks runes.
+
+```ts
+const word = "héllo"
+let runes = 0
+for (const rune of word) runes++
+console.log(word.length, runes, word.slice(0, 3), word.replaceAll("l", "L"))   // 6 5 hé héLLo
+```
+
+**Structural interfaces, nominal classes.** Any class or object with the
+members fits an interface, fields included. Classes have no inheritance.
 
 ```ts
 interface Named {
     readonly name: string
 }
 
-function greet(n: Named): string {
-    return `hello, ${n.name}`
+class User {
+    constructor(
+        readonly name: string,
+        private password: string,
+    ) {}
 }
 
-greet({ name: "literal" })
-greet(new User("Ada"))
+const greet = (n: Named) => `hello, ${n.name}`
+console.log(greet(new User("Ada", "secret")), greet({ name: "literal" }))   // hello, Ada hello, literal
 ```
 
-**Unions and narrowing.** `T | null`, discriminated unions, string literal
-types, `typeof`, `instanceof`, `?.`, `??` and exhaustive `switch`. A narrowed
-value is checked at run time, so a wrong check panics instead of corrupting
-memory.
-
-**Errors are values.** Fallible functions return `T | Error`; any class with a
-`message` is an `Error`. `process.panic` is for bugs. There is no `throw`.
-
-**Generics.** Functions, classes, interfaces and type aliases, with inferred
-type arguments and `extends` constraints, compiled per instance.
-
-**Functions.** Default, optional and rest parameters, destructuring
-(`function f({ x, y }: Point)`, `[a, b] = [b, a]`), closures that capture by
-reference as in JavaScript, methods as values, getters and setters, generic
-methods, and `using`, which disposes resources at the end of a block, like
-Go's `defer`:
+**Unions narrow, and `switch` is exhaustive.** `T | null`, discriminated
+unions, `typeof`, `instanceof`, `?.` and `??`.
 
 ```ts
-function copy(from: string, to: string): Error | null {
-    using input = open(from)
-    using output = create(to)
-    ...
+type Shape = { kind: "circle"; r: f64 } | { kind: "rect"; w: f64; h: f64 }
+
+function area(s: Shape): f64 {
+    switch (s.kind) {
+        case "circle":
+            return Math.PI * s.r * s.r
+        case "rect":
+            return s.w * s.h
+    }
 }
+
+const found = ["ada", "grace"].find((n) => n.startsWith("g"))   // string | null
+console.log(area({ kind: "rect", w: 2, h: 3 }), found?.toUpperCase() ?? "nobody")   // 6 GRACE
 ```
 
-`using` is not Ore's own syntax: it is the `using` declaration of the TC39
-[Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)
-proposal, shipped in
-[TypeScript 5.2](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management).
-Ore keeps TypeScript's syntax, so there is no `defer`; unlike Go's `defer`,
-`using` is tied to a value's `[Symbol.dispose]()` method and ends with the
-block, not the function, so a `using` in a loop disposes on every iteration.
+**Errors are values.** No `throw`: a fallible function returns `T | Error`,
+and the checker makes you look before you use the result.
 
-**Scripts.** A program is the top-level code of its files, run in import
-order; there is no `main`. Top-level variables that functions use are
-globals.
+```ts
+function parseAge(text: string): int | Error {
+    const n = Number.parseInt(text)
+    if (n === null || n < 0) return new Error(`bad age '${text}'`)
+    return n
+}
 
-**Typed JSON.** `JSON.stringify(value)` works on any data type, and
-`JSON.parse<Config>(text)` returns a `Config` or an `Error` that says what is
-wrong and where (`expected a string, got a number at .tags[1]`).
+const age = parseAge("forty")
+if (age instanceof Error) console.log(age.message)   // bad age 'forty'
+else console.log(age + 1)                            // age is an int here
+parseAge("1") + 1   // error: Operator '+' cannot be applied to type 'Error | i64'.
+```
 
-**Built-ins in namespaces.** `console.log`, `process.args`, `Math.sqrt`,
-`Number.parseInt`, `fs.readFile`, `Date.now`. No bare globals.
+**Generics are compiled per type,** with inferred type arguments and
+`extends` constraints.
 
-**Concurrency, like Go.** Green threads running in parallel on all CPUs,
-channels and select, without `async` coloring; `ore:sync` adds `Mutex` and
-`WaitGroup`, and `ore:net` TCP whose waiting parks only the task:
+```ts
+function last<T>(items: T[]): T | null {
+    return items.length > 0 ? items[items.length - 1] : null
+}
+
+console.log(last([1, 2, 3]), last(["x", "y"]), last<f64>([]))   // 3 y null
+```
+
+**Closures, defaults, destructuring,** as in TypeScript; closures capture
+variables by reference.
+
+```ts
+function counter(start = 0): () => int {
+    let n = start
+    return () => ++n
+}
+
+const next = counter(10)
+next()
+const { x, y } = { x: next(), y: 1 }
+console.log(x, y, [3, 1, 2].map((v) => v * x).join(" "))   // 12 1 36 12 24
+```
+
+**`using` instead of `defer`.** A value with `[Symbol.dispose]()` is disposed
+at the end of its block, on every path out of it. This is the `using`
+declaration of TC39's [Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management),
+as shipped in [TypeScript 5.2](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management).
+
+```ts
+class Section {
+    constructor(readonly name: string) {
+        console.log("enter", name)
+    }
+
+    [Symbol.dispose](): void {
+        console.log("leave", this.name)
+    }
+}
+
+for (const name of ["a", "b"]) {
+    using s = new Section(name)
+    console.log("work in", s.name)
+}   // enter a, work in a, leave a, enter b, work in b, leave b
+```
+
+**Typed JSON.** Code for each type is generated at compile time; a mismatch
+is an `Error` that says where.
+
+```ts
+type Config = { name: string; port: int; tags: string[] }
+
+const config = JSON.parse<Config>(`{"name": "api", "port": "80", "tags": []}`)
+if (config instanceof Error) console.log(config.message)   // JSON: expected an integer, got a string at .port
+console.log(JSON.stringify({ name: "api", port: 80, tags: ["v1"] }))   // {"name":"api","port":80,"tags":["v1"]}
+```
+
+**Concurrency, like Go.** Green threads on all CPUs, channels and `select`,
+with no `async` coloring; waiting parks the task, not the OS thread.
+`ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP.
 
 ```ts
 const results = new Chan<int>()
 for (let i = 1; i <= 3; i++) task.spawn(() => results.send(i * i))
 let sum = 0
-for (let i = 0; i < 3; i++) sum += results.receive() ?? 0
+for (let i = 0; i < 3; i++) sum += results.receive() ?? 0   // 14
 
 task.select([
     results.onReceive((v) => console.log("got", v)),
@@ -179,17 +213,22 @@ task.select([
 ])
 ```
 
-**Fast by default.** Release builds (`ore build --release`) inline small
-functions and keep objects that never leave their function on the stack
-instead of the garbage-collected heap.
+**C, and the machine, when needed.** `declare function` calls C directly;
+`unsafe` has raw memory, atomics and inline assembly, enough to write the
+runtime itself in Ore ([unsafe code](docs/spec/09-unsafe.md)).
 
-**C interop.** `declare function strlen(s: string): u64` calls C directly,
-and `//ore:export name` makes an Ore function callable from C.
+```ts
+declare function strlen(s: string): u64
+console.log(strlen("ore"))   // 3, from libc
 
-**Low level when needed.** The `unsafe` namespace has raw memory, atomics and
-inline assembly, and `//ore:` directives set function attributes and
-thread-local variables, so the runtime itself can be written in Ore. See
-[unsafe code](docs/spec/09-unsafe.md).
+const counter = unsafe.allocBytes(8)
+unsafe.atomicAdd<i64>(counter, 5)
+console.log(unsafe.atomicLoad<i64>(counter), unsafe.sizeOf<string>())   // 5 16
+```
+
+**Scripts, built-ins in namespaces.** A program is the top-level code of its
+files, with no `main`. Built-ins live in namespaces: `console.log`,
+`process.args`, `Math.sqrt`, `fs.readFile`; there are no bare globals.
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
 inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
