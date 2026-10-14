@@ -119,6 +119,14 @@ function copy(from: string, to: string): Error | null {
 }
 ```
 
+`using` is not Ore's own syntax: it is the `using` declaration of the TC39
+[Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)
+proposal, shipped in
+[TypeScript 5.2](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-2.html#using-declarations-and-explicit-resource-management).
+Ore keeps TypeScript's syntax, so there is no `defer`; unlike Go's `defer`,
+`using` is tied to a value's `[Symbol.dispose]()` method and ends with the
+block, not the function, so a `using` in a loop disposes on every iteration.
+
 **Scripts.** A program is the top-level code of its files, run in import
 order; there is no `main`. Top-level variables that functions use are
 globals.

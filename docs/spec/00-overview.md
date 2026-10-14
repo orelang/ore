@@ -377,6 +377,9 @@ everything as strings). `includes` finds `NaN`, `indexOf` does not.
 When the rest of the block ends, also by `return`, `break` or `continue`,
 `x[Symbol.dispose]()` is called; several resources are disposed in reverse
 order, and a null resource is skipped. Panics do not dispose resources.
+This is the `using` declaration of the TC39 Explicit Resource Management
+proposal (https://github.com/tc39/proposal-explicit-resource-management), as
+in TypeScript 5.2; `await using` is rejected.
 
 ### 3.19 Evaluation order
 
