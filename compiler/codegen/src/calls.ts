@@ -30,17 +30,23 @@ export abstract class CallEmitter extends ExpressionEmitter {
       // Strings cross into C as NUL-terminated copies, and come back copied.
       const args = e.args.map((a, i) => {
         const v = this.expr(a)
+        // Arguments past the fixed parameters of a variadic function, already promoted.
+        if (i >= e.func.params.length) return `${this.lt(e.func.variadic!)} ${v.v}`
         const t = e.func.params[i]!.type
         if (t.kind === "string") return `ptr ${this.rt("ore_rt_cstring", [v]).v}`
         return `${this.externType(t, true)} ${v.v}`
       })
       const result = e.func.type.result
       const ret = this.externType(result, false)
+      // A variadic call names the function's type, so that LLVM passes the arguments as the platform's C does.
+      const callee = e.func.variadic
+        ? `(${[...e.func.params.map((p) => this.externType(p.type, true)), "..."].join(", ")}) @${e.func.name}`
+        : `@${e.func.name}`
       if (ret === "void") {
-        this.b.emit(`call void @${e.func.name}(${args.join(", ")})`)
+        this.b.emit(`call void ${callee}(${args.join(", ")})`)
         return voidValue
       }
-      const v = this.b.value(ret.split(" ").pop()!, `call ${ret} @${e.func.name}(${args.join(", ")})`)
+      const v = this.b.value(ret.split(" ").pop()!, `call ${ret} ${callee}(${args.join(", ")})`)
       return result.kind === "string" ? this.rt("ore_rt_from_cstring", [v]) : v
     }
     const args = e.args.map((a) => this.expr(a))

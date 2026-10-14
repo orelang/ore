@@ -18,6 +18,9 @@ declare function next_byte(x: u8): u8
 declare function read_counter(): i64
 declare function bump_counter(): void
 
+// A variadic C function.
+declare function snprintf(buffer: ptr, size: u64, format: string, ...args: i64[]): i32
+
 // A variable shared with C.
 //ore:export ore_counter
 let counter: i64
@@ -65,3 +68,6 @@ counter = 40
 bump_counter()
 bump_counter()
 console.log(counter, read_counter())
+const formatted = unsafe.allocBytes(64)
+const written = snprintf(formatted, 64, "%lld|%lld|%lld", 7, -8, 9000000000)
+console.log(unsafe.makeString(formatted, i64(written)))

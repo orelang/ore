@@ -357,8 +357,22 @@ export abstract class DeclarationChecker extends CheckerBase {
     if (decl.body) return this.error(decl.name!, "A declared function cannot have a body.")
     if (decl.typeParameters) return this.error(decl.typeParameters[0]!, "External functions cannot be generic.")
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return this.error(decl.name!, "An external function needs a C name.")
-    const params = this.resolveParams(decl.parameters, scope)
-    if (this.signatures.has(params)) this.error(decl.name!, "An external function cannot have optional or rest parameters.")
+    let params = this.resolveParams(decl.parameters, scope)
+    // `...args: T[]` declares a variadic C function, such as fcntl or printf. C
+    // promotes the arguments after the fixed ones, to an int64, a double or a pointer.
+    let variadic: Type | undefined
+    const last = decl.parameters.at(-1)
+    if (last?.dotDotDotToken) {
+      const rest = params.at(-1)?.type
+      const elem = rest?.kind === "array" ? rest.elem : undefined
+      if (!elem || !((elem.kind === "int" && elem.bits === 64) || (elem.kind === "float" && elem.bits === 64) || elem.kind === "ptr")) {
+        this.error(last, "The variadic arguments of a C function are i64, f64 or ptr, as C promotes them: write '...args: i64[]'.")
+      }
+      variadic = elem
+      params = params.slice(0, -1)
+    } else if (this.signatures.has(params)) {
+      this.error(decl.name!, "An external function cannot have optional parameters.")
+    }
     const result = decl.type ? this.resolveType(decl.type, scope) ?? types.void : types.void
     // C can exchange numbers, booleans, strings and pointers.
     const cCompatible = (t: Type) => isNumeric(t) || t.kind === "bool" || t.kind === "string" || t.kind === "ptr"
@@ -376,6 +390,7 @@ export abstract class DeclarationChecker extends CheckerBase {
       body: { k: "block", body: [] },
       exported: false,
       extern: true,
+      variadic,
     }
     this.module.functions.push(func)
     if (!scope.declareValue(name, { k: "func", func, decl })) this.error(decl.name!, `Duplicate declaration '${name}'.`)

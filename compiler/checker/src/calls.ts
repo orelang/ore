@@ -497,6 +497,16 @@ export abstract class CallChecker extends ExpressionChecker {
 
   protected callFunc(func: ir.Func, args: readonly ts.Expression[], node: ts.Node, scope: Scope, what: string, receiver?: ir.Expr, operands?: Operand[]): Operand {
     const params = func.type.params
+    const variadic = func.variadic
+    if (variadic) {
+      // A variadic C function: the fixed arguments, then any number of the promoted type.
+      if (args.length < params.length) return this.fail(node, `${what} expects at least ${params.length} argument(s), got ${args.length}.`)
+      const values = args.map((arg, i) => {
+        const type = i < params.length ? params[i]! : variadic
+        return this.coerce(this.checkExpr(arg, scope, type), type, arg)
+      })
+      return typed({ k: "call", type: func.type.result, func, args: values })
+    }
     const signature = this.signatures.get(func.params)
     const fixed = signature?.rest ? params.length - 1 : params.length
     const required = signature?.required ?? params.length

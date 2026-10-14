@@ -8,7 +8,7 @@ import { EmitterBase } from "./base"
 
 export abstract class FunctionEmitter extends EmitterBase {
   protected declareExtern(func: ir.Func) {
-    const params = func.params.map((p) => this.externType(p.type, true)).join(", ")
+    const params = [...func.params.map((p) => this.externType(p.type, true)), ...(func.variadic ? ["..."] : [])].join(", ")
     const result = this.externType(func.type.result, false)
     this.decls.set(`@${func.name}`, `declare ${result} @${func.name}(${params})`)
   }

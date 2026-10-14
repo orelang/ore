@@ -27,6 +27,11 @@ NUL-terminated copy (`const char *`); a returned `const char *` is copied
 into an Ore string (NULL gives `""`). External functions cannot be used as
 values.
 
+A rest parameter declares a variadic C function, such as
+`declare function snprintf(buffer: ptr, size: u64, format: string, ...args: i64[]): i32`.
+Its element type is `i64`, `f64` or `ptr`, the types C promotes variadic
+arguments to, and each argument after the fixed ones converts to it.
+
 In package.json, `"ore": { "link": [...], "sources": [...] }` adds libraries
 to link (`-l`) and C files, relative to the package, to compile into the
 program. This applies to every package of the program, including

@@ -46,6 +46,8 @@ export interface Func {
    * as NUL-terminated copies and returned strings are copied.
    */
   extern?: boolean
+  /** For a variadic external function: the type of the arguments after `params`, as C passes them. */
+  variadic?: Type
   type: FuncType
   params: Local[]
   /** `this` of a method, passed before the parameters. */
