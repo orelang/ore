@@ -1,0 +1,29 @@
+// Promise.all, Promise.race, then chains and promises that adopt promises.
+
+async function after(ms: int, value: string): Promise<string> {
+    await time.delay(ms)
+    console.log("settled", value)
+    return value
+}
+
+async function main() {
+    const all = await Promise.all([after(60, "slow"), after(10, "fast"), after(30, "middle")])
+    console.log("all", all.join(","))
+
+    const winner = await Promise.race([after(50, "tortoise"), after(10, "hare")])
+    console.log("race", winner)
+    await time.delay(60)
+
+    // `then` returns a new promise; a callback returning a promise is awaited.
+    const chained = await Promise.resolve(2)
+        .then((n) => n * 10)
+        .then((n) => after(1, `${n}`))
+        .then((s) => s.length)
+    console.log("chained", chained)
+
+    const none: Promise<int>[] = []
+    const empty = await Promise.all(none)
+    console.log("empty all", empty.length)
+}
+
+main()

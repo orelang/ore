@@ -1,0 +1,56 @@
+// Async functions run synchronously until their first await.
+
+async function add(a: int, b: int): Promise<int> {
+    console.log("add", a, b)
+    return a + b
+}
+
+async function twice(n: int): Promise<int> {
+    const once = await add(n, n)
+    const again = await add(once, once)
+    return again
+}
+
+async function noValue() {
+    console.log("noValue runs")
+}
+
+class Counter {
+    count = 0
+
+    async increment(by: int): Promise<int> {
+        await null
+        this.count += by
+        return this.count
+    }
+}
+
+async function main() {
+    console.log("result", await twice(3))
+    await noValue()
+    const counter = new Counter()
+    await counter.increment(2)
+    const last = await counter.increment(5)
+    console.log("counter", last, counter.count)
+
+    // Async arrow functions and closures over locals.
+    let calls = 0
+    const bump = async (step: int): Promise<int> => {
+        calls += step
+        return calls
+    }
+    await bump(1)
+    console.log("bump", await bump(10), calls)
+
+    // A promise made by hand.
+    const ready = new Promise<string>((resolve) => {
+        console.log("executor runs at once")
+        time.timeout(() => resolve("done"), 1)
+    })
+    console.log("waiting")
+    console.log(await ready)
+}
+
+console.log("before main")
+main().then(() => console.log("main finished"))
+console.log("after main")

@@ -188,6 +188,21 @@ work.**
 - Getters and setters.
 - `JSON.parse` / `JSON.stringify`.
 
+### Phase 8.6: Async
+- Promises and `async`/`await` in the JavaScript order of microtasks and
+  timers, without exceptions: a promise only resolves, failures are values
+  (`Promise<T | Error>`).
+- `time.timeout`, `interval`, `immediate`, `delay` (a promise), `sleep`
+  (blocks the task; moved from `task`), timers cancelled with `cancel()`;
+  `task.microtask`.
+- Async functions compile to state machines (no stack per call), run
+  synchronously until their first `await`, on one event loop: async code is
+  single-threaded, `task.spawn` is parallel.
+- Done: the test suite `tests/async/`, whose expected outputs come from Bun
+  running the same files (`tests/async/bun-shim.ts` maps `time` and `task`
+  to Web APIs).
+- Next: the runtime event loop, then the compiler.
+
 ### Phase 9: Self-hosting
 - Rewrite the compiler in Ore, the best stress test of the language, in
   `selfhost/`.
@@ -196,7 +211,8 @@ work.**
   the tokens equal the TypeScript scanner's and the tree (kinds, spans and
   children) equals the TypeScript parser's.
 - Next: the checker and the C backend.
-- Language gaps found so far: definite assignment (now supported).
+- Language gaps found so far: definite assignment (now supported); arrays
+  have no `unshift`.
 
 ## 5. Risks and mitigations
 

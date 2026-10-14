@@ -1,0 +1,32 @@
+// Microtasks of separate promise chains interleave; returning a promise from
+// an async function takes two more ticks than returning a value.
+
+Promise.resolve()
+    .then(() => console.log("a1"))
+    .then(() => console.log("a2"))
+    .then(() => console.log("a3"))
+Promise.resolve()
+    .then(() => console.log("b1"))
+    .then(() => console.log("b2"))
+    .then(() => console.log("b3"))
+
+async function first() {
+    console.log("first start")
+    await null
+    console.log("first after await")
+}
+first()
+
+const settled = Promise.resolve(1)
+settled.then(() => console.log("settled then"))
+
+async function returnsPromise(): Promise<int> {
+    return settled
+}
+async function returnsValue(): Promise<int> {
+    return 2
+}
+returnsPromise().then(() => console.log("returned promise"))
+returnsValue().then(() => console.log("returned value"))
+
+console.log("sync end")

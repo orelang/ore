@@ -1,0 +1,68 @@
+// await inside loops, branches, switch, expressions and using.
+
+async function value(n: int): Promise<int> {
+    await null
+    return n
+}
+
+async function log(label: string): Promise<string> {
+    console.log("evaluated", label)
+    await null
+    return label
+}
+
+class Resource {
+    constructor(readonly name: string) {
+        console.log("open", name)
+    }
+
+    [Symbol.dispose](): void {
+        console.log("close", this.name)
+    }
+}
+
+async function main() {
+    let sum = 0
+    for (let i = 0; i < 3; i++) sum += await value(i)
+    console.log("for", sum)
+
+    let n = 0
+    while ((await value(n)) < 3) n++
+    console.log("while", n)
+
+    for (const s of ["x", "y"]) console.log("for-of", await log(s))
+
+    if ((await value(1)) === 1) console.log("if then")
+    else console.log("if else")
+
+    switch (await value(2)) {
+        case 1:
+            console.log("case 1")
+            break
+        case 2:
+            console.log("case 2", await log("in case"))
+            break
+    }
+
+    // Arguments are evaluated in order, each await before the next argument.
+    console.log("args", await log("a"), await log("b"), `${await log("c")}!`)
+
+    // && and ?: evaluate an await only when they reach it.
+    const skipped = false && (await log("never")) === "never"
+    const chosen = true ? await log("chosen") : await log("other")
+    console.log("short-circuit", skipped, chosen)
+
+    const [p, q] = await Promise.all([value(7), value(8)])
+    console.log("destructured", p, q)
+
+    {
+        using outer = new Resource("outer")
+        await value(0)
+        using inner = new Resource("inner")
+        await value(0)
+        console.log("using body")
+    }
+    console.log("after using")
+}
+
+main()
