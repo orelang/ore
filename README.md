@@ -1,13 +1,19 @@
-# Ore
+<p align="center">
+  <img alt="{Ore}: familiar language, closer to the machine. A natively compiled, Go-like language with TypeScript syntax." src="docs/assets/banner.png" width="100%">
+</p>
 
-A natively compiled, Go-like language with TypeScript syntax.
+<p align="center">
+  <a href="#getting-started">Getting started</a> ·
+  <a href="docs/spec">Specification</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="docs/roadmap.md">Roadmap</a>
+</p>
 
-Ore keeps the syntax of TypeScript and gives it native semantics: real `i32`,
-`u64` and `f32` types, untyped numeric constants, explicit conversions, nominal
-classes, structural interfaces, tagged unions with narrowing, errors as values,
-generics by monomorphization, green threads with channels and a garbage
-collector. Programs compile to C and
-then to a single native binary with clang.
+**Ore** keeps the syntax of TypeScript and gives it native semantics: real
+`i32`, `u64` and `f32` types, untyped numeric constants, explicit conversions,
+nominal classes, structural interfaces, tagged unions with narrowing, errors
+as values, generics by monomorphization, green threads with channels and a
+garbage collector. Programs compile through LLVM to a single native binary.
 
 ```ts
 type Shape = { kind: "circle"; r: f64 } | { kind: "rect"; w: f64; h: f64 }
@@ -60,9 +66,22 @@ total area: 9.14
 bad size '-4'
 ```
 
-Status: early development. The language described below works today; see the
-[roadmap](docs/roadmap.md) for what comes next, the [spec](docs/spec) for the
-details and the [architecture](docs/architecture.md) for how it is built.
+## Where Ore is now
+
+Early development: the language below works today, on macOS and Linux, arm64
+and x86-64. The current goal is **an Ore that is written in Ore**: no C left
+in the runtime, then the compiler itself, then a garbage collector of its own,
+and only then `async`/`await`.
+
+| Now | |
+|---|---|
+| Runtime in Ore | Strings, arrays, maps, number formatting are done and run faster than the C they replaced (up to 2.4×); JSON, printing, the network and the scheduler are next |
+| Compiler in Ore | The lexer and the parser are done and match TypeScript's on every file of the repository; the checker and the backend come after the runtime |
+| Low-level layer | Done: `unsafe` (raw memory, atomics, inline assembly) and `//ore:` directives, the tools the runtime is written with |
+
+The [roadmap](docs/roadmap.md) has the order and the details, the
+[spec](docs/spec) the language, the [architecture](docs/architecture.md) how
+it is built.
 
 ## The language at a glance
 
