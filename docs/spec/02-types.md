@@ -101,6 +101,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.exit(code)` | exits with a status code |
 | `process.args` | the command-line arguments after the program name |
 | `process.getenv(name)` | an environment variable, or `null` |
+| `process.cwd()` | the working directory, as an absolute path |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
 | `Math.abs(x)`, `Math.min(a, b)`, `Math.max(a, b)` | for any numeric type, keeping it |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |

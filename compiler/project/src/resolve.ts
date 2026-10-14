@@ -19,6 +19,7 @@ import runtimeSys from "../../../runtime/core/sys.ore" with { type: "text" }
 import runtimeTask from "../../../runtime/core/task.ore" with { type: "text" }
 import cryptoModule from "../../../runtime/std/crypto.ore" with { type: "text" }
 import netModule from "../../../runtime/std/net.ore" with { type: "text" }
+import pathModule from "../../../runtime/std/path.ore" with { type: "text" }
 import syncModule from "../../../runtime/std/sync.ore" with { type: "text" }
 import testModule from "../../../runtime/std/test.ore" with { type: "text" }
 
@@ -26,6 +27,7 @@ import testModule from "../../../runtime/std/test.ore" with { type: "text" }
 export const stdModules: Record<string, string> = {
   "ore:crypto": cryptoModule,
   "ore:net": netModule,
+  "ore:path": pathModule,
   "ore:sync": syncModule,
   "ore:test": testModule,
   "ore:runtime/string": runtimeString,

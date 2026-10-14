@@ -312,6 +312,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.rt("ore_rt_args", [])
       case "process.getenv":
         return this.rt("ore_rt_getenv", [a[0]!])
+      case "process.cwd":
+        return this.rt("ore_rt_cwd", [])
       case "internal.runTest":
         this.rt("ore_rt_run_test", [a[0]!, a[1]!])
         return voidValue

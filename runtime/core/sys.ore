@@ -14,6 +14,7 @@ declare function read(fd: i32, buffer: ptr, size: u64): i64
 declare function write(fd: i32, buffer: ptr, size: u64): i64
 declare function close(fd: i32): i32
 declare function access(path: string, mode: i32): i32
+declare function getcwd(buffer: ptr, size: u64): ptr
 declare function strerror(code: i32): ptr
 declare function strlen(s: ptr): u64
 declare function time(result: ptr): i64
@@ -176,6 +177,23 @@ function writeAll(path: string, data: string, err: ptr): bool {
 //ore:runtime ore_rt_file_exists
 function fileExists(path: string): bool {
     return access(path, accessExists) === 0
+}
+
+// ---------------------------------------------------------------------------
+// The working directory
+
+const erange: i32 = 34
+
+/** process.cwd: the working directory, as an absolute path. */
+//ore:runtime ore_rt_cwd
+function cwd(): string {
+    let size = 1024
+    while (true) {
+        const buffer = bytes(size)
+        if (unsafe.toInt(getcwd(buffer, u64(size))) !== 0) return unsafe.makeString(buffer, i64(strlen(buffer)))
+        if (errno() !== erange) process.panic(failure("cannot get the working directory", "."))
+        size *= 2
+    }
 }
 
 // ---------------------------------------------------------------------------
