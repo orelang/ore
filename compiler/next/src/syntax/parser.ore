@@ -153,6 +153,9 @@ function precedence(kind: NodeKind): int {
 /** An operator made of one or more tokens, such as `>>=` from `>`, `>` and `=`. */
 type Operator = { kind: NodeKind; tokens: int }
 
+/** A syntax error: its message and the span of the token where it was found. */
+export type SyntaxError = { message: string; start: int; end: int }
+
 export class Parser {
     private tokens: Token[]
     private i = 0
@@ -161,6 +164,8 @@ export class Parser {
     /** Inside the initializer of a `for`, where `in` is not an operator. */
     private noIn = false
     errors: string[] = []
+    /** The same errors, with the span of their token instead of its offset in the message. */
+    diagnostics: SyntaxError[] = []
     file: Node | null = null
 
     constructor(readonly text: string) {
@@ -209,6 +214,7 @@ export class Parser {
     private error(message: string) {
         const t = this.token()
         this.errors.push(`${message}, got '${t.kind}' at ${t.start}`)
+        this.diagnostics.push({ message: `${message}, got '${t.kind}'`, start: t.start, end: t.end })
     }
 
     /** The current token as a node. */
@@ -250,6 +256,7 @@ export class Parser {
         this.last = last
         this.noIn = noIn
         this.errors = this.errors.slice(0, errors)
+        this.diagnostics = this.diagnostics.slice(0, errors)
         return null
     }
 
