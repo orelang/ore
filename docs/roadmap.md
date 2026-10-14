@@ -25,7 +25,9 @@ once its Ore version passes the tests. Only libc and the GC stay outside Ore.
   rounded `(2.5).toFixed(0)` to `2` and read `parseFloat("0x10")` as 16).
   The scheduler: tasks with the context switch in assembly, workers,
   timers, channels, `select` and the network poller, about as fast as the C
-  version.
+  version. Allocation, inlined into every `new`, at least as fast as the C
+  version; files, the clock, `Math.random`, C strings and the conversion of
+  interface values.
 - Next: printing, panics and the test runner, the network functions and the
   program's entry;
   printing moves with the scheduler, since the C runtime's own output

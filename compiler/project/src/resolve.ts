@@ -12,6 +12,7 @@ import runtimeOs from "../../../runtime/core/os.ore" with { type: "text" }
 import runtimePoll from "../../../runtime/core/poll.ore" with { type: "text" }
 import runtimeMap from "../../../runtime/core/map.ore" with { type: "text" }
 import runtimeString from "../../../runtime/core/string.ore" with { type: "text" }
+import runtimeSys from "../../../runtime/core/sys.ore" with { type: "text" }
 import runtimeTask from "../../../runtime/core/task.ore" with { type: "text" }
 import netModule from "../../../runtime/std/net.ore" with { type: "text" }
 import syncModule from "../../../runtime/std/sync.ore" with { type: "text" }
@@ -33,12 +34,13 @@ export const stdModules: Record<string, string> = {
   "ore:runtime/frames": runtimeFrames,
   "ore:runtime/os": runtimeOs,
   "ore:runtime/task": runtimeTask,
+  "ore:runtime/sys": runtimeSys,
   "ore:runtime/chan": runtimeChan,
   "ore:runtime/poll": runtimePoll,
 }
 
 /** The modules of the runtime written in Ore (runtime/core), part of every program, in load order. */
-export const runtimeModules = ["ore:runtime/frames", "ore:runtime/string", "ore:runtime/array", "ore:runtime/map", "ore:runtime/format", "ore:runtime/float-tables", "ore:runtime/float", "ore:runtime/json", "ore:runtime/number", "ore:runtime/os", "ore:runtime/task", "ore:runtime/chan", "ore:runtime/poll"]
+export const runtimeModules = ["ore:runtime/frames", "ore:runtime/string", "ore:runtime/array", "ore:runtime/map", "ore:runtime/format", "ore:runtime/float-tables", "ore:runtime/float", "ore:runtime/json", "ore:runtime/number", "ore:runtime/os", "ore:runtime/task", "ore:runtime/sys", "ore:runtime/chan", "ore:runtime/poll"]
 
 export interface PackageJson {
   name?: string

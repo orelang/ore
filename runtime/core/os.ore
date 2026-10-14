@@ -49,6 +49,10 @@ export declare function epoll_wait(poller: i32, events: ptr, count: i32, timeout
 // ---------------------------------------------------------------------------
 // The Boehm GC
 
+/** Collected memory, zeroed and scanned for pointers; null when there is no memory. */
+export declare function GC_malloc(size: u64): ptr
+/** Collected memory that is never scanned for pointers, not zeroed. */
+export declare function GC_malloc_atomic(size: u64): ptr
 export declare function GC_get_my_stackbottom(base: ptr): ptr
 export declare function GC_set_stackbottom(thread: ptr, base: ptr): void
 export declare function GC_get_stack_base(base: ptr): i32
@@ -155,6 +159,12 @@ function clockMonotonic(): i32 {
 /** Milliseconds on a clock that only goes forward. */
 export function nowMs(time: ptr): int {
     clock_gettime(clockMonotonic(), time)
+    return unsafe.load<i64>(time) * 1000 + unsafe.load<i64>(unsafe.add(time, 8)) / 1000000
+}
+
+/** Milliseconds since the Unix epoch, on the wall clock. */
+export function epochMs(time: ptr): int {
+    clock_gettime(clockRealtime, time)
     return unsafe.load<i64>(time) * 1000 + unsafe.load<i64>(unsafe.add(time, 8)) / 1000000
 }
 

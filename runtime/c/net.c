@@ -18,10 +18,28 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+// Boehm GC, as in runtime.c.
+void *GC_malloc_atomic(size_t size);
+
+/** Memory for bytes, which the GC does not scan. Not zeroed. */
+static u8 *alloc_bytes(i64 size) {
+  u8 *p = GC_malloc_atomic(size > 0 ? (size_t)size : 1);
+  if (!p) ore_rt_panic_cstr("out of memory");
+  return p;
+}
+
+/** A NUL-terminated copy of a string, for C APIs. */
+static char *c_string(ore_string s) {
+  char *p = (char *)alloc_bytes(s.len + 1);
+  memcpy(p, s.ptr, (size_t)s.len);
+  p[s.len] = 0;
+  return p;
+}
+
 static ore_string message(const char *what, int error) {
   char buf[256];
   int n = snprintf(buf, sizeof buf, "%s: %s", what, strerror(error));
-  u8 *copy = ore_rt_alloc(n);
+  u8 *copy = alloc_bytes(n);
   memcpy(copy, buf, (size_t)n);
   return (ore_string){copy, n};
 }
@@ -29,7 +47,7 @@ static ore_string message(const char *what, int error) {
 static ore_string lookup_message(int error) {
   char buf[256];
   int n = snprintf(buf, sizeof buf, "cannot resolve host: %s", gai_strerror(error));
-  u8 *copy = ore_rt_alloc(n);
+  u8 *copy = alloc_bytes(n);
   memcpy(copy, buf, (size_t)n);
   return (ore_string){copy, n};
 }
@@ -56,7 +74,7 @@ static int resolve(ore_string host, i64 port, bool passive, struct addrinfo **ou
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   if (passive) hints.ai_flags = AI_PASSIVE;
-  const char *name = host.len > 0 ? ore_rt_cstring(host) : NULL;
+  const char *name = host.len > 0 ? c_string(host) : NULL;
   ore_rt_blocking_enter();
   int error = getaddrinfo(name, service, &hints, out);
   ore_rt_blocking_exit();
@@ -146,7 +164,7 @@ bool ore_rt_net_accept(i64 listener, i64 *fd, ore_string *err) {
 
 bool ore_rt_net_read(i64 fd, i64 max, ore_string *data) {
   if (max <= 0) return *data = ORE_STR("read: the size must be positive"), false;
-  u8 *buf = ore_rt_alloc(max);
+  u8 *buf = alloc_bytes(max);
   for (;;) {
     ssize_t n = recv((int)fd, buf, (size_t)max, 0);
     if (n >= 0) return *data = (ore_string){buf, n}, true;
