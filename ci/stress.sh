@@ -20,10 +20,15 @@ for test in concurrency/parallel-channels concurrency/parallel-gc concurrency/ta
     total=0
     for i in $(seq "$runs"); do
         for t in $settings; do
-            ORE_THREADS=$t "$out/$name" >"$out/$name.out" 2>"$out/$name.err" || cat "$out/$name.err" >>"$out/$name.out"
+            ORE_THREADS=$t "$out/$name" >"$out/$name.out" 2>"$out/$name.err"
             if ! cmp -s "$out/$name.out" "$expected"; then
                 # Show the first bad run, to have something to go on.
-                [ "$bad" = 0 ] && { echo "$name: run $i with $t threads differs:"; diff "$out/$name.out" "$expected" | head -20; }
+                [ "$bad" = 0 ] && {
+                    echo "$name: run $i with $t threads differs:"
+                    diff "$out/$name.out" "$expected" | head -20
+                    echo "stderr:"
+                    head -20 "$out/$name.err"
+                }
                 bad=$((bad + 1))
             fi
             total=$((total + 1))
