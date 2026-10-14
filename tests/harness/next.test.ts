@@ -205,6 +205,9 @@ describe("next modules", () => {
       expect(lines.slice(0, count)).toEqual(expected.modules)
       if (expected.diagnostics !== null) expect(lines.slice(count)).toEqual(expected.diagnostics)
     })
+  }
+})
+
 /** The *.test.ore files of compiler/next/test, as `ore test` runs them. */
 describe("next tests", () => {
   const dir = join(root, "compiler/next/test")
