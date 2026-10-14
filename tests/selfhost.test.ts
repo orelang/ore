@@ -1,5 +1,5 @@
 /**
- * The self-hosted compiler in selfhost/, checked against the TypeScript
+ * The compiler written in Ore, in compiler/next/, checked against the TypeScript
  * compiler on every .ore file of the repository.
  *
  * Lexer: the tokens of each file (kind and byte span) must equal those of the
@@ -18,7 +18,7 @@ import { join, relative } from "node:path"
 import ts from "typescript"
 
 const root = join(import.meta.dir, "..")
-const binary = join(mkdtempSync(join(tmpdir(), "ore-selfhost-")), "ore-selfhost")
+const binary = join(mkdtempSync(join(tmpdir(), "ore-next-")), "ore-next")
 
 function oreFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -29,7 +29,7 @@ function oreFiles(dir: string): string[] {
   })
 }
 
-const files = ["tests", "std", "selfhost", "bench"].flatMap((d) => oreFiles(join(root, d))).sort()
+const files = ["tests", "std", "compiler/next", "bench"].flatMap((d) => oreFiles(join(root, d))).sort()
 
 /** The first name of each SyntaxKind value: the real kinds come before markers such as FirstToken. */
 const kindNames = new Map<number, string>()
@@ -90,7 +90,7 @@ async function run(...args: string[]): Promise<{ code: number; stdout: string; s
 }
 
 beforeAll(async () => {
-  const result = await build(join(root, "selfhost/src/main.ore"), { output: binary, release: true })
+  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary, release: true })
   expect(result.diagnostics.map((d) => d.message)).toEqual([])
 }, 120_000)
 

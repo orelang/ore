@@ -8,7 +8,7 @@ out=$(mktemp -d)
 failed=0
 for name in parallel-channels parallel-gc tasks tasks-gc select sync yield-exit escape net json; do
     src="tests/run/$name.ore"
-    bun packages/cli/src/main.ts build --release "$src" -o "$out/$name" >/dev/null || { echo "$name: build failed"; failed=1; continue; }
+    bun compiler/cli/src/main.ts build --release "$src" -o "$out/$name" >/dev/null || { echo "$name: build failed"; failed=1; continue; }
     threads=$(sed -n 's|^// threads: *||p' "$src")
     threads=${threads:-1}
     settings=$threads
@@ -17,8 +17,12 @@ for name in parallel-channels parallel-gc tasks tasks-gc select sync yield-exit 
     total=0
     for i in $(seq "$runs"); do
         for t in $settings; do
-            ORE_THREADS=$t "$out/$name" >"$out/$name.out" 2>/dev/null
-            cmp -s "$out/$name.out" "tests/run/$name.out" || bad=$((bad + 1))
+            ORE_THREADS=$t "$out/$name" >"$out/$name.out" 2>"$out/$name.err" || cat "$out/$name.err" >>"$out/$name.out"
+            if ! cmp -s "$out/$name.out" "tests/run/$name.out"; then
+                # Show the first bad run, to have something to go on.
+                [ "$bad" = 0 ] && { echo "$name: run $i with $t threads differs:"; diff "$out/$name.out" "tests/run/$name.out" | head -20; }
+                bad=$((bad + 1))
+            fi
             total=$((total + 1))
         done
     done

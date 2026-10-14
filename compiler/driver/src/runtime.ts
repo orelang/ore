@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import headerText from "../../../runtime/include/ore.h" with { type: "text" }
-import { abiWrappers } from "@ore/codegen-llvm"
+import { abiWrappers } from "@ore/codegen"
 import runtimeSource from "../../../runtime/src/runtime.c" with { type: "text" }
 import taskSource from "../../../runtime/src/task.c" with { type: "text" }
 import netSource from "../../../runtime/src/net.c" with { type: "text" }

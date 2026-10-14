@@ -22,7 +22,7 @@ for src in *.ore; do
     cp "$src" "$out/$name.ts"
     bun_time=$(best bun --preload "$root/tests/async/bun-shim.ts" "$out/$name.ts")
     ore_time=-
-    if bun "$root/packages/cli/src/main.ts" build --release "$src" -o "$out/$name" >/dev/null 2>&1; then
+    if bun "$root/compiler/cli/src/main.ts" build --release "$src" -o "$out/$name" >/dev/null 2>&1; then
         ore_time=$(best env ORE_THREADS=1 "$out/$name")
     fi
     printf '%-12s %9ss %9ss\n' "$name" "$bun_time" "$ore_time"

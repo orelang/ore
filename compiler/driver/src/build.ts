@@ -1,5 +1,5 @@
 import { check } from "@ore/checker"
-import { emitModule, type EmitOptions } from "@ore/codegen-llvm"
+import { emitModule, type EmitOptions } from "@ore/codegen"
 import { findPackageRoot, loadProgram, readPackageJson } from "@ore/project"
 import { type Diagnostic } from "@ore/syntax"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"

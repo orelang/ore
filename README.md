@@ -289,18 +289,18 @@ The tests run on macOS and Linux, on arm64 and x86-64.
 
 | Path | Contents |
 |---|---|
-| `packages/syntax` | Parsing `.ore` with the TypeScript parser, diagnostics |
-| `packages/project` | Module resolution, package.json, loading programs |
-| `packages/checker` | Type checker producing IR |
-| `packages/ir` | Type model and typed IR |
-| `packages/opt` | Optimizations on the IR: escape analysis, inlining |
-| `packages/codegen-llvm` | IR to LLVM IR, built by clang |
-| `packages/driver` | Compilation pipeline, clang, runtime and GC cache |
-| `packages/cli` | The `ore` command, including `test` and `fmt` |
-| `packages/lsp` | Language server |
+| `compiler/syntax` | Parsing `.ore` with the TypeScript parser, diagnostics |
+| `compiler/project` | Module resolution, package.json, loading programs |
+| `compiler/checker` | Type checker producing IR |
+| `compiler/ir` | Type model and typed IR |
+| `compiler/opt` | Optimizations on the IR: escape analysis, inlining |
+| `compiler/codegen` | IR to LLVM IR, built by clang |
+| `compiler/driver` | Compilation pipeline, clang, runtime and GC cache |
+| `compiler/cli` | The `ore` command, including `test` and `fmt` |
+| `compiler/lsp` | Language server |
 | `editors/zed` | Zed extension |
 | `editors/vscode` | VS Code extension |
-| `selfhost/` | The compiler written in Ore (so far the lexer and the parser) |
+| `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer and the parser) |
 | `runtime/` | C runtime, moving to Ore part by part; Boehm GC in `runtime/third_party/bdwgc` |
 | `std/` | Built-in declarations (`builtin.d.ore`), standard modules (`ore:test`, `ore:sync`, `ore:net`) and the runtime written in Ore (`runtime.ore`) |
 | `tests/run` | Programs with expected output; directories are multi-module programs |
