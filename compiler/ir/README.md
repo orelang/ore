@@ -10,3 +10,6 @@ interfaces and their tables are explicit.
   `sameType` and the representation of unions.
 - `nodes.ts`: `Module`, `Func`, `Local`, statements and expressions. A node
   is a plain object with a kind `k`.
+- `dump.ts`: `dump(module)`, the canonical text of a module, one node per
+  line; `compiler/next/src/ir/dump.ore` writes the same text, so the IR of
+  the checker written in Ore can be compared with this one.

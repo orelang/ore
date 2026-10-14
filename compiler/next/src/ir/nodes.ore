@@ -1,0 +1,966 @@
+// The nodes of the IR, ported from compiler/ir/src/nodes.ts: the same names,
+// kinds (`k`) and fields. Each TypeScript interface is a class whose
+// constructor takes the required fields in declaration order, then the
+// optional ones (null or false when absent); see "How TypeScript maps to Ore
+// in this port" in compiler/next/README.md.
+
+import {
+    type ArrayType,
+    type BoolType,
+    type ChanType,
+    type FloatType,
+    type FuncType,
+    type IntType,
+    type InterfaceType,
+    type LiteralType,
+    type MapType,
+    type StringType,
+    type StructType,
+    type Type,
+    type UnionType,
+} from "./types"
+
+/**
+ * Typed, name-resolved, structured IR produced by the checker.
+ *
+ * All implicit behavior of the source is explicit here: numeric literals have
+ * concrete types, conversions are `convert` nodes, compound assignments are
+ * expanded, and every local has a unique id.
+ */
+export class Module {
+    constructor(
+        /** Path of the source file, as given to the compiler. */
+        public file: string,
+        public functions: Func[],
+        /**
+         * The top-level code of each source module, in the order the program runs
+         * it: every module after the modules it imports, the entry last.
+         */
+        public inits: Func[],
+        /** Every struct type used by the module. */
+        public structs: StructType[],
+        /** Interface tables of structs converted to interfaces. */
+        public itabs: Itab[],
+        /** Every union type used by the module. */
+        public unions: UnionType[],
+    ) {}
+}
+
+/** The table for a struct used as an interface; see `InterfaceType`. */
+export class Itab {
+    constructor(
+        public id: int,
+        public struct: StructType,
+        public iface: InterfaceType,
+    ) {}
+}
+
+export class Func {
+    constructor(
+        /** Unique symbol name, safe to use in the target language. */
+        public name: string,
+        /** Name as written in the source. */
+        public sourceName: string,
+        /** 1-based source line of the declaration. */
+        public line: int,
+        public type: FuncType,
+        public params: Local[],
+        public body: Block,
+        public exported: bool,
+        /** Path of the declaring module, when it differs from the module's `file`. */
+        public file: string | null = null,
+        /**
+         * An external C function, called by its C name `name`: strings are passed
+         * as NUL-terminated copies and returned strings are copied.
+         */
+        public extern: bool = false,
+        /** For a variadic external function: the type of the arguments after `params`, as C passes them. */
+        public variadic: Type | null = null,
+        /** `this` of a method, passed before the parameters. */
+        public receiver: Local | null = null,
+        /**
+         * For a closure: the locals of enclosing functions it uses, in the order of
+         * its environment. The closure is called with the environment first.
+         */
+        public captures: Local[] | null = null,
+        /** Set by `//ore:` directives before the declaration. */
+        public attributes: FuncAttributes | null = null,
+    ) {}
+}
+
+/** Code generation attributes of a function, from `//ore:` directives. */
+export class FuncAttributes {
+    constructor(
+        /** `//ore:noinline`: never inlined. */
+        public noinline: bool = false,
+        /** `//ore:inline`: always inlined by LLVM. */
+        public inline: bool = false,
+        /** `//ore:cold`: rarely called, optimized for size and placed apart. */
+        public cold: bool = false,
+        /** `//ore:export name`: visible to C as `name`, with the C calling convention. */
+        public exportName: string | null = null,
+        /** `//ore:runtime name`, in the standard library: implements the runtime function `name` that generated code calls. */
+        public runtime: string | null = null,
+        /** `//ore:naked`: no prologue or epilogue; the body is assembly only. */
+        public naked: bool = false,
+    ) {}
+}
+
+export class Local {
+    constructor(
+        public id: int,
+        public name: string,
+        public type: Type,
+        public mutable: bool,
+        /** Referenced by a closure other than the function that declares it. */
+        public captured: bool = false,
+        /** Assigned after its declaration. A captured local that is assigned lives in a heap box. */
+        public assigned: bool = false,
+        /**
+         * Declared at the top level of a module: a global variable, set when the
+         * module's top-level code runs and zero before. Never captured.
+         */
+        public global: bool = false,
+        /** `//ore:threadlocal`: a global with a separate value, starting at zero, in each OS thread. */
+        public threadLocal: bool = false,
+        /** `//ore:export name`: a global visible to C as `name`. */
+        public exportName: string | null = null,
+    ) {}
+}
+
+// Statements. Each has `line` (`StmtBase` in TypeScript): the 1-based source
+// line, for debug info and stack traces, or null. It is not a constructor
+// parameter: set it after creating the statement.
+
+export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | SwitchStmt | UsingStmt | BreakStmt | ContinueStmt | ReturnStmt
+
+/**
+ * Sets the source line of a statement: `stmt.line = line` in TypeScript, as
+ * Ore reads a field common to the members of a union but does not assign it.
+ */
+export function setLine(s: Stmt, line: int | null) {
+    switch (s.k) {
+        case "block":
+            s.line = line
+            return
+        case "let":
+            s.line = line
+            return
+        case "expr":
+            s.line = line
+            return
+        case "if":
+            s.line = line
+            return
+        case "loop":
+            s.line = line
+            return
+        case "for-of":
+            s.line = line
+            return
+        case "switch":
+            s.line = line
+            return
+        case "using":
+            s.line = line
+            return
+        case "break":
+            s.line = line
+            return
+        case "continue":
+            s.line = line
+            return
+        case "return":
+            s.line = line
+            return
+    }
+}
+
+export class Block {
+    readonly k: "block" = "block"
+    line: int | null = null
+    constructor(public body: Stmt[]) {}
+}
+
+export class LetStmt {
+    readonly k: "let" = "let"
+    line: int | null = null
+    constructor(
+        public local: Local,
+        /** Without an initializer, the local starts zeroed; used for hoisted functions. */
+        public init: Expr | null = null,
+    ) {}
+}
+
+export class ExprStmt {
+    readonly k: "expr" = "expr"
+    line: int | null = null
+    constructor(public expr: Expr) {}
+}
+
+export class IfStmt {
+    readonly k: "if" = "if"
+    line: int | null = null
+    else: Stmt | null
+    constructor(
+        public cond: Expr,
+        public then: Stmt,
+        otherwise: Stmt | null = null,
+    ) {
+        this.else = otherwise
+    }
+}
+
+/**
+ * A loop. `while (c) s` has `cond`; `for (;c;u) s` has `cond` and `update`;
+ * `do s while (c)` has `cond` and `condAfter`; a missing `cond` loops forever.
+ * `continue` jumps to `update`, then to the condition check.
+ */
+export class LoopStmt {
+    readonly k: "loop" = "loop"
+    line: int | null = null
+    constructor(
+        /** Unique within the function; the target of labeled `break` / `continue`. */
+        public id: int,
+        /** Set when a labeled `break` / `continue` targets this loop. */
+        public labeled: bool,
+        public condAfter: bool,
+        public body: Stmt,
+        /**
+         * Variables declared by `for (let ...)`: each iteration has its own copy,
+         * which matters when closures capture them.
+         */
+        public perIteration: Local[] | null = null,
+        public cond: Expr | null = null,
+        public update: Expr | null = null,
+    ) {}
+}
+
+/**
+ * `for (const x of iterable)`: over array elements, or over the runes (`i32`)
+ * of a string. The array length is re-read on every iteration.
+ */
+export class ForOfStmt {
+    readonly k: "for-of" = "for-of"
+    line: int | null = null
+    constructor(
+        public id: int,
+        public labeled: bool,
+        /** The element, rune, or key of a map entry. */
+        public local: Local,
+        public iterable: Expr,
+        public body: Stmt,
+        /** The value of a map entry, for `for (const [key, value] of map)`. */
+        public value: Local | null = null,
+    ) {}
+}
+
+/** A clause of a `switch`: `{ test?, body }` in TypeScript. Without `test`, it is `default`. */
+export class SwitchClause {
+    constructor(
+        public body: Stmt[],
+        public test: Expr | null = null,
+    ) {}
+}
+
+/**
+ * `switch`: `value` is stored in `local`, then the `test` of each clause is
+ * evaluated in order until one is true (a clause without `test` is
+ * `default`, chosen when none matches). Execution starts at that clause and
+ * falls through the following ones until a `break`.
+ */
+export class SwitchStmt {
+    readonly k: "switch" = "switch"
+    line: int | null = null
+    constructor(
+        public id: int,
+        public labeled: bool,
+        /** The cases cover every possible value, as a default would. */
+        public exhaustive: bool,
+        public local: Local,
+        public value: Expr,
+        public clauses: SwitchClause[],
+    ) {}
+}
+
+/**
+ * `using local = init` followed by the rest of its block in `body`: `dispose`
+ * runs whenever control leaves `body`, by its end, `return`, `break` or
+ * `continue`.
+ */
+export class UsingStmt {
+    readonly k: "using" = "using"
+    line: int | null = null
+    constructor(
+        public local: Local,
+        public init: Expr,
+        public dispose: Stmt,
+        public body: Stmt[],
+    ) {}
+}
+
+/** Exits the innermost loop or switch, or the one with id `target` for a labeled break. */
+export class BreakStmt {
+    readonly k: "break" = "break"
+    line: int | null = null
+    constructor(public target: int | null = null) {}
+}
+
+/** Continues the innermost loop, or the loop with id `target` for a labeled continue. */
+export class ContinueStmt {
+    readonly k: "continue" = "continue"
+    line: int | null = null
+    constructor(public target: int | null = null) {}
+}
+
+export class ReturnStmt {
+    readonly k: "return" = "return"
+    line: int | null = null
+    constructor(public value: Expr | null = null) {}
+}
+
+export type ArithOp = "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>"
+export type CompareOp = "===" | "!==" | "<" | "<=" | ">" | ">="
+
+export type Expr =
+    | IntLit
+    | FloatLit
+    | BoolLit
+    | StringLit
+    | LocalRef
+    | Assign
+    | IncDec
+    | Arith
+    | Compare
+    | Logical
+    | Unary
+    | Not
+    | Convert
+    | Call
+    | BuiltinCall
+    | Conditional
+    | Concat
+    | Index
+    | Len
+    | Slice
+    | ArrayLit
+    | Push
+    | Pop
+    | ObjectLit
+    | FieldGet
+    | Alloc
+    | MethodCall
+    | ToIface
+    | IfaceField
+    | IfaceCall
+    | NullLit
+    | Recast
+    | IsNull
+    | Optional
+    | Coalesce
+    | UnionField
+    | TypeOf
+    | Is
+    | Downcast
+    | MapOp
+    | FuncRef
+    | Closure
+    | CallValue
+    | BoundMethod
+    | ArrayMethod
+    | StringMethod
+    | ChanOp
+    | Bind
+    | Seq
+
+/** An integer constant: a `bigint` in TypeScript, here its bits as an `i64` (a `u64` value above the `i64` range is negative). */
+export class IntLit {
+    readonly k: "int" = "int"
+    constructor(
+        public type: IntType,
+        public value: i64,
+    ) {}
+}
+
+export class FloatLit {
+    readonly k: "float" = "float"
+    constructor(
+        public type: FloatType,
+        public value: f64,
+    ) {}
+}
+
+export class BoolLit {
+    readonly k: "bool" = "bool"
+    constructor(
+        public type: BoolType,
+        public value: bool,
+    ) {}
+}
+
+export class StringLit {
+    readonly k: "string" = "string"
+    constructor(
+        public type: StringType | LiteralType,
+        public value: string,
+    ) {}
+}
+
+export class LocalRef {
+    readonly k: "local" = "local"
+    constructor(
+        public type: Type,
+        public local: Local,
+    ) {}
+}
+
+/** A local as a place: `{ k: "local"; local }` of `LValue`. */
+export class LocalLValue {
+    readonly k: "local" = "local"
+    constructor(public local: Local) {}
+}
+
+/** A bounds-checked array element: `{ k: "element"; array; index }` of `LValue`. */
+export class ElementLValue {
+    readonly k: "element" = "element"
+    constructor(
+        public array: Expr,
+        public index: Expr,
+    ) {}
+}
+
+/** A field of a struct reference: `{ k: "field"; object; name }` of `LValue`. */
+export class FieldLValue {
+    readonly k: "field" = "field"
+    constructor(
+        public object: Expr,
+        public name: string,
+    ) {}
+}
+
+/** The field at `index` of an interface's members: `{ k: "iface-field"; value; index }` of `LValue`. */
+export class IfaceFieldLValue {
+    readonly k: "iface-field" = "iface-field"
+    constructor(
+        public value: Expr,
+        public index: int,
+    ) {}
+}
+
+/** A place that can be assigned to. */
+export type LValue = LocalLValue | ElementLValue | FieldLValue | IfaceFieldLValue
+
+/**
+ * Assignment. With `op` it is a compound assignment `target op= value`, where
+ * `value` is already converted as the right operand of `op` and the target is
+ * evaluated once. Compound assignments to locals are expanded by the checker.
+ */
+export class Assign {
+    readonly k: "assign" = "assign"
+    constructor(
+        public type: Type,
+        public target: LValue,
+        public value: Expr,
+        public op: ArithOp | null = null,
+    ) {}
+}
+
+export class IncDec {
+    readonly k: "incdec" = "incdec"
+    constructor(
+        public type: IntType | FloatType,
+        public target: LValue,
+        public op: "++" | "--",
+        public prefix: bool,
+    ) {}
+}
+
+/**
+ * Arithmetic and bitwise operations. Both operands have the result type,
+ * except the right operand of `<<` / `>>`, which may be any integer type.
+ */
+export class Arith {
+    readonly k: "arith" = "arith"
+    constructor(
+        public type: IntType | FloatType,
+        public op: ArithOp,
+        public left: Expr,
+        public right: Expr,
+    ) {}
+}
+
+export class Compare {
+    readonly k: "compare" = "compare"
+    constructor(
+        public type: BoolType,
+        public op: CompareOp,
+        public left: Expr,
+        public right: Expr,
+    ) {}
+}
+
+export class Logical {
+    readonly k: "logical" = "logical"
+    constructor(
+        public type: BoolType,
+        public op: "&&" | "||",
+        public left: Expr,
+        public right: Expr,
+    ) {}
+}
+
+export class Unary {
+    readonly k: "unary" = "unary"
+    constructor(
+        public type: IntType | FloatType,
+        public op: "-" | "~",
+        public operand: Expr,
+    ) {}
+}
+
+export class Not {
+    readonly k: "not" = "not"
+    constructor(
+        public type: BoolType,
+        public operand: Expr,
+    ) {}
+}
+
+/** Numeric conversion between distinct numeric types. */
+export class Convert {
+    readonly k: "convert" = "convert"
+    constructor(
+        public type: IntType | FloatType,
+        public value: Expr,
+    ) {}
+}
+
+export class Call {
+    readonly k: "call" = "call"
+    constructor(
+        public type: Type,
+        public func: Func,
+        public args: Expr[],
+    ) {}
+}
+
+/** A built-in function by its qualified name, such as `console.log` or `Math.sqrt`. */
+export type BuiltinName = string
+
+/** For built-ins that return `Error`: how to create one from a message (`{ ctor, itab }` in TypeScript). */
+export class BuiltinError {
+    constructor(
+        public ctor: Func,
+        public itab: Itab,
+    ) {}
+}
+
+export class BuiltinCall {
+    readonly k: "builtin" = "builtin"
+    constructor(
+        public type: Type,
+        public name: BuiltinName,
+        public args: Expr[],
+        /** For built-ins that return `Error`: how to create one from a message. */
+        public error: BuiltinError | null = null,
+        /** Type arguments, for `JSON.parse<T>` and the generic `unsafe` functions. */
+        public typeArgs: Type[] | null = null,
+    ) {}
+}
+
+export class Conditional {
+    readonly k: "cond" = "cond"
+    else: Expr
+    constructor(
+        public type: Type,
+        public cond: Expr,
+        public then: Expr,
+        otherwise: Expr,
+    ) {
+        this.else = otherwise
+    }
+}
+
+/** String concatenation; non-string parts are formatted like `print` does. */
+export class Concat {
+    readonly k: "concat" = "concat"
+    constructor(
+        public type: StringType,
+        public parts: Expr[],
+    ) {}
+}
+
+/** Bounds-checked element read: an array element or a byte of a string. The index has any integer type. */
+export class Index {
+    readonly k: "index" = "index"
+    constructor(
+        public type: Type,
+        public target: Expr,
+        public index: Expr,
+    ) {}
+}
+
+/** Length of an array, or of a string in bytes. */
+export class Len {
+    readonly k: "len" = "len"
+    constructor(
+        public type: IntType,
+        public value: Expr,
+    ) {}
+}
+
+/** JavaScript `slice`: a substring of byte offsets, or a copy of a range of an array. */
+export class Slice {
+    readonly k: "slice" = "slice"
+    constructor(
+        public type: Type,
+        public value: Expr,
+        public start: Expr | null = null,
+        public end: Expr | null = null,
+    ) {}
+}
+
+export class ArrayLit {
+    readonly k: "array" = "array"
+    constructor(
+        public type: ArrayType,
+        public elems: Expr[],
+    ) {}
+}
+
+/** `array.push(...values)`; evaluates to the new length. */
+export class Push {
+    readonly k: "push" = "push"
+    constructor(
+        public type: IntType,
+        public array: Expr,
+        public values: Expr[],
+    ) {}
+}
+
+/** `array.pop()`; panics on an empty array. */
+export class Pop {
+    readonly k: "pop" = "pop"
+    constructor(
+        public type: Type,
+        public array: Expr,
+    ) {}
+}
+
+/** A field of an object literal: `{ name, value }` in TypeScript. */
+export class FieldInit {
+    constructor(
+        public name: string,
+        public value: Expr,
+    ) {}
+}
+
+/** Allocates a struct and initializes its fields in source order. */
+export class ObjectLit {
+    readonly k: "object" = "object"
+    constructor(
+        public type: StructType,
+        public fields: FieldInit[],
+    ) {}
+}
+
+export class FieldGet {
+    readonly k: "field" = "field"
+    constructor(
+        public type: Type,
+        public object: Expr,
+        public name: string,
+    ) {}
+}
+
+/** A new zeroed instance of a struct; used at the start of constructors. */
+export class Alloc {
+    readonly k: "alloc" = "alloc"
+    constructor(public type: StructType) {}
+}
+
+/** A direct call of a class method. */
+export class MethodCall {
+    readonly k: "method-call" = "method-call"
+    constructor(
+        public type: Type,
+        public func: Func,
+        public receiver: Expr,
+        public args: Expr[],
+    ) {}
+}
+
+/**
+ * Converts a struct to an interface with a static table, or an interface to
+ * another interface by picking table entries: entry `i` of the result is
+ * entry `indices[i]` of the source.
+ */
+export class ToIface {
+    readonly k: "to-iface" = "to-iface"
+    constructor(
+        public type: InterfaceType,
+        public value: Expr,
+        public itab: Itab | null = null,
+        public indices: int[] | null = null,
+    ) {}
+}
+
+/** Reads the field at `index` of an interface's members. */
+export class IfaceField {
+    readonly k: "iface-field" = "iface-field"
+    constructor(
+        public type: Type,
+        public value: Expr,
+        public index: int,
+    ) {}
+}
+
+/** Calls the method at `index` of an interface's members. */
+export class IfaceCall {
+    readonly k: "iface-call" = "iface-call"
+    constructor(
+        public type: Type,
+        public value: Expr,
+        public index: int,
+        public method: FuncType,
+        public args: Expr[],
+    ) {}
+}
+
+/** `null` of a union type that contains `null`. */
+export class NullLit {
+    readonly k: "null" = "null"
+    constructor(public type: UnionType) {}
+}
+
+/**
+ * Converts between a union and its members: a member to a union containing it
+ * (or containing all its members), or a union to a member or a smaller union.
+ * Narrowing checks at run time that the value is one of the target's members
+ * and panics otherwise.
+ */
+export class Recast {
+    readonly k: "recast" = "recast"
+    constructor(
+        public type: Type,
+        public value: Expr,
+    ) {}
+}
+
+/** Whether a value of a union type is `null`. */
+export class IsNull {
+    readonly k: "is-null" = "is-null"
+    constructor(
+        public type: BoolType,
+        public value: Expr,
+    ) {}
+}
+
+/**
+ * Optional chaining `value?.…`: `null` if `value` is null, else `body`
+ * evaluated with `binding` set to the non-null value and converted to `type`.
+ */
+export class Optional {
+    readonly k: "optional" = "optional"
+    constructor(
+        public type: UnionType,
+        public value: Expr,
+        public binding: Local,
+        public body: Expr,
+    ) {}
+}
+
+/** `value ?? fallback`: the non-null value, or `fallback`. */
+export class Coalesce {
+    readonly k: "coalesce" = "coalesce"
+    constructor(
+        public type: Type,
+        public value: Expr,
+        public fallback: Expr,
+    ) {}
+}
+
+/** Reads a field that every member of a union of structs and interfaces has. */
+export class UnionField {
+    readonly k: "union-field" = "union-field"
+    constructor(
+        public type: Type,
+        public value: Expr,
+        public name: string,
+    ) {}
+}
+
+/** `typeof value`: "number", "boolean", "string" or "object" (also for null). */
+export class TypeOf {
+    readonly k: "typeof" = "typeof"
+    constructor(
+        public type: StringType,
+        public value: Expr,
+    ) {}
+}
+
+/**
+ * `instanceof`: whether a union value holds `member`, or whether an interface
+ * value refers to an instance of the class `member`. With `via`, the union
+ * holds the interface `via` referring to an instance of `member`.
+ */
+export class Is {
+    readonly k: "is" = "is"
+    constructor(
+        public type: BoolType,
+        public value: Expr,
+        public member: Type,
+        public via: InterfaceType | null = null,
+    ) {}
+}
+
+/** The instance behind an interface value, which must be of class `type`; panics otherwise. */
+export class Downcast {
+    readonly k: "downcast" = "downcast"
+    constructor(
+        public type: StructType,
+        public value: Expr,
+    ) {}
+}
+
+/** The operations of `MapOp` (an inline union in TypeScript). */
+export type MapOpName = "new" | "get" | "set" | "has" | "delete" | "clear" | "size" | "keys" | "values"
+
+/**
+ * An operation of `Map`: `new Map()`, `map.get(key)` (the value or null),
+ * `map.set(key, value)` (the map), `has`, `delete`, `clear`, `size`, and
+ * `keys` / `values` as arrays in insertion order.
+ */
+export class MapOp {
+    readonly k: "map" = "map"
+    constructor(
+        public op: MapOpName,
+        public type: Type,
+        public mapType: MapType,
+        public map: Expr | null = null,
+        public key: Expr | null = null,
+        public value: Expr | null = null,
+    ) {}
+}
+
+/** A top-level function used as a value. */
+export class FuncRef {
+    readonly k: "func-ref" = "func-ref"
+    constructor(
+        public type: FuncType,
+        public func: Func,
+    ) {}
+}
+
+/** Creates a closure of `func`, capturing `func.captures` from the current function. */
+export class Closure {
+    readonly k: "closure" = "closure"
+    constructor(
+        public type: FuncType,
+        public func: Func,
+    ) {}
+}
+
+/** Calls a function value. */
+export class CallValue {
+    readonly k: "call-value" = "call-value"
+    constructor(
+        public type: Type,
+        public callee: Expr,
+        public args: Expr[],
+    ) {}
+}
+
+/**
+ * A method bound to its receiver as a function value: a class method
+ * (`func`), or method `index` of an interface value.
+ */
+export class BoundMethod {
+    readonly k: "bound-method" = "bound-method"
+    constructor(
+        public type: FuncType,
+        public receiver: Expr,
+        public func: Func | null = null,
+        public index: int | null = null,
+    ) {}
+}
+
+/**
+ * A method of arrays taking a callback or a value: forEach, map, filter,
+ * reduce, find, findIndex, some, every, includes, indexOf, join, reverse,
+ * sort. A callback is called with its first `arity` arguments of
+ * (element, index) — or (accumulator, element, index) for reduce.
+ */
+export class ArrayMethod {
+    readonly k: "array-method" = "array-method"
+    constructor(
+        public method: string,
+        public type: Type,
+        public array: Expr,
+        public args: Expr[],
+        public arity: int | null = null,
+    ) {}
+}
+
+/** A method of strings, such as `indexOf` or `split`; omitted optional arguments are absent. */
+export class StringMethod {
+    readonly k: "string-method" = "string-method"
+    constructor(
+        public method: string,
+        public type: Type,
+        public value: Expr,
+        public args: Expr[],
+    ) {}
+}
+
+/** The operations of `ChanOp` (an inline union in TypeScript). */
+export type ChanOpName = "new" | "send" | "receive" | "close" | "on-receive" | "on-send"
+
+/**
+ * An operation of `Chan`: `new Chan(capacity)`, `send(value)`,
+ * `receive()` (the value, or null once closed and empty), `close()`, and the
+ * select cases `onReceive(handler)` and `onSend(value, handler)`.
+ */
+export class ChanOp {
+    readonly k: "chan" = "chan"
+    constructor(
+        public op: ChanOpName,
+        public type: Type,
+        public chanType: ChanType,
+        public chan: Expr | null = null,
+        public value: Expr | null = null,
+        /** For select cases: the handler, and how many arguments it takes. */
+        public handler: Expr | null = null,
+        public arity: int | null = null,
+    ) {}
+}
+
+/** A local of a `Bind` with its initial value: `{ local, init }` in TypeScript. */
+export class BindLocal {
+    constructor(
+        public local: Local,
+        public init: Expr,
+    ) {}
+}
+
+/**
+ * Declares `locals` with their initial values in order, then evaluates to
+ * `body`. Created by inlining a call: the locals are the parameters.
+ */
+export class Bind {
+    readonly k: "bind" = "bind"
+    constructor(
+        public type: Type,
+        public locals: BindLocal[],
+        public body: Expr,
+    ) {}
+}
+
+/** Evaluates `exprs` in order; the value is the last one's. */
+export class Seq {
+    readonly k: "seq" = "seq"
+    constructor(
+        public type: Type,
+        public exprs: Expr[],
+    ) {}
+}

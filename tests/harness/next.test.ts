@@ -205,5 +205,18 @@ describe("next modules", () => {
       expect(lines.slice(0, count)).toEqual(expected.modules)
       if (expected.diagnostics !== null) expect(lines.slice(count)).toEqual(expected.diagnostics)
     })
+/** The *.test.ore files of compiler/next/test, as `ore test` runs them. */
+describe("next tests", () => {
+  const dir = join(root, "compiler/next/test")
+  for (const name of readdirSync(dir).filter((n) => n.endsWith(".test.ore")).sort()) {
+    test(name, async () => {
+      const output = join(mkdtempSync(join(tmpdir(), "ore-next-test-")), "test")
+      const result = await build(join(dir, name), { output })
+      expect(result.diagnostics.map((d) => d.message)).toEqual([])
+      const proc = Bun.spawn([output], { stdout: "pipe", stderr: "pipe" })
+      const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()])
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" })
+      expect(stdout).toContain(" 0 failed")
+    }, 120_000)
   }
 })
