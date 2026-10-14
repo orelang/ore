@@ -11,6 +11,7 @@ in it is bounds-, type- or null-checked.
 | `sizeOf<T>()`, `alignOf<T>()` | size and alignment of a value of `T` in bytes (8 for a reference) |
 | `add(p, bytes)`, `diff(a, b)` | pointer arithmetic in bytes |
 | `toInt(p)`, `fromInt(n)` | a pointer as a `uint` and back; `fromInt(0)` is null |
+| `bitcast<T>(x)` | the bits of a number as another numeric type of the same size (`f64` and `u64`, `f32` and `i32`, …) |
 | `load<T>(p)`, `store<T>(p, value)` | read or write a value of `T` at `p` (`T` of `store` may come from the value) |
 | `alloc(size)`, `allocBytes(size)` | zeroed garbage-collected memory; the second is never scanned for references |
 | `copy(dst, src, size)`, `fill(dst, byte, size)`, `compare(a, b, size)` | memmove, memset, memcmp |

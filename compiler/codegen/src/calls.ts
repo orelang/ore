@@ -368,6 +368,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.b.value("i64", `ptrtoint ptr ${a[0]!.v} to i64`)
       case "fromInt":
         return this.b.value("ptr", `inttoptr i64 ${a[0]!.v} to ptr`)
+      case "bitcast":
+        return a[0]!.ty === mt ? { ty: mt, v: a[0]!.v } : this.b.value(mt, `bitcast ${a[0]!.ty} ${a[0]!.v} to ${mt}`)
       case "load":
         return this.load(a[0]!.v, T!)
       case "store":

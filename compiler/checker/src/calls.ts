@@ -331,6 +331,17 @@ export abstract class CallChecker extends ExpressionChecker {
         if (!storable(t, typeArg!)) return errorOperand
         return call(t, [pointer(args[0]!)], [t])
       }
+      case "bitcast": {
+        const t = needType("unsafe.bitcast<u64>(x)")
+        if (!t || !expect(1)) return errorOperand
+        const operand = this.checkExpr(args[0]!, scope)
+        if (operand.k === "error") return errorOperand
+        const value = this.toDefault(operand, args[0]!)
+        const bits = (x: Type) => (x.kind === "int" || x.kind === "float" ? x.bits : 0)
+        if (!bits(t) || !bits(value.type)) return this.fail(node, `'${name}' converts between numeric types, not '${typeToString(value.type)}' and '${typeToString(t)}'.`)
+        if (bits(t) !== bits(value.type)) return this.fail(node, `'${name}' needs types of the same size: '${typeToString(value.type)}' has ${bits(value.type)} bits, '${typeToString(t)}' ${bits(t)}.`)
+        return call(t, [value], [t])
+      }
       case "addressOf": {
         if (!expect(1)) return errorOperand
         const v = typeFrom(0)
