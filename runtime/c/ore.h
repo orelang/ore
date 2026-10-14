@@ -91,11 +91,8 @@ void *ore_rt_alloc_bytes(i64 size);
 
 // Strings. Comparison, search and the string methods are in runtime/core/string.ore.
 
-ore_string ore_rt_str_from_i64(i64 v);
-ore_string ore_rt_str_from_u64(u64 v);
 ore_string ore_rt_str_from_f64(f64 v);
 ore_string ore_rt_str_from_f32(f32 v);
-ore_string ore_rt_str_from_bool(bool v);
 
 static inline u8 ore_rt_str_at(ore_string s, i64 i) {
   if ((u64)i >= (u64)s.len) ore_rt_panic_index(i, s.len);

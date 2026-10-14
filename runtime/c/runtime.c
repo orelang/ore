@@ -296,18 +296,6 @@ static ore_string str_copy(const char *s, size_t n) {
   return (ore_string){p, (i64)n};
 }
 
-ore_string ore_rt_str_from_i64(i64 v) {
-  char buf[32];
-  return str_copy(buf, (size_t)snprintf(buf, sizeof buf, "%lld", (long long)v));
-}
-
-ore_string ore_rt_str_from_u64(u64 v) {
-  char buf[32];
-  return str_copy(buf, (size_t)snprintf(buf, sizeof buf, "%llu", (unsigned long long)v));
-}
-
-ore_string ore_rt_str_from_bool(bool v) { return v ? ORE_STR("true") : ORE_STR("false"); }
-
 // ---------------------------------------------------------------------------
 // Interfaces
 

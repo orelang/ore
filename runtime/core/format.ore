@@ -1,0 +1,36 @@
+// Formatting values as strings, as `${x}` and String(x) do.
+
+/** The decimal digits of `value`, after a minus sign if `negative`. */
+function decimal(value: u64, negative: bool): string {
+    // 20 digits hold any u64; one more for the sign.
+    const buffer = unsafe.allocBytes(21)
+    let at = 21
+    let rest = value
+    while (true) {
+        at--
+        unsafe.store<u8>(unsafe.add(buffer, at), u8(rest % 10) + 0x30)
+        rest /= 10
+        if (rest === 0) break
+    }
+    if (negative) {
+        at--
+        unsafe.store<u8>(unsafe.add(buffer, at), 0x2d)
+    }
+    return unsafe.makeString(unsafe.add(buffer, at), 21 - at)
+}
+
+//ore:runtime ore_rt_str_from_i64
+function strFromI64(v: i64): string {
+    // The magnitude as u64, which also holds that of the smallest i64.
+    return v < 0 ? decimal(u64(0) - u64(v), true) : decimal(u64(v), false)
+}
+
+//ore:runtime ore_rt_str_from_u64
+function strFromU64(v: u64): string {
+    return decimal(v, false)
+}
+
+//ore:runtime ore_rt_str_from_bool
+function strFromBool(v: bool): string {
+    return v ? "true" : "false"
+}

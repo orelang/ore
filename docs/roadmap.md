@@ -13,9 +13,12 @@ once its Ore version passes the tests. Only libc and the GC stay outside Ore.
   split and join, trim, case, replace, repeat, pad), about 18% faster on a
   string benchmark; arrays (new, push, pop, slice, reverse, stable sort),
   about 1.9 times faster on an array benchmark; maps and hashing, about 15%
-  faster. The speed comes from inlining into the program.
-- Next: printing and number formatting, JSON, the network, then the
-  scheduler and channels.
+  faster; integers and booleans as strings, about 2.4 times faster in
+  template literals. The speed comes from inlining into the program.
+- Next: floats as strings (the shortest form that reads back, as in
+  JavaScript), JSON with the string builder, then printing, the network, the
+  scheduler and channels; printing moves with the scheduler, since the C
+  runtime's own output (panics, `ore test`) must keep its order with it.
 - Also: the system part of the standard library that the compiler in Ore
   will need: running a process with its output, directories and paths,
   hashing, files embedded in the binary.

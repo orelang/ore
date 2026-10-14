@@ -22,5 +22,6 @@ Rules for this code:
 | `string.ore` | Comparison, concatenation, UTF-8 decoding, search, slicing, split and join, trim, case, replace, repeat, pad |
 | `array.ore` | New arrays, push and pop, slicing, reverse, stable sort |
 | `map.ore` | Insertion-ordered hash maps, hashing of keys |
+| `format.ore` | Integers and booleans as strings |
 
 Next: printing and number formatting, JSON, the network, the scheduler.
