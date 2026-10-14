@@ -176,9 +176,26 @@ work.**
 - Done: inlining of small functions (a single `return`) in release builds,
   so that objects they return can stay on the caller's stack.
 - Next for escape analysis: stack arrays of known size.
-- Custom precise GC (needs stack maps, so likely together with LLVM).
-- LLVM or Cranelift backend.
-- `try` / `catch` if it turns out to be needed.
+- `try` / `catch` will not be added: errors are values.
+
+The road from here, in this order:
+
+1. **LLVM backend** (`packages/codegen-llvm`): the same IR compiled to textual
+   LLVM IR, built by clang, at first calling the C runtime. Golden tests and
+   CI run on both backends until the LLVM one passes everything; then the C
+   backend is removed.
+2. **Low-level layer** for the standard library, like Go's `unsafe`: raw
+   memory (pointer arithmetic, typed loads and stores, sizes), atomics,
+   thread-local variables, inline assembly and function attributes.
+3. **Runtime in Ore**: strings, arrays and maps, printing and JSON, the
+   network, then the scheduler and channels, ported from C part by part until
+   `runtime/src/*.c` is gone. The runtime and the program are one LLVM module,
+   so runtime functions inline into user code. Only libc and the Boehm GC stay
+   outside Ore.
+4. **Own garbage collector** in Ore, precise, with LLVM stack maps, replacing
+   Boehm.
+5. **Promises and async/await** (Phase 8.6) on LLVM coroutines, against the
+   tests already in `tests/async/`.
 
 ### Phase 8.5: Language completeness (done)
 - Destructuring of objects and arrays in declarations, parameters, `for-of`
@@ -195,9 +212,10 @@ work.**
 - `time.timeout`, `interval`, `immediate`, `delay` (a promise), `sleep`
   (blocks the task; moved from `task`), timers cancelled with `cancel()`;
   `task.microtask`.
-- Async functions compile to state machines (no stack per call), run
-  synchronously until their first `await`, on one event loop: async code is
-  single-threaded, `task.spawn` is parallel.
+- Async functions compile to LLVM coroutines (state machines, no stack per
+  call), run synchronously until their first `await`, on one event loop:
+  async code is single-threaded, `task.spawn` is parallel. Comes after the
+  LLVM backend, the runtime in Ore and the own GC (Phase 8).
 - Done: the test suite `tests/async/`, whose expected outputs come from Bun
   running the same files (`tests/async/bun-shim.ts` maps `time` and `task`
   to Web APIs), and benchmarks in `bench/async/` with Bun's times as the
@@ -209,7 +227,6 @@ work.**
   (pending timers keep it, unsettled promises do not, running tasks are
   stopped); an unsettled top-level await with nothing pending exits with
   status 13 as in Node, and a deadlock with tasks panics as before.
-- Next: the runtime event loop, then the compiler.
 
 ### Phase 9: Self-hosting
 - Rewrite the compiler in Ore, the best stress test of the language, in
