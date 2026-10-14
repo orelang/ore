@@ -1,0 +1,162 @@
+// Output and the end of the program. Standard output goes through one buffer
+// shared by all threads, under a lock, so that what tasks print stays whole
+// and in order; it is written out when full, before anything goes to
+// standard error, and when the program ends. Standard error is written at
+// once.
+
+import { strFromI64, strFromU64 } from "ore:runtime/format"
+import { isNil, lock, permanent, permanentMutex, unlock } from "ore:runtime/os"
+
+declare function write(fd: i32, bytes: ptr, size: u64): i64
+declare function exit(code: i32): void
+declare function __error(): ptr
+declare function __errno_location(): ptr
+
+const bufferSize = 65536
+
+let outputLock: ptr
+let outputBuffer: ptr
+let outputLength: int
+
+/** Sets up the output buffer; the program's entry calls it before anything prints. */
+export function initOutput(): void {
+    outputLock = permanentMutex()
+    outputBuffer = permanent(bufferSize)
+}
+
+function interrupted(): bool {
+    // EINTR is 4 on both platforms.
+    const errno = target.os === "darwin" ? __error() : __errno_location()
+    return unsafe.load<i32>(errno) === 4
+}
+
+/** Writes all `size` bytes at `bytes` to a file descriptor, retrying after signals. */
+export function writeAll(fd: i32, bytes: ptr, size: int): void {
+    let done = 0
+    while (done < size) {
+        const n = write(fd, unsafe.add(bytes, done), u64(size - done))
+        if (n > 0) done += n
+        else if (n < 0 && interrupted()) continue
+        else return
+    }
+}
+
+/** Writes out the buffer; the caller holds the output lock. */
+function flushLocked(): void {
+    writeAll(1, outputBuffer, outputLength)
+    outputLength = 0
+}
+
+/** Writes out what standard output has buffered. */
+export function flushOutput(): void {
+    if (isNil(outputLock)) return
+    lock(outputLock)
+    flushLocked()
+    unlock(outputLock)
+}
+
+/** Appends bytes to standard output. */
+function putOut(bytes: ptr, size: int): void {
+    lock(outputLock)
+    if (outputLength + size > bufferSize) flushLocked()
+    if (size > bufferSize) writeAll(1, bytes, size)
+    else {
+        unsafe.copy(unsafe.add(outputBuffer, outputLength), bytes, size)
+        outputLength += size
+    }
+    unlock(outputLock)
+}
+
+/** Writes a string to standard output (1) or to standard error (2), after what standard output buffered. */
+export function writeString(fd: i32, s: string): void {
+    if (fd === 2) {
+        flushOutput()
+        writeAll(2, unsafe.stringData(s), s.length)
+    } else {
+        putOut(unsafe.stringData(s), s.length)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Printing, for console.log, console.error and console.write
+
+/** Where this thread prints: 0 for standard output, 2 for standard error. */
+//ore:threadlocal
+let printTarget: int
+
+//ore:noinline
+function currentTarget(): int {
+    return printTarget
+}
+
+//ore:noinline
+function setTarget(fd: int): void {
+    printTarget = fd
+}
+
+function put(s: string): void {
+    if (currentTarget() === 2) writeAll(2, unsafe.stringData(s), s.length)
+    else putOut(unsafe.stringData(s), s.length)
+}
+
+/** Directs this thread's printing to standard output (1) or standard error (2). */
+//ore:runtime ore_rt_print_to
+function printTo(fd: int): void {
+    // Standard error comes after what standard output printed before it.
+    if (fd === 2) flushOutput()
+    setTarget(fd === 2 ? 2 : 0)
+}
+
+//ore:runtime ore_rt_print_string
+function printString(s: string): void {
+    put(s)
+}
+
+//ore:runtime ore_rt_print_i64
+function printI64(v: i64): void {
+    put(strFromI64(v))
+}
+
+//ore:runtime ore_rt_print_u64
+function printU64(v: u64): void {
+    put(strFromU64(v))
+}
+
+//ore:runtime ore_rt_print_bool
+function printBool(v: bool): void {
+    put(v ? "true" : "false")
+}
+
+//ore:runtime ore_rt_print_space
+function printSpace(): void {
+    put(" ")
+}
+
+//ore:runtime ore_rt_print_newline
+function printNewline(): void {
+    put("\n")
+}
+
+// ---------------------------------------------------------------------------
+// The end of the program
+
+/** Tests run by `ore test`, reported when the program ends. */
+let testsPassed: int
+let testsFailed: int
+
+export function countTest(passed: bool): void {
+    if (passed) testsPassed++
+    else testsFailed++
+}
+
+/** Ends the program: the summary of `ore test` if tests ran, standard output written out, then exit. */
+//ore:runtime ore_rt_exit
+export function exitProgram(code: i32): void {
+    let status = code
+    if (testsPassed + testsFailed > 0) {
+        writeString(1, `\n${testsPassed} passed, ${testsFailed} failed\n`)
+        if (testsFailed > 0) status = 1
+    }
+    flushOutput()
+    exit(status)
+}

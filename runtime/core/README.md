@@ -32,5 +32,5 @@ Rules for this code:
 | `task.ore` | The M:N scheduler: tasks on mapped stacks, the context switch in assembly, workers, timers, the GC's view of task stacks |
 | `chan.ore` | Channels and `select` |
 | `poll.ore` | Waiting for sockets: the kqueue or epoll poller thread |
-
-Next: printing, panics and the test runner, the network functions, the program's entry.
+| `io.ore` | Printing through one shared buffer, and the end of the program |
+| `program.ore` | The entry point (`main`), arguments, panics with their stack trace, and the `ore test` runner |

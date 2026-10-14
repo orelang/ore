@@ -344,6 +344,9 @@ export abstract class CallChecker extends ExpressionChecker {
       }
       case "functionAddress": {
         if (!expect(1)) return errorOperand
+        // A declared C function, which is not a value otherwise.
+        const named = ts.isIdentifier(args[0]!) ? scope.lookupValue(args[0]!.text) : undefined
+        if (named?.k === "func" && named.func.extern) return call(types.ptr, [{ k: "func-ref", type: named.func.type, func: named.func }])
         const operand = this.checkExpr(args[0]!, scope)
         if (operand.k === "error") return errorOperand
         if (operand.k !== "typed" || operand.expr.k !== "func-ref") return this.fail(args[0]!, `'${name}' needs the name of a top-level function.`)

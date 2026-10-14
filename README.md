@@ -67,8 +67,8 @@ total: 1000
   inlines into user code: strings, arrays, maps, number formatting, JSON, and
   the M:N scheduler of green threads (stackful, on a pool of OS threads,
   with the context switch in assembly), channels and `select`, and a
-  netpoller on kqueue or epoll. Printing, panics and the socket calls are
-  still C. Memory is managed by the Boehm garbage collector, built with
+  netpoller on kqueue or epoll, printing and panics. The socket calls and
+  file functions are still C. Memory is managed by the Boehm garbage collector, built with
   threads and parallel marking.
 - **Tooling.** One `ore` binary builds, runs, checks, tests and formats code
   and serves the language server. Debug builds keep stack traces for panics.
@@ -344,7 +344,7 @@ Another binary can be set with the `ore.path` setting.
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Runtime in Ore: strings, arrays, maps, number formatting, JSON, the scheduler, channels and `select` (done); printing, panics, the network functions | in progress |
+| 9. Runtime in Ore: strings, arrays, maps, number formatting, JSON, the scheduler, channels and `select`, printing, panics, the entry point (done); the network and system functions | in progress |
 | 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
 | 11. Own precise garbage collector | planned |
 | 12. Promises and `async`/`await` | planned |

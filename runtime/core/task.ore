@@ -27,6 +27,7 @@
 // reset.
 
 import { getTop, setTop } from "ore:runtime/frames"
+import { exitProgram } from "ore:runtime/io"
 import {
     GC_allow_register_threads,
     GC_call_with_alloc_lock,
@@ -63,9 +64,6 @@ import {
     unlock,
     unmap,
 } from "ore:runtime/os"
-
-/** Ends the program with a status, flushing standard output; in the C runtime. */
-declare function ore_rt_exit(code: i32): void
 
 const mainStackSize = 8 << 20
 const taskStackSize = 256 << 10
@@ -112,6 +110,8 @@ export class Task {
     select: SelectState | null = null
     /** The waiter the task reuses for channel operations (an address in chan.ore), or null. */
     waiter: ptr = nil()
+    /** For a task running a test of `ore test`: its record (an address in program.ore), or null. */
+    test: ptr = nil()
 
     constructor(readonly body: () => void) {}
 
@@ -382,14 +382,26 @@ function taskMain(self: ptr): void {
     const t = unsafe.fromAddress<Task>(self)
     t.body()
     // The program ends with its top-level code.
-    if (t === s.mainTask) ore_rt_exit(0)
-    t.state = done
+    if (t === s.mainTask) exitProgram(0)
+    endTask()
+}
+
+/** Ends the current task; it never runs again, and its stack is freed. */
+export function endTask(): void {
+    current().state = done
     parkOnly()
 }
 
 //ore:runtime ore_rt_spawn
 function spawn(body: () => void): void {
     enqueue(newTask(body, taskStackSize))
+}
+
+/** Starts a task running a test, with its record. */
+export function spawnTest(body: () => void, test: ptr): void {
+    const t = newTask(body, taskStackSize)
+    t.test = test
+    enqueue(t)
 }
 
 //ore:runtime ore_rt_yield
@@ -444,9 +456,9 @@ function sleep(ms: int): void {
     parkUnlocking(s.lock)
 }
 
-/** The running task, for the C runtime's test runner. */
+/** The running task, or null on a thread that runs none. */
 //ore:export ore_rt_task_current
-function taskCurrent(): ptr {
+export function taskCurrent(): ptr {
     const w = workerBlock()
     return isNil(w) ? nil() : unsafe.load<ptr>(unsafe.add(w, 32))
 }
@@ -589,7 +601,7 @@ function workerCount(): int {
 
 /** Runs the program: its top-level code (`entry`, a C function) as the first task, on the workers. */
 //ore:export ore_rt_run_main
-function runMain(entry: ptr): void {
+export function runMain(entry: ptr): void {
     const s = new Scheduler()
     schedulerAddress = unsafe.addressOf(s)
     GC_allow_register_threads()

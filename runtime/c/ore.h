@@ -68,7 +68,7 @@ typedef struct ore_frame {
 
 extern _Thread_local ore_frame *ore_rt_top;
 
-_Noreturn void ore_rt_panic(ore_string message);
+// Panics are in runtime/core/program.ore, which exports these two for C.
 _Noreturn void ore_rt_panic_cstr(const char *message);
 _Noreturn void ore_rt_panic_index(i64 index, i64 length);
 
@@ -80,11 +80,6 @@ void *ore_rt_alloc_bytes(i64 size);
 // Strings. Comparison, search and the string methods are in runtime/core/string.ore.
 
 
-static inline u8 ore_rt_str_at(ore_string s, i64 i) {
-  if ((u64)i >= (u64)s.len) ore_rt_panic_index(i, s.len);
-  return s.ptr[i];
-}
-
 // Arrays are references to a growable buffer of elements of one type; their
 // functions are in runtime/core/array.ore.
 
@@ -93,16 +88,6 @@ typedef struct {
   i64 len;
   i64 cap;
 } ore_array;
-
-static inline i64 ore_rt_check_index(i64 i, i64 len) {
-  if ((u64)i >= (u64)len) ore_rt_panic_index(i, len);
-  return i;
-}
-
-/** Pointer to element `i`, bounds-checked. */
-static inline void *ore_rt_array_at(ore_array *a, i64 i, i64 elem_size) {
-  return (u8 *)a->data + elem_size * ore_rt_check_index(i, a->len);
-}
 
 // Interfaces: a reference to a struct and a table. Entry 0 of the table is the
 // type id of the struct; entry `i + 1` is, for member `i` of the interface
@@ -127,30 +112,13 @@ ore_iface ore_rt_iface_project(ore_iface v, i64 count, const i32 *indices);
 /** Sentinel for an omitted `end` argument of `slice`. */
 #define ORE_SLICE_END INT64_MAX
 
-/**
- * Runs a test body (a closure taking no arguments), catching a panic in it.
- * At exit, prints a summary and exits with status 1 if a test failed.
- */
-void ore_rt_run_test(ore_string name, ore_closure body);
-
 /** A NUL-terminated copy of a string, for C. */
 const char *ore_rt_cstring(ore_string s);
 /** A copy of a NUL-terminated C string; empty for NULL. */
 ore_string ore_rt_from_cstring(const char *p);
 
-/** The command-line arguments after the program name, as an array of strings. */
-ore_array *ore_rt_args(void);
-
-/** Directs printing to stdout (1) or stderr (2). */
-void ore_rt_print_to(int fd);
-_Noreturn void ore_rt_exit(i32 code);
-
-void ore_rt_print_i64(i64 v);
-void ore_rt_print_u64(u64 v);
-void ore_rt_print_bool(bool v);
-void ore_rt_print_string(ore_string v);
-void ore_rt_print_space(void);
-void ore_rt_print_newline(void);
+// Printing, the program's entry and arguments, and the test runner are in
+// runtime/core (io.ore and program.ore).
 
 // Integer division and remainder: division by zero panics, MIN / -1 wraps.
 #define ORE_DEF_DIV_SIGNED(T)                                                        \

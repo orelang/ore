@@ -140,3 +140,18 @@ function arraySort(a: ptr, size: int, compare: ptr, ctx: ptr): void {
     }
     if (src !== data(a)) unsafe.copy(data(a), src, n * size)
 }
+
+/** Panics for an index out of bounds; apart, so that the checks that call it stay small. */
+//ore:cold
+//ore:noinline
+export function indexOutOfRange(index: int, length: int): void {
+    process.panic(`index out of range [${index}] with length ${length}`)
+}
+
+/** The address of element `i`, bounds-checked. */
+//ore:runtime ore_rt_array_at
+function arrayAt(a: ptr, i: int, size: int): ptr {
+    const len = length(a)
+    if (u64(i) >= u64(len)) indexOutOfRange(i, len)
+    return unsafe.add(data(a), i * size)
+}
