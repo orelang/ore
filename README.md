@@ -252,9 +252,9 @@ Another binary can be set with the `ore.path` setting.
 | 6. Modules, packages, standard library, C interop, `ore test`, `ore fmt` | done |
 | 7. Concurrency: tasks, `Chan<T>`, `select` on green threads | done |
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
-| 8. Performance: escape analysis and inlining (done); precise GC, LLVM backend | in progress |
+| 8. Performance: escape analysis and inlining, LLVM backend (done); low-level layer, runtime in Ore, compiler in Ore, precise GC | in progress |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Self-hosting: lexer and parser (done), checker, backend in `selfhost/` | in progress |
+| 9. Self-hosting: lexer and parser (done); the rest of the compiler in Phase 8 | in progress |
 
 ### Known limitations
 

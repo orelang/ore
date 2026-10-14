@@ -26,8 +26,8 @@ had to make, because JS was always underneath.
 
 **Implementation language:** TypeScript on Bun. We get the TS parser for free,
 the compiler and the language server share one codebase, and
-`bun build --compile` produces a single binary. Self-hosting in Ore is a
-long-term goal.
+`bun build --compile` produces a single binary. The compiler moves to Ore
+(Phase 8, step 4) once the runtime is in Ore.
 
 ## 1. Semantics (draft spec, lives in `docs/spec/`)
 
@@ -193,9 +193,24 @@ The road from here, in this order:
    `runtime/src/*.c` is gone. The runtime and the program are one LLVM module,
    so runtime functions inline into user code. Only libc and the Boehm GC stay
    outside Ore.
-4. **Own garbage collector** in Ore, precise, with LLVM stack maps, replacing
+   This step also brings the system std the compiler needs: running a
+   process with its output, directories and paths, hashing, and files
+   embedded in the binary.
+4. **Compiler in Ore**: every package of `packages/` rewritten in Ore, the
+   checker over the self-hosted parser of `selfhost/` (through typed
+   accessors over its generic nodes). `try`/`finally` becomes `using`,
+   internal `throw` becomes `process.panic`, I/O errors become values. `ore fmt`
+   gets its own printer instead of prettier, and the LSP its own JSON-RPC
+   instead of `vscode-languageserver`. Bootstrap: the TypeScript compiler
+   builds stage 1, stage 1 builds stage 2, stage 2 builds stage 3, and CI
+   checks that stages 2 and 3 emit the same LLVM IR. Then the TypeScript
+   compiler is removed and the compiler builds from the previous release.
+   Only the oracle tests stay in TypeScript: the parser compared with
+   TypeScript's and the async references from Bun. Done before the GC and
+   async, so that both are written once, in Ore.
+5. **Own garbage collector** in Ore, precise, with LLVM stack maps, replacing
    Boehm.
-5. **Promises and async/await** (Phase 8.6) on LLVM coroutines, against the
+6. **Promises and async/await** (Phase 8.6) on LLVM coroutines, against the
    tests already in `tests/async/`.
 
 ### Phase 8.5: Language completeness (done)
@@ -216,7 +231,8 @@ The road from here, in this order:
 - Async functions compile to LLVM coroutines (state machines, no stack per
   call), run synchronously until their first `await`, on one event loop:
   async code is single-threaded, `task.spawn` is parallel. Comes after the
-  LLVM backend, the runtime in Ore and the own GC (Phase 8).
+  LLVM backend, the runtime in Ore, the compiler in Ore and the own GC
+  (Phase 8).
 - Done: the test suite `tests/async/`, whose expected outputs come from Bun
   running the same files (`tests/async/bun-shim.ts` maps `time` and `task`
   to Web APIs), and benchmarks in `bench/async/` with Bun's times as the
@@ -236,7 +252,8 @@ The road from here, in this order:
   `tests/selfhost.test.ts` checks, on every .ore file of the repository, that
   the tokens equal the TypeScript scanner's and the tree (kinds, spans and
   children) equals the TypeScript parser's.
-- Next: the checker and the C backend.
+- Next: the whole compiler (Phase 8, step 4), after the runtime in Ore and
+  before the own GC and async.
 - Language gaps found so far: definite assignment (now supported); arrays
   have no `unshift`.
 
