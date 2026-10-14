@@ -287,6 +287,8 @@ ci/stress.sh                     # run the concurrent programs many times
 
 The tests run on macOS and Linux, on arm64 and x86-64.
 
+Every directory below has a README with the details.
+
 | Path | Contents |
 |---|---|
 | `compiler/syntax` | Parsing `.ore` with the TypeScript parser, diagnostics |
