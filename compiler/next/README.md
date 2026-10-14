@@ -6,10 +6,10 @@ and the parser, which build a tree in the shape of TypeScript's.
 
 | File | Contents |
 |---|---|
-| `tokens.ore` | Token kinds (named as `ts.SyntaxKind`) and keywords |
-| `lexer.ore` | Tokens of a file, with byte offsets |
-| `ast.ore` | The syntax tree: a node kind, a span and children |
-| `parser.ore` | The parser |
+| `syntax/tokens.ore` | Token kinds (named as `ts.SyntaxKind`) and keywords |
+| `syntax/lexer.ore` | Tokens of a file, with byte offsets |
+| `syntax/ast.ore` | The syntax tree: a node kind, a span and children |
+| `syntax/parser.ore` | The parser |
 | `main.ore` | `ore-next tokens|tree <file>`: prints the tokens or the tree |
 
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
