@@ -334,6 +334,16 @@ class Checker {
     return found
   }
 
+  /**
+   * Whether a module may use `internal` and `//ore:runtime`: a module of the
+   * standard library, or one that starts with `//ore:internal`.
+   */
+  private isInternal(source: Source): boolean {
+    if (source.path.startsWith("ore:")) return true
+    const first = source.ast.statements[0]
+    return first !== undefined && this.directives(first).some((d) => d.name === "internal")
+  }
+
   private directiveError(stmt: ts.Statement, d: Directive, message: string) {
     this.diagnostics.push({ source: this.sourceOf(stmt), start: d.pos, length: d.end - d.pos, severity: "error", message })
   }
@@ -351,8 +361,12 @@ class Checker {
         this.directiveError(stmt, d, named ? `'//ore:${d.name}' needs a C name, e.g. '//ore:${d.name} my_function'.` : `'//ore:${d.name}' takes no argument.`)
         continue
       }
-      if (d.name === "runtime" && !this.sourceOf(stmt).path.startsWith("ore:")) {
-        this.directiveError(stmt, d, "'//ore:runtime' is only for the standard library.")
+      if (d.name === "runtime" && !this.isInternal(this.sourceOf(stmt))) {
+        this.directiveError(stmt, d, "'//ore:runtime' is only for the standard library. Add '//ore:internal' at the top of the file to use it here.")
+        continue
+      }
+      if (kind === "module") {
+        if (stmt.getSourceFile().statements[0] !== stmt) this.directiveError(stmt, d, `'//ore:${d.name}' goes at the top of the file, before the first statement.`)
         continue
       }
       if (kind === "function") {
@@ -377,7 +391,7 @@ class Checker {
       if (d.name === "noinline") attributes.noinline = true
       else if (d.name === "inline") attributes.inline = true
       else if (d.name === "cold") attributes.cold = true
-      else if (d.name === "runtime" && d.arg !== "" && this.sourceOf(decl).path.startsWith("ore:")) attributes.runtime = d.arg
+      else if (d.name === "runtime" && d.arg !== "" && this.isInternal(this.sourceOf(decl))) attributes.runtime = d.arg
       else if (d.name === "export" && d.arg !== "") {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(d.arg)) {
           this.directiveError(decl, d, `'${d.arg}' is not a C name.`)
@@ -3012,8 +3026,8 @@ class Checker {
       // `console.log(...)`: a member of a namespace, or else a method call.
       const ns = ts.isIdentifier(callee.expression) ? scope.lookupValue(callee.expression.text) : undefined
       if (ns?.k !== "namespace") return this.checkMethodCall(node, callee, scope)
-      if (ns.name === "internal" && !this.sourceOf(node).path.startsWith("ore:")) {
-        return this.fail(callee.expression, "'internal' is only for the standard library.")
+      if (ns.name === "internal" && !this.isInternal(this.sourceOf(node))) {
+        return this.fail(callee.expression, "'internal' is only for the standard library. Add '//ore:internal' at the top of the file to use it here.")
       }
       this.info.definitions.set(callee.expression as ts.Identifier, ns.decl)
       name = `${ns.name}.${callee.name.text}`
@@ -4253,7 +4267,8 @@ interface Directive {
 }
 
 /** The known directives and what they apply to. */
-const directiveKinds = new Map<string, "function" | "variable">([
+const directiveKinds = new Map<string, "function" | "variable" | "module">([
+  ["internal", "module"],
   ["noinline", "function"],
   ["inline", "function"],
   ["cold", "function"],

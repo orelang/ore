@@ -465,7 +465,8 @@ errors.
 | `//ore:inline` | function | always inlined by LLVM |
 | `//ore:cold` | function | rarely called: optimized for size, placed apart |
 | `//ore:export name` | function | visible to C as `name`, with the C calling convention; numbers, `bool` and `ptr` only |
-| `//ore:runtime name` | function in the standard library | implements the runtime function `name` (see `std/runtime.ore`) |
+| `//ore:internal` | the module, before its first statement | allows the namespace `internal` and `//ore:runtime`, otherwise only for the standard library |
+| `//ore:runtime name` | function in the standard library | implements the runtime function `name` (see `runtime/core`) |
 | `//ore:threadlocal` | `let name: T` | a separate value in each OS thread, starting at zero; `T` is a number, `bool` or `ptr`, and there is no initializer |
 
 Tasks move between OS threads when they wait, so a thread-local variable is
