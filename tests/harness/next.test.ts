@@ -17,7 +17,7 @@ import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import ts from "typescript"
 
-const root = join(import.meta.dir, "..")
+const root = join(import.meta.dir, "../..")
 const binary = join(mkdtempSync(join(tmpdir(), "ore-next-")), "ore-next")
 
 function oreFiles(dir: string): string[] {
@@ -29,7 +29,7 @@ function oreFiles(dir: string): string[] {
   })
 }
 
-const files = ["tests", "runtime", "compiler/next", "bench"].flatMap((d) => oreFiles(join(root, d))).sort()
+const files = ["tests", "runtime", "compiler/next"].flatMap((d) => oreFiles(join(root, d))).sort()
 
 /** The first name of each SyntaxKind value: the real kinds come before markers such as FirstToken. */
 const kindNames = new Map<number, string>()

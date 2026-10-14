@@ -3,7 +3,7 @@
 # implements async, built by Ore with --release. Prints the best of three runs.
 set -e
 cd "$(dirname "$0")"
-root=../..
+root=../../..
 out=$(mktemp -d)
 best() {
     best=

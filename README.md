@@ -280,7 +280,7 @@ Another binary can be set with the `ore.path` setting.
 bun test                         # unit and golden tests
 bun run typecheck
 ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
-bench/run.sh                     # time the benchmarks in bench/ (release builds)
+tests/bench/run.sh               # time the benchmarks in tests/bench/ (release builds)
 ci/test-linux.sh                 # the tests in Linux containers (arm64 and amd64), with Docker
 ci/stress.sh                     # run the concurrent programs many times
 ```
@@ -296,16 +296,18 @@ The tests run on macOS and Linux, on arm64 and x86-64.
 | `compiler/opt` | Optimizations on the IR: escape analysis, inlining |
 | `compiler/codegen` | IR to LLVM IR, built by clang |
 | `compiler/driver` | Compilation pipeline, clang, runtime and GC cache |
-| `compiler/cli` | The `ore` command, including `test` and `fmt` |
 | `compiler/lsp` | Language server |
-| `editors/zed` | Zed extension |
-| `editors/vscode` | VS Code extension |
+| `compiler/cli` | The `ore` command, including `test` and `fmt` |
 | `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer and the parser) |
 | `runtime/core` | The runtime written in Ore (`ore:runtime/...`), part of every program |
 | `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`) |
 | `runtime/c` | The part of the runtime still in C, moving to `runtime/core` |
 | `runtime/third_party/bdwgc` | The Boehm garbage collector (submodule) |
-| `tests/run` | Programs with expected output; directories are multi-module programs |
-| `tests/diag` | Programs with expected diagnostics (`// error: ...`) |
-| `bench/` | Benchmarks |
+| `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
+| `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |
+| `tests/async` | Async tests, with references from Bun (waiting for Phase 8.6) |
+| `tests/bench` | Benchmarks |
+| `tests/harness` | The test runners: golden, async, the Ore compiler against TypeScript, Zed queries |
+| `editors/zed` | Zed extension |
+| `editors/vscode` | VS Code extension |
 | `ci/` | Linux test environment and stress tests |

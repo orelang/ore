@@ -9,7 +9,7 @@
  * "reference" checks each .out against Bun; "ore" runs the program built by
  * Ore against it.
  *
- * Header comments, as in tests/golden.test.ts:
+ * Header comments, as in golden.test.ts:
  *   // reference: none, <why>   no Bun reference (tasks and channels, or where
  *                               Ore differs on purpose): the .out is written by hand
  *   // threads: 8               OS threads for tasks (default 1)
@@ -27,7 +27,7 @@ import { join } from "node:path"
 /** Whether Ore implements async yet; until then only the references are checked. */
 const implemented = false
 
-const dir = join(import.meta.dir, "async")
+const dir = join(import.meta.dir, "../async")
 const shim = join(dir, "bun-shim.ts")
 const cases = readdirSync(dir).filter((f) => f.endsWith(".ore")).sort()
 const work = mkdtempSync(join(tmpdir(), "ore-async-"))

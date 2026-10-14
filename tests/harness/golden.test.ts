@@ -1,21 +1,21 @@
 /**
- * Golden tests.
+ * Golden tests, grouped by topic in directories.
  *
- * tests/run/NAME.ore   is built and run; stdout must equal NAME.out.
- *                      A directory tests/run/NAME/ is a program of several
- *                      modules with entry main.ore and output main.out.
- *                      Header comments set other expectations:
- *                        // exit: 2
- *                        // stderr: panic: integer divide by zero   (substring, repeatable)
- *                        // threads: 4    (OS threads for tasks; default 1, for a stable order)
- * tests/diag/NAME.ore  must fail to check; every diagnostic must sit on a line
- *                      annotated with `// error: <substring of the message>`,
- *                      and every annotation must be matched. An annotation
- *                      alone on its line belongs to the nearest line above
- *                      with code or an `//ore:` directive, as `ore fmt`
- *                      moves comments after `{` into the block. A directory
- *                      tests/diag/NAME/ is checked from main.ore, with
- *                      annotations in any of its modules.
+ * tests/run/TOPIC/NAME.ore  is built and run; stdout must equal NAME.out.
+ *                           Header comments set other expectations:
+ *                             // exit: 2
+ *                             // stderr: panic: integer divide by zero   (substring, repeatable)
+ *                             // threads: 4   (OS threads for tasks; default 1, for a stable order)
+ * tests/diag/TOPIC/NAME.ore must fail to check; every diagnostic must sit on
+ *                           a line annotated with `// error: <substring of
+ *                           the message>`, and every annotation must be
+ *                           matched. An annotation alone on its line belongs
+ *                           to the nearest line above with code or an
+ *                           `//ore:` directive, as `ore fmt` moves comments
+ *                           after `{` into the block.
+ *
+ * A directory with a main.ore is one program of several modules, with its
+ * output in main.out and annotations in any of its modules.
  *
  * ORE_BLESS=1 bun test tests   rewrites the .out files from actual output.
  */
@@ -23,17 +23,25 @@ import { build } from "@ore/driver"
 import { check } from "@ore/checker"
 import { loadProgram } from "@ore/project"
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const bless = process.env.ORE_BLESS === "1"
 
-/** Test entry files: NAME.ore, or NAME/main.ore for a program of several modules. */
-function cases(dir: string): string[] {
-  const root = join(import.meta.dir, dir)
+/**
+ * Test entry files below a directory, as paths relative to it: NAME.ore, or
+ * NAME/main.ore for a program of several modules. Other directories group
+ * tests by topic.
+ */
+function cases(dir: string, prefix = ""): string[] {
+  const root = join(import.meta.dir, "..", dir, prefix)
   return readdirSync(root)
-    .flatMap((f) => (f.endsWith(".ore") ? [f] : existsSync(join(root, f, "main.ore")) ? [join(f, "main.ore")] : []))
+    .flatMap((f) => {
+      if (f.endsWith(".ore")) return [join(prefix, f)]
+      if (!statSync(join(root, f)).isDirectory()) return []
+      return existsSync(join(root, f, "main.ore")) ? [join(prefix, f, "main.ore")] : cases(dir, join(prefix, f))
+    })
     .sort()
 }
 
@@ -47,7 +55,7 @@ describe("run", () => {
 
   for (const file of cases("run")) {
     test(file, async () => {
-      const path = join(import.meta.dir, "run", file)
+      const path = join(import.meta.dir, "../run", file)
       const text = await Bun.file(path).text()
       const output = join(work, file.replace(/\.ore$/, "").replaceAll("/", "_"))
       const result = await build(path, { output })
@@ -72,7 +80,7 @@ describe("run", () => {
 describe("diag", () => {
   for (const file of cases("diag")) {
     test(file, async () => {
-      const path = join(import.meta.dir, "diag", file)
+      const path = join(import.meta.dir, "../diag", file)
       const program = loadProgram(path)
       const diagnostics = program.syntaxErrors ? program.diagnostics : [...program.diagnostics, ...check(program).diagnostics]
 

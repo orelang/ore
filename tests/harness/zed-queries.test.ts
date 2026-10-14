@@ -7,12 +7,12 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Language, Parser, Query } from "web-tree-sitter"
 
-const queriesDir = join(import.meta.dir, "../editors/zed/languages/ore")
+const queriesDir = join(import.meta.dir, "../../editors/zed/languages/ore")
 let language: Language
 
 beforeAll(async () => {
   await Parser.init()
-  language = await Language.load(join(import.meta.dir, "../node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm"))
+  language = await Language.load(join(import.meta.dir, "../../node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm"))
 })
 
 const sample = `/** Adds numbers. */
