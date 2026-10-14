@@ -1,0 +1,158 @@
+// Module resolution: the standard modules embedded in the compiler, and
+// import specifiers resolved to files like Node does.
+
+import { dirname, isAbsolute, join, resolve } from "ore:path"
+import runtimeArray from "../../../../runtime/core/array.ore" with { type: "text" }
+import runtimeChan from "../../../../runtime/core/chan.ore" with { type: "text" }
+import runtimeFloat from "../../../../runtime/core/float.ore" with { type: "text" }
+import runtimeFloatTables from "../../../../runtime/core/float-tables.ore" with { type: "text" }
+import runtimeFormat from "../../../../runtime/core/format.ore" with { type: "text" }
+import runtimeFrames from "../../../../runtime/core/frames.ore" with { type: "text" }
+import runtimeIo from "../../../../runtime/core/io.ore" with { type: "text" }
+import runtimeJson from "../../../../runtime/core/json.ore" with { type: "text" }
+import runtimeNumber from "../../../../runtime/core/number.ore" with { type: "text" }
+import runtimeOs from "../../../../runtime/core/os.ore" with { type: "text" }
+import runtimePoll from "../../../../runtime/core/poll.ore" with { type: "text" }
+import runtimeNet from "../../../../runtime/core/net.ore" with { type: "text" }
+import runtimeProgram from "../../../../runtime/core/program.ore" with { type: "text" }
+import runtimeMap from "../../../../runtime/core/map.ore" with { type: "text" }
+import runtimeString from "../../../../runtime/core/string.ore" with { type: "text" }
+import runtimeSys from "../../../../runtime/core/sys.ore" with { type: "text" }
+import runtimeTask from "../../../../runtime/core/task.ore" with { type: "text" }
+import cryptoModule from "../../../../runtime/std/crypto.ore" with { type: "text" }
+import netModule from "../../../../runtime/std/net.ore" with { type: "text" }
+import pathModule from "../../../../runtime/std/path.ore" with { type: "text" }
+import syncModule from "../../../../runtime/std/sync.ore" with { type: "text" }
+import testModule from "../../../../runtime/std/test.ore" with { type: "text" }
+
+/** Standard library modules, imported as "ore:name" and embedded in the compiler. */
+export const stdModules = new Map<string, string>()
+stdModules.set("ore:crypto", cryptoModule)
+stdModules.set("ore:net", netModule)
+stdModules.set("ore:path", pathModule)
+stdModules.set("ore:sync", syncModule)
+stdModules.set("ore:test", testModule)
+stdModules.set("ore:runtime/string", runtimeString)
+stdModules.set("ore:runtime/array", runtimeArray)
+stdModules.set("ore:runtime/map", runtimeMap)
+stdModules.set("ore:runtime/format", runtimeFormat)
+stdModules.set("ore:runtime/float", runtimeFloat)
+stdModules.set("ore:runtime/float-tables", runtimeFloatTables)
+stdModules.set("ore:runtime/json", runtimeJson)
+stdModules.set("ore:runtime/number", runtimeNumber)
+stdModules.set("ore:runtime/frames", runtimeFrames)
+stdModules.set("ore:runtime/os", runtimeOs)
+stdModules.set("ore:runtime/task", runtimeTask)
+stdModules.set("ore:runtime/sys", runtimeSys)
+stdModules.set("ore:runtime/chan", runtimeChan)
+stdModules.set("ore:runtime/poll", runtimePoll)
+stdModules.set("ore:runtime/io", runtimeIo)
+stdModules.set("ore:runtime/program", runtimeProgram)
+stdModules.set("ore:runtime/net", runtimeNet)
+
+/** The modules of the runtime written in Ore (runtime/core), part of every program, in load order. */
+export const runtimeModules = [
+    "ore:runtime/frames",
+    "ore:runtime/string",
+    "ore:runtime/array",
+    "ore:runtime/map",
+    "ore:runtime/format",
+    "ore:runtime/float-tables",
+    "ore:runtime/float",
+    "ore:runtime/json",
+    "ore:runtime/number",
+    "ore:runtime/os",
+    "ore:runtime/io",
+    "ore:runtime/task",
+    "ore:runtime/sys",
+    "ore:runtime/chan",
+    "ore:runtime/poll",
+    "ore:runtime/net",
+    "ore:runtime/program",
+]
+
+/** Native code of a package: libraries to link (`-l`), and C sources relative to the package. */
+export type NativeConfig = { link: string[] | null; sources: string[] | null }
+
+export type PackageJson = {
+    name: string | null
+    version: string | null
+    /** The entry file of a program, or the module imported by a package's name. */
+    main: string | null
+    dependencies: Map<string, string> | null
+    ore: NativeConfig | null
+}
+
+// TODO: fs.stat. Until the fs namespace tells files from directories, a
+// path is a directory when opendir opens it.
+declare function opendir(path: string): ptr
+declare function closedir(dir: ptr): i32
+
+function isDirectory(path: string): bool {
+    const dir = opendir(path)
+    if (unsafe.toInt(dir) === 0) return false
+    closedir(dir)
+    return true
+}
+
+/** Whether a path is a file (or anything but a directory) that exists. */
+export function isFile(path: string): bool {
+    return fs.exists(path) && !isDirectory(path)
+}
+
+/** The package.json of a directory: null when there is none, an Error when it cannot be read. */
+export function readPackageJson(dir: string): PackageJson | Error | null {
+    const path = join(dir, "package.json")
+    if (!fs.exists(path)) return null
+    const text = fs.readFile(path)
+    if (text instanceof Error) return text
+    const json = JSON.parse<PackageJson>(text)
+    if (json instanceof Error) return new Error(`${path}: ${json.message}`)
+    return json
+}
+
+/** The nearest directory at or above `dir` that has a package.json. */
+export function findPackageRoot(dir: string): string | null {
+    for (let d = resolve(dir); ; d = dirname(d)) {
+        if (fs.exists(join(d, "package.json"))) return d
+        if (dirname(d) === d) return null
+    }
+}
+
+/** A file path for a module path: `x.ore`, `x` itself if it ends in `.ore`, or `x/index.ore`. */
+function resolveFile(base: string): string | null {
+    if (base.endsWith(".ore")) return isFile(base) ? base : null
+    const file = `${base}.ore`
+    if (isFile(file)) return file
+    const index = join(base, "index.ore")
+    return isFile(index) ? index : null
+}
+
+/** The entry module of a package directory: its package.json `main`, or `index.ore`. */
+export function packageEntry(dir: string): string | Error | null {
+    const json = readPackageJson(dir)
+    if (json instanceof Error) return json
+    const main = json === null ? null : json.main
+    return main !== null && main.length > 0 ? resolveFile(join(dir, main)) : resolveFile(join(dir, "index"))
+}
+
+/**
+ * Resolves an import specifier like Node does: relative paths against the
+ * importing file, and package names in `node_modules` directories above it.
+ * Null when there is no such module; an Error when a package.json is invalid.
+ */
+export function resolveImport(specifier: string, fromFile: string): string | Error | null {
+    if (specifier.startsWith("ore:")) return stdModules.has(specifier) ? specifier : null
+    if (specifier.startsWith("./") || specifier.startsWith("../") || isAbsolute(specifier)) {
+        return resolveFile(resolve(dirname(fromFile), specifier))
+    }
+    const parts = specifier.split("/")
+    const nameLength = specifier.startsWith("@") ? 2 : 1
+    const name = parts.slice(0, nameLength).join("/")
+    const subpath = parts.slice(nameLength).join("/")
+    for (let d = dirname(resolve(fromFile)); ; d = dirname(d)) {
+        const dir = join(d, "node_modules", name)
+        if (fs.exists(dir)) return subpath.length > 0 ? resolveFile(join(dir, subpath)) : packageEntry(dir)
+        if (dirname(d) === d) return null
+    }
+}

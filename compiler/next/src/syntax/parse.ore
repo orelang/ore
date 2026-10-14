@@ -1,0 +1,37 @@
+// Parsing a file into a Source, with its syntax errors as diagnostics.
+
+import { Diagnostic } from "./diagnostic"
+import { tokenize } from "./lexer"
+import { parse as parseText } from "./parser"
+import { Source } from "./source"
+
+export type ParseResult = { source: Source; diagnostics: Diagnostic[] }
+
+/** Parses a file; its syntax errors are diagnostics. */
+export function parse(path: string, text: string): ParseResult {
+    const parser = parseText(text)
+    const file = parser.file
+    if (file === null) process.panic(`parse: no tree for ${path}`)
+    const source = new Source(path, text, file)
+    const diagnostics: Diagnostic[] = []
+    if (parser.errors.length === 0) return { source, diagnostics }
+    const tokens = tokenize(text)
+    for (const error of parser.errors) {
+        // The parser writes "<message>, got '<token kind>' at <byte offset>".
+        const at = error.lastIndexOf(" at ")
+        const got = error.lastIndexOf(", got '")
+        const start = at < 0 ? 0 : (Number.parseInt(error.slice(at + 4)) ?? 0)
+        const message = got < 0 ? error : error.slice(0, got)
+        // The span of the token the error is at.
+        let length = 0
+        for (const token of tokens) {
+            if (token.start === start) {
+                length = token.end - token.start
+                break
+            }
+            if (token.start > start) break
+        }
+        diagnostics.push(new Diagnostic(source, start, length, "error", `${message}.`))
+    }
+    return { source, diagnostics }
+}

@@ -1,0 +1,122 @@
+// Imports: the attributes and specifiers of import declarations.
+
+import { type Node } from "./ast"
+
+/** Whether an import has the attribute `type: "text"`. */
+export function importsText(stmt: Node): bool {
+    const attributes = stmt.child("attributes")
+    if (attributes === null) return false
+    for (const element of attributes.list("elements")) {
+        const name = element.child("name")
+        const value = element.child("value")
+        if (name === null || value === null) continue
+        const key = name.kind === "StringLiteral" ? stringValue(name) : name.text
+        if (key === "type" && value.kind === "StringLiteral" && stringValue(value) === "text") return true
+    }
+    return false
+}
+
+/** The string literal that is the module specifier of an import or export declaration, if any. */
+export function moduleSpecifier(stmt: Node): Node | null {
+    if (stmt.kind !== "ImportDeclaration" && stmt.kind !== "ExportDeclaration") return null
+    const spec = stmt.child("moduleSpecifier")
+    return spec !== null && spec.kind === "StringLiteral" ? spec : null
+}
+
+const BACKSLASH: u8 = 0x5c
+const LF: u8 = 0x0a
+const CR: u8 = 0x0d
+
+/** The value of a string literal node: its text without the quotes, with escapes resolved. */
+export function stringValue(node: Node): string {
+    const raw = node.text
+    const end = raw.length >= 2 ? raw.length - 1 : raw.length
+    let value = ""
+    let from = 1
+    let i = 1
+    while (i < end) {
+        if (raw[i] !== BACKSLASH || i + 1 >= end) {
+            i++
+            continue
+        }
+        value += raw.slice(from, i)
+        const c = raw.slice(i + 1, i + 2)
+        i += 2
+        switch (c) {
+            case "n":
+                value += "\n"
+                break
+            case "t":
+                value += "\t"
+                break
+            case "r":
+                value += "\r"
+                break
+            case "b":
+                value += "\b"
+                break
+            case "f":
+                value += "\f"
+                break
+            case "v":
+                value += "\v"
+                break
+            case "0":
+                value += "\0"
+                break
+            case "\r":
+                // A line continuation.
+                if (i < end && raw[i] === LF) i++
+                break
+            case "\n":
+                break
+            case "x":
+                value += codeUnit(raw.slice(i, i + 2))
+                i += 2
+                break
+            case "u":
+                if (raw.slice(i, i + 1) === "{") {
+                    const close = raw.indexOf("}", i)
+                    const point = close < 0 ? null : Number.parseInt(raw.slice(i + 1, close), 16)
+                    if (close >= 0) i = close + 1
+                    if (point !== null) value += codePoint(point)
+                } else {
+                    value += codeUnit(raw.slice(i, i + 4))
+                    i += 4
+                }
+                break
+            default:
+                value += c
+        }
+        from = i
+    }
+    return value + raw.slice(from, end)
+}
+
+const hexDigits = "0123456789abcdef"
+
+function hex4(n: int): string {
+    let s = ""
+    for (let shift = 12; shift >= 0; shift -= 4) s += hexDigits.slice((n >> shift) & 15, ((n >> shift) & 15) + 1)
+    return s
+}
+
+/** The character of a UTF-16 code unit, written in hex digits; JSON decodes it. */
+function codeUnit(digits: string): string {
+    const n = Number.parseInt(digits, 16)
+    if (n === null) return ""
+    return codePoint(n)
+}
+
+/** The UTF-8 text of a code point, decoded by the JSON reader from `\uXXXX` escapes. */
+function codePoint(n: int): string {
+    let escape = ""
+    if (n >= 0x10000) {
+        const m = n - 0x10000
+        escape = `\\u${hex4(0xd800 + (m >> 10))}\\u${hex4(0xdc00 + (m & 0x3ff))}`
+    } else {
+        escape = `\\u${hex4(n)}`
+    }
+    const s = JSON.parse<string>(`"${escape}"`)
+    return s instanceof Error ? "" : s
+}

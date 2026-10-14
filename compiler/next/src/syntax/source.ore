@@ -1,0 +1,79 @@
+// A parsed source file: its path, its text and its syntax tree, with the
+// positions of its offsets.
+
+import { type Node } from "./ast"
+
+/** A zero-based line and column. */
+export type Position = { line: int; column: int }
+
+const LF: u8 = 0x0a
+const CR: u8 = 0x0d
+
+/** A parsed `.ore` file. */
+export class Source {
+    /** The byte offset of the start of each line. */
+    private lineStarts: int[] = []
+
+    constructor(
+        readonly path: string,
+        readonly text: string,
+        readonly ast: Node,
+    ) {
+        // Line breaks as TypeScript counts them: \n, \r\n, \r, U+2028 and U+2029.
+        this.lineStarts.push(0)
+        let i = 0
+        while (i < text.length) {
+            const c = text[i]
+            if (c === CR) {
+                i += i + 1 < text.length && text[i + 1] === LF ? 2 : 1
+                this.lineStarts.push(i)
+            } else if (c === LF) {
+                i++
+                this.lineStarts.push(i)
+            } else if (c === 0xe2 && i + 2 < text.length && text[i + 1] === 0x80 && (text[i + 2] === 0xa8 || text[i + 2] === 0xa9)) {
+                i += 3
+                this.lineStarts.push(i)
+            } else {
+                i++
+            }
+        }
+    }
+
+    /**
+     * The zero-based line and column of a byte offset. The column counts
+     * UTF-16 code units, as TypeScript and the Language Server Protocol do.
+     */
+    position(offset: int): Position {
+        // The last line that starts at or before the offset.
+        let low = 0
+        let high = this.lineStarts.length - 1
+        while (low < high) {
+            const middle = (low + high + 1) / 2
+            if (this.lineStarts[middle] <= offset) low = middle
+            else high = middle - 1
+        }
+        return { line: low, column: utf16Length(this.text, this.lineStarts[low], offset) }
+    }
+
+    /** The text of a zero-based line, without the line break. */
+    line(line: int): string {
+        const start = line < this.lineStarts.length ? this.lineStarts[line] : this.text.length
+        const end = line + 1 < this.lineStarts.length ? this.lineStarts[line + 1] : this.text.length
+        const text = this.text.slice(start, end)
+        if (text.endsWith("\r\n")) return text.slice(0, text.length - 2)
+        if (text.endsWith("\n")) return text.slice(0, text.length - 1)
+        return text
+    }
+}
+
+/** The number of UTF-16 code units of the UTF-8 bytes of `text` from `start` to `end`. */
+export function utf16Length(text: string, start: int, end: int): int {
+    let n = 0
+    for (let i = start; i < end && i < text.length; i++) {
+        const c = text[i]
+        if ((c & 0xc0) !== 0x80) n++
+        // A four-byte sequence is a character outside the BMP, a surrogate pair.
+        if (c >= 0xf0) n++
+    }
+    return n
+}
