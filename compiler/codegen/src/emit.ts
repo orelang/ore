@@ -1,5 +1,5 @@
 import * as ir from "@ore/ir"
-import { isStringLike, typeToString, types, unionRepr, type IntType, type Type, type UnionType } from "@ore/ir"
+import { isStringLike, typeofName, typeToString, types, unionRepr, type IntType, type Type, type UnionType } from "@ore/ir"
 import { inlineCalls, planStack, type StackPlan } from "@ore/opt"
 import { parsePrototypes, type CPrototype } from "./abi"
 import { cString, FnBuilder, floatConstant, globalName, intConstant, sizeOf, utf8, voidValue, type V } from "./ll"
@@ -2669,9 +2669,3 @@ function memberIndex(u: UnionType, type: Type): number {
   return u.members.findIndex((m) => m.kind === "string")
 }
 
-function typeofName(type: Type): string {
-  if (type.kind === "int" || type.kind === "float") return "number"
-  if (type.kind === "bool") return "boolean"
-  if (type.kind === "string" || type.kind === "literal") return "string"
-  return "object"
-}

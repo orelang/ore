@@ -291,6 +291,14 @@ export function isStringLike(type: Type): boolean {
   return type.kind === "string" || type.kind === "literal"
 }
 
+/** What JavaScript's `typeof` says of a value of a type. */
+export function typeofName(type: Type): string {
+  if (isNumeric(type)) return "number"
+  if (type.kind === "bool") return "boolean"
+  if (isStringLike(type)) return "string"
+  return "object"
+}
+
 /**
  * How a union is represented at run time:
  * - `strings`: only string literal types, as a string; the value tells the member;
