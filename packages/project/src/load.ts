@@ -2,7 +2,7 @@ import { parse, type Diagnostic, type Source } from "@ore/syntax"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import ts from "typescript"
-import { resolveImport, stdModules } from "./resolve"
+import { resolveImport, runtimeModuleName, stdModules } from "./resolve"
 
 export interface Program {
   /** Modules with each module after the modules it imports, the entry last (cycles aside). */
@@ -58,6 +58,8 @@ export function loadProgram(entryPath: string, options: LoadOptions = {}): Progr
     return source
   }
 
+  // The runtime comes first, so that its top-level code runs before any other.
+  visit(runtimeModuleName, runtimeModuleName)
   const entry = visit(resolve(entryPath), options.absolutePaths ? resolve(entryPath) : entryPath)
   return { modules: order, entry, imports, diagnostics, syntaxErrors }
 }

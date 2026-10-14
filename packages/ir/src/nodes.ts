@@ -71,6 +71,8 @@ export interface FuncAttributes {
   cold?: boolean
   /** `//ore:export name`: visible to C as `name`, with the C calling convention. */
   exportName?: string
+  /** `//ore:runtime name`, in the standard library: implements the runtime function `name` that generated code calls. */
+  runtime?: string
 }
 
 export interface Local {

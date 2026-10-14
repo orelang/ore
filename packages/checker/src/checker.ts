@@ -346,8 +346,13 @@ class Checker {
         this.directiveError(stmt, d, `Unknown directive '//ore:${d.name}'. Known: ${[...directiveKinds.keys()].map((k) => `//ore:${k}`).join(", ")}.`)
         continue
       }
-      if (d.name === "export" ? d.arg === "" : d.arg !== "") {
-        this.directiveError(stmt, d, d.name === "export" ? "'//ore:export' needs a C name, e.g. '//ore:export my_function'." : `'//ore:${d.name}' takes no argument.`)
+      const named = d.name === "export" || d.name === "runtime"
+      if (named ? d.arg === "" : d.arg !== "") {
+        this.directiveError(stmt, d, named ? `'//ore:${d.name}' needs a C name, e.g. '//ore:${d.name} my_function'.` : `'//ore:${d.name}' takes no argument.`)
+        continue
+      }
+      if (d.name === "runtime" && !this.sourceOf(stmt).path.startsWith("ore:")) {
+        this.directiveError(stmt, d, "'//ore:runtime' is only for the standard library.")
         continue
       }
       if (kind === "function") {
@@ -372,6 +377,7 @@ class Checker {
       if (d.name === "noinline") attributes.noinline = true
       else if (d.name === "inline") attributes.inline = true
       else if (d.name === "cold") attributes.cold = true
+      else if (d.name === "runtime" && d.arg !== "" && this.sourceOf(decl).path.startsWith("ore:")) attributes.runtime = d.arg
       else if (d.name === "export" && d.arg !== "") {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(d.arg)) {
           this.directiveError(decl, d, `'${d.arg}' is not a C name.`)
@@ -4252,6 +4258,7 @@ const directiveKinds = new Map<string, "function" | "variable">([
   ["inline", "function"],
   ["cold", "function"],
   ["export", "function"],
+  ["runtime", "function"],
   ["threadlocal", "variable"],
 ])
 

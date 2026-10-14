@@ -40,7 +40,7 @@ test("loads modules dependencies first and reports missing modules", () => {
     "b.ore": 'import { a } from "./a"\n',
   })
   const program = loadProgram(join(root, "main.ore"))
-  expect(program.modules.map((m) => m.path.split("/").pop())).toEqual(["b.ore", "a.ore", "main.ore"])
+  expect(program.modules.map((m) => m.path.split("/").pop())).toEqual(["ore:runtime", "b.ore", "a.ore", "main.ore"])
   expect(program.diagnostics.map((d) => d.message)).toEqual(["Cannot find module './nope'."])
 })
 

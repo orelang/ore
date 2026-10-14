@@ -1,0 +1,87 @@
+// The string functions of the runtime (std/runtime.ore) on edge cases.
+
+/** A string of raw bytes, which may be invalid UTF-8. */
+function bytes(values: u8[]): string {
+    const p = unsafe.allocBytes(values.length)
+    for (let i = 0; i < values.length; i++) unsafe.store<u8>(unsafe.add(p, i), values[i])
+    return unsafe.makeString(p, values.length)
+}
+
+function runes(s: string): string {
+    const out: string[] = []
+    for (const r of s) out.push(`${r}`)
+    return out.join(" ")
+}
+
+// Decoding: invalid bytes, overlong forms and surrogates give U+FFFD (65533) one byte at a time.
+console.log(runes(bytes([0x41, 0xff, 0x42])))
+console.log(runes(bytes([0xc0, 0x80])))
+console.log(runes(bytes([0xed, 0xa0, 0x80])))
+console.log(runes(bytes([0xf0, 0x9f, 0x98, 0x80, 0xe2, 0x82])))
+console.log(runes("aé€"))
+console.log(bytes([0xe2, 0x82]).split("").length, "aé€😀".split("").join("|"))
+
+// Comparison, including null strings of `string | null`.
+const none: string | null = null
+const empty: string | null = ""
+const word: string | null = "x"
+console.log(none === empty, empty === none, none === null, empty === "", word === "x", word !== empty)
+console.log("a" < "ab", "b" > "abc", "abc" < "abd", "" < "a", "same" <= "same")
+console.log(["pear", "apple", "fig", "apples", ""].sort().join(","))
+
+// Search.
+console.log(
+    "banana".indexOf("an"),
+    "banana".indexOf("an", 2),
+    "banana".indexOf("an", -5),
+    "banana".indexOf("x"),
+    "banana".indexOf(""),
+)
+console.log("banana".lastIndexOf("an"), "banana".lastIndexOf(""), "banana".lastIndexOf("nab"), "".lastIndexOf(""))
+console.log(
+    "banana".startsWith(""),
+    "banana".startsWith("ban"),
+    "ban".startsWith("banana"),
+    "banana".endsWith("na"),
+    "na".endsWith("banana"),
+)
+console.log("banana".includes("nan"), "banana".includes("nab"))
+
+// Slicing.
+console.log(
+    "hello".slice(-3),
+    "hello".slice(1, -1),
+    "hello".slice(4, 1) === "",
+    "hello".slice(-10, 2),
+    "hello".slice(2, 100),
+)
+console.log("hello".substring(3, 1), "hello".substring(-2, 2), "hello".substring(2), "hello".substring(9, 3))
+
+// Splitting and joining.
+console.log(
+    "a,b,,c".split(",").length,
+    ",a,".split(",").join("|"),
+    "abc".split("abc").length,
+    "".split(",").length,
+    "".split("").length,
+)
+const nothing: string[] = []
+console.log(["x"].join(", "), ["a", "b", "c"].join(""), nothing.join("-") === "")
+
+// Trimming and case.
+console.log(`[${" \t a b \n".trim()}]`, `[${"  a ".trimStart()}]`, `[${"  a ".trimEnd()}]`, `[${"   ".trim()}]`)
+console.log("MiXeD 123 é".toUpperCase(), "MiXeD 123 É".toLowerCase())
+
+// Replacing.
+console.log(
+    "aaa".replace("a", "b"),
+    "aaa".replaceAll("a", "bb"),
+    "abc".replace("", "-"),
+    "abc".replaceAll("", "-"),
+    "".replaceAll("", "-"),
+)
+console.log("a.b.c".replaceAll(".", ""), "xyz".replace("q", "!"), "aaaa".replaceAll("aa", "a"))
+
+// Repeating and padding.
+console.log(`[${"ab".repeat(3)}]`, `[${"ab".repeat(0)}]`, `[${"".repeat(5)}]`)
+console.log("5".padStart(3, "0"), "5".padEnd(4, "ab"), "long".padStart(2), `[${"x".padStart(3)}]`, "x".padStart(3, ""))

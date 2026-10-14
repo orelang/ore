@@ -301,8 +301,8 @@ The tests run on macOS and Linux, on arm64 and x86-64.
 | `editors/zed` | Zed extension |
 | `editors/vscode` | VS Code extension |
 | `selfhost/` | The compiler written in Ore (so far the lexer and the parser) |
-| `runtime/` | C runtime; Boehm GC in `runtime/third_party/bdwgc` |
-| `std/` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`) |
+| `runtime/` | C runtime, moving to Ore part by part; Boehm GC in `runtime/third_party/bdwgc` |
+| `std/` | Built-in declarations (`builtin.d.ore`), standard modules (`ore:test`, `ore:sync`, `ore:net`) and the runtime written in Ore (`runtime.ore`) |
 | `tests/run` | Programs with expected output; directories are multi-module programs |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`) |
 | `bench/` | Benchmarks |

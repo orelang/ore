@@ -194,6 +194,12 @@ The road from here, in this order:
    `runtime/src/*.c` is gone. The runtime and the program are one LLVM module,
    so runtime functions inline into user code. Only libc and the Boehm GC stay
    outside Ore.
+   The runtime in Ore is `std/runtime.ore` (the module `ore:runtime`), loaded
+   first into every program; `//ore:runtime ore_rt_name` on a function makes
+   generated code call it instead of the C function, which is then deleted.
+   Done: strings (comparison, concatenation, UTF-8 decoding, search, slicing,
+   split and join, trim, case, replace, repeat, pad); they inline into user
+   code, and a string benchmark got about 18% faster.
    This step also brings the system std the compiler needs: running a
    process with its output, directories and paths, hashing, and files
    embedded in the binary.

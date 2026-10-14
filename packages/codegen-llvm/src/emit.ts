@@ -59,6 +59,8 @@ class ModuleEmitter {
   private globals = new Set<ir.Local>()
   private plan: StackPlan = { slots: new Map(), ctorsAt: new Set() }
   private file = ""
+  /** Runtime functions written in Ore, by the name of the C function they replace. */
+  private runtime = new Map<string, ir.Func>()
 
   // The function being emitted.
   private b = new FnBuilder()
@@ -88,6 +90,7 @@ class ModuleEmitter {
     this.decls.set("@ore_rt_top", "@ore_rt_top = external thread_local global ptr")
     this.decls.set("@llvm.threadlocal.address.p0", "declare ptr @llvm.threadlocal.address.p0(ptr)")
     this.plan = planStack(m)
+    for (const func of m.functions) if (func.attributes?.runtime) this.runtime.set(func.attributes.runtime, func)
     for (const local of findGlobals(m)) {
       this.globals.add(local)
       this.out.push(`${this.globalOf(local)} = internal ${local.threadLocal ? "thread_local " : ""}global ${this.mt(local.type)} zeroinitializer`)
@@ -227,6 +230,8 @@ class ModuleEmitter {
    * pointer, integers as i64; a struct result comes back through a pointer.
    */
   private rt(name: string, args: V[]): V {
+    const own = this.runtime.get(name)
+    if (own) return this.rtOre(own, args)
     const proto = this.prototypes.get(name)
     if (!proto) throw new Error(`no runtime function ${name}`)
     const params: string[] = []
@@ -264,6 +269,36 @@ class ModuleEmitter {
       return voidValue
     }
     return this.b.value(ret, `call ${ret} ${wrapper}(${operands.join(", ")})`)
+  }
+
+  /**
+   * Calls a runtime function written in Ore, with the conventions of `rt`
+   * for its callers: integers and booleans come back as i64.
+   */
+  private rtOre(func: ir.Func, args: V[]): V {
+    const operands = func.params.map((p, i) => {
+      const arg = args[i]!
+      const ty = this.lt(p.type)
+      if (arg.ty === ty) return `${ty} ${arg.v}`
+      if (ty === "i1") return `i1 ${this.b.value("i1", `icmp ne ${arg.ty} ${arg.v}, 0`).v}`
+      if (p.type.kind === "int") {
+        const from = Number(arg.ty.slice(1))
+        const op = from > p.type.bits ? "trunc" : arg.ty === "i1" || !p.type.signed ? "zext" : "sext"
+        return `${ty} ${this.b.value(ty, `${op} ${arg.ty} ${arg.v} to ${ty}`).v}`
+      }
+      return `${ty} ${arg.v}`
+    })
+    const result = func.type.result
+    const ty = this.lt(result)
+    const call = `call ${ty} ${globalName(func.name)}(${operands.join(", ")})`
+    if (ty === "void") {
+      this.b.emit(call)
+      return voidValue
+    }
+    const r = this.b.value(ty, call)
+    if (result.kind === "bool") return this.b.value("i64", `zext i1 ${r.v} to i64`)
+    if (result.kind === "int" && result.bits < 64) return this.b.value("i64", `${result.signed ? "sext" : "zext"} ${ty} ${r.v} to i64`)
+    return r
   }
 
   /** A runtime call returning a C bool, as i1. */
@@ -465,7 +500,8 @@ class ModuleEmitter {
     this.frame = undefined
     this.slots = new Map()
     for (const node of this.plan.slots.get(func) ?? []) this.slots.set(node, this.b.alloca(this.slotType(node)))
-    if (this.options.debug) {
+    // The runtime keeps no frames, as when it was C: stack traces show the program's code.
+    if (this.options.debug && func.file !== "ore:runtime") {
       const frame = this.b.alloca(FRAME)
       const prev = this.b.value("ptr", `load ptr, ptr ${this.top()}`)
       this.b.emit(`store ptr ${prev.v}, ptr ${this.field(frame, FRAME, 0)}`)
