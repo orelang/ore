@@ -29,14 +29,14 @@ const maxSize = 40
 const maxDepth = 3
 
 /** Keys of IR nodes that refer to shared things rather than own subtrees. */
-const shared = new Set(["type", "func", "itab", "error", "member", "via", "mapType", "chanType", "method", "indices", "captures"])
+const shared = new Set(["type", "func", "itab", "error", "member", "via", "mapType", "chanType", "method", "indices", "captures", "typeArgs"])
 
 /** Keys of IR nodes that hold locals. */
 const localKeys = new Set(["local", "binding"])
 
 /** The value of a function that consists of one `return value` or one expression, if inlinable. */
 function inlinable(func: ir.Func): ir.Expr | undefined {
-  if (func.extern || func.captures || isCtor(func) || func.body.body.length !== 1) return
+  if (func.extern || func.captures || func.attributes?.noinline || isCtor(func) || func.body.body.length !== 1) return
   const stmt = func.body.body[0]!
   const value = stmt.k === "return" ? stmt.value : stmt.k === "expr" && func.type.result.kind === "void" ? stmt.expr : undefined
   if (!value) return

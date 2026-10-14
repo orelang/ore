@@ -9,6 +9,28 @@ declare function counter_add(c: ptr, n: int): int
 declare function counter_free(c: ptr): void
 declare function greeting(name: string): string
 
+// Functions of native/callback.c, which call back the exported functions below.
+declare function sum_of_squares(n: int): int
+declare function count_small(limit: i32): i32
+declare function half_of(x: f64): f64
+declare function negate(b: bool): bool
+declare function next_byte(x: u8): u8
+
+//ore:export ore_square
+function square(x: int): int {
+    return x * x
+}
+
+//ore:export ore_is_small
+function isSmall(x: u8): bool {
+    return x < 10
+}
+
+//ore:export ore_half // called from C
+function half(x: f64): f64 {
+    return x / 2
+}
+
 class Counter {
     private handle: ptr
 
@@ -31,3 +53,5 @@ console.log(greeting("ore"))
 using c = new Counter()
 c.add(2)
 console.log(c.add(40))
+console.log(sum_of_squares(4), count_small(300), half_of(5), square(9))
+console.log(negate(true), negate(false), next_byte(41), next_byte(255))

@@ -12,8 +12,8 @@
  *                      annotated with `// error: <substring of the message>`,
  *                      and every annotation must be matched. An annotation
  *                      alone on its line belongs to the nearest line above
- *                      with code, as `ore fmt` moves comments after `{`
- *                      into the block. A directory
+ *                      with code or an `//ore:` directive, as `ore fmt`
+ *                      moves comments after `{` into the block. A directory
  *                      tests/diag/NAME/ is checked from main.ore, with
  *                      annotations in any of its modules.
  *
@@ -82,7 +82,8 @@ describe("diag", () => {
         const lines = source.text.split("\n")
         let code = 0
         lines.forEach((line, i) => {
-          const alone = /^\s*\/\//.test(line)
+          // An `//ore:` directive counts as code: its errors are reported on it.
+          const alone = /^\s*\/\//.test(line) && !/^\s*\/\/ore:/.test(line)
           if (!alone && line.trim() !== "") code = i
           const m = line.match(/\/\/ error: (.*)$/)
           const key = `${source.path}:${alone ? code : i}`

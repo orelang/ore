@@ -185,9 +185,10 @@ The road from here, in this order:
    textual LLVM IR, built by clang, calling the C runtime through generated
    `ore_abi_*` wrappers. It passed every test on both platforms, and the C
    backend was removed.
-2. **Low-level layer** for the standard library, like Go's `unsafe`: raw
-   memory (pointer arithmetic, typed loads and stores, sizes), atomics,
-   thread-local variables, inline assembly and function attributes.
+2. **Low-level layer** (done) for the standard library, like Go's `unsafe`:
+   the `unsafe` namespace (raw memory, pointer arithmetic, typed loads and
+   stores, sizes, atomics, inline assembly) and `//ore:` directives
+   (`noinline`, `inline`, `cold`, `export`, `threadlocal`); spec section 3.23.
 3. **Runtime in Ore**: strings, arrays and maps, printing and JSON, the
    network, then the scheduler and channels, ported from C part by part until
    `runtime/src/*.c` is gone. The runtime and the program are one LLVM module,

@@ -136,6 +136,76 @@ declare namespace task {
     function after(ms: int, handler: () => void): SelectCase
 }
 
+/**
+ * Unchecked access to memory and the machine, like Go's `unsafe`: for the
+ * runtime and the standard library. Nothing here is bounds-, type- or
+ * null-checked; a mistake corrupts memory.
+ */
+declare namespace unsafe {
+    /** The size in bytes of a value of type `T` (a reference for classes, arrays and maps). */
+    function sizeOf<T>(): int
+    /** The alignment in bytes of a value of type `T`. */
+    function alignOf<T>(): int
+
+    /** The address `bytes` after `p`. */
+    function add(p: ptr, bytes: int): ptr
+    /** The distance in bytes from `b` to `a`. */
+    function diff(a: ptr, b: ptr): int
+    /** The address as an integer. */
+    function toInt(p: ptr): uint
+    /** The pointer at an address; `fromInt(0)` is the null pointer. */
+    function fromInt(address: uint): ptr
+
+    /** Reads a value of type `T` at `p`. */
+    function load<T>(p: ptr): T
+    /** Writes a value of type `T` at `p`. */
+    function store<T>(p: ptr, value: T): void
+
+    /** Allocates zeroed, garbage-collected memory, which may hold references. */
+    function alloc(size: int): ptr
+    /** Allocates zeroed, garbage-collected memory that the collector never scans: bytes and numbers only. */
+    function allocBytes(size: int): ptr
+    /** Copies `size` bytes from `src` to `dst`; the ranges may overlap. */
+    function copy(dst: ptr, src: ptr, size: int): void
+    /** Sets `size` bytes at `dst` to `value`. */
+    function fill(dst: ptr, value: u8, size: int): void
+    /** Compares `size` bytes: negative, zero or positive, like C's memcmp. */
+    function compare(a: ptr, b: ptr, size: int): int
+
+    /** The address of an object, an array or a map. */
+    function addressOf<T>(value: T): ptr
+    /** The object, array or map at an address. */
+    function fromAddress<T>(p: ptr): T
+    /** The address of the bytes of a string. */
+    function stringData(s: string): ptr
+    /** A string of the `length` bytes at `p`, without copying them. */
+    function makeString(p: ptr, length: int): string
+
+    // Atomic operations on integers and pointers, sequentially consistent.
+    // `p` must be aligned to the size of `T`.
+    function atomicLoad<T>(p: ptr): T
+    function atomicStore<T>(p: ptr, value: T): void
+    /** Adds `value` and returns the previous value; also atomicSub, atomicAnd, atomicOr, atomicXor. */
+    function atomicAdd<T>(p: ptr, value: T): T
+    function atomicSub<T>(p: ptr, value: T): T
+    function atomicAnd<T>(p: ptr, value: T): T
+    function atomicOr<T>(p: ptr, value: T): T
+    function atomicXor<T>(p: ptr, value: T): T
+    /** Stores `value` and returns the previous value. */
+    function atomicExchange<T>(p: ptr, value: T): T
+    /** Stores `desired` if the value is `expected`; returns whether it did. */
+    function atomicCompareExchange<T>(p: ptr, expected: T, desired: T): bool
+    /** A full memory barrier. */
+    function fence(): void
+
+    /**
+     * Inline assembly, as LLVM writes it: a template with `$0`, `$1`, ...
+     * for the operands, and constraints such as "=r,r,~{memory}". Both are
+     * string literals; the operands are numbers or pointers.
+     */
+    function asm<T>(template: string, constraints: string, ...args: numeric[]): T
+}
+
 /** Functions only for the standard library modules ("ore:..."). */
 declare namespace internal {
     /** Runs a test body, reporting whether it panics. */

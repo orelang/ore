@@ -1,0 +1,53 @@
+class Box {
+    constructor(public value: int) {}
+}
+
+const p = unsafe.alloc(16)
+unsafe.load(p) // error: needs a type argument
+unsafe.sizeOf<i64>(p) // error: expects 0 argument(s)
+unsafe.fromAddress<int>(p) // error: needs an object, array or map type
+unsafe.addressOf(5) // error: needs an object, array or map
+unsafe.atomicAdd(p, 1.5) // error: Atomic operations need an integer or 'ptr'
+unsafe.atomicAdd(p, p) // error: needs an integer
+unsafe.atomicLoad<string>(p) // error: Atomic operations need an integer or 'ptr'
+unsafe.store(p, new Box(1))
+unsafe.store<int>(p, "x") // error: is not assignable
+const t = "nop"
+unsafe.asm(t, "") // error: must be string literals
+unsafe.asm("", "", "s") // error: must be a number or 'ptr'
+unsafe.asm<string>("", "=r") // error: can return a number or 'ptr'
+unsafe.add(p) // error: expects 2 argument(s)
+
+//ore:bogus // error: Unknown directive '//ore:bogus'
+function a(): void {}
+
+//ore:noinline // error: applies to a function declaration
+class C {}
+
+//ore:export // error: needs a C name
+function b(): void {}
+
+//ore:export ore_c // error: takes and returns numbers
+function c(s: string): void {}
+
+//ore:export ore_d
+function d(): void {}
+
+//ore:export ore_d // error: is already exported by 'd'
+function e(): void {}
+
+//ore:noinline
+//ore:inline
+function f(): void {} // error: cannot be both
+
+//ore:threadlocal
+let tl1: string // error: holds a number, 'bool' or 'ptr'
+
+//ore:threadlocal
+let tl2: int = 5 // error: starts at zero in each thread
+
+//ore:threadlocal // error: applies to a top-level 'let'
+const tl3 = 1
+
+//ore:cold x // error: takes no argument
+function g(): void {}

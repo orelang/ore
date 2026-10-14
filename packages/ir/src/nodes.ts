@@ -57,6 +57,20 @@ export interface Func {
   captures?: Local[]
   body: Block
   exported: boolean
+  /** Set by `//ore:` directives before the declaration. */
+  attributes?: FuncAttributes
+}
+
+/** Code generation attributes of a function, from `//ore:` directives. */
+export interface FuncAttributes {
+  /** `//ore:noinline`: never inlined. */
+  noinline?: boolean
+  /** `//ore:inline`: always inlined by LLVM. */
+  inline?: boolean
+  /** `//ore:cold`: rarely called, optimized for size and placed apart. */
+  cold?: boolean
+  /** `//ore:export name`: visible to C as `name`, with the C calling convention. */
+  exportName?: string
 }
 
 export interface Local {
@@ -73,6 +87,8 @@ export interface Local {
    * module's top-level code runs and zero before. Never captured.
    */
   global?: boolean
+  /** `//ore:threadlocal`: a global with a separate value, starting at zero, in each OS thread. */
+  threadLocal?: boolean
 }
 
 interface StmtBase {
@@ -371,7 +387,7 @@ export interface BuiltinCall {
   args: Expr[]
   /** For built-ins that return `Error`: how to create one from a message. */
   error?: { ctor: Func; itab: Itab }
-  /** Type arguments, for `JSON.parse<T>`. */
+  /** Type arguments, for `JSON.parse<T>` and the generic `unsafe` functions. */
   typeArgs?: Type[]
 }
 

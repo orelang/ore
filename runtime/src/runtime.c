@@ -82,6 +82,12 @@ void *ore_rt_alloc(i64 size) {
   return p;
 }
 
+void *ore_rt_alloc_bytes(i64 size) {
+  void *p = alloc_atomic(size);
+  memset(p, 0, size > 0 ? (size_t)size : 1);
+  return p;
+}
+
 /** A NUL-terminated copy of a string, for C APIs. */
 static char *c_string(ore_string s) {
   char *p = alloc_atomic(s.len + 1);

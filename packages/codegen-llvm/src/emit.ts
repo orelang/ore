@@ -90,7 +90,7 @@ class ModuleEmitter {
     this.plan = planStack(m)
     for (const local of findGlobals(m)) {
       this.globals.add(local)
-      this.out.push(`${this.globalOf(local)} = internal global ${this.mt(local.type)} zeroinitializer`)
+      this.out.push(`${this.globalOf(local)} = internal ${local.threadLocal ? "thread_local " : ""}global ${this.mt(local.type)} zeroinitializer`)
     }
     for (const itab of m.itabs) this.out.push(this.itab(itab))
     for (const func of m.functions) {
@@ -354,9 +354,15 @@ class ModuleEmitter {
     return globalName(`G.${local.name}.${local.id}`)
   }
 
+  /** The address of a global; a thread-local one is looked up on each access, since tasks move between threads. */
+  private globalPlace(local: ir.Local): string {
+    if (!local.threadLocal) return this.globalOf(local)
+    return this.b.value("ptr", `call ptr @llvm.threadlocal.address.p0(ptr ${this.globalOf(local)})`).v
+  }
+
   /** A pointer to where a local's value is, from the function being emitted. */
   private place(local: ir.Local): string {
-    if (local.global && this.globals.has(local)) return this.globalOf(local)
+    if (local.global && this.globals.has(local)) return this.globalPlace(local)
     const captures = this.func?.captures
     const index = captures ? captures.indexOf(local) : -1
     if (index !== -1) {
@@ -386,7 +392,7 @@ class ModuleEmitter {
   /** Declares a local with a value (zero without one): a slot, or a box when closures capture and assign it. */
   private declare(local: ir.Local, init: V | undefined) {
     if (local.global && this.globals.has(local)) {
-      this.store(init ?? this.zero(local.type), this.globalOf(local), local.type)
+      this.store(init ?? this.zero(local.type), this.globalPlace(local), local.type)
       return
     }
     const mt = this.mt(local.type)
@@ -429,8 +435,9 @@ class ModuleEmitter {
   /** The C type of a value crossing into C, with the extension attributes clang uses. */
   private externType(type: Type, param: boolean): string {
     if (type.kind === "string") return "ptr"
-    if (type.kind === "bool") return "zeroext i1"
-    if (type.kind === "int" && type.bits < 32) return `${type.signed ? "signext" : "zeroext"} i${type.bits}`
+    const ext = type.kind === "bool" ? "zeroext" : type.kind === "int" && type.bits < 32 ? (type.signed ? "signext" : "zeroext") : undefined
+    // LLVM writes parameter attributes after the type and result attributes before it.
+    if (ext) return param ? `${this.lt(type)} ${ext}` : `${ext} ${this.lt(type)}`
     return param || type.kind !== "void" ? this.lt(type) : "void"
   }
 
@@ -439,8 +446,13 @@ class ModuleEmitter {
     if (at) params.push("ptr %mem")
     if (func.captures) params.push("ptr %env")
     if (func.receiver) params.push("ptr %self")
-    func.params.forEach((p, i) => params.push(`${this.lt(p.type)} %p${i}`))
-    return `define internal ${this.lt(func.type.result)} ${globalName(func.name + (at ? "_at" : ""))}(${params.join(", ")})`
+    const attrs = func.attributes ?? {}
+    const exported = attrs.exportName !== undefined && !at
+    // An exported function follows C: small integers and booleans are extended.
+    func.params.forEach((p, i) => params.push(`${exported ? this.externType(p.type, true) : this.lt(p.type)} %p${i}`))
+    const result = exported ? this.externType(func.type.result, false) : this.lt(func.type.result)
+    const flags = [attrs.noinline && "noinline", attrs.inline && "alwaysinline", attrs.cold && "cold"].filter(Boolean).join(" ")
+    return `define ${exported ? "" : "internal "}${result} ${globalName(func.name + (at ? "_at" : ""))}(${params.join(", ")})${flags ? ` ${flags}` : ""}`
   }
 
   private function(func: ir.Func, at: boolean): string {
@@ -1544,6 +1556,7 @@ class ModuleEmitter {
       return voidValue
     }
     if (name === "JSON.stringify" || name === "JSON.parse") return this.json(e)
+    if (name.startsWith("unsafe.")) return this.unsafe(e)
     const a = e.args.map((x) => this.expr(x))
     const ty = this.lt(e.type)
     const libm = ["sqrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot", "floor", "ceil", "trunc"]
@@ -1655,6 +1668,100 @@ class ModuleEmitter {
         return voidValue
     }
     throw new Error(`no built-in ${name}`)
+  }
+
+  /** The functions of `unsafe`: plain LLVM instructions and intrinsics. */
+  private unsafe(e: ir.BuiltinCall): V {
+    const name = e.name.slice("unsafe.".length)
+    if (name === "asm") return this.inlineAsm(e)
+    const a = e.args.map((x) => this.expr(x))
+    const T = e.typeArgs?.[0]
+    const mt = T ? this.mt(T) : ""
+    // Atomic accesses need an explicit alignment: the natural one of integers and pointers.
+    const align = T?.kind === "int" ? Math.max(1, T.bits / 8) : 8
+    const intrinsic = (decl: string) => this.decls.set(decl.slice(decl.indexOf("@"), decl.indexOf("(")), decl)
+    switch (name) {
+      case "sizeOf":
+        return { ty: "i64", v: sizeOf(mt) }
+      case "alignOf":
+        return { ty: "i64", v: `ptrtoint (ptr getelementptr ({ i8, ${mt} }, ptr null, i32 0, i32 1) to i64)` }
+      case "add":
+        return this.b.value("ptr", `getelementptr i8, ptr ${a[0]!.v}, i64 ${a[1]!.v}`)
+      case "diff": {
+        const x = this.b.value("i64", `ptrtoint ptr ${a[0]!.v} to i64`)
+        const y = this.b.value("i64", `ptrtoint ptr ${a[1]!.v} to i64`)
+        return this.b.value("i64", `sub i64 ${x.v}, ${y.v}`)
+      }
+      case "toInt":
+        return this.b.value("i64", `ptrtoint ptr ${a[0]!.v} to i64`)
+      case "fromInt":
+        return this.b.value("ptr", `inttoptr i64 ${a[0]!.v} to ptr`)
+      case "load":
+        return this.load(a[0]!.v, T!)
+      case "store":
+        this.store(a[1]!, a[0]!.v, T!)
+        return voidValue
+      case "alloc":
+        return this.rt("ore_rt_alloc", [a[0]!])
+      case "allocBytes":
+        return this.rt("ore_rt_alloc_bytes", [a[0]!])
+      case "copy":
+        intrinsic("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)")
+        this.b.emit(`call void @llvm.memmove.p0.p0.i64(ptr ${a[0]!.v}, ptr ${a[1]!.v}, i64 ${a[2]!.v}, i1 false)`)
+        return voidValue
+      case "fill":
+        intrinsic("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)")
+        this.b.emit(`call void @llvm.memset.p0.i64(ptr ${a[0]!.v}, i8 ${a[1]!.v}, i64 ${a[2]!.v}, i1 false)`)
+        return voidValue
+      case "compare": {
+        intrinsic("declare i32 @memcmp(ptr, ptr, i64)")
+        const r = this.b.value("i32", `call i32 @memcmp(ptr ${a[0]!.v}, ptr ${a[1]!.v}, i64 ${a[2]!.v})`)
+        return this.b.value("i64", `sext i32 ${r.v} to i64`)
+      }
+      case "addressOf":
+      case "fromAddress":
+        return { ty: "ptr", v: a[0]!.v }
+      case "stringData":
+        return this.extract(a[0]!, 0, "ptr")
+      case "makeString":
+        return this.aggregate(STR, [a[0]!, a[1]!])
+      case "atomicLoad":
+        return this.b.value(mt, `load atomic ${mt}, ptr ${a[0]!.v} seq_cst, align ${align}`)
+      case "atomicStore":
+        this.b.emit(`store atomic ${mt} ${a[1]!.v}, ptr ${a[0]!.v} seq_cst, align ${align}`)
+        return voidValue
+      case "atomicAdd":
+      case "atomicSub":
+      case "atomicAnd":
+      case "atomicOr":
+      case "atomicXor":
+      case "atomicExchange": {
+        const op = name === "atomicExchange" ? "xchg" : name.slice("atomic".length).toLowerCase()
+        return this.b.value(mt, `atomicrmw ${op} ptr ${a[0]!.v}, ${mt} ${a[1]!.v} seq_cst, align ${align}`)
+      }
+      case "atomicCompareExchange": {
+        const pair = this.b.value(`{ ${mt}, i1 }`, `cmpxchg ptr ${a[0]!.v}, ${mt} ${a[1]!.v}, ${mt} ${a[2]!.v} seq_cst seq_cst, align ${align}`)
+        return this.extract(pair, 1, "i1")
+      }
+      case "fence":
+        this.b.emit("fence seq_cst")
+        return voidValue
+    }
+    throw new Error(`no built-in ${e.name}`)
+  }
+
+  /** `unsafe.asm<T>(template, constraints, ...operands)`: an LLVM inline assembly call with side effects. */
+  private inlineAsm(e: ir.BuiltinCall): V {
+    const [template, constraints] = e.args.map((x) => (x as ir.StringLit).value) as [string, string]
+    const operands = e.args.slice(2).map((x) => this.expr(x))
+    const ty = this.lt(e.type)
+    const quoted = (text: string) => cString(utf8(text)).slice(1)
+    const call = `call ${ty} asm sideeffect ${quoted(template)}, ${quoted(constraints)}(${operands.map((o) => `${o.ty} ${o.v}`).join(", ")})`
+    if (ty === "void") {
+      this.b.emit(call)
+      return voidValue
+    }
+    return this.b.value(ty, call)
   }
 
   /** A new Error with a message, as an interface value. */

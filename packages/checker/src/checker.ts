@@ -211,6 +211,8 @@ class Checker {
   private readonly genericMethods = new Map<StructType, Map<string, { generic: Generic; info: ClassInfo; private: boolean }>>()
   /** Optional and rest parameters of functions, by their parameter list. */
   private readonly signatures = new WeakMap<ir.Local[], Signature>()
+  /** Functions by their `//ore:export` name. */
+  private readonly exportNames = new Map<string, ir.Func>()
 
   private readonly sources = new Map<ts.SourceFile, Source>()
   /** The scope of built-in declarations, for resolving their signatures. */
@@ -249,6 +251,7 @@ class Checker {
     // Pass 1: exports, imports, and names of classes and interfaces, so that
     // types can refer to them in any order and across modules.
     each((stmt, m) => this.declareExports(stmt, m))
+    each((stmt) => this.checkDirectives(stmt))
     each((stmt, m) => {
       if (ts.isClassDeclaration(stmt)) this.declareClass(stmt, m.scope)
       else if (ts.isInterfaceDeclaration(stmt)) this.declareInterface(stmt, m.scope)
@@ -315,6 +318,103 @@ class Checker {
     this.module.inits.push(func)
   }
 
+  // ---------------------------------------------------------------------------
+  // Directives
+
+  /** The `//ore:name argument` comments before a statement. */
+  private directives(stmt: ts.Statement): Directive[] {
+    const text = stmt.getSourceFile().text
+    const found: Directive[] = []
+    for (const range of ts.getLeadingCommentRanges(text, stmt.pos) ?? []) {
+      const comment = text.slice(range.pos, range.end)
+      // A comment may follow the directive: `//ore:noinline // keeps the frame`.
+      const match = /^\/\/ore:(\S*)\s*(.*?)\s*(\/\/.*)?$/.exec(comment)
+      if (match) found.push({ name: match[1]!, arg: match[2]!, pos: range.pos, end: range.end })
+    }
+    return found
+  }
+
+  private directiveError(stmt: ts.Statement, d: Directive, message: string) {
+    this.diagnostics.push({ source: this.sourceOf(stmt), start: d.pos, length: d.end - d.pos, severity: "error", message })
+  }
+
+  /** Reports unknown directives and directives on statements they do not apply to. */
+  private checkDirectives(stmt: ts.Statement) {
+    for (const d of this.directives(stmt)) {
+      const kind = directiveKinds.get(d.name)
+      if (!kind) {
+        this.directiveError(stmt, d, `Unknown directive '//ore:${d.name}'. Known: ${[...directiveKinds.keys()].map((k) => `//ore:${k}`).join(", ")}.`)
+        continue
+      }
+      if (d.name === "export" ? d.arg === "" : d.arg !== "") {
+        this.directiveError(stmt, d, d.name === "export" ? "'//ore:export' needs a C name, e.g. '//ore:export my_function'." : `'//ore:${d.name}' takes no argument.`)
+        continue
+      }
+      if (kind === "function") {
+        const ok = ts.isFunctionDeclaration(stmt) && stmt.body !== undefined && !stmt.typeParameters
+        if (!ok) this.directiveError(stmt, d, `'//ore:${d.name}' applies to a function declaration with a body, not generic.`)
+      } else {
+        const ok =
+          ts.isVariableStatement(stmt) &&
+          (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) === ts.NodeFlags.Let &&
+          stmt.declarationList.declarations.every((v) => ts.isIdentifier(v.name))
+        if (!ok) this.directiveError(stmt, d, "'//ore:threadlocal' applies to a top-level 'let' of plain names.")
+      }
+    }
+  }
+
+  /** Sets the attributes of a function from its directives. */
+  private applyFuncDirectives(decl: ts.FunctionDeclaration, func: ir.Func) {
+    const directives = this.directives(decl).filter((d) => directiveKinds.get(d.name) === "function")
+    if (directives.length === 0) return
+    const attributes: ir.FuncAttributes = {}
+    for (const d of directives) {
+      if (d.name === "noinline") attributes.noinline = true
+      else if (d.name === "inline") attributes.inline = true
+      else if (d.name === "cold") attributes.cold = true
+      else if (d.name === "export" && d.arg !== "") {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(d.arg)) {
+          this.directiveError(decl, d, `'${d.arg}' is not a C name.`)
+          continue
+        }
+        // C passes numbers, booleans and pointers; strings and objects have no C form.
+        const cType = (t: Type) => isNumeric(t) || t.kind === "bool" || t.kind === "ptr"
+        const bad = [...func.type.params, ...(func.type.result.kind === "void" ? [] : [func.type.result])].find((t) => !cType(t))
+        if (bad) {
+          this.directiveError(decl, d, `An exported function takes and returns numbers, 'bool' and 'ptr' only, not '${typeToString(bad)}'.`)
+          continue
+        }
+        if (this.signatures.has(func.params)) {
+          this.directiveError(decl, d, "An exported function cannot have optional or rest parameters.")
+          continue
+        }
+        const other = this.exportNames.get(d.arg)
+        if (other) {
+          this.directiveError(decl, d, `'${d.arg}' is already exported by '${other.sourceName}'.`)
+          continue
+        }
+        this.exportNames.set(d.arg, func)
+        attributes.exportName = d.arg
+        func.name = d.arg
+      }
+    }
+    if (attributes.noinline && attributes.inline) this.error(decl.name!, "A function cannot be both '//ore:noinline' and '//ore:inline'.")
+    func.attributes = attributes
+  }
+
+  /** Makes a top-level variable thread-local, if its type and declaration allow it. */
+  private threadLocal(decl: ts.VariableDeclaration, local: ir.Local) {
+    const type = local.type
+    // The collector does not scan thread-local storage, so it may not hold references.
+    if (!isNumeric(type) && type.kind !== "bool" && type.kind !== "ptr") {
+      return this.error(decl.name, `A thread-local variable holds a number, 'bool' or 'ptr', not '${typeToString(type)}'.`)
+    }
+    if (decl.initializer || !decl.type) {
+      return this.error(decl.name, "A thread-local variable starts at zero in each thread: write 'let name: T' with a type and no value.")
+    }
+    local.threadLocal = true
+  }
+
   /** Reports variables that may be read before they are assigned; see `checkAssigned`. */
   private checkUnassigned() {
     for (const local of this.untyped) {
@@ -343,7 +443,7 @@ class Checker {
     for (const init of this.module.inits) visitLocals(init.body, (local) => local.global && owners.set(local, init))
     const shared = new Set<ir.Local>()
     for (const func of this.module.functions) visitLocals(func.body, (local) => local.global && owners.get(local) !== func && shared.add(local))
-    for (const local of owners.keys()) if (!shared.has(local)) local.global = false
+    for (const local of owners.keys()) if (!shared.has(local) && !local.threadLocal) local.global = false
   }
 
   /** Whether a top-level `const` statement declares only constants, known before any code runs. */
@@ -489,6 +589,7 @@ class Checker {
 
     const exported = decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false
     const func = this.makeFunc(decl, scope, decl.name.text, this.prefix + cIdent(decl.name.text), exported)
+    this.applyFuncDirectives(decl, func)
     if (!scope.declareValue(decl.name.text, { k: "func", func, decl })) {
       this.error(decl.name, `Duplicate declaration '${decl.name.text}'.`)
       return undefined
@@ -1820,6 +1921,9 @@ class Checker {
         }
         const local = this.newLocal(name, type, !isConst)
         if (scope === this.globals) local.global = true
+        if (scope === this.globals && ts.isVariableStatement(decl.parent.parent) && this.directives(decl.parent.parent).some((d) => d.name === "threadlocal")) {
+          this.threadLocal(decl, local)
+        }
         symbol = { k: "local", local, decl }
         if (!declared && !value) this.untyped.add(local)
         else this.info.types.set(decl.name, type)
@@ -3064,6 +3168,7 @@ class Checker {
    */
   private builtinCall(name: string, decl: ts.FunctionDeclaration, node: ts.CallExpression, scope: Scope): Operand {
     if (name === "JSON.stringify" || name === "JSON.parse") return this.jsonCall(name, node, scope)
+    if (name.startsWith("unsafe.") && decl.typeParameters) return this.unsafeCall(name, node, scope)
     const args = node.arguments
     const required = decl.parameters.filter((p) => !p.questionToken).length
     if (args.length < required || args.length > decl.parameters.length) {
@@ -3114,6 +3219,114 @@ class Checker {
     const result = this.unionOf([target, this.errorType!])
     const error = { ctor: this.basicErrorClass().ctor!, itab: this.itab(this.basicErrorClass(), this.errorType!) }
     return typed({ k: "builtin", type: result, name, args: [text], error, typeArgs: [target] })
+  }
+
+  /** The generic functions of `unsafe`, whose type argument is given or comes from a value. */
+  private unsafeCall(name: string, node: ts.CallExpression, scope: Scope): Operand {
+    const args = node.arguments
+    const short = name.slice("unsafe.".length)
+    const expect = (count: number): boolean => {
+      if (args.length === count) return true
+      this.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+      return false
+    }
+    const typeArg = node.typeArguments?.length === 1 ? node.typeArguments[0] : undefined
+    if (node.typeArguments && !typeArg) return this.fail(node, `'${name}' takes one type argument.`)
+    const explicit = typeArg ? this.resolveValueType(typeArg, scope) : undefined
+    if (typeArg && !explicit) return errorOperand
+    const pointer = (arg: ts.Expression) => this.coerce(this.checkExpr(arg, scope, types.ptr), types.ptr, arg)
+    const call = (type: Type, values: ir.Expr[], typeArgs: Type[] = []): Operand => typed({ k: "builtin", type, name, args: values, typeArgs })
+    const isReference = (t: Type) => t.kind === "struct" || t.kind === "array" || t.kind === "map" || t.kind === "chan"
+    const isAtomic = (t: Type) => t.kind === "int" || t.kind === "ptr"
+
+    // `T` from the type argument, or else from the value argument at `index`.
+    const typeFrom = (index: number): { type: Type; value: ir.Expr } | undefined => {
+      const operand = this.checkExpr(args[index]!, scope, explicit)
+      if (operand.k === "error") return undefined
+      const value = explicit ? this.coerce(operand, explicit, args[index]!) : this.toDefault(operand, args[index]!)
+      return { type: explicit ?? value.type, value }
+    }
+    const needType = (example: string): Type | undefined => {
+      if (!explicit) this.fail(node, `'${name}' needs a type argument, e.g. '${example}'.`)
+      return explicit
+    }
+    const storable = (t: Type, at: ts.Node): boolean => {
+      if (t.kind === "void" || t.kind === "never" || t.kind === "null") return this.error(at, `'${name}' cannot work on '${typeToString(t)}'.`), false
+      return true
+    }
+
+    switch (short) {
+      case "sizeOf":
+      case "alignOf": {
+        const t = needType(`unsafe.${short}<i64>()`)
+        if (!t || !expect(0) || !storable(t, node)) return errorOperand
+        return call(types.i64, [], [t])
+      }
+      case "load":
+      case "atomicLoad":
+      case "fromAddress": {
+        const t = needType(`unsafe.${short}<i64>(p)`)
+        if (!t || !expect(1)) return errorOperand
+        if (short === "fromAddress" && !isReference(t)) return this.fail(typeArg!, `'${name}' needs an object, array or map type, got '${typeToString(t)}'.`)
+        if (short === "atomicLoad" && !isAtomic(t)) return this.fail(typeArg!, `Atomic operations need an integer or 'ptr', got '${typeToString(t)}'.`)
+        if (!storable(t, typeArg!)) return errorOperand
+        return call(t, [pointer(args[0]!)], [t])
+      }
+      case "addressOf": {
+        if (!expect(1)) return errorOperand
+        const v = typeFrom(0)
+        if (!v) return errorOperand
+        if (!isReference(v.type)) return this.fail(args[0]!, `'${name}' needs an object, array or map, got '${typeToString(v.type)}'.`)
+        return call(types.ptr, [v.value], [v.type])
+      }
+      case "store":
+      case "atomicStore":
+      case "atomicAdd":
+      case "atomicSub":
+      case "atomicAnd":
+      case "atomicOr":
+      case "atomicXor":
+      case "atomicExchange": {
+        if (!expect(2)) return errorOperand
+        const p = pointer(args[0]!)
+        const v = typeFrom(1)
+        if (!v || !storable(v.type, args[1]!)) return errorOperand
+        if (short !== "store" && !isAtomic(v.type)) return this.fail(args[1]!, `Atomic operations need an integer or 'ptr', got '${typeToString(v.type)}'.`)
+        const arithmetic = short !== "store" && short !== "atomicStore" && short !== "atomicExchange"
+        if (arithmetic && v.type.kind !== "int") return this.fail(args[1]!, `'${name}' needs an integer, got '${typeToString(v.type)}'.`)
+        const result = short === "store" || short === "atomicStore" ? types.void : v.type
+        return call(result, [p, v.value], [v.type])
+      }
+      case "atomicCompareExchange": {
+        if (!expect(3)) return errorOperand
+        const p = pointer(args[0]!)
+        const expected = typeFrom(1)
+        if (!expected) return errorOperand
+        if (!isAtomic(expected.type)) return this.fail(args[1]!, `Atomic operations need an integer or 'ptr', got '${typeToString(expected.type)}'.`)
+        const desired = this.coerce(this.checkExpr(args[2]!, scope, expected.type), expected.type, args[2]!)
+        return call(types.bool, [p, expected.value, desired], [expected.type])
+      }
+      case "asm": {
+        const result = explicit ?? types.void
+        if (args.length < 2) return this.fail(node, `'${name}' expects a template and constraints, got ${args.length} argument(s).`)
+        const texts: ir.Expr[] = []
+        for (const arg of args.slice(0, 2)) {
+          if (!isStringLiteralNode(arg)) return this.fail(arg, "The template and the constraints of 'unsafe.asm' must be string literals.")
+          texts.push({ k: "string", type: types.string, value: arg.text })
+        }
+        const operands: ir.Expr[] = []
+        for (const arg of args.slice(2)) {
+          const operand = this.checkExpr(arg, scope)
+          if (operand.k === "error") return errorOperand
+          const value = this.toDefault(operand, arg)
+          if (!isNumeric(value.type) && value.type.kind !== "ptr") return this.fail(arg, `An operand of 'unsafe.asm' must be a number or 'ptr', got '${typeToString(value.type)}'.`)
+          operands.push(value)
+        }
+        if (result.kind !== "void" && !isNumeric(result) && result.kind !== "ptr") return this.fail(typeArg!, `'unsafe.asm' can return a number or 'ptr', got '${typeToString(result)}'.`)
+        return call(result, [...texts, ...operands], [result])
+      }
+    }
+    return this.fail(node, `Unknown function '${name}'.`)
   }
 
   /** Calls a function value with arguments converted to its parameters. */
@@ -4024,6 +4237,23 @@ function isDeclaration(stmt: ts.Statement): boolean {
     ts.isEmptyStatement(stmt)
   )
 }
+
+/** An `//ore:` comment before a top-level declaration. */
+interface Directive {
+  name: string
+  arg: string
+  pos: number
+  end: number
+}
+
+/** The known directives and what they apply to. */
+const directiveKinds = new Map<string, "function" | "variable">([
+  ["noinline", "function"],
+  ["inline", "function"],
+  ["cold", "function"],
+  ["export", "function"],
+  ["threadlocal", "variable"],
+])
 
 function isStringLiteralNode(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
   return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)

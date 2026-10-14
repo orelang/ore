@@ -1,0 +1,132 @@
+// threads: 4
+
+// Sizes and alignments.
+console.log(
+    unsafe.sizeOf<i8>(),
+    unsafe.sizeOf<i32>(),
+    unsafe.sizeOf<f64>(),
+    unsafe.sizeOf<ptr>(),
+    unsafe.sizeOf<string>(),
+)
+console.log(unsafe.alignOf<u16>(), unsafe.alignOf<i64>(), unsafe.alignOf<bool>())
+
+// Raw memory: a little array of i32 written and read through pointers.
+const n = 8
+const base = unsafe.allocBytes(n * unsafe.sizeOf<i32>())
+for (let i = 0; i < n; i++) unsafe.store<i32>(unsafe.add(base, i * 4), i32(i * i))
+let sum = 0
+for (let i = 0; i < n; i++) sum += i64(unsafe.load<i32>(unsafe.add(base, i * 4)))
+console.log("sum", sum, "span", unsafe.diff(unsafe.add(base, n * 4), base))
+
+// Copy, fill and compare.
+const other = unsafe.allocBytes(32)
+unsafe.copy(other, base, 32)
+console.log("same", unsafe.compare(base, other, 32) === 0)
+unsafe.fill(other, 255, 4)
+console.log("first", unsafe.load<i32>(other), "less", unsafe.compare(base, other, 4) < 0)
+
+// Overlapping copy moves like memmove.
+unsafe.copy(unsafe.add(base, 4), base, 12)
+console.log(
+    unsafe.load<i32>(base),
+    unsafe.load<i32>(unsafe.add(base, 4)),
+    unsafe.load<i32>(unsafe.add(base, 8)),
+    unsafe.load<i32>(unsafe.add(base, 12)),
+)
+
+// Booleans, floats and pointers in memory.
+const cell = unsafe.alloc(16)
+unsafe.store(cell, true)
+console.log(unsafe.load<bool>(cell), unsafe.load<u8>(cell))
+unsafe.store<f64>(cell, 1.5)
+console.log(unsafe.load<f64>(cell))
+unsafe.store(cell, base)
+console.log(unsafe.load<ptr>(cell) === base, unsafe.toInt(unsafe.fromInt(0)) === 0)
+
+// Strings: their bytes, and strings over raw bytes.
+const word = "héllo"
+const bytes = unsafe.stringData(word)
+console.log(unsafe.load<u8>(bytes), unsafe.load<u8>(unsafe.add(bytes, 1)))
+const raw = unsafe.allocBytes(3)
+unsafe.store<u8>(raw, 111)
+unsafe.store<u8>(unsafe.add(raw, 1), 114)
+unsafe.store<u8>(unsafe.add(raw, 2), 101)
+console.log(unsafe.makeString(raw, 3), unsafe.makeString(bytes, 1))
+
+// Objects by address.
+class Point {
+    constructor(
+        public x: int,
+        public y: int,
+    ) {}
+}
+const p = new Point(3, 4)
+const address = unsafe.addressOf(p)
+const same = unsafe.fromAddress<Point>(address)
+same.x = 30
+console.log(p.x, unsafe.load<int>(address), unsafe.load<int>(unsafe.add(address, 8)))
+const xs = [1, 2, 3]
+console.log(unsafe.fromAddress<int[]>(unsafe.addressOf(xs)).length)
+
+// Atomics: four threads add to one counter.
+const counter = unsafe.allocBytes(8)
+const done = new Chan<bool>(4)
+for (let t = 0; t < 4; t++) {
+    task.spawn(() => {
+        for (let i = 0; i < 10000; i++) unsafe.atomicAdd(counter, 1)
+        done.send(true)
+    })
+}
+for (let t = 0; t < 4; t++) done.receive()
+console.log("counter", unsafe.atomicLoad<int>(counter))
+console.log(
+    unsafe.atomicExchange(counter, 7),
+    unsafe.atomicCompareExchange(counter, 7, 9),
+    unsafe.atomicCompareExchange(counter, 7, 11),
+    unsafe.atomicLoad<int>(counter),
+)
+unsafe.atomicStore<u32>(counter, 6)
+console.log(
+    unsafe.atomicSub<u32>(counter, 1),
+    unsafe.atomicAnd<u32>(counter, 4),
+    unsafe.atomicOr<u32>(counter, 3),
+    unsafe.atomicXor<u32>(counter, 1),
+    unsafe.atomicLoad<u32>(counter),
+)
+unsafe.fence()
+
+// A thread-local variable starts at zero in each thread.
+//ore:threadlocal
+let perThread: int
+
+function bump(): int {
+    perThread++
+    return perThread
+}
+bump()
+// Read before waiting: a task may continue on another thread after a wait.
+const mine = bump()
+const seen = new Chan<int>(1)
+task.spawn(() => seen.send(perThread))
+const theirs = seen.receive()
+console.log("main", mine, "other", theirs === 0 || theirs === 2)
+
+// Inline assembly: a compiler barrier, and a value passed through a register tied to the result.
+unsafe.asm("", "~{memory}")
+console.log(unsafe.asm<int>("", "=r,0", 42))
+
+// Attributes.
+//ore:noinline
+function kept(x: int): int {
+    return x + 1
+}
+//ore:inline
+function small(x: int): int {
+    return x * 2
+}
+//ore:cold
+function rare(): void {
+    console.log("rare")
+}
+console.log(kept(1), small(2))
+rare()

@@ -158,7 +158,13 @@ task.select([
 functions and keep objects that never leave their function on the stack
 instead of the garbage-collected heap.
 
-**C interop.** `declare function strlen(s: string): u64` calls C directly.
+**C interop.** `declare function strlen(s: string): u64` calls C directly,
+and `//ore:export name` makes an Ore function callable from C.
+
+**Low level when needed.** The `unsafe` namespace has raw memory, atomics and
+inline assembly, and `//ore:` directives set function attributes and
+thread-local variables, so the runtime itself can be written in Ore. See
+[unsafe code](docs/spec/00-overview.md#323-unsafe-code-and-directives).
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
 inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See

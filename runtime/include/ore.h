@@ -86,6 +86,8 @@ _Noreturn void ore_rt_panic_index(i64 index, i64 length);
 
 /** Allocates zeroed, garbage-collected memory. */
 void *ore_rt_alloc(i64 size);
+/** Allocates zeroed, garbage-collected memory that is never scanned for pointers. */
+void *ore_rt_alloc_bytes(i64 size);
 
 // Strings
 
