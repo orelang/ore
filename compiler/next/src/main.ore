@@ -1,17 +1,39 @@
-// ore-next: for now, prints the tokens or the syntax tree of a file.
+// ore-next: for now, prints the tokens or the syntax tree of a file, or the
+// modules of a program.
 //
-//   ore-next tokens <file.ore>   one token per line: kind, start and end byte
-//   ore-next tree <file.ore>     the syntax tree in pre-order: kind, start and end byte
-//   ore-next roles <file.ore>    the same, each node after its role in its parent ("-" for the root)
+//   ore-next tokens <file.ore>    one token per line: kind, start and end byte
+//   ore-next tree <file.ore>      the syntax tree in pre-order: kind, start and end byte
+//   ore-next roles <file.ore>     the same, each node after its role in its parent ("-" for the root)
+//   ore-next modules <entry.ore>  the modules of the program in load order, each with its
+//                                 imports ("import <specifier> <module>") and text imports
+//                                 ("text <specifier> <bytes>"), then the diagnostics
 
+import { loadProgram } from "./project/load"
 import { dump, dumpRoles } from "./syntax/ast"
+import { formatDiagnostic } from "./syntax/diagnostic"
 import { tokenize } from "./syntax/lexer"
 import { parse } from "./syntax/parser"
 
 const mode = process.args.length === 2 ? process.args[0] : ""
-if (mode !== "tokens" && mode !== "tree" && mode !== "roles") {
-    console.error("usage: ore-next tokens|tree|roles <file.ore>")
+if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules") {
+    console.error("usage: ore-next tokens|tree|roles|modules <file.ore>")
     process.exit(2)
+}
+if (mode === "modules") {
+    const program = loadProgram(process.args[1])
+    if (program instanceof Error) {
+        console.error(program.message)
+        process.exit(1)
+    }
+    for (const source of program.modules) {
+        console.log(source.path)
+        const imports = program.imports.get(source)
+        if (imports !== null) for (const [specifier, target] of imports) console.log("  import", specifier, target.path)
+        const texts = program.texts.get(source)
+        if (texts !== null) for (const [specifier, text] of texts) console.log("  text", specifier, text.length)
+    }
+    for (const d of program.diagnostics) console.log(formatDiagnostic(d))
+    process.exit(0)
 }
 const text = fs.readFile(process.args[1])
 if (text instanceof Error) {
