@@ -16,25 +16,34 @@ as values, generics by monomorphization, green threads with channels and a
 garbage collector. Programs compile through LLVM to a single native binary.
 
 ```ts
-const level: u8 = 250
-console.log(level + 10, 7 / 2, 7.0 / 2)      // 4 3 3.5: machine integers
+import { Mutex } from "ore:sync"
 
-function parsePort(text: string): int | Error {
-    const n = Number.parseInt(text)
-    if (n === null || n > 65535) return new Error(`bad port '${text}'`)
-    return n
+async function price(id: int): Promise<u64 | Error> {
+    await time.delay(10)
+    return id > 0 ? u64(id) * 100 : new Error(`no item ${id}`)
 }
 
-const port = parsePort("8080")
-if (port instanceof Error) process.panic(port.message)  // errors are values
+const lock = new Mutex()
+const done = new Chan<bool>()
+let total: u64 = 0
 
-const replies = new Chan<int>()
-task.spawn(() => replies.send(port + 1))    // a green thread, no async
-console.log(replies.receive())             // 8081
+for (const id of [3, -1, 7]) {
+    task.spawn(async () => {                  // green threads, in parallel on all CPUs
+        const p = await price(id)             // and async inside them
+        if (p instanceof Error) console.error(p.message)   // errors are values
+        else {
+            using guard = lock.acquire()      // released at the end of the block
+            total += p                        // a machine integer
+        }
+        done.send(true)
+    })
+}
+for (let i = 0; i < 3; i++) done.receive()
+console.log(`total: ${total}`)               // no item -1, total: 1000
 ```
 
 ```sh
-ore build server.ore && ./server   # one native binary, nothing to install next to it
+ore build prices.ore && ./prices   # one native binary
 ```
 
 ## How it works
@@ -197,9 +206,9 @@ if (config instanceof Error) console.log(config.message)   // JSON: expected an 
 console.log(JSON.stringify({ name: "api", port: 80, tags: ["v1"] }))   // {"name":"api","port":80,"tags":["v1"]}
 ```
 
-**Concurrency, like Go.** Green threads on all CPUs, channels and `select`,
-with no `async` coloring; waiting parks the task, not the OS thread.
-`ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP.
+**Concurrency, like Go.** Green threads on all CPUs, channels and `select`;
+waiting parks the task, not the OS thread. `ore:sync` adds `Mutex` and
+`WaitGroup`, `ore:net` TCP.
 
 ```ts
 const results = new Chan<int>()
