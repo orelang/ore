@@ -1,0 +1,55 @@
+// The map functions of the runtime (runtime/core/map.ore) on edge cases.
+
+// Float keys compare like SameValueZero: NaN equals NaN, -0 equals 0.
+const zero: f64 = 0
+const nan = zero / zero
+const floats = new Map<f64, string>()
+floats.set(nan, "nan")
+floats.set(-zero, "zero")
+floats.set(0.0, "zero again")
+floats.set(1.5, "one and a half")
+console.log(floats.size, floats.get(zero / zero), floats.get(0.0), floats.get(-zero), floats.has(2.5))
+
+// Insertion order survives deletes, re-insertions and updates.
+const order = new Map<string, int>()
+for (const k of ["a", "b", "c", "d", "e"]) order.set(k, k.length)
+order.delete("b")
+order.delete("d")
+order.set("b", 20)
+order.set("a", 10)
+console.log(order.keys().join(","), order.values().join(","), order.size)
+console.log(order.delete("zz"), order.delete("c"), order.has("c"), order.size)
+
+// Many deletes: the table compacts its holes and keeps every live entry.
+const churn = new Map<int, int>()
+for (let i = 0; i < 10000; i++) {
+    churn.set(i, i * 2)
+    if (i % 4 !== 0) churn.delete(i)
+}
+let sum = 0
+for (const [k, v] of churn) sum += k + v
+console.log(churn.size, sum, churn.get(9996), churn.get(9997))
+
+// Clear, then reuse.
+churn.clear()
+console.log(churn.size, churn.get(0), churn.keys().length)
+churn.set(7, 49)
+console.log(churn.size, churn.get(7))
+
+// Objects as keys, by identity; values that hold references.
+class Node {
+    constructor(public name: string) {}
+}
+const a = new Node("a")
+const b = new Node("a")
+const owners = new Map<Node, Node[]>()
+owners.set(a, [b])
+owners.set(b, [a, b])
+console.log(owners.size, owners.get(a)?.length, owners.get(b)?.length, owners.has(new Node("a")))
+
+// A large map of strings, kept alive through many collections.
+const words = new Map<string, Node>()
+for (let i = 0; i < 50000; i++) words.set(`word-${i % 30000}`, new Node(`n${i}`))
+let found = 0
+for (let i = 0; i < 30000; i++) if (words.get(`word-${i}`)?.name === `n${i < 20000 ? i + 30000 : i}`) found++
+console.log(words.size, found, words.keys()[0], words.values()[29999].name)

@@ -12,9 +12,9 @@ once its Ore version passes the tests. Only libc and the GC stay outside Ore.
 - Done: strings (comparison, concatenation, UTF-8 decoding, search, slicing,
   split and join, trim, case, replace, repeat, pad), about 18% faster on a
   string benchmark; arrays (new, push, pop, slice, reverse, stable sort),
-  about 1.9 times faster on an array benchmark. The speed comes from
-  inlining into the program.
-- Next: maps, printing and number formatting, JSON, the network, then the
+  about 1.9 times faster on an array benchmark; maps and hashing, about 15%
+  faster. The speed comes from inlining into the program.
+- Next: printing and number formatting, JSON, the network, then the
   scheduler and channels.
 - Also: the system part of the standard library that the compiler in Ore
   will need: running a process with its output, directories and paths,

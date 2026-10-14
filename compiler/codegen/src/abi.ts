@@ -26,7 +26,6 @@ export interface CPrototype {
 
 const structTypes = new Set(["ore_string", "ore_closure", "ore_iface"])
 const intTypes = new Set(["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "bool", "char", "uintptr_t", "size_t"])
-const pointerTypedefs = new Set(["ore_hash_fn", "ore_eq_fn"])
 
 /** Functions of the runtime not called from generated code. */
 const internal = new Set(["ore_entry", "ore_rt_run_main"])
@@ -34,7 +33,7 @@ const internal = new Set(["ore_entry", "ore_rt_run_main"])
 function classify(type: string): CValue {
   const t = type.replace(/\bconst\b/g, "").replace(/\s+/g, " ").trim()
   if (t === "void") return { kind: "void", type }
-  if (t.includes("*") || pointerTypedefs.has(t)) return { kind: "ptr", type }
+  if (t.includes("*")) return { kind: "ptr", type }
   if (structTypes.has(t)) return { kind: "struct", type: t }
   if (t === "f64" || t === "double") return { kind: "double", type: t }
   if (t === "f32" || t === "float") return { kind: "float", type: t }

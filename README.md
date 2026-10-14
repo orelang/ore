@@ -260,7 +260,7 @@ Another binary can be set with the `ore.path` setting.
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Runtime in Ore: strings and arrays (done); maps, printing, JSON, network, scheduler | in progress |
+| 9. Runtime in Ore: strings, arrays, maps (done); printing, JSON, network, scheduler | in progress |
 | 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
 | 11. Own precise garbage collector | planned |
 | 12. Promises and `async`/`await` | planned |

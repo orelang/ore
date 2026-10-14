@@ -1,0 +1,257 @@
+// Maps: hash tables that keep insertion order, like JavaScript's Map.
+//
+// Entries are stored densely in insertion order, each a header {live, hash}
+// then the key and the value, rounded up to 8 bytes; deleted entries stay as
+// holes until the table is rebuilt. An open-addressing index holds, per
+// slot, the entry's index + 1, or 0 for an empty slot; its capacity is a
+// power of two.
+//
+// The map's header is read by generated code too (the count and the size),
+// so its layout is fixed:
+//   0 keySize, 8 valueSize, 16 entrySize, 24 hash, 32 eq, 40 entries,
+//   48 count (entries, with holes), 56 cap, 64 size (live entries),
+//   72 index, 80 indexCap.
+// `hash` and `eq` point to closures over the compiler's functions for the
+// key type, `(env, key) => u64` and `(env, a, b) => bool`.
+
+const keySizeAt = 0
+const valueSizeAt = 8
+const entrySizeAt = 16
+const hashAt = 24
+const eqAt = 32
+const entriesAt = 40
+const countAt = 48
+const capAt = 56
+const sizeAt = 64
+const indexAt = 72
+const indexCapAt = 80
+const headerSize = 88
+
+/** Key and value start after the {live, hash} header of an entry. */
+const entryHeader = 16
+
+function field(m: ptr, at: int): int {
+    return unsafe.load<int>(unsafe.add(m, at))
+}
+
+function setField(m: ptr, at: int, value: int): void {
+    unsafe.store<int>(unsafe.add(m, at), value)
+}
+
+function round8(n: int): int {
+    return (n + 7) & ~7
+}
+
+function entry(m: ptr, i: int): ptr {
+    return unsafe.add(unsafe.load<ptr>(unsafe.add(m, entriesAt)), i * field(m, entrySizeAt))
+}
+
+function slotOf(m: ptr, slot: int): ptr {
+    return unsafe.add(unsafe.load<ptr>(unsafe.add(m, indexAt)), slot * 8)
+}
+
+function hashOf(m: ptr, key: ptr): u64 {
+    const hash = unsafe.load<(key: ptr) => u64>(unsafe.load<ptr>(unsafe.add(m, hashAt)))
+    return hash(key)
+}
+
+function equal(m: ptr, a: ptr, b: ptr): bool {
+    const eq = unsafe.load<(a: ptr, b: ptr) => bool>(unsafe.load<ptr>(unsafe.add(m, eqAt)))
+    return eq(a, b)
+}
+
+/** A closure over a function that takes an environment it does not use. */
+function closureOf(cell: ptr, fn: ptr): void {
+    unsafe.store<ptr>(cell, fn)
+    unsafe.store<ptr>(unsafe.add(cell, 8), unsafe.fromInt(0))
+}
+
+//ore:runtime ore_rt_map_new
+function mapNew(keySize: int, valueSize: int, hash: ptr, eq: ptr): ptr {
+    const m = unsafe.alloc(headerSize)
+    setField(m, keySizeAt, keySize)
+    setField(m, valueSizeAt, valueSize)
+    setField(m, entrySizeAt, entryHeader + round8(keySize) + round8(valueSize))
+    const closures = unsafe.alloc(32)
+    closureOf(closures, hash)
+    closureOf(unsafe.add(closures, 16), eq)
+    unsafe.store<ptr>(unsafe.add(m, hashAt), closures)
+    unsafe.store<ptr>(unsafe.add(m, eqAt), unsafe.add(closures, 16))
+    return m
+}
+
+//ore:runtime ore_rt_map_live
+function mapLive(m: ptr, i: int): bool {
+    return unsafe.load<int>(entry(m, i)) !== 0
+}
+
+//ore:runtime ore_rt_map_key
+function mapKey(m: ptr, i: int): ptr {
+    return unsafe.add(entry(m, i), entryHeader)
+}
+
+//ore:runtime ore_rt_map_value
+function mapValue(m: ptr, i: int): ptr {
+    return unsafe.add(entry(m, i), entryHeader + round8(field(m, keySizeAt)))
+}
+
+/** The slot of `key` in the index, or the empty slot where it would go. */
+function findSlot(m: ptr, key: ptr, hash: u64): int {
+    const mask = field(m, indexCapAt) - 1
+    let slot = i64(hash) & mask
+    while (true) {
+        const e = unsafe.load<int>(slotOf(m, slot))
+        if (e === 0) return slot
+        const found = entry(m, e - 1)
+        // Deleted entries keep their slot, so that probing goes on past them.
+        if (
+            unsafe.load<int>(found) !== 0 &&
+            unsafe.load<u64>(unsafe.add(found, 8)) === hash &&
+            equal(m, unsafe.add(found, entryHeader), key)
+        ) {
+            return slot
+        }
+        slot = (slot + 1) & mask
+    }
+}
+
+/** Rebuilds the entries without holes, and the index with room for `cap` entries. */
+function rebuild(m: ptr, cap: int): void {
+    const size = field(m, entrySizeAt)
+    const entries = unsafe.alloc(cap * size)
+    let count = 0
+    for (let i = 0; i < field(m, countAt); i++) {
+        if (!mapLive(m, i)) continue
+        unsafe.copy(unsafe.add(entries, count * size), entry(m, i), size)
+        count++
+    }
+    unsafe.store<ptr>(unsafe.add(m, entriesAt), entries)
+    setField(m, countAt, count)
+    setField(m, capAt, cap)
+    let indexCap = 8
+    while (indexCap < cap * 2) indexCap *= 2
+    setField(m, indexCapAt, indexCap)
+    // The index holds numbers only, so the collector need not scan it.
+    unsafe.store<ptr>(unsafe.add(m, indexAt), unsafe.allocBytes(indexCap * 8))
+    const mask = indexCap - 1
+    for (let i = 0; i < count; i++) {
+        let slot = i64(unsafe.load<u64>(unsafe.add(entry(m, i), 8))) & mask
+        while (unsafe.load<int>(slotOf(m, slot)) !== 0) slot = (slot + 1) & mask
+        unsafe.store<int>(slotOf(m, slot), i + 1)
+    }
+}
+
+/** The address of the value of `key`, or null. */
+//ore:runtime ore_rt_map_get
+function mapGet(m: ptr, key: ptr): ptr {
+    if (field(m, sizeAt) === 0) return unsafe.fromInt(0)
+    const e = unsafe.load<int>(slotOf(m, findSlot(m, key, hashOf(m, key))))
+    return e === 0 ? unsafe.fromInt(0) : mapValue(m, e - 1)
+}
+
+//ore:runtime ore_rt_map_set
+function mapSet(m: ptr, key: ptr, value: ptr): void {
+    const hash = hashOf(m, key)
+    const valueSize = field(m, valueSizeAt)
+    if (field(m, indexCapAt) > 0) {
+        const e = unsafe.load<int>(slotOf(m, findSlot(m, key, hash)))
+        if (e !== 0) {
+            unsafe.copy(mapValue(m, e - 1), value, valueSize)
+            return
+        }
+    }
+    const cap = field(m, capAt)
+    if (field(m, countAt) === cap) {
+        // Full: drop the holes of deleted entries if they are many, else grow.
+        const compact = cap > 0 && field(m, sizeAt) < cap / 2
+        rebuild(m, compact ? cap : cap < 8 ? 8 : cap * 2)
+    }
+    const i = field(m, countAt)
+    setField(m, countAt, i + 1)
+    const e = entry(m, i)
+    unsafe.store<int>(e, 1)
+    unsafe.store<u64>(unsafe.add(e, 8), hash)
+    unsafe.copy(unsafe.add(e, entryHeader), key, field(m, keySizeAt))
+    unsafe.copy(mapValue(m, i), value, valueSize)
+    unsafe.store<int>(slotOf(m, findSlot(m, key, hash)), i + 1)
+    setField(m, sizeAt, field(m, sizeAt) + 1)
+}
+
+//ore:runtime ore_rt_map_delete
+function mapDelete(m: ptr, key: ptr): bool {
+    if (field(m, sizeAt) === 0) return false
+    const e = unsafe.load<int>(slotOf(m, findSlot(m, key, hashOf(m, key))))
+    if (e === 0) return false
+    unsafe.store<int>(entry(m, e - 1), 0)
+    setField(m, sizeAt, field(m, sizeAt) - 1)
+    return true
+}
+
+//ore:runtime ore_rt_map_clear
+function mapClear(m: ptr): void {
+    unsafe.store<ptr>(unsafe.add(m, entriesAt), unsafe.fromInt(0))
+    unsafe.store<ptr>(unsafe.add(m, indexAt), unsafe.fromInt(0))
+    setField(m, countAt, 0)
+    setField(m, capAt, 0)
+    setField(m, sizeAt, 0)
+    setField(m, indexCapAt, 0)
+}
+
+/** The keys (or the values) of the live entries, as an array of their elements. */
+function collect(m: ptr, values: bool): ptr {
+    const size = field(m, values ? valueSizeAt : keySizeAt)
+    const out = unsafe.alloc(24)
+    const count = field(m, sizeAt)
+    unsafe.store<ptr>(out, unsafe.alloc(size * count))
+    unsafe.store<int>(unsafe.add(out, 8), count)
+    unsafe.store<int>(unsafe.add(out, 16), count)
+    let n = 0
+    for (let i = 0; i < field(m, countAt); i++) {
+        if (!mapLive(m, i)) continue
+        unsafe.copy(unsafe.add(unsafe.load<ptr>(out), n * size), values ? mapValue(m, i) : mapKey(m, i), size)
+        n++
+    }
+    return out
+}
+
+//ore:runtime ore_rt_map_keys
+function mapKeys(m: ptr): ptr {
+    return collect(m, false)
+}
+
+//ore:runtime ore_rt_map_values
+function mapValues(m: ptr): ptr {
+    return collect(m, true)
+}
+
+// Hashing of keys, for the compiler's hash functions.
+
+//ore:runtime ore_rt_hash_u64
+function hashU64(value: u64): u64 {
+    // The splitmix64 finalizer.
+    let x = value + 0x9e3779b97f4a7c15
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+    x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+    return x ^ (x >> 31)
+}
+
+//ore:runtime ore_rt_hash_bytes
+function hashBytes(p: ptr, n: int): u64 {
+    // FNV-1a, then mixed.
+    let h: u64 = 0xcbf29ce484222325
+    for (let i = 0; i < n; i++) h = (h ^ u64(unsafe.load<u8>(unsafe.add(p, i)))) * 0x100000001b3
+    return hashU64(h)
+}
+
+//ore:runtime ore_rt_hash_f64
+function hashF64(x: f64): u64 {
+    // NaN equals NaN and -0 equals 0 as keys, so they hash alike.
+    if (x !== x) return 0x7ff8000000000000
+    return hashU64(unsafe.bitcast<u64>(x === 0 ? 0.0 : x))
+}
+
+/** SameValueZero for floats: NaN equals NaN, and -0 equals 0. */
+//ore:runtime ore_rt_same_f64
+function sameF64(a: f64, b: f64): bool {
+    return a === b || (a !== a && b !== b)
+}

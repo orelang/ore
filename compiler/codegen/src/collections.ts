@@ -193,7 +193,8 @@ export abstract class CollectionEmitter extends CallEmitter {
     if (this.helpers.has(hash)) return { hash, eq }
     this.helpers.set(hash, "")
     this.helpers.set(eq, "")
-    this.helper(hash, `define internal i64 ${hash}(ptr %k)`, (e) => {
+    // Both take an unused environment first, so that the runtime calls them as closures.
+    this.helper(hash, `define internal i64 ${hash}(ptr %env, ptr %k)`, (e) => {
       const k = e.load("%k", key)
       let h: V
       if (key.kind === "float") h = e.rt("ore_rt_hash_f64", [e.convert(k, key, types.f64)])
@@ -203,7 +204,7 @@ export abstract class CollectionEmitter extends CallEmitter {
       else h = e.rt("ore_rt_hash_u64", [e.intToI64(k, key)])
       e.b.terminate(`ret i64 ${h.v}`)
     })
-    this.helper(eq, `define internal zeroext i1 ${eq}(ptr %a, ptr %b)`, (e) => {
+    this.helper(eq, `define internal i1 ${eq}(ptr %env, ptr %a, ptr %b)`, (e) => {
       const a = e.load("%a", key)
       const b = e.load("%b", key)
       const same = key.kind === "float" ? e.rtBool("ore_rt_same_f64", [e.convert(a, key, types.f64), e.convert(b, key, types.f64)]) : e.equals(a, b, key)
