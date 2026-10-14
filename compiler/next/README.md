@@ -1,7 +1,7 @@
 # compiler/next
 
 The Ore compiler written in Ore, which will replace the TypeScript compiler
-(the plan is in the [roadmap](../../docs/PLAN.md)). So far it has the lexer
+(see the [roadmap](../../docs/roadmap.md)). So far it has the lexer
 and the parser, which build a tree in the shape of TypeScript's.
 
 | File | Contents |

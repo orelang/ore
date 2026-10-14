@@ -61,8 +61,8 @@ bad size '-4'
 ```
 
 Status: early development. The language described below works today; see the
-[plan](docs/PLAN.md) for what comes next and the [spec](docs/spec/00-overview.md)
-for the details.
+[roadmap](docs/roadmap.md) for what comes next, the [spec](docs/spec) for the
+details and the [architecture](docs/architecture.md) for how it is built.
 
 ## The language at a glance
 
@@ -164,11 +164,11 @@ and `//ore:export name` makes an Ore function callable from C.
 **Low level when needed.** The `unsafe` namespace has raw memory, atomics and
 inline assembly, and `//ore:` directives set function attributes and
 thread-local variables, so the runtime itself can be written in Ore. See
-[unsafe code](docs/spec/00-overview.md#323-unsafe-code-and-directives).
+[unsafe code](docs/spec/09-unsafe.md).
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
 inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
-[differences from TypeScript](docs/spec/00-overview.md#7-differences-from-typescript-summary).
+[differences from TypeScript](docs/spec/10-differences.md).
 
 ## Getting started
 
@@ -258,9 +258,12 @@ Another binary can be set with the `ore.path` setting.
 | 6. Modules, packages, standard library, C interop, `ore test`, `ore fmt` | done |
 | 7. Concurrency: tasks, `Chan<T>`, `select` on green threads | done |
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
-| 8. Performance: escape analysis and inlining, LLVM backend (done); low-level layer, runtime in Ore, compiler in Ore, precise GC | in progress |
+| 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Self-hosting: lexer and parser (done); the rest of the compiler in Phase 8 | in progress |
+| 9. Runtime in Ore: strings (done); arrays, maps, printing, JSON, network, scheduler | in progress |
+| 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
+| 11. Own precise garbage collector | planned |
+| 12. Promises and `async`/`await` | planned |
 
 ### Known limitations
 
