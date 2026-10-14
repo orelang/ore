@@ -1,0 +1,275 @@
+// Floats as strings, as JavaScript writes numbers: the shortest decimal that
+// reads back to the same float, laid out like Number.prototype.toString.
+//
+// The digits come from the free-format algorithm of Burger and Dybvig
+// ("Printing Floating-Point Numbers Quickly and Accurately", 1996), on exact
+// big integers: the value and the halfway points to its neighbors are
+// scaled to integers r / s, m- / s and m+ / s, and digits are generated
+// until the remainder is within the halfway points.
+
+/** A non-negative big integer: 32-bit limbs, least significant first, no leading zero limbs. */
+class Big {
+    limbs: u32[] = []
+
+    copy(): Big {
+        const b = new Big()
+        for (const l of this.limbs) b.limbs.push(l)
+        return b
+    }
+
+    /** Multiplies by 2^n. */
+    shiftLeft(n: int): Big {
+        const words = n / 32
+        const bits = n % 32
+        const out = new Big()
+        for (let i = 0; i < words; i++) out.limbs.push(0)
+        let carry: u64 = 0
+        for (const l of this.limbs) {
+            const v = (u64(l) << u64(bits)) | carry
+            out.limbs.push(u32(v & 0xffffffff))
+            carry = v >> 32
+        }
+        if (carry !== 0) out.limbs.push(u32(carry))
+        if (this.limbs.length === 0) return new Big()
+        return out
+    }
+
+    /** Multiplies by a small number, in place. */
+    times(m: u32): Big {
+        let carry: u64 = 0
+        for (let i = 0; i < this.limbs.length; i++) {
+            const v = u64(this.limbs[i]) * u64(m) + carry
+            this.limbs[i] = u32(v & 0xffffffff)
+            carry = v >> 32
+        }
+        if (carry !== 0) this.limbs.push(u32(carry))
+        return this
+    }
+
+    /** Multiplies by 10^n, in place. */
+    timesPow10(n: int): Big {
+        let left = n
+        while (left >= 9) {
+            this.times(1000000000)
+            left -= 9
+        }
+        let rest: u32 = 1
+        for (let i = 0; i < left; i++) rest *= 10
+        if (rest !== 1) this.times(rest)
+        return this
+    }
+
+    plus(other: Big): Big {
+        const out = new Big()
+        const n = this.limbs.length > other.limbs.length ? this.limbs.length : other.limbs.length
+        let carry: u64 = 0
+        for (let i = 0; i < n; i++) {
+            const a = i < this.limbs.length ? u64(this.limbs[i]) : 0
+            const b = i < other.limbs.length ? u64(other.limbs[i]) : 0
+            const v = a + b + carry
+            out.limbs.push(u32(v & 0xffffffff))
+            carry = v >> 32
+        }
+        if (carry !== 0) out.limbs.push(u32(carry))
+        return out
+    }
+
+    /** Subtracts a smaller or equal number, in place. */
+    minus(other: Big): Big {
+        let borrow: i64 = 0
+        for (let i = 0; i < this.limbs.length; i++) {
+            let v = i64(this.limbs[i]) - borrow - (i < other.limbs.length ? i64(other.limbs[i]) : 0)
+            borrow = 0
+            if (v < 0) {
+                v += 0x100000000
+                borrow = 1
+            }
+            this.limbs[i] = u32(v)
+        }
+        while (this.limbs.length > 0 && this.limbs[this.limbs.length - 1] === 0) this.limbs.pop()
+        return this
+    }
+
+    /** Negative, zero or positive as this is less than, equal to or greater than other. */
+    compare(other: Big): int {
+        if (this.limbs.length !== other.limbs.length) return this.limbs.length - other.limbs.length
+        for (let i = this.limbs.length - 1; i >= 0; i--) {
+            if (this.limbs[i] !== other.limbs[i]) return this.limbs[i] < other.limbs[i] ? -1 : 1
+        }
+        return 0
+    }
+}
+
+function big(value: u64): Big {
+    const b = new Big()
+    let v = value
+    while (v !== 0) {
+        b.limbs.push(u32(v & 0xffffffff))
+        v >>= 32
+    }
+    return b
+}
+
+/** The number of significant bits of a non-zero value. */
+function bitLength(v: u64): int {
+    let n = 0
+    let x = v
+    while (x !== 0) {
+        n++
+        x >>= 1
+    }
+    return n
+}
+
+/** The shortest digits of f × 2^e and the exponent k with value = 0.digits × 10^k. */
+class Digits {
+    digits: u8[] = []
+    exponent = 0
+}
+
+/**
+ * The shortest digits of a positive float f × 2^e, where f has `precision`
+ * significant bits when normal and `minExponent` is the exponent of the
+ * subnormals.
+ */
+function shortest(f: u64, e: int, precision: int, minExponent: int): Digits {
+    // A float with an even mantissa reads back from its halfway points too (round half to even).
+    const inclusive = f % 2 === 0
+    // At a power of two the gap below is half the gap above.
+    const unequalGaps = f === u64(1) << u64(precision - 1) && e > minExponent
+    let r: Big
+    let s: Big
+    let mPlus: Big
+    let mMinus: Big
+    if (e >= 0) {
+        if (!unequalGaps) {
+            r = big(f).shiftLeft(e + 1)
+            s = big(2)
+            mPlus = big(1).shiftLeft(e)
+            mMinus = big(1).shiftLeft(e)
+        } else {
+            r = big(f).shiftLeft(e + 2)
+            s = big(4)
+            mPlus = big(1).shiftLeft(e + 1)
+            mMinus = big(1).shiftLeft(e)
+        }
+    } else if (!unequalGaps) {
+        r = big(f).shiftLeft(1)
+        s = big(1).shiftLeft(1 - e)
+        mPlus = big(1)
+        mMinus = big(1)
+    } else {
+        r = big(f).shiftLeft(2)
+        s = big(1).shiftLeft(2 - e)
+        mPlus = big(2)
+        mMinus = big(1)
+    }
+
+    // Scale by 10^k with k estimated from the bit length, at most one too low.
+    let k = i64(Math.ceil(f64(e + bitLength(f) - 1) * 0.30102999566398114 - 1e-10))
+    if (k >= 0) s.timesPow10(k)
+    else {
+        r.timesPow10(-k)
+        mPlus.timesPow10(-k)
+        mMinus.timesPow10(-k)
+    }
+    const high = r.plus(mPlus).compare(s)
+    if (inclusive ? high >= 0 : high > 0) {
+        s.times(10)
+        k++
+    }
+
+    const out = new Digits()
+    out.exponent = k
+    while (true) {
+        r.times(10)
+        mPlus.times(10)
+        mMinus.times(10)
+        let d: u8 = 0
+        while (r.compare(s) >= 0) {
+            r.minus(s)
+            d++
+        }
+        const low = r.compare(mMinus)
+        const up = r.plus(mPlus).compare(s)
+        const nearLow = inclusive ? low <= 0 : low < 0
+        const nearHigh = inclusive ? up >= 0 : up > 0
+        if (!nearLow && !nearHigh) {
+            out.digits.push(d)
+            continue
+        }
+        if (nearLow && nearHigh) {
+            // Both digits read back: take the closer one, or the even one on a tie.
+            const twice = r.shiftLeft(1).compare(s)
+            out.digits.push(twice < 0 || (twice === 0 && d % 2 === 0) ? d : d + 1)
+        } else {
+            out.digits.push(nearLow ? d : d + 1)
+        }
+        return out
+    }
+}
+
+/** The digits laid out as JavaScript's Number.prototype.toString does. */
+function layout(negative: bool, d: Digits): string {
+    const parts: string[] = []
+    if (negative) parts.push("-")
+    const k = d.digits.length
+    const n = d.exponent
+    const digit = (i: int): string => `${d.digits[i]}`
+    if (k <= n && n <= 21) {
+        // An integer: the digits, then zeros.
+        for (let i = 0; i < k; i++) parts.push(digit(i))
+        for (let i = k; i < n; i++) parts.push("0")
+    } else if (0 < n && n <= 21) {
+        // A point inside the digits.
+        for (let i = 0; i < k; i++) {
+            if (i === n) parts.push(".")
+            parts.push(digit(i))
+        }
+    } else if (-6 < n && n <= 0) {
+        // A small number: zeros after the point.
+        parts.push("0.")
+        for (let i = 0; i < -n; i++) parts.push("0")
+        for (let i = 0; i < k; i++) parts.push(digit(i))
+    } else {
+        // Exponent notation: d.ddde±x.
+        parts.push(digit(0))
+        if (k > 1) {
+            parts.push(".")
+            for (let i = 1; i < k; i++) parts.push(digit(i))
+        }
+        parts.push(n - 1 >= 0 ? "e+" : "e-")
+        parts.push(`${n - 1 >= 0 ? n - 1 : 1 - n}`)
+    }
+    return parts.join("")
+}
+
+//ore:runtime ore_rt_str_from_f64
+function strFromF64(v: f64): string {
+    if (v !== v) return "NaN"
+    if (v === 0) return "0"
+    const bits = unsafe.bitcast<u64>(v)
+    const negative = bits >> 63 !== 0
+    const biased = i64((bits >> 52) & 0x7ff)
+    const mantissa = bits & 0xfffffffffffff
+    if (biased === 0x7ff) return negative ? "-Infinity" : "Infinity"
+    const d =
+        biased === 0
+            ? shortest(mantissa, -1074, 53, -1074)
+            : shortest(mantissa | (u64(1) << 52), biased - 1075, 53, -1074)
+    return layout(negative, d)
+}
+
+//ore:runtime ore_rt_str_from_f32
+function strFromF32(v: f32): string {
+    if (v !== v) return "NaN"
+    if (v === 0) return "0"
+    const bits = unsafe.bitcast<u32>(v)
+    const negative = bits >> 31 !== 0
+    const biased = i64((bits >> 23) & 0xff)
+    const mantissa = u64(bits & 0x7fffff)
+    if (biased === 0xff) return negative ? "-Infinity" : "Infinity"
+    const d =
+        biased === 0 ? shortest(mantissa, -149, 24, -149) : shortest(mantissa | (u64(1) << 23), biased - 150, 24, -149)
+    return layout(negative, d)
+}

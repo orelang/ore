@@ -85,9 +85,24 @@ export abstract class JsonEmitter extends CollectionEmitter {
         if (type.signed) this.rt("ore_rt_json_i64", [b, this.toI64(v)])
         else this.rt("ore_rt_json_u64", [b, this.toI64(v, false)])
         return
-      case "float":
-        this.rt(type.bits === 32 ? "ore_rt_json_f32" : "ore_rt_json_f64", [b, v])
+      case "float": {
+        // JSON has no NaN or infinities: they are written as null, as in JavaScript.
+        const ty = this.lt(type)
+        const finite = this.b.value("i1", `fcmp oeq ${ty} ${this.b.value(ty, `fsub ${ty} ${v.v}, ${v.v}`).v}, 0.0`)
+        const number = this.b.label("number")
+        const nonFinite = this.b.label("nonfinite")
+        const end = this.b.label("written")
+        this.b.condBr(finite, number, nonFinite)
+        this.b.start(number)
+        const text = this.rt(`ore_rt_str_from_${type.name}`, [v])
+        this.rt("ore_sb_put", [b, this.extract(text, 0, "ptr"), this.extract(text, 1, "i64")])
+        this.b.br(end)
+        this.b.start(nonFinite)
+        this.put(b, "null")
+        this.b.br(end)
+        this.b.start(end)
         return
+      }
       case "bool": {
         const t = this.b.label("true")
         const f = this.b.label("false")

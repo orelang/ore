@@ -360,57 +360,6 @@ void ore_rt_print_space(void) { fputc(' ', stream()); }
 
 void ore_rt_print_newline(void) { fputc('\n', stream()); }
 
-// Rewrites a C exponent ("1e-07", "1e+21") into the JavaScript style ("1e-7", "1e+21").
-static void normalize_exponent(char *s) {
-  char *e = strchr(s, 'e');
-  if (!e) return;
-  char *digits = e + 2;
-  char *p = digits;
-  while (*p == '0' && p[1] != '\0') p++;
-  memmove(digits, p, strlen(p) + 1);
-}
-
-// Formats the shortest decimal representation that round-trips, like JavaScript.
-static void format_float(char buf[64], f64 v, int max_precision, bool single) {
-  if (isnan(v)) return (void)strcpy(buf, "NaN");
-  if (isinf(v)) return (void)strcpy(buf, v > 0 ? "Infinity" : "-Infinity");
-  if (v == 0) return (void)strcpy(buf, "0");
-  for (int precision = 1; precision <= max_precision; precision++) {
-    snprintf(buf, 64, "%.*g", precision, v);
-    if (single ? strtof(buf, NULL) == (f32)v : strtod(buf, NULL) == v) break;
-  }
-  // %g switches to exponent notation earlier than JavaScript does for integers.
-  f64 magnitude = fabs(v);
-  if (magnitude >= 1 && magnitude < 1e21 && strchr(buf, 'e') && v == floor(v)) {
-    snprintf(buf, 64, "%.0f", v);
-  }
-  normalize_exponent(buf);
-}
-
-void ore_rt_print_f64(f64 v) {
-  char buf[64];
-  format_float(buf, v, 17, false);
-  fputs(buf, stream());
-}
-
-void ore_rt_print_f32(f32 v) {
-  char buf[64];
-  format_float(buf, v, 9, true);
-  fputs(buf, stream());
-}
-
-ore_string ore_rt_str_from_f64(f64 v) {
-  char buf[64];
-  format_float(buf, v, 17, false);
-  return str_copy(buf, strlen(buf));
-}
-
-ore_string ore_rt_str_from_f32(f32 v) {
-  char buf[64];
-  format_float(buf, v, 9, true);
-  return str_copy(buf, strlen(buf));
-}
-
 f64 ore_rt_cbrt(f64 x) {
   if (x == 0 || !isfinite(x)) return cbrt(x);
   f64 y = cbrt(x);
@@ -476,20 +425,6 @@ void ore_rt_json_i64(ore_sb *b, i64 v) {
 void ore_rt_json_u64(ore_sb *b, u64 v) {
   char buf[32];
   ore_sb_put(b, buf, snprintf(buf, sizeof buf, "%llu", (unsigned long long)v));
-}
-
-void ore_rt_json_f64(ore_sb *b, f64 v) {
-  if (!isfinite(v)) return sb_puts(b, "null");
-  char buf[64];
-  format_float(buf, v, 17, false);
-  sb_puts(b, buf);
-}
-
-void ore_rt_json_f32(ore_sb *b, f32 v) {
-  if (!isfinite(v)) return sb_puts(b, "null");
-  char buf[64];
-  format_float(buf, v, 9, true);
-  sb_puts(b, buf);
 }
 
 void ore_rt_json_newline(ore_sb *b, i64 indent, i64 depth) {

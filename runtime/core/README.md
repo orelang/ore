@@ -23,5 +23,6 @@ Rules for this code:
 | `array.ore` | New arrays, push and pop, slicing, reverse, stable sort |
 | `map.ore` | Insertion-ordered hash maps, hashing of keys |
 | `format.ore` | Integers and booleans as strings |
+| `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript |
 
 Next: printing and number formatting, JSON, the network, the scheduler.

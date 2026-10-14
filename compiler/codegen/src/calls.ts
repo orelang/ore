@@ -200,7 +200,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         else this.rt("ore_rt_print_u64", [this.toI64(v, false)])
         return
       case "float":
-        this.rt(`ore_rt_print_${t.name}`, [v])
+        this.rt("ore_rt_print_string", [this.rt(`ore_rt_str_from_${t.name}`, [v])])
         return
       case "bool":
         this.rt("ore_rt_print_bool", [v])

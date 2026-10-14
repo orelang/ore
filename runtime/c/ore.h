@@ -91,8 +91,6 @@ void *ore_rt_alloc_bytes(i64 size);
 
 // Strings. Comparison, search and the string methods are in runtime/core/string.ore.
 
-ore_string ore_rt_str_from_f64(f64 v);
-ore_string ore_rt_str_from_f32(f32 v);
 
 static inline u8 ore_rt_str_at(ore_string s, i64 i) {
   if ((u64)i >= (u64)s.len) ore_rt_panic_index(i, s.len);
@@ -163,8 +161,6 @@ _Noreturn void ore_rt_exit(i32 code);
 
 void ore_rt_print_i64(i64 v);
 void ore_rt_print_u64(u64 v);
-void ore_rt_print_f64(f64 v);
-void ore_rt_print_f32(f32 v);
 void ore_rt_print_bool(bool v);
 void ore_rt_print_string(ore_string v);
 void ore_rt_print_space(void);
@@ -323,8 +319,6 @@ void ore_rt_json_str(ore_sb *b, ore_string s);
 void ore_rt_json_i64(ore_sb *b, i64 v);
 void ore_rt_json_u64(ore_sb *b, u64 v);
 /** Writes a number; NaN and infinities become `null`, as in JavaScript. */
-void ore_rt_json_f64(ore_sb *b, f64 v);
-void ore_rt_json_f32(ore_sb *b, f32 v);
 /** With `indent` > 0: a line break and `indent * depth` spaces. */
 void ore_rt_json_newline(ore_sb *b, i64 indent, i64 depth);
 
