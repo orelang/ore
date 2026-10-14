@@ -927,6 +927,25 @@ export class Parser {
         }
         if (this.at("StringLiteral")) node.add(this.tokenNode(), "moduleSpecifier")
         else this.error("Module specifier expected")
+        // Import attributes: `with { type: "text" }`, from the `with` keyword.
+        if (this.at("WithKeyword")) {
+            const attributesStart = this.next().start
+            const attributes = new Node("ImportAttributes", attributesStart, attributesStart)
+            this.expect("OpenBraceToken")
+            while (!this.at("CloseBraceToken") && !this.at("EndOfFileToken")) {
+                const attributeStart = this.token().start
+                const name = this.at("StringLiteral") ? this.tokenNode() : this.identifierName()
+                this.expect("ColonToken")
+                const value = this.assignment()
+                attributes.add(
+                    this.node("ImportAttribute", attributeStart, [name, value], ["name", "value"]),
+                    "elements",
+                )
+                if (!this.eat("CommaToken")) break
+            }
+            this.expect("CloseBraceToken")
+            node.add(this.finish(attributes, attributesStart), "attributes")
+        }
         this.semicolon()
         return this.finish(node, start)
     }

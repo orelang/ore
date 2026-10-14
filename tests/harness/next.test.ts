@@ -89,7 +89,8 @@ function typescriptTree(path: string, text: string): string[] | undefined {
 /** The name of the property of `parent` that holds `child`, directly or in a NodeArray. */
 function roleOf(parent: ts.Node, child: ts.Node): string {
   for (const [key, value] of Object.entries(parent)) {
-    if (key === "parent" || key === "original") continue
+    // `assertClause` is a deprecated alias of `attributes`, holding the same node.
+    if (key === "parent" || key === "original" || key === "assertClause") continue
     if (value === child || (Array.isArray(value) && value.includes(child))) return key
   }
   return "?"
