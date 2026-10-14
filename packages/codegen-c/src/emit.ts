@@ -1356,15 +1356,23 @@ for (const f of ["sqrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "ta
 function emitBuiltin(expr: ir.BuiltinCall): string {
   const special = builtins[expr.name]
   if (special) return inOrder(expr.args, (a) => special(a, expr))
+  // All arguments are evaluated before anything is printed, as in JavaScript.
+  const decls: string[] = []
+  const args = expr.args.map((arg) => {
+    const t = temp()
+    decls.push(`${cType(arg.type)} ${t} = ${emitExpr(arg)};`)
+    return raw(t, arg.type)
+  })
   const parts: string[] = []
   if (expr.name === "console.error") parts.push("ore_rt_print_to(2)")
-  expr.args.forEach((arg, i) => {
+  args.forEach((arg, i) => {
     if (i > 0) parts.push("ore_rt_print_space()")
     parts.push(printCall(arg))
   })
   if (expr.name !== "console.write") parts.push("ore_rt_print_newline()")
   if (expr.name === "console.error") parts.push("ore_rt_print_to(1)")
-  return parts.length === 0 ? "((void)0)" : `(${parts.join(", ")})`
+  if (parts.length === 0) return `({ ${decls.join(" ")} (void)0; })`
+  return `({ ${decls.join(" ")} ${parts.join("; ")}; })`
 }
 
 function printCall(arg: ir.Expr): string {
