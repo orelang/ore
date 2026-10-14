@@ -225,16 +225,11 @@ static inline u64 ore_shift_count(i64 n) {
 static inline f64 ore_fmod(f64 a, f64 b) { return __builtin_fmod(a, b); }
 static inline f32 ore_fmodf(f32 a, f32 b) { return __builtin_fmodf(a, b); }
 
-// Green threads (tasks), scheduled cooperatively on one OS thread.
+// Tasks, channels and select are in runtime/core (task.ore, chan.ore,
+// poll.ore); these are the functions of theirs that the C code calls.
 
 /** Runs `entry` as the main task and schedules tasks until it returns. */
 void ore_rt_run_main(void (*entry)(void));
-/** Starts a task running a closure without arguments. */
-void ore_rt_spawn(ore_closure body);
-/** Lets other runnable tasks run first. */
-void ore_rt_yield(void);
-/** Suspends the current task for `ms` milliseconds. */
-void ore_rt_sleep(i64 ms);
 /** The current task. */
 void *ore_rt_task_current(void);
 /**
@@ -243,44 +238,6 @@ void *ore_rt_task_current(void);
  */
 void ore_rt_blocking_enter(void);
 void ore_rt_blocking_exit(void);
-
-// Channels, as in Go: a buffer of `cap` values (none for a rendezvous) and
-// queues of tasks waiting to send or receive.
-
-typedef struct ore_waiter ore_waiter;
-
-typedef struct {
-  i64 elem_size, cap, len, head;
-  u8 *buf;
-  bool closed;
-  ore_waiter *receivers, *senders;
-  /** A pthread mutex guarding the channel. */
-  void *lock;
-} ore_chan;
-
-ore_chan *ore_rt_chan_new(i64 elem_size, i64 cap);
-/** Sends the value at `value`, blocking until there is room or a receiver; panics if closed. */
-void ore_rt_chan_send(ore_chan *c, const void *value);
-/** Receives into `out`, blocking until there is a value; false (and zeroes) once closed and empty. */
-bool ore_rt_chan_recv(ore_chan *c, void *out);
-/** Closes a channel: waiting receivers get nothing, waiting senders panic. */
-void ore_rt_chan_close(ore_chan *c);
-
-/** A case of a select: a receive, a send, or a timeout, with its handler. */
-typedef struct ore_select_case ore_select_case;
-
-ore_select_case *ore_rt_case_recv(ore_chan *c, ore_closure handler, void (*dispatch)(ore_select_case *));
-ore_select_case *ore_rt_case_send(ore_chan *c, const void *value, ore_closure handler);
-ore_select_case *ore_rt_case_after(i64 ms, ore_closure handler);
-/** The received value of a receive case, and whether there was one, for its dispatch function. */
-void *ore_rt_case_value(ore_select_case *c, bool *ok);
-/** The handler of a case. */
-ore_closure ore_rt_case_handler(ore_select_case *c);
-/**
- * Runs the handler of one case that can proceed, waiting for one unless
- * `otherwise` (a closure, or one without code) runs instead.
- */
-void ore_rt_select(ore_array *cases, ore_closure otherwise);
 
 // The string builder and JSON are in runtime/core/json.ore.
 

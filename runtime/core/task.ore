@@ -1,0 +1,618 @@
+// Green threads ("tasks") on several OS threads ("workers"), M:N like Go.
+//
+// Tasks run until they wait (on a channel, a timer or a select) or yield;
+// any worker runs any runnable task. Every task, including the one running
+// the program's top-level code, has its own mapped stack with a guard page.
+// The program ends when the top-level code ends.
+//
+// Garbage collection: each worker tells the GC the stack bottom of the task
+// it runs (GC_set_stackbottom), and a push-other-roots hook scans the used
+// part of every task that is not running. Switching stacks is not atomic, so
+// a worker switches inside a read lock of `switchLock`, which the GC takes for
+// writing before it stops the world. No code allocates while it holds that
+// read lock, or a collection would wait for it forever.
+//
+// Waking before sleeping: a task that waits holds a lock (of a channel, or of
+// the scheduler) that its wakers need, and releases it only after it has left
+// its stack, in the worker's loop (`park` takes what to do then).
+//
+// Thread-local variables after a switch: a task may resume on another worker,
+// and an address of a thread-local variable computed before the switch is the
+// old thread's. Code reads them only through the noinline functions below,
+// which compute the address again on the current thread.
+//
+// The scheduler's state starts at zero and is set by ore_rt_run_main before
+// any top-level code runs, including the runtime's own: it lives in globals
+// that are numbers or pointers, which a declaration without a value does not
+// reset.
+
+import { getTop, setTop } from "ore:runtime/frames"
+import {
+    GC_allow_register_threads,
+    GC_call_with_alloc_lock,
+    GC_get_my_stackbottom,
+    GC_get_push_other_roots,
+    GC_get_stack_base,
+    GC_push_all_eager,
+    GC_register_my_thread,
+    GC_set_on_collection_event,
+    GC_set_push_other_roots,
+    GC_set_stackbottom,
+    cpuCount,
+    deadlineIn,
+    gcEventPostStartWorld,
+    gcEventPreStopWorld,
+    getenv,
+    isNil,
+    lock,
+    mapGuarded,
+    nil,
+    nowMs,
+    pageSize,
+    permanent,
+    permanentCond,
+    permanentMutex,
+    permanentRwlock,
+    pthread_cond_signal,
+    pthread_cond_timedwait,
+    pthread_cond_wait,
+    pthread_rwlock_rdlock,
+    pthread_rwlock_unlock,
+    pthread_rwlock_wrlock,
+    startThread,
+    unlock,
+    unmap,
+} from "ore:runtime/os"
+
+/** Ends the program with a status, flushing standard output; in the C runtime. */
+declare function ore_rt_exit(code: i32): void
+
+const mainStackSize = 8 << 20
+const taskStackSize = 256 << 10
+
+export const runnable = 0
+export const blocked = 1
+export const done = 2
+
+/** A select in progress: which case fired, or none yet, in a cell claimed atomically by its first waker. */
+export class SelectState {
+    fired: ptr = unsafe.allocBytes(8)
+
+    constructor() {
+        unsafe.store<i64>(this.fired, selectWaiting)
+    }
+}
+
+export const selectWaiting = -1
+export const selectTimeout = -2
+
+export class Task {
+    /**
+     * Memory that assembly and the GC read by address: the stack pointer while
+     * the task is parked (at 0), and the GC's stack base, the stack's top (at 8).
+     */
+    context: ptr = unsafe.allocBytes(16)
+    /** The mapping and the usable stack range [lo, hi). */
+    map: ptr = nil()
+    mapSize = 0
+    hi: ptr = nil()
+    /** The shadow stack of debug frames while the task is parked. */
+    top: ptr = nil()
+    state = runnable
+    /** Whether a worker runs the task: its stack is then scanned as the worker's. */
+    running = false
+    /** The next task in the run queue or the timers. */
+    next: Task | null = null
+    /** All live tasks, for the garbage collector. */
+    allNext: Task | null = null
+    allPrev: Task | null = null
+    /** When a sleeping task wakes, in milliseconds. */
+    wakeAt = 0
+    /** The select the task waits in, if any, so that a timer can time it out. */
+    select: SelectState | null = null
+    /** The waiter the task reuses for channel operations (an address in chan.ore), or null. */
+    waiter: ptr = nil()
+
+    constructor(readonly body: () => void) {}
+
+    sp(): ptr {
+        return unsafe.load<ptr>(this.context)
+    }
+}
+
+/** The run queue, the timers and the workers, under `lock`. */
+class Scheduler {
+    lock = permanentMutex()
+    cond = permanentCond()
+    switchLock = permanentRwlock()
+    runHead: Task | null = null
+    runTail: Task | null = null
+    /** Sleeping tasks by wake time. */
+    timers: Task | null = null
+    workers = 0
+    idleWorkers = 0
+    blockingWorkers = 0
+    maxWorkers = 0
+    /** Tasks parked until a socket is ready: not a deadlock while there are any. */
+    netWaiters = 0
+    mainTask: Task | null = null
+    /** All live tasks; changed only with the GC's allocation lock held. */
+    allTasks: Task | null = null
+    /** The GC's previous push-other-roots hook, as a closure cell, or null. */
+    previousPush = nil()
+    /** Whether the network poller was started: 0 not yet, 1 starting, 2 running. */
+    pollState = permanent(8)
+}
+
+/** The scheduler, set by ore_rt_run_main. */
+let schedulerAddress: ptr
+
+export function scheduler(): Scheduler {
+    return unsafe.fromAddress<Scheduler>(schedulerAddress)
+}
+
+// ---------------------------------------------------------------------------
+// Per worker: a block of memory that the thread-local `worker` points to.
+//   0 the scheduler loop's stack pointer while a task runs
+//   8 the worker's own stack base (GC_stack_base)
+//  16 the worker's GC thread handle
+//  24 what to do after the current task has left its stack: a closure cell, or null
+//  32 the current task, or null
+//  40 a timespec, for clocks and deadlines (16 bytes)
+//  56 a mutex to unlock after the current task has left its stack, or null
+
+//ore:threadlocal
+let worker: ptr
+
+const workerSize = 64
+
+//ore:noinline
+function workerBlock(): ptr {
+    return worker
+}
+
+//ore:noinline
+function setWorkerBlock(block: ptr): void {
+    worker = block
+}
+
+/** The running task of this worker. */
+//ore:noinline
+export function current(): Task {
+    return unsafe.fromAddress<Task>(unsafe.load<ptr>(unsafe.add(workerBlock(), 32)))
+}
+
+function setCurrent(w: ptr, t: ptr): void {
+    unsafe.store<ptr>(unsafe.add(w, 32), t)
+}
+
+function now(): int {
+    return nowMs(unsafe.add(workerBlock(), 40))
+}
+
+/** A new worker block for this thread; allocates no collected memory. */
+function newWorker(): ptr {
+    const w = permanent(workerSize)
+    setWorkerBlock(w)
+    unsafe.store<ptr>(unsafe.add(w, 16), GC_get_my_stackbottom(unsafe.add(w, 8)))
+    return w
+}
+
+// ---------------------------------------------------------------------------
+// Context switching
+
+/**
+ * Saves the callee-saved registers on the current stack, stores the stack
+ * pointer at `save`, and resumes the stack `load`.
+ */
+//ore:naked
+function switchContext(save: ptr, load: ptr): void {
+    if (target.arch === "arm64") {
+        unsafe.asm(
+            "sub sp, sp, #160\nstp x19, x20, [sp, #0]\nstp x21, x22, [sp, #16]\nstp x23, x24, [sp, #32]\nstp x25, x26, [sp, #48]\nstp x27, x28, [sp, #64]\nstp x29, x30, [sp, #80]\nstp d8, d9, [sp, #96]\nstp d10, d11, [sp, #112]\nstp d12, d13, [sp, #128]\nstp d14, d15, [sp, #144]\nmov x2, sp\nstr x2, [x0]\nmov sp, x1\nldp x19, x20, [sp, #0]\nldp x21, x22, [sp, #16]\nldp x23, x24, [sp, #32]\nldp x25, x26, [sp, #48]\nldp x27, x28, [sp, #64]\nldp x29, x30, [sp, #80]\nldp d8, d9, [sp, #96]\nldp d10, d11, [sp, #112]\nldp d12, d13, [sp, #128]\nldp d14, d15, [sp, #144]\nadd sp, sp, #160\nret",
+            "",
+        )
+    } else {
+        unsafe.asm(
+            "pushq %rbp\npushq %rbx\npushq %r12\npushq %r13\npushq %r14\npushq %r15\nmovq %rsp, (%rdi)\nmovq %rsi, %rsp\npopq %r15\npopq %r14\npopq %r13\npopq %r12\npopq %rbx\npopq %rbp\nretq",
+            "",
+        )
+    }
+}
+
+/** The first code of a new task: calls the function in a saved register with the task in another. */
+//ore:naked
+function trampoline(): void {
+    if (target.arch === "arm64") unsafe.asm("mov x0, x19\nblr x20\nbrk #0", "")
+    else unsafe.asm("movq %rbx, %rdi\ncallq *%r12\nud2", "")
+}
+
+// ---------------------------------------------------------------------------
+// Garbage collection
+
+/** Pushes the used part of the stack of every task that no worker is running. */
+function pushTaskStacks(): void {
+    const s = scheduler()
+    let t = s.allTasks
+    while (t !== null) {
+        if (!t.running && !isNil(t.sp())) GC_push_all_eager(t.sp(), t.hi)
+        t = t.allNext
+    }
+    if (!isNil(s.previousPush)) {
+        const previous = unsafe.load<() => void>(s.previousPush)
+        previous()
+    }
+}
+
+/** Keeps the GC from stopping the world while a worker is between two stacks. */
+function onCollectionEvent(event: i32): void {
+    const s = scheduler()
+    if (event === gcEventPreStopWorld) pthread_rwlock_wrlock(s.switchLock)
+    else if (event === gcEventPostStartWorld) pthread_rwlock_unlock(s.switchLock)
+}
+
+function linkTask(data: ptr): ptr {
+    const s = scheduler()
+    const t = unsafe.fromAddress<Task>(data)
+    t.allNext = s.allTasks
+    const first = s.allTasks
+    if (first !== null) first.allPrev = t
+    s.allTasks = t
+    return nil()
+}
+
+function unlinkTask(data: ptr): ptr {
+    const s = scheduler()
+    const t = unsafe.fromAddress<Task>(data)
+    const prev = t.allPrev
+    const next = t.allNext
+    if (prev !== null) prev.allNext = next
+    else s.allTasks = next
+    if (next !== null) next.allPrev = prev
+    return nil()
+}
+
+// ---------------------------------------------------------------------------
+// Tasks
+
+/** Makes a task runnable; the caller holds the scheduler's lock. */
+export function enqueueLocked(t: Task): void {
+    const s = scheduler()
+    t.state = runnable
+    t.next = null
+    const tail = s.runTail
+    if (tail !== null) tail.next = t
+    else s.runHead = t
+    s.runTail = t
+    pthread_cond_signal(s.cond)
+}
+
+export function enqueue(t: Task): void {
+    const s = scheduler()
+    lock(s.lock)
+    enqueueLocked(t)
+    unlock(s.lock)
+}
+
+function newTask(body: () => void, stackSize: int): Task {
+    const t = new Task(body)
+    const page = pageSize()
+    t.mapSize = stackSize + page
+    t.map = mapGuarded(t.mapSize)
+    if (isNil(t.map)) process.panic("cannot allocate a task stack")
+    t.hi = unsafe.add(t.map, t.mapSize)
+    unsafe.store<ptr>(unsafe.add(t.context, 8), t.hi)
+
+    // An initial frame that the context switch "returns" through into the trampoline.
+    const top = unsafe.fromInt(unsafe.toInt(t.hi) & ~u64(15))
+    const self = unsafe.addressOf(t)
+    if (target.arch === "arm64") {
+        const frame = unsafe.add(top, -160)
+        unsafe.fill(frame, 0, 160)
+        unsafe.store<ptr>(frame, self)
+        unsafe.store<ptr>(unsafe.add(frame, 8), unsafe.functionAddress(taskMain))
+        unsafe.store<ptr>(unsafe.add(frame, 88), unsafe.functionAddress(trampoline))
+        unsafe.store<ptr>(t.context, frame)
+    } else {
+        // Six saved registers and the return address into the trampoline; after
+        // `ret`, rsp is 16-byte aligned, as the ABI requires before the
+        // trampoline's call.
+        const frame = unsafe.add(top, -72)
+        unsafe.fill(frame, 0, 72)
+        unsafe.store<ptr>(unsafe.add(frame, 24), unsafe.functionAddress(taskMain))
+        unsafe.store<ptr>(unsafe.add(frame, 32), self)
+        unsafe.store<ptr>(unsafe.add(frame, 48), unsafe.functionAddress(trampoline))
+        unsafe.store<ptr>(t.context, frame)
+    }
+    GC_call_with_alloc_lock(unsafe.functionAddress(linkTask), self)
+    return t
+}
+
+function freeTask(t: Task): void {
+    GC_call_with_alloc_lock(unsafe.functionAddress(unlinkTask), unsafe.addressOf(t))
+    unmap(t.map, t.mapSize)
+}
+
+/**
+ * Suspends the current task. Once it has left its stack, its worker runs
+ * `then`: typically releasing the lock that a waker of the task needs.
+ * Never inlined, so callers keep no thread-local addresses from before it.
+ */
+//ore:noinline
+export function park(then: () => void): void {
+    const cell = unsafe.alloc(16)
+    unsafe.store<() => void>(cell, then)
+    parkWith(cell, nil())
+}
+
+/** Suspends the current task with nothing to do after it left its stack. */
+//ore:noinline
+export function parkOnly(): void {
+    parkWith(nil(), nil())
+}
+
+/** Suspends the current task, and unlocks `mutex` once it has left its stack: the common case, without a closure. */
+//ore:noinline
+export function parkUnlocking(mutex: ptr): void {
+    parkWith(nil(), mutex)
+}
+
+//ore:noinline
+function parkWith(cell: ptr, mutex: ptr): void {
+    const s = scheduler()
+    const w = workerBlock()
+    const t = current()
+    t.top = getTop()
+    unsafe.store<ptr>(unsafe.add(w, 24), cell)
+    unsafe.store<ptr>(unsafe.add(w, 56), mutex)
+    pthread_rwlock_rdlock(s.switchLock)
+    GC_set_stackbottom(unsafe.load<ptr>(unsafe.add(w, 16)), unsafe.add(w, 8))
+    t.running = false
+    switchContext(t.context, unsafe.load<ptr>(w))
+    // Resumed, maybe by another worker, which took the switch lock to get here.
+    // `w` is the old worker's block; nothing reads it from here on.
+    pthread_rwlock_unlock(s.switchLock)
+    setTop(t.top)
+}
+
+/** The body of every task, entered from the trampoline on the task's stack. */
+function taskMain(self: ptr): void {
+    const s = scheduler()
+    pthread_rwlock_unlock(s.switchLock)
+    const t = unsafe.fromAddress<Task>(self)
+    t.body()
+    // The program ends with its top-level code.
+    if (t === s.mainTask) ore_rt_exit(0)
+    t.state = done
+    parkOnly()
+}
+
+//ore:runtime ore_rt_spawn
+function spawn(body: () => void): void {
+    enqueue(newTask(body, taskStackSize))
+}
+
+//ore:runtime ore_rt_yield
+function yieldTask(): void {
+    const t = current()
+    park(() => enqueue(t))
+}
+
+/** Inserts a task into the timers by wake time; the caller holds the scheduler's lock. */
+export function addTimerLocked(t: Task): void {
+    const s = scheduler()
+    let previous: Task | null = null
+    let next = s.timers
+    while (next !== null && next.wakeAt <= t.wakeAt) {
+        previous = next
+        next = next.next
+    }
+    t.next = next
+    if (previous !== null) previous.next = t
+    else s.timers = t
+    pthread_cond_signal(s.cond)
+}
+
+export function removeTimerLocked(t: Task): void {
+    const s = scheduler()
+    let previous: Task | null = null
+    let next = s.timers
+    while (next !== null) {
+        if (next === t) {
+            if (previous !== null) previous.next = t.next
+            else s.timers = t.next
+            return
+        }
+        previous = next
+        next = next.next
+    }
+}
+
+/** Sets a task to wake `ms` from now. */
+export function wakeIn(t: Task, ms: int): void {
+    t.wakeAt = now() + (ms > 0 ? ms : 0)
+}
+
+//ore:runtime ore_rt_sleep
+function sleep(ms: int): void {
+    const s = scheduler()
+    const t = current()
+    wakeIn(t, ms)
+    t.state = blocked
+    lock(s.lock)
+    addTimerLocked(t)
+    parkUnlocking(s.lock)
+}
+
+/** The running task, for the C runtime's test runner. */
+//ore:export ore_rt_task_current
+function taskCurrent(): ptr {
+    const w = workerBlock()
+    return isNil(w) ? nil() : unsafe.load<ptr>(unsafe.add(w, 32))
+}
+
+/** Starts another worker thread; the caller holds the scheduler's lock. */
+function addWorkerLocked(): void {
+    if (startThread(unsafe.functionAddress(workerMain), nil())) scheduler().workers++
+}
+
+/**
+ * Brackets a call that may block its OS thread, such as file I/O, so that
+ * another worker runs the other tasks meanwhile.
+ */
+//ore:export ore_rt_blocking_enter
+function blockingEnter(): void {
+    const s = scheduler()
+    lock(s.lock)
+    s.blockingWorkers++
+    if (s.runHead !== null && s.idleWorkers === 0 && s.workers < s.maxWorkers) addWorkerLocked()
+    unlock(s.lock)
+}
+
+//ore:export ore_rt_blocking_exit
+function blockingExit(): void {
+    const s = scheduler()
+    lock(s.lock)
+    s.blockingWorkers--
+    unlock(s.lock)
+}
+
+/** Moves tasks whose time has come from the timers to the run queue; the caller holds the scheduler's lock. */
+function wakeTimersLocked(): void {
+    const s = scheduler()
+    const at = now()
+    while (true) {
+        const t = s.timers
+        if (t === null || t.wakeAt > at) return
+        s.timers = t.next
+        // A task waiting in a select wakes for its timeout unless a channel case fired first.
+        const select = t.select
+        if (select !== null && !unsafe.atomicCompareExchange<i64>(select.fired, selectWaiting, selectTimeout)) continue
+        enqueueLocked(t)
+    }
+}
+
+/** Counts a task that waits for a socket, so that waiting for it is no deadlock. */
+export function addNetWaiterLocked(delta: int): void {
+    scheduler().netWaiters += delta
+}
+
+/** The next task to run, waiting for one; panics when every task waits forever. */
+function nextTask(w: ptr): Task {
+    const s = scheduler()
+    lock(s.lock)
+    while (true) {
+        wakeTimersLocked()
+        const t = s.runHead
+        if (t !== null) {
+            s.runHead = t.next
+            if (s.runHead === null) s.runTail = null
+            unlock(s.lock)
+            return t
+        }
+        const timers = s.timers
+        if (timers === null && s.blockingWorkers === 0 && s.netWaiters === 0 && s.idleWorkers === s.workers - 1) {
+            unlock(s.lock)
+            const main = s.mainTask
+            if (main !== null) {
+                setCurrent(w, unsafe.addressOf(main))
+                setTop(main.top)
+            }
+            process.panic("all tasks are asleep - deadlock!")
+        }
+        s.idleWorkers++
+        if (timers !== null) {
+            const wait = timers.wakeAt - now()
+            deadlineIn(unsafe.add(w, 40), wait > 0 ? wait : 0)
+            pthread_cond_timedwait(s.cond, s.lock, unsafe.add(w, 40))
+        } else {
+            pthread_cond_wait(s.cond, s.lock)
+        }
+        s.idleWorkers--
+    }
+}
+
+/** A worker: runs tasks until the program ends. It stays on its own OS thread, so `w` stays its block. */
+function schedule(): void {
+    const s = scheduler()
+    const w = workerBlock()
+    while (true) {
+        const t = nextTask(w)
+        setCurrent(w, unsafe.addressOf(t))
+        setTop(t.top)
+        pthread_rwlock_rdlock(s.switchLock)
+        GC_set_stackbottom(unsafe.load<ptr>(unsafe.add(w, 16)), unsafe.add(t.context, 8))
+        t.running = true
+        switchContext(w, t.sp())
+        // The task parked or ended, holding the switch lock.
+        pthread_rwlock_unlock(s.switchLock)
+        setCurrent(w, nil())
+        // Decided before `then` runs: once it makes the task runnable, another
+        // worker may run it to its end and free it.
+        const finished = t.state === done
+        const cell = unsafe.load<ptr>(unsafe.add(w, 24))
+        unsafe.store<ptr>(unsafe.add(w, 24), nil())
+        const mutex = unsafe.load<ptr>(unsafe.add(w, 56))
+        unsafe.store<ptr>(unsafe.add(w, 56), nil())
+        if (!isNil(mutex)) unlock(mutex)
+        if (!isNil(cell)) {
+            const then = unsafe.load<() => void>(cell)
+            then()
+        }
+        if (finished) freeTask(t)
+    }
+}
+
+function workerMain(argument: ptr): ptr {
+    const base = permanent(16)
+    GC_get_stack_base(base)
+    GC_register_my_thread(base)
+    newWorker()
+    schedule()
+    return argument
+}
+
+/** The number of workers: ORE_THREADS, or one per CPU. */
+function workerCount(): int {
+    const configured = getenv("ORE_THREADS")
+    if (isNil(configured)) return cpuCount()
+    let n = 0
+    let i = 0
+    while (true) {
+        const c = unsafe.load<u8>(unsafe.add(configured, i))
+        if (c < 0x30 || c > 0x39) break
+        n = n * 10 + i64(c - 0x30)
+        i++
+    }
+    return n > 0 ? n : 1
+}
+
+/** Runs the program: its top-level code (`entry`, a C function) as the first task, on the workers. */
+//ore:export ore_rt_run_main
+function runMain(entry: ptr): void {
+    const s = new Scheduler()
+    schedulerAddress = unsafe.addressOf(s)
+    GC_allow_register_threads()
+    newWorker()
+    // The previous hook, as a closure cell: a C function called with an environment it ignores.
+    const previous = GC_get_push_other_roots()
+    if (!isNil(previous)) {
+        s.previousPush = permanent(16)
+        unsafe.store<ptr>(s.previousPush, previous)
+    }
+    GC_set_push_other_roots(unsafe.functionAddress(pushTaskStacks))
+    GC_set_on_collection_event(unsafe.functionAddress(onCollectionEvent))
+
+    const count = workerCount()
+    s.maxWorkers = count + 64
+    // The entry as a closure, called with an environment it ignores.
+    const cell = permanent(16)
+    unsafe.store<ptr>(cell, entry)
+    s.mainTask = newTask(unsafe.load<() => void>(cell), mainStackSize)
+    lock(s.lock)
+    s.workers = 1
+    enqueueLocked(s.mainTask)
+    for (let i = 1; i < count; i++) addWorkerLocked()
+    unlock(s.lock)
+    schedule()
+}

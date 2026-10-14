@@ -6,7 +6,6 @@ The part of the runtime still in C, moving to [`runtime/core`](../core).
 |---|---|
 | `ore.h` | The runtime's interface: types and every function generated code calls |
 | `runtime.c` | Allocation, panics, printing, interfaces, process and file functions |
-| `task.c` | The M:N scheduler: green-thread tasks on OS threads, channels, `select`, timers, the netpoller |
 | `net.c` | TCP sockets |
 
 Generated code calls these functions through the `ore_abi_*` wrappers made

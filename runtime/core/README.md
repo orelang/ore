@@ -28,5 +28,9 @@ Rules for this code:
 | `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |
 | `json.ore` | The string builder, the JSON parser and the helpers of the generated encoders and decoders |
 | `number.ore` | `parseInt`, `parseFloat` and `toFixed` as JavaScript computes them, `Math.round`, `Math.cbrt`, `process.getenv` |
+| `os.ore` | libc, pthreads and the GC's hooks, with the sizes and constants of each platform |
+| `task.ore` | The M:N scheduler: tasks on mapped stacks, the context switch in assembly, workers, timers, the GC's view of task stacks |
+| `chan.ore` | Channels and `select` |
+| `poll.ore` | Waiting for sockets: the kqueue or epoll poller thread |
 
-Next: printing, the network, the scheduler.
+Next: printing, panics and the test runner, the network functions, the program's entry.

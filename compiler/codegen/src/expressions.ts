@@ -49,6 +49,8 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       case "builtin":
         return this.builtin(e)
       case "cond":
+        // A condition known at compile time, such as one on `target.os`, compiles only the branch taken.
+        if (e.cond.k === "bool") return this.expr(e.cond.value ? e.then : e.else)
         return this.choose(this.expr(e.cond), () => this.expr(e.then), () => this.expr(e.else), this.lt(e.type))
       case "concat":
         return this.concat(e.parts.map((p) => [this.expr(p), p.type] as const))

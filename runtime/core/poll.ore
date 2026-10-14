@@ -1,0 +1,71 @@
+// Network I/O: sockets are non-blocking. A task whose socket is not ready
+// parks, and a poller thread (kqueue or epoll) makes it runnable when the
+// socket is, so waiting on the network occupies no worker.
+
+import { addNetWaiterLocked, current, enqueueLocked, park, scheduler, Task } from "ore:runtime/task"
+import {
+    eventData,
+    lock,
+    newEvents,
+    newPoller,
+    nil,
+    permanent,
+    pollOnce,
+    pollWait,
+    startThread,
+    unlock,
+} from "ore:runtime/os"
+
+/** The poller's file descriptor, once started. */
+let pollerFd: i32
+
+/** Makes the tasks whose sockets are ready runnable; runs on its own thread, without allocating. */
+function pollerMain(argument: ptr): ptr {
+    const events = newEvents()
+    while (true) {
+        const n = pollWait(pollerFd, events)
+        if (n <= 0) continue
+        const s = scheduler()
+        lock(s.lock)
+        for (let i = 0; i < n; i++) {
+            addNetWaiterLocked(-1)
+            enqueueLocked(unsafe.fromAddress<Task>(eventData(events, i)))
+        }
+        unlock(s.lock)
+    }
+    return argument
+}
+
+/** Starts the poller once, whichever task needs it first. */
+function startPoller(): void {
+    const state = scheduler().pollState
+    if (unsafe.atomicLoad<i64>(state) === 2) return
+    if (unsafe.atomicCompareExchange<i64>(state, 0, 1)) {
+        pollerFd = newPoller()
+        if (pollerFd < 0) process.panic("cannot create the network poller")
+        if (!startThread(unsafe.functionAddress(pollerMain), nil())) process.panic("cannot start the network poller")
+        unsafe.atomicStore<i64>(state, 2)
+        return
+    }
+    while (unsafe.atomicLoad<i64>(state) !== 2) {}
+}
+
+/** Parks the current task until `fd` is ready for reading or writing; the task then retries its operation. */
+//ore:export ore_rt_net_wait
+function netWait(fd: i32, write: bool): void {
+    startPoller()
+    const t = current()
+    const s = scheduler()
+    lock(s.lock)
+    addNetWaiterLocked(1)
+    unlock(s.lock)
+    // Registered once the task has left its stack, so the poller cannot wake it before.
+    park(() => {
+        if (pollOnce(pollerFd, fd, write, unsafe.addressOf(t))) return
+        // The task retries its operation, which reports the error.
+        lock(s.lock)
+        addNetWaiterLocked(-1)
+        enqueueLocked(t)
+        unlock(s.lock)
+    })
+}

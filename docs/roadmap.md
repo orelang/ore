@@ -23,7 +23,11 @@ once its Ore version passes the tests. Only libc and the GC stay outside Ore.
   as the C version in every message and as fast. Numbers: `parseInt`,
   `parseFloat` and `toFixed` now as JavaScript computes them (the C version
   rounded `(2.5).toFixed(0)` to `2` and read `parseFloat("0x10")` as 16).
-- Next: printing, the network, the scheduler and channels;
+  The scheduler: tasks with the context switch in assembly, workers,
+  timers, channels, `select` and the network poller, about as fast as the C
+  version.
+- Next: printing, panics and the test runner, the network functions and the
+  program's entry;
   printing moves with the scheduler, since the C runtime's own output
   (panics, `ore test`) must keep its order with it.
 - Also: the system part of the standard library that the compiler in Ore

@@ -1,0 +1,473 @@
+// Channels and select. A channel is a buffer of `cap` values (none for a
+// rendezvous) and queues of tasks waiting to send or receive, guarded by a
+// mutex. Values are copied as `size` bytes, since one runtime serves channels
+// of every element type. Generated code holds channels and select cases as
+// addresses of the objects below.
+
+import {
+    blocked,
+    current,
+    enqueue,
+    addTimerLocked,
+    park,
+    parkUnlocking,
+    removeTimerLocked,
+    scheduler,
+    selectTimeout,
+    selectWaiting,
+    SelectState,
+    Task,
+    wakeIn,
+} from "ore:runtime/task"
+import { lock, newMutex, nil, isNil, unlock } from "ore:runtime/os"
+
+/** A task waiting in a channel queue. */
+class Waiter {
+    /** Whether the operation completed with a value (false when the channel closed). */
+    ok = false
+    next: Waiter | null = null
+
+    constructor(
+        readonly task: Task,
+        /** The value to send, or where to put the received value. */
+        public slot: ptr,
+        /** For a select: its state and the index of this case. */
+        readonly select: SelectState | null,
+        readonly index: int,
+    ) {}
+}
+
+class Chan {
+    len = 0
+    head = 0
+    closed = false
+    receivers: Waiter | null = null
+    senders: Waiter | null = null
+    lock = newMutex()
+    buffer: ptr
+
+    constructor(
+        readonly size: int,
+        readonly cap: int,
+    ) {
+        // Values are bytes or references: the buffer is scanned.
+        this.buffer = unsafe.alloc(size * (cap > 0 ? cap : 1))
+    }
+
+    slotAt(i: int): ptr {
+        return unsafe.add(this.buffer, ((this.head + i) % this.cap) * this.size)
+    }
+}
+
+function chanAt(c: ptr): Chan {
+    return unsafe.fromAddress<Chan>(c)
+}
+
+/** The task's own waiter for a channel operation, made on its first one. */
+function waiterFor(t: Task, slot: ptr): Waiter {
+    if (isNil(t.waiter)) t.waiter = unsafe.addressOf(new Waiter(t, slot, null, 0))
+    const w = unsafe.fromAddress<Waiter>(t.waiter)
+    w.slot = slot
+    w.ok = false
+    w.next = null
+    return w
+}
+
+function waitPush(queue: Waiter | null, w: Waiter): Waiter {
+    w.next = null
+    if (queue === null) return w
+    let last = queue
+    while (last.next !== null) last = last.next
+    last.next = w
+    return queue
+}
+
+function waitRemove(queue: Waiter | null, w: Waiter): Waiter | null {
+    if (queue === null) return null
+    if (queue === w) return w.next
+    let previous = queue
+    let next = queue.next
+    while (next !== null) {
+        if (next === w) {
+            previous.next = w.next
+            break
+        }
+        previous = next
+        next = next.next
+    }
+    return queue
+}
+
+/** Whether a waiter belongs to a select that another case already completed. */
+function stale(w: Waiter): bool {
+    const select = w.select
+    return select !== null && unsafe.atomicLoad<i64>(select.fired) !== selectWaiting
+}
+
+/**
+ * Takes the first waiter of a channel's queue that can still complete,
+ * claiming its select, and drops the stale ones before it.
+ */
+function waitTake(c: Chan, receivers: bool): Waiter | null {
+    while (true) {
+        const w = receivers ? c.receivers : c.senders
+        if (w === null) return null
+        if (receivers) c.receivers = w.next
+        else c.senders = w.next
+        const select = w.select
+        if (select !== null) {
+            if (!unsafe.atomicCompareExchange<i64>(select.fired, selectWaiting, w.index)) continue
+            // This case fired; the select stops waiting on its timer.
+            const s = scheduler()
+            lock(s.lock)
+            removeTimerLocked(w.task)
+            unlock(s.lock)
+        }
+        return w
+    }
+}
+
+function hasWaiter(queue: Waiter | null): bool {
+    let w = queue
+    while (w !== null) {
+        if (!stale(w)) return true
+        w = w.next
+    }
+    return false
+}
+
+/** Completes a waiter's operation and makes its task runnable. */
+function wake(w: Waiter, ok: bool): void {
+    w.ok = ok
+    enqueue(w.task)
+}
+
+function takeReceiver(c: Chan): Waiter | null {
+    return waitTake(c, true)
+}
+
+function takeSender(c: Chan): Waiter | null {
+    return waitTake(c, false)
+}
+
+//ore:runtime ore_rt_chan_new
+function chanNew(size: int, cap: int): ptr {
+    if (cap < 0) process.panic("negative channel capacity")
+    return unsafe.addressOf(new Chan(size, cap))
+}
+
+/** Whether a receive would complete now; the caller holds the channel's lock. */
+function canReceive(c: Chan): bool {
+    return c.len > 0 || hasWaiter(c.senders) || c.closed
+}
+
+function canSend(c: Chan): bool {
+    return hasWaiter(c.receivers) || c.len < c.cap
+}
+
+/** Sends without waiting; the caller holds the lock and checked that it can. */
+function sendNow(c: Chan, value: ptr): void {
+    const r = takeReceiver(c)
+    if (r !== null) {
+        unsafe.copy(r.slot, value, c.size)
+        wake(r, true)
+    } else {
+        unsafe.copy(c.slotAt(c.len), value, c.size)
+        c.len++
+    }
+}
+
+/** Receives without waiting; the caller holds the lock and checked canReceive. False once closed and empty. */
+function receiveNow(c: Chan, out: ptr): bool {
+    if (c.len > 0) {
+        unsafe.copy(out, c.slotAt(0), c.size)
+        c.head = (c.head + 1) % c.cap
+        c.len--
+        // A waiting sender's value takes the freed place.
+        const s = takeSender(c)
+        if (s !== null) {
+            unsafe.copy(c.slotAt(c.len), s.slot, c.size)
+            c.len++
+            wake(s, true)
+        }
+        return true
+    }
+    const s = takeSender(c)
+    if (s !== null) {
+        unsafe.copy(out, s.slot, c.size)
+        wake(s, true)
+        return true
+    }
+    unsafe.fill(out, 0, c.size)
+    return false
+}
+
+//ore:runtime ore_rt_chan_send
+function chanSend(channel: ptr, value: ptr): void {
+    const c = chanAt(channel)
+    lock(c.lock)
+    if (c.closed) {
+        unlock(c.lock)
+        process.panic("send on closed channel")
+    }
+    if (canSend(c)) {
+        sendNow(c, value)
+        unlock(c.lock)
+        return
+    }
+    const t = current()
+    const w = waiterFor(t, value)
+    c.senders = waitPush(c.senders, w)
+    t.state = blocked
+    parkUnlocking(c.lock)
+    if (!w.ok) process.panic("send on closed channel")
+}
+
+//ore:runtime ore_rt_chan_recv
+function chanReceive(channel: ptr, out: ptr): bool {
+    const c = chanAt(channel)
+    lock(c.lock)
+    if (canReceive(c)) {
+        const ok = receiveNow(c, out)
+        unlock(c.lock)
+        return ok
+    }
+    const t = current()
+    const w = waiterFor(t, out)
+    c.receivers = waitPush(c.receivers, w)
+    t.state = blocked
+    parkUnlocking(c.lock)
+    if (!w.ok) unsafe.fill(out, 0, c.size)
+    return w.ok
+}
+
+//ore:runtime ore_rt_chan_close
+function chanClose(channel: ptr): void {
+    const c = chanAt(channel)
+    lock(c.lock)
+    if (c.closed) {
+        unlock(c.lock)
+        process.panic("close of closed channel")
+    }
+    c.closed = true
+    while (true) {
+        const w = takeReceiver(c)
+        if (w === null) break
+        unsafe.fill(w.slot, 0, c.size)
+        wake(w, false)
+    }
+    while (true) {
+        const w = takeSender(c)
+        if (w === null) break
+        wake(w, false)
+    }
+    unlock(c.lock)
+}
+
+// ---------------------------------------------------------------------------
+// Select
+
+const caseReceive = 0
+const caseSend = 1
+const caseAfter = 2
+
+class SelectCase {
+    /** Whether a receive got a value (false when the channel closed). */
+    ok = false
+
+    constructor(
+        readonly kind: int,
+        readonly chan: Chan | null,
+        readonly ms: int,
+        /** The value to send, or the received value. */
+        readonly buffer: ptr,
+        readonly handler: () => void,
+        /** Calls the handler of a receive case with the value: a C function of the case's address. */
+        readonly dispatch: ptr,
+    ) {}
+}
+
+function caseAt(c: ptr): SelectCase {
+    return unsafe.fromAddress<SelectCase>(c)
+}
+
+//ore:runtime ore_rt_case_recv
+function caseReceiveNew(channel: ptr, handler: () => void, dispatch: ptr): ptr {
+    const c = chanAt(channel)
+    return unsafe.addressOf(new SelectCase(caseReceive, c, 0, unsafe.alloc(c.size), handler, dispatch))
+}
+
+//ore:runtime ore_rt_case_send
+function caseSendNew(channel: ptr, value: ptr, handler: () => void): ptr {
+    const c = chanAt(channel)
+    const buffer = unsafe.alloc(c.size)
+    unsafe.copy(buffer, value, c.size)
+    return unsafe.addressOf(new SelectCase(caseSend, c, 0, buffer, handler, nil()))
+}
+
+//ore:runtime ore_rt_case_after
+function caseAfterNew(ms: int, handler: () => void): ptr {
+    return unsafe.addressOf(new SelectCase(caseAfter, null, ms, nil(), handler, nil()))
+}
+
+/** The received value of a receive case, and whether there was one, for its dispatch function. */
+//ore:runtime ore_rt_case_value
+function caseValue(c: ptr, ok: ptr): ptr {
+    const s = caseAt(c)
+    unsafe.store<u8>(ok, s.ok ? 1 : 0)
+    return s.buffer
+}
+
+//ore:runtime ore_rt_case_handler
+function caseHandler(c: ptr): () => void {
+    return caseAt(c).handler
+}
+
+function runCase(c: SelectCase): void {
+    if (c.kind === caseReceive) {
+        // The dispatch function as a closure whose environment is the case.
+        const cell = unsafe.alloc(16)
+        unsafe.store<ptr>(cell, c.dispatch)
+        unsafe.store<ptr>(unsafe.add(cell, 8), unsafe.addressOf(c))
+        const dispatch = unsafe.load<() => void>(cell)
+        dispatch()
+    } else {
+        c.handler()
+    }
+}
+
+/** Case `k` of the array of case addresses that generated code passes. */
+function caseIn(data: ptr, k: int): SelectCase {
+    return caseAt(unsafe.load<ptr>(unsafe.add(data, k * 8)))
+}
+
+/** The channel locks of a select, sorted by address and without duplicates, so that every select locks in one order. */
+function lockSet(data: ptr, n: int): ptr[] {
+    const locks: ptr[] = []
+    for (let k = 0; k < n; k++) {
+        const chan = caseIn(data, k).chan
+        if (chan === null) continue
+        const l = chan.lock
+        // Insertion into the sorted list: selects have few cases.
+        let i = locks.length
+        while (i > 0 && unsafe.toInt(locks[i - 1]) > unsafe.toInt(l)) i--
+        if (i > 0 && locks[i - 1] === l) continue
+        locks.push(l)
+        for (let j = locks.length - 1; j > i; j--) locks[j] = locks[j - 1]
+        locks[i] = l
+    }
+    return locks
+}
+
+function lockAll(locks: ptr[]): void {
+    for (const l of locks) lock(l)
+}
+
+function unlockAll(locks: ptr[]): void {
+    for (let i = locks.length - 1; i >= 0; i--) unlock(locks[i])
+}
+
+function queueOf(c: SelectCase): Waiter | null {
+    const chan = c.chan!
+    return c.kind === caseReceive ? chan.receivers : chan.senders
+}
+
+function setQueue(c: SelectCase, queue: Waiter | null): void {
+    const chan = c.chan!
+    if (c.kind === caseReceive) chan.receivers = queue
+    else chan.senders = queue
+}
+
+/**
+ * Runs the handler of one case that can proceed, waiting for one unless
+ * `otherwise` (a closure, or one without code) runs instead.
+ */
+//ore:runtime ore_rt_select
+function select(caseArray: ptr, otherwise: () => void): void {
+    const n = unsafe.load<int>(unsafe.add(caseArray, 8))
+    const data = unsafe.load<ptr>(caseArray)
+    const locks = lockSet(data, n)
+    lockAll(locks)
+
+    // A case that can proceed now, starting at a random one for fairness.
+    const start = n > 0 ? i64(Math.random() * f64(n)) : 0
+    for (let k = 0; k < n; k++) {
+        const c = caseIn(data, (start + k) % n)
+        const chan = c.chan
+        if (c.kind === caseReceive && chan !== null && canReceive(chan)) {
+            c.ok = receiveNow(chan, c.buffer)
+            unlockAll(locks)
+            return runCase(c)
+        }
+        if (c.kind === caseSend && chan !== null) {
+            if (chan.closed) {
+                unlockAll(locks)
+                process.panic("send on closed channel")
+            }
+            if (canSend(chan)) {
+                sendNow(chan, c.buffer)
+                unlockAll(locks)
+                return runCase(c)
+            }
+        }
+        if (c.kind === caseAfter && c.ms <= 0) {
+            unlockAll(locks)
+            return runCase(c)
+        }
+    }
+    // `otherwise` without code means there is none.
+    const cell = unsafe.alloc(16)
+    unsafe.store<() => void>(cell, otherwise)
+    if (!isNil(unsafe.load<ptr>(cell))) {
+        unlockAll(locks)
+        return otherwise()
+    }
+
+    // Wait on every channel and on the earliest timeout at once.
+    const state = new SelectState()
+    const t = current()
+    const waiters: (Waiter | null)[] = []
+    let timeout: SelectCase | null = null
+    for (let k = 0; k < n; k++) {
+        const c = caseIn(data, k)
+        if (c.kind === caseAfter) {
+            if (timeout === null || c.ms < timeout.ms) timeout = c
+            waiters.push(null)
+            continue
+        }
+        const w = new Waiter(t, c.buffer, state, k)
+        waiters.push(w)
+        setQueue(c, waitPush(queueOf(c), w))
+    }
+    t.select = state
+    if (timeout !== null) wakeIn(t, timeout.ms)
+    t.state = blocked
+    // The channel locks are held until the task has left its stack and its
+    // timer is set, so no case can fire before.
+    const timed = timeout !== null
+    park(() => {
+        if (timed) {
+            const s = scheduler()
+            lock(s.lock)
+            addTimerLocked(t)
+            unlock(s.lock)
+        }
+        unlockAll(locks)
+    })
+
+    // Woken by one case or by the timeout; leave the other queues.
+    lockAll(locks)
+    t.select = null
+    for (let k = 0; k < n; k++) {
+        const w = waiters[k]
+        if (w !== null) setQueue(caseIn(data, k), waitRemove(queueOf(caseIn(data, k)), w))
+    }
+    unlockAll(locks)
+    const fired = unsafe.atomicLoad<i64>(state.fired)
+    if (fired === selectTimeout && timeout !== null) return runCase(timeout)
+    const c = caseIn(data, fired)
+    const w = waiters[fired]!
+    if (c.kind === caseSend && !w.ok) process.panic("send on closed channel")
+    c.ok = w.ok
+    runCase(c)
+}

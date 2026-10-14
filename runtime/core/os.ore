@@ -1,0 +1,249 @@
+// The operating system under the scheduler: threads, locks, memory mappings,
+// clocks, the network poller and the garbage collector's hooks, from libc and
+// the Boehm GC. Struct sizes and constants differ between platforms; they
+// were read from the system headers of macOS (arm64) and Linux (arm64 and
+// x86-64).
+
+// ---------------------------------------------------------------------------
+// libc
+
+export declare function malloc(size: u64): ptr
+export declare function calloc(count: u64, size: u64): ptr
+export declare function getenv(name: string): ptr
+export declare function sysconf(name: i32): i64
+export declare function clock_gettime(clock: i32, time: ptr): i32
+export declare function mmap(address: ptr, size: u64, protection: i32, flags: i32, fd: i32, offset: i64): ptr
+export declare function mprotect(address: ptr, size: u64, protection: i32): i32
+export declare function munmap(address: ptr, size: u64): i32
+
+export declare function pthread_mutex_init(mutex: ptr, attributes: ptr): i32
+export declare function pthread_mutex_lock(mutex: ptr): i32
+export declare function pthread_mutex_unlock(mutex: ptr): i32
+export declare function pthread_cond_init(cond: ptr, attributes: ptr): i32
+export declare function pthread_cond_signal(cond: ptr): i32
+export declare function pthread_cond_wait(cond: ptr, mutex: ptr): i32
+export declare function pthread_cond_timedwait(cond: ptr, mutex: ptr, deadline: ptr): i32
+export declare function pthread_rwlock_init(lock: ptr, attributes: ptr): i32
+export declare function pthread_rwlock_rdlock(lock: ptr): i32
+export declare function pthread_rwlock_wrlock(lock: ptr): i32
+export declare function pthread_rwlock_unlock(lock: ptr): i32
+export declare function pthread_attr_init(attributes: ptr): i32
+export declare function pthread_attr_setdetachstate(attributes: ptr, state: i32): i32
+export declare function pthread_attr_destroy(attributes: ptr): i32
+export declare function pthread_create(thread: ptr, attributes: ptr, start: ptr, argument: ptr): i32
+
+// The network poller: kqueue on macOS, epoll on Linux.
+export declare function kqueue(): i32
+export declare function kevent(
+    queue: i32,
+    changes: ptr,
+    changeCount: i32,
+    events: ptr,
+    eventCount: i32,
+    timeout: ptr,
+): i32
+export declare function epoll_create1(flags: i32): i32
+export declare function epoll_ctl(poller: i32, op: i32, fd: i32, event: ptr): i32
+export declare function epoll_wait(poller: i32, events: ptr, count: i32, timeout: i32): i32
+
+// ---------------------------------------------------------------------------
+// The Boehm GC
+
+export declare function GC_get_my_stackbottom(base: ptr): ptr
+export declare function GC_set_stackbottom(thread: ptr, base: ptr): void
+export declare function GC_get_stack_base(base: ptr): i32
+export declare function GC_allow_register_threads(): void
+export declare function GC_register_my_thread(base: ptr): i32
+export declare function GC_push_all_eager(bottom: ptr, top: ptr): void
+export declare function GC_set_push_other_roots(proc: ptr): void
+export declare function GC_get_push_other_roots(): ptr
+export declare function GC_set_on_collection_event(proc: ptr): void
+export declare function GC_call_with_alloc_lock(fn: ptr, data: ptr): ptr
+
+/** Collection events of GC_set_on_collection_event. */
+export const gcEventPreStopWorld = 6
+export const gcEventPostStartWorld = 9
+
+// ---------------------------------------------------------------------------
+// Memory outside the collector, for state that C and assembly reach by address
+
+/** Zeroed memory that is never freed or collected. */
+export function permanent(size: int): ptr {
+    return calloc(1, u64(size))
+}
+
+export function nil(): ptr {
+    return unsafe.fromInt(0)
+}
+
+export function isNil(p: ptr): bool {
+    return unsafe.toInt(p) === 0
+}
+
+// ---------------------------------------------------------------------------
+// Locks: buffers larger than any platform's pthread types (at most 200 bytes, a
+// macOS rwlock), set up by pthread_*_init since static initializers differ.
+
+const lockSize = 256
+
+/** A new mutex, in collected memory: it lives as long as the object holding it. */
+export function newMutex(): ptr {
+    const m = unsafe.allocBytes(lockSize)
+    pthread_mutex_init(m, nil())
+    return m
+}
+
+/** A new mutex that is never freed, for the scheduler. */
+export function permanentMutex(): ptr {
+    const m = permanent(lockSize)
+    pthread_mutex_init(m, nil())
+    return m
+}
+
+export function permanentCond(): ptr {
+    const c = permanent(lockSize)
+    pthread_cond_init(c, nil())
+    return c
+}
+
+export function permanentRwlock(): ptr {
+    const l = permanent(lockSize)
+    pthread_rwlock_init(l, nil())
+    return l
+}
+
+export function lock(m: ptr): void {
+    pthread_mutex_lock(m)
+}
+
+export function unlock(m: ptr): void {
+    pthread_mutex_unlock(m)
+}
+
+// ---------------------------------------------------------------------------
+// Threads
+
+/** Starts a detached OS thread running `start(argument)`, a C function; false if it could not. */
+export function startThread(start: ptr, argument: ptr): bool {
+    const attributes = unsafe.allocBytes(lockSize)
+    const thread = unsafe.allocBytes(8)
+    pthread_attr_init(attributes)
+    pthread_attr_setdetachstate(attributes, target.os === "darwin" ? 2 : 1)
+    const started = pthread_create(thread, attributes, start, argument) === 0
+    pthread_attr_destroy(attributes)
+    return started
+}
+
+export function cpuCount(): int {
+    const n = sysconf(target.os === "darwin" ? 58 : 84)
+    return n > 0 ? n : 1
+}
+
+export function pageSize(): int {
+    return sysconf(target.os === "darwin" ? 29 : 30)
+}
+
+// ---------------------------------------------------------------------------
+// Clocks
+
+const clockRealtime: i32 = 0
+
+function clockMonotonic(): i32 {
+    return target.os === "darwin" ? 6 : 1
+}
+
+/** Milliseconds on a clock that only goes forward. */
+export function nowMs(time: ptr): int {
+    clock_gettime(clockMonotonic(), time)
+    return unsafe.load<i64>(time) * 1000 + unsafe.load<i64>(unsafe.add(time, 8)) / 1000000
+}
+
+/** Fills `deadline` (a timespec) with the wall-clock time `ms` from now, for pthread_cond_timedwait. */
+export function deadlineIn(deadline: ptr, ms: int): void {
+    clock_gettime(clockRealtime, deadline)
+    let seconds = unsafe.load<i64>(deadline) + ms / 1000
+    let nanos = unsafe.load<i64>(unsafe.add(deadline, 8)) + (ms % 1000) * 1000000
+    if (nanos >= 1000000000) {
+        seconds++
+        nanos -= 1000000000
+    }
+    unsafe.store<i64>(deadline, seconds)
+    unsafe.store<i64>(unsafe.add(deadline, 8), nanos)
+}
+
+// ---------------------------------------------------------------------------
+// Memory mappings, for task stacks
+
+const protNone: i32 = 0
+const protReadWrite: i32 = 3
+const mapPrivate: i32 = 2
+
+function mapAnonymous(): i32 {
+    return target.os === "darwin" ? 0x1000 : 0x20
+}
+
+/** A private mapping of `size` bytes whose lowest page faults when touched; null if there is no memory. */
+export function mapGuarded(size: int): ptr {
+    const p = mmap(nil(), u64(size), protReadWrite, mapPrivate | mapAnonymous(), -1, 0)
+    // MAP_FAILED is the address -1.
+    if (unsafe.toInt(p) === 18446744073709551615) return nil()
+    mprotect(p, u64(pageSize()), protNone)
+    return p
+}
+
+export function unmap(p: ptr, size: int): void {
+    munmap(p, u64(size))
+}
+
+// ---------------------------------------------------------------------------
+// The network poller
+
+const pollBatch = 64
+
+/** The size of one event of the poller. */
+function eventSize(): int {
+    if (target.os === "darwin") return 32
+    return target.arch === "x86_64" ? 12 : 16
+}
+
+export function newPoller(): i32 {
+    // EPOLL_CLOEXEC on Linux.
+    return target.os === "darwin" ? kqueue() : epoll_create1(0x80000)
+}
+
+/** Room for the events of one wait. */
+export function newEvents(): ptr {
+    return permanent(pollBatch * eventSize())
+}
+
+/** Waits for readiness events; returns how many there are. */
+export function pollWait(poller: i32, events: ptr): int {
+    if (target.os === "darwin") return i64(kevent(poller, nil(), 0, events, pollBatch, nil()))
+    return i64(epoll_wait(poller, events, pollBatch, -1))
+}
+
+/** The data registered with event `i`. */
+export function eventData(events: ptr, i: int): ptr {
+    const event = unsafe.add(events, i * eventSize())
+    if (target.os === "darwin") return unsafe.load<ptr>(unsafe.add(event, 24))
+    // epoll_event is packed on x86-64: its data follows the 4 bytes of the event mask.
+    return unsafe.load<ptr>(unsafe.add(event, target.arch === "x86_64" ? 4 : 8))
+}
+
+/** Asks for one readiness event of `fd` (writable, or readable), carrying `data`; false if it failed. */
+export function pollOnce(poller: i32, fd: i32, write: bool, data: ptr): bool {
+    const event = unsafe.allocBytes(32)
+    if (target.os === "darwin") {
+        // EV_SET(event, fd, EVFILT_WRITE or EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, data)
+        unsafe.store<u64>(event, u64(fd))
+        unsafe.store<i16>(unsafe.add(event, 8), write ? -2 : -1)
+        unsafe.store<u16>(unsafe.add(event, 10), 0x1 | 0x10)
+        unsafe.store<ptr>(unsafe.add(event, 24), data)
+        return kevent(poller, event, 1, nil(), 0, nil()) >= 0
+    }
+    // EPOLLOUT or EPOLLIN, with EPOLLONESHOT; modified if registered before, else added.
+    const flags: u32 = u32(write ? 0x4 : 0x1) | 0x40000000
+    unsafe.store<u32>(event, flags)
+    unsafe.store<ptr>(unsafe.add(event, target.arch === "x86_64" ? 4 : 8), data)
+    return epoll_ctl(poller, 3, fd, event) >= 0 || epoll_ctl(poller, 1, fd, event) >= 0
+}
