@@ -10,10 +10,12 @@ Port the C runtime ([`runtime/c`](../runtime/c)) to Ore
 once its Ore version passes the tests. Only libc and the GC stay outside Ore.
 
 - Done: strings (comparison, concatenation, UTF-8 decoding, search, slicing,
-  split and join, trim, case, replace, repeat, pad). A string benchmark got
-  about 18% faster, since these now inline into the program.
-- Next: arrays, maps, printing and number formatting, JSON, the network,
-  then the scheduler and channels.
+  split and join, trim, case, replace, repeat, pad), about 18% faster on a
+  string benchmark; arrays (new, push, pop, slice, reverse, stable sort),
+  about 1.9 times faster on an array benchmark. The speed comes from
+  inlining into the program.
+- Next: maps, printing and number formatting, JSON, the network, then the
+  scheduler and channels.
 - Also: the system part of the standard library that the compiler in Ore
   will need: running a process with its output, directories and paths,
   hashing, files embedded in the binary.

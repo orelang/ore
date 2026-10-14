@@ -26,7 +26,7 @@ export interface CPrototype {
 
 const structTypes = new Set(["ore_string", "ore_closure", "ore_iface"])
 const intTypes = new Set(["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "bool", "char", "uintptr_t", "size_t"])
-const pointerTypedefs = new Set(["ore_cmp_fn", "ore_hash_fn", "ore_eq_fn"])
+const pointerTypedefs = new Set(["ore_hash_fn", "ore_eq_fn"])
 
 /** Functions of the runtime not called from generated code. */
 const internal = new Set(["ore_entry", "ore_rt_run_main"])

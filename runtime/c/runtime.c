@@ -21,6 +21,8 @@ void *GC_malloc_atomic(size_t size);
 // Helpers defined below.
 static void *alloc_atomic(i64 size);
 static ore_string str_copy(const char *s, size_t n);
+static ore_array *array_new(i64 elem_size, i64 len);
+static void *array_push(ore_array *a, i64 elem_size);
 static bool is_space(u8 c);
 
 static int arg_count;
@@ -129,9 +131,9 @@ const char *ore_rt_cstring(ore_string s) { return c_string(s); }
 ore_string ore_rt_from_cstring(const char *p) { return p ? str_copy(p, strlen(p)) : ORE_STR(""); }
 
 ore_array *ore_rt_args(void) {
-  ore_array *a = ore_rt_array_new(sizeof(ore_string), 0);
+  ore_array *a = array_new(sizeof(ore_string), 0);
   for (int i = 1; i < arg_count; i++) {
-    *(ore_string *)ore_rt_array_push(a, sizeof(ore_string)) = str_copy(arg_values[i], strlen(arg_values[i]));
+    *(ore_string *)array_push(a, sizeof(ore_string)) = str_copy(arg_values[i], strlen(arg_values[i]));
   }
   return a;
 }
@@ -279,13 +281,6 @@ static void *alloc_atomic(i64 size) {
 
 // ---------------------------------------------------------------------------
 // Strings
-
-// Resolves a JavaScript `slice` offset against a length.
-static i64 slice_offset(i64 offset, i64 len) {
-  if (offset < 0) offset += len;
-  if (offset < 0) return 0;
-  return offset > len ? len : offset;
-}
 
 static bool is_space(u8 c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
 
@@ -440,17 +435,17 @@ void ore_rt_map_clear(ore_map *m) {
 }
 
 ore_array *ore_rt_map_keys(ore_map *m) {
-  ore_array *a = ore_rt_array_new(m->key_size, 0);
+  ore_array *a = array_new(m->key_size, 0);
   for (i64 i = 0; i < m->count; i++) {
-    if (ore_rt_map_live(m, i)) memcpy(ore_rt_array_push(a, m->key_size), ore_rt_map_key(m, i), (size_t)m->key_size);
+    if (ore_rt_map_live(m, i)) memcpy(array_push(a, m->key_size), ore_rt_map_key(m, i), (size_t)m->key_size);
   }
   return a;
 }
 
 ore_array *ore_rt_map_values(ore_map *m) {
-  ore_array *a = ore_rt_array_new(m->value_size, 0);
+  ore_array *a = array_new(m->value_size, 0);
   for (i64 i = 0; i < m->count; i++) {
-    if (ore_rt_map_live(m, i)) memcpy(ore_rt_array_push(a, m->value_size), ore_rt_map_value(m, i), (size_t)m->value_size);
+    if (ore_rt_map_live(m, i)) memcpy(array_push(a, m->value_size), ore_rt_map_value(m, i), (size_t)m->value_size);
   }
   return a;
 }
@@ -458,7 +453,8 @@ ore_array *ore_rt_map_values(ore_map *m) {
 // ---------------------------------------------------------------------------
 // Arrays
 
-ore_array *ore_rt_array_new(i64 elem_size, i64 len) {
+// Arrays for the C code; generated code uses runtime/core/array.ore.
+static ore_array *array_new(i64 elem_size, i64 len) {
   ore_array *a = ore_rt_alloc(sizeof(ore_array));
   a->data = ore_rt_alloc(elem_size * len);
   a->len = len;
@@ -466,7 +462,7 @@ ore_array *ore_rt_array_new(i64 elem_size, i64 len) {
   return a;
 }
 
-void *ore_rt_array_push(ore_array *a, i64 elem_size) {
+static void *array_push(ore_array *a, i64 elem_size) {
   if (a->len == a->cap) {
     i64 cap = a->cap < 4 ? 4 : a->cap * 2;
     void *data = ore_rt_alloc(elem_size * cap);
@@ -475,56 +471,6 @@ void *ore_rt_array_push(ore_array *a, i64 elem_size) {
     a->cap = cap;
   }
   return (u8 *)a->data + elem_size * a->len++;
-}
-
-void *ore_rt_array_pop(ore_array *a, i64 elem_size) {
-  if (a->len == 0) ore_rt_panic_cstr("pop from an empty array");
-  return (u8 *)a->data + elem_size * --a->len;
-}
-
-void ore_rt_array_sort(ore_array *a, i64 elem_size, ore_cmp_fn cmp, void *ctx) {
-  i64 n = a->len;
-  if (n < 2) return;
-  u8 *src = a->data;
-  u8 *buf = ore_rt_alloc(n * elem_size);
-  // Bottom-up merge sort: stable, as JavaScript requires.
-  for (i64 width = 1; width < n; width *= 2) {
-    for (i64 lo = 0; lo < n; lo += 2 * width) {
-      i64 mid = lo + width < n ? lo + width : n;
-      i64 hi = lo + 2 * width < n ? lo + 2 * width : n;
-      i64 i = lo, j = mid, k = lo;
-      while (i < mid && j < hi) {
-        bool right = cmp(ctx, src + j * elem_size, src + i * elem_size) < 0;
-        memcpy(buf + k++ * elem_size, src + (right ? j++ : i++) * elem_size, (size_t)elem_size);
-      }
-      while (i < mid) memcpy(buf + k++ * elem_size, src + i++ * elem_size, (size_t)elem_size);
-      while (j < hi) memcpy(buf + k++ * elem_size, src + j++ * elem_size, (size_t)elem_size);
-    }
-    u8 *t = src;
-    src = buf;
-    buf = t;
-  }
-  if (src != a->data) memcpy(a->data, src, (size_t)(n * elem_size));
-}
-
-void ore_rt_array_reverse(ore_array *a, i64 elem_size) {
-  u8 tmp[64];
-  u8 *big = elem_size > (i64)sizeof tmp ? ore_rt_alloc(elem_size) : tmp;
-  for (i64 i = 0, j = a->len - 1; i < j; i++, j--) {
-    u8 *x = (u8 *)a->data + i * elem_size, *y = (u8 *)a->data + j * elem_size;
-    memcpy(big, x, (size_t)elem_size);
-    memcpy(x, y, (size_t)elem_size);
-    memcpy(y, big, (size_t)elem_size);
-  }
-}
-
-ore_array *ore_rt_array_slice(ore_array *a, i64 elem_size, i64 start, i64 end) {
-  start = slice_offset(start, a->len);
-  end = slice_offset(end, a->len);
-  if (end < start) end = start;
-  ore_array *r = ore_rt_array_new(elem_size, end - start);
-  if (end > start) memcpy(r->data, (u8 *)a->data + elem_size * start, (size_t)(elem_size * (end - start)));
-  return r;
 }
 
 // ---------------------------------------------------------------------------

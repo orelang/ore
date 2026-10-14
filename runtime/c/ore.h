@@ -102,7 +102,8 @@ static inline u8 ore_rt_str_at(ore_string s, i64 i) {
   return s.ptr[i];
 }
 
-// Arrays are references to a growable buffer of elements of one type.
+// Arrays are references to a growable buffer of elements of one type; their
+// functions are in runtime/core/array.ore.
 
 typedef struct {
   void *data;
@@ -110,26 +111,10 @@ typedef struct {
   i64 cap;
 } ore_array;
 
-/** A new array of `len` zeroed elements. */
-ore_array *ore_rt_array_new(i64 elem_size, i64 len);
-/** Appends one zeroed element and returns a pointer to it. */
-void *ore_rt_array_push(ore_array *a, i64 elem_size);
-/** Removes the last element and returns a pointer to it; panics if empty. */
-void *ore_rt_array_pop(ore_array *a, i64 elem_size);
-/** A copy of the elements in [start, end), with JavaScript `slice` offsets. */
-ore_array *ore_rt_array_slice(ore_array *a, i64 elem_size, i64 start, i64 end);
-
 static inline i64 ore_rt_check_index(i64 i, i64 len) {
   if ((u64)i >= (u64)len) ore_rt_panic_index(i, len);
   return i;
 }
-
-/** Compares two elements for sorting: negative, zero or positive. */
-typedef int (*ore_cmp_fn)(void *ctx, const void *a, const void *b);
-
-/** Sorts an array in place, stably (merge sort). */
-void ore_rt_array_sort(ore_array *a, i64 elem_size, ore_cmp_fn cmp, void *ctx);
-void ore_rt_array_reverse(ore_array *a, i64 elem_size);
 
 /** Pointer to element `i`, bounds-checked. */
 static inline void *ore_rt_array_at(ore_array *a, i64 i, i64 elem_size) {

@@ -1,0 +1,64 @@
+// The array functions of the runtime (runtime/core/array.ore) on edge cases.
+
+class Item {
+    constructor(
+        public key: int,
+        public name: string,
+    ) {}
+}
+
+// Sorting is stable: equal keys keep their order.
+const items: Item[] = []
+for (let i = 0; i < 40; i++) items.push(new Item((i * 7) % 5, `n${i}`))
+items.sort((a, b) => a.key - b.key)
+console.log(items.map((it) => `${it.key}${it.name}`).join(" "))
+
+// Natural order of numbers and strings, floats with a float comparator.
+console.log([10, 9, 1, -3, 100, 0].sort().join(","), ["pear", "apple", "", "fig"].sort().join(","))
+console.log([2.5, -1.5, 0.25, 10].sort((a, b) => a - b).join(","))
+const empty: int[] = []
+empty.sort()
+console.log(empty.length, [7].sort().join(","))
+
+// Elements of 1 byte, of 8 bytes, and of several words with references.
+const flags = [true, false, false, true, true]
+flags.reverse()
+console.log(flags.join(","))
+const small: u8[] = [1, 2, 3, 4, 5, 6, 7]
+small.reverse()
+console.log(small.join(","))
+const pairs = [
+    { a: 1, s: "x" },
+    { a: 2, s: "y" },
+    { a: 3, s: "z" },
+]
+pairs.reverse()
+console.log(pairs.map((p) => `${p.a}${p.s}`).join(","))
+pairs.sort((p, q) => q.a - p.a)
+console.log(pairs.map((p) => `${p.a}${p.s}`).join(","))
+
+// Slicing with JavaScript offsets.
+const xs = [0, 1, 2, 3, 4, 5]
+console.log(
+    xs.slice(2).join(","),
+    xs.slice(-2).join(","),
+    xs.slice(1, -1).join(","),
+    xs.slice(4, 2).length,
+    xs.slice(-100, 100).length,
+)
+const copy = xs.slice()
+copy.push(6)
+console.log(xs.length, copy.length)
+
+// Growth and pop, keeping references alive through many collections.
+const kept: Item[] = []
+for (let i = 0; i < 20000; i++) {
+    kept.push(new Item(i, `item-${i}`))
+    if (i % 3 === 0) kept.pop()
+}
+let total = 0
+for (const it of kept) total += it.key
+console.log(kept.length, total, kept[kept.length - 1].name)
+kept.reverse()
+kept.sort((a, b) => b.key - a.key)
+console.log(kept[0].name, kept[kept.length - 1].name)

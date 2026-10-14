@@ -20,5 +20,6 @@ Rules for this code:
 | Module | Contents |
 |---|---|
 | `string.ore` | Comparison, concatenation, UTF-8 decoding, search, slicing, split and join, trim, case, replace, repeat, pad |
+| `array.ore` | New arrays, push and pop, slicing, reverse, stable sort |
 
-Next: arrays, maps, printing and JSON, the network, the scheduler.
+Next: maps, printing and JSON, the network, the scheduler.
