@@ -15,11 +15,12 @@ once its Ore version passes the tests. Only libc and the GC stay outside Ore.
   about 1.9 times faster on an array benchmark; maps and hashing, about 15%
   faster; integers and booleans as strings, about 2.4 times faster in
   template literals. The speed comes from inlining into the program.
-  Floats as strings, for printing, template literals and JSON: exact, and
-  now the same as JavaScript in every case (the C version wrote `1e-6`
-  where JavaScript writes `0.000001`), but by big integers, slower than V8.
-- Next: a faster float algorithm (Ryu-like, with tables), JSON with the
-  string builder, then printing, the network, the scheduler and channels;
+  Floats as strings, for printing, template literals and JSON: the same as
+  JavaScript in every case (the C version wrote `1e-6` where JavaScript
+  writes `0.000001`), with Ryu about 44 times faster than the C version and
+  close to Bun.
+- Next: JSON with the string builder, then printing, the network, the
+  scheduler and channels;
   printing moves with the scheduler, since the C runtime's own output
   (panics, `ore test`) must keep its order with it.
 - Also: the system part of the standard library that the compiler in Ore

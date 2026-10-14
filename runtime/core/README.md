@@ -23,6 +23,7 @@ Rules for this code:
 | `array.ore` | New arrays, push and pop, slicing, reverse, stable sort |
 | `map.ore` | Insertion-ordered hash maps, hashing of keys |
 | `format.ore` | Integers and booleans as strings |
-| `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript |
+| `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript (Ryu for f64) |
+| `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |
 
 Next: printing and number formatting, JSON, the network, the scheduler.
