@@ -73,6 +73,8 @@ export interface FuncAttributes {
   exportName?: string
   /** `//ore:runtime name`, in the standard library: implements the runtime function `name` that generated code calls. */
   runtime?: string
+  /** `//ore:naked`: no prologue or epilogue; the body is assembly only. */
+  naked?: boolean
 }
 
 export interface Local {

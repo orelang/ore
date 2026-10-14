@@ -346,6 +346,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected unsafe(e: ir.BuiltinCall): V {
     const name = e.name.slice("unsafe.".length)
     if (name === "asm") return this.inlineAsm(e)
+    if (name === "functionAddress") return { ty: "ptr", v: globalName((e.args[0] as ir.FuncRef).func.name) }
     const a = e.args.map((x) => this.expr(x))
     const T = e.typeArgs?.[0]
     const mt = T ? this.mt(T) : ""

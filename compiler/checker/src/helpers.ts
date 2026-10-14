@@ -160,6 +160,7 @@ export const directiveKinds = new Map<string, "function" | "variable" | "module"
   ["noinline", "function"],
   ["inline", "function"],
   ["cold", "function"],
+  ["naked", "function"],
   ["export", "function"],
   ["runtime", "function"],
   ["threadlocal", "variable"],

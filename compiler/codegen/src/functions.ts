@@ -32,7 +32,7 @@ export abstract class FunctionEmitter extends EmitterBase {
     // An exported function follows C: small integers and booleans are extended.
     func.params.forEach((p, i) => params.push(`${exported ? this.externType(p.type, true) : this.lt(p.type)} %p${i}`))
     const result = exported ? this.externType(func.type.result, false) : this.lt(func.type.result)
-    const flags = [attrs.noinline && "noinline", attrs.inline && "alwaysinline", attrs.cold && "cold"].filter(Boolean).join(" ")
+    const flags = [attrs.noinline && "noinline", attrs.inline && "alwaysinline", attrs.cold && "cold", attrs.naked && "naked"].filter(Boolean).join(" ")
     return `define ${exported ? "" : "internal "}${result} ${globalName(func.name + (at ? "_at" : ""))}(${params.join(", ")})${flags ? ` ${flags}` : ""}`
   }
 
@@ -45,6 +45,11 @@ export abstract class FunctionEmitter extends EmitterBase {
     this.disposals = []
     this.frame = undefined
     this.slots = new Map()
+    if (func.attributes?.naked) {
+      // Nothing but the assembly: no frame, no parameters in memory.
+      for (const stmt of func.body.body) this.stmt(stmt)
+      return this.b.finish(this.signature(func, at), "unreachable")
+    }
     for (const node of this.plan.slots.get(func) ?? []) this.slots.set(node, this.b.alloca(this.slotType(node)))
     // The runtime keeps no frames, as when it was C: stack traces show the program's code.
     if (this.options.debug && !func.file?.startsWith("ore:runtime/")) {

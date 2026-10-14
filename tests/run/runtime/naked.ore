@@ -1,0 +1,16 @@
+// add(a, b) in assembly, called from Ore and through its address from C's qsort.
+//ore:naked
+function add(a: int, b: int): int {
+    if (target.arch === "arm64") unsafe.asm("add x0, x0, x1\nret", "")
+    else unsafe.asm("leaq (%rdi,%rsi), %rax\nretq", "")
+}
+console.log(add(40, 2), unsafe.toInt(unsafe.functionAddress(add)) > 0)
+
+declare function qsort(base: ptr, count: u64, size: u64, compare: ptr): void
+
+function byValue(a: ptr, b: ptr): i32 {
+    return i32(unsafe.load<int>(a) - unsafe.load<int>(b))
+}
+const xs = [5, 3, 9, 1]
+qsort(unsafe.load<ptr>(unsafe.addressOf(xs)), 4, 8, unsafe.functionAddress(byValue))
+console.log(xs.join(" "))

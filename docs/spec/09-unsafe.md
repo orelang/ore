@@ -18,6 +18,7 @@ in it is bounds-, type- or null-checked.
 | `addressOf(value)`, `fromAddress<T>(p)` | the address of an object, array or map, and back |
 | `stringData(s)`, `makeString(p, length)` | the bytes of a string, and a string over bytes without copying |
 | `atomicLoad<T>`, `atomicStore`, `atomicAdd`, `atomicSub`, `atomicAnd`, `atomicOr`, `atomicXor`, `atomicExchange`, `atomicCompareExchange`, `fence()` | sequentially consistent atomics on integers and `ptr` |
+| `functionAddress(f)` | the machine address of a top-level function, for C callbacks and assembly |
 | `asm<T>(template, constraints, ...operands)` | inline assembly in LLVM's syntax: `$0`, `$1` in the template, constraints such as `"=r,r,~{memory}"` |
 
 `ptr` values are invisible to the garbage collector: memory reachable only
@@ -34,6 +35,7 @@ errors.
 | `//ore:noinline` | function | never inlined |
 | `//ore:inline` | function | always inlined by LLVM |
 | `//ore:cold` | function | rarely called: optimized for size, placed apart |
+| `//ore:naked` | function | no prologue or epilogue: the body is only `unsafe.asm`, chosen by `if` on the target, and returns by itself |
 | `//ore:export name` | function | visible to C as `name`, with the C calling convention; numbers, `bool` and `ptr` only |
 | `//ore:internal` | the module, before its first statement | allows the namespace `internal` and `//ore:runtime`, otherwise only for the standard library |
 | `//ore:runtime name` | function in the standard library | implements the runtime function `name` (see `runtime/core`) |

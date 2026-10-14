@@ -342,6 +342,13 @@ export abstract class CallChecker extends ExpressionChecker {
         if (bits(t) !== bits(value.type)) return this.fail(node, `'${name}' needs types of the same size: '${typeToString(value.type)}' has ${bits(value.type)} bits, '${typeToString(t)}' ${bits(t)}.`)
         return call(t, [value], [t])
       }
+      case "functionAddress": {
+        if (!expect(1)) return errorOperand
+        const operand = this.checkExpr(args[0]!, scope)
+        if (operand.k === "error") return errorOperand
+        if (operand.k !== "typed" || operand.expr.k !== "func-ref") return this.fail(args[0]!, `'${name}' needs the name of a top-level function.`)
+        return call(types.ptr, [operand.expr])
+      }
       case "addressOf": {
         if (!expect(1)) return errorOperand
         const v = typeFrom(0)

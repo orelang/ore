@@ -93,6 +93,23 @@ export abstract class DeclarationChecker extends CheckerBase {
       if (d.name === "noinline") attributes.noinline = true
       else if (d.name === "inline") attributes.inline = true
       else if (d.name === "cold") attributes.cold = true
+      else if (d.name === "naked") {
+        // The body runs without a frame, so it may hold nothing but assembly, chosen by `if` on the target.
+        const asmOnly = (s: ts.Statement): boolean =>
+          ts.isBlock(s)
+            ? s.statements.every(asmOnly)
+            : ts.isIfStatement(s)
+              ? asmOnly(s.thenStatement) && (!s.elseStatement || asmOnly(s.elseStatement))
+              : ts.isExpressionStatement(s) &&
+                ts.isCallExpression(s.expression) &&
+                s.expression.expression.getText() === "unsafe.asm" &&
+                s.expression.arguments.length === 2
+        if (!decl.body!.statements.every(asmOnly)) this.directiveError(decl, d, "A '//ore:naked' function holds only 'unsafe.asm(template, constraints)' statements.")
+        else {
+          attributes.naked = true
+          attributes.noinline = true
+        }
+      }
       else if (d.name === "runtime" && d.arg !== "" && this.isInternal(this.sourceOf(decl))) attributes.runtime = d.arg
       else if (d.name === "export" && d.arg !== "") {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(d.arg)) {
@@ -708,11 +725,18 @@ export abstract class DeclarationChecker extends CheckerBase {
     func.body.body.unshift(...prologue)
     this.fn = undefined
     this.checkReturns(func, decl.type ?? decl.name!)
+    // Without a frame, a naked function can branch only on what is known at compile time.
+    if (func.attributes?.naked) {
+      const constant = (st: ir.Stmt): boolean =>
+        st.k === "block" ? st.body.every(constant) : st.k === "if" ? st.cond.k === "bool" && constant(st.then) && (!st.else || constant(st.else)) : true
+      if (!func.body.body.every(constant)) this.error(decl.name!, "A '//ore:naked' function can branch only on conditions known at compile time, such as 'target.arch'.")
+    }
   }
 
   protected checkReturns(func: ir.Func, node: ts.Node) {
     const result = func.type.result
-    if (result.kind !== "void" && !terminates(func.body)) {
+    // A naked function returns from its assembly.
+    if (result.kind !== "void" && !func.attributes?.naked && !terminates(func.body)) {
       this.error(node, `Function '${func.sourceName}' must return a value of type '${typeToString(result)}' on every path.`)
     }
   }
