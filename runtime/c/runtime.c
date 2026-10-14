@@ -284,9 +284,15 @@ static void *alloc_atomic(i64 size) {
 
 static bool is_space(u8 c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
 
+/**
+ * A copy of `n` bytes as a string, followed by a NUL that is not part of it:
+ * C functions such as strtod may read the copy, and must stop at its end
+ * rather than in whatever memory follows.
+ */
 static ore_string str_copy(const char *s, size_t n) {
-  u8 *p = alloc_atomic((i64)n);
+  u8 *p = alloc_atomic((i64)n + 1);
   memcpy(p, s, n);
+  p[n] = 0;
   return (ore_string){p, (i64)n};
 }
 
