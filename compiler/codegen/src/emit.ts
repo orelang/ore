@@ -1,7 +1,6 @@
 // Emits an LLVM IR module for an Ore module: the layers of ModuleEmitter put together.
 import * as ir from "@ore/ir"
 import { inlineCalls, planStack } from "@ore/opt"
-import { parsePrototypes } from "./abi"
 import { globalName } from "./ll"
 import { type EmitOptions, STR, FN, IFACE, FRAME, ARRAY, MAP } from "./context"
 import { findGlobals } from "./helpers"
@@ -10,13 +9,14 @@ import { JsonEmitter } from "./json"
 export type { EmitOptions } from "./context"
 
 /**
- * Emits an LLVM IR module for an Ore module. Calls into the C runtime go
- * through the `ore_abi_*` wrappers generated from `header` (see abi.ts).
+ * Emits an LLVM IR module for an Ore module. The runtime, written in Ore
+ * (runtime/core), is part of the module, so its functions inline into the
+ * program's code.
  */
-export function emitModule(module: ir.Module, header: string, options: EmitOptions = { debug: false }): string {
+export function emitModule(module: ir.Module, options: EmitOptions = { debug: false }): string {
   // Inlining loses the frames of stack traces, so debug builds keep every call.
   if (!options.debug) inlineCalls(module)
-  return new ModuleEmitter(module, parsePrototypes(header), options).emit()
+  return new ModuleEmitter(module, options).emit()
 }
 
 export class ModuleEmitter extends JsonEmitter {

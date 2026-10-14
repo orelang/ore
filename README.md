@@ -344,7 +344,7 @@ Another binary can be set with the `ore.path` setting.
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Runtime in Ore: no C file left (done); the inline helpers of `ore.h` | in progress |
+| 9. Runtime in Ore: no C left; only libc and the Boehm GC outside Ore | done |
 | 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
 | 11. Own precise garbage collector | planned |
 | 12. Promises and `async`/`await` | planned |
@@ -390,7 +390,6 @@ Every directory below has a README with the details.
 | `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer and the parser) |
 | `runtime/core` | The runtime written in Ore (`ore:runtime/...`), part of every program |
 | `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`) |
-| `runtime/c` | The part of the runtime still in C, moving to `runtime/core` |
 | `runtime/third_party/bdwgc` | The Boehm garbage collector (submodule) |
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |

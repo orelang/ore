@@ -6,7 +6,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { clang } from "./clang"
-import { header, prepareRuntime } from "./runtime"
+import { prepareGc } from "./gc"
+import { cacheDir } from "./runtime"
 
 
 export interface CompileResult {
@@ -23,7 +24,7 @@ export function compileToIr(entry: string, options: EmitOptions = { debug: false
   const checked = check(program)
   const diagnostics = [...program.diagnostics, ...checked.diagnostics]
   if (!checked.module || program.diagnostics.length > 0) return { diagnostics }
-  return { ir: emitModule(checked.module, header, options), diagnostics, native: nativeCode(program.modules.map((m) => m.path)) }
+  return { ir: emitModule(checked.module, options), diagnostics, native: nativeCode(program.modules.map((m) => m.path)) }
 }
 
 export interface NativeCode {
@@ -66,13 +67,14 @@ export async function build(path: string, options: BuildOptions): Promise<BuildR
   if (options.emitLlvm) writeFileSync(options.emitLlvm, ir)
 
   const flags = [...commonFlags, ...(options.release ? ["-O2"] : ["-O0", "-g"])]
-  const runtime = await prepareRuntime(flags)
+  // The runtime is Ore, part of the program's LLVM IR; only the GC is a separate object.
+  const gc = await prepareGc(cacheDir())
   const dir = mkdtempSync(join(tmpdir(), "ore-build-"))
   try {
     const irPath = join(dir, "main.ll")
     writeFileSync(irPath, ir)
     const libs = (native?.link ?? []).map((l) => `-l${l}`)
-    await clang([...flags, "-I", runtime.includeDir, irPath, ...(native?.sources ?? []), ...runtime.objects, "-lm", "-pthread", ...libs, "-o", options.output])
+    await clang([...flags, irPath, ...(native?.sources ?? []), gc, "-lm", "-pthread", ...libs, "-o", options.output])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

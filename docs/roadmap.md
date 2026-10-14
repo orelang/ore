@@ -3,42 +3,20 @@
 What is done is in the [README](../README.md#status) and the
 [specification](spec); this is what comes next, in order.
 
-## 1. Runtime in Ore (in progress)
+## 1. Runtime in Ore (done)
 
-Port the C runtime ([`runtime/c`](../runtime/c)) to Ore
-([`runtime/core`](../runtime/core)) part by part, deleting each C function
-once its Ore version passes the tests. Only libc and the GC stay outside Ore.
+The whole runtime is Ore, in [`runtime/core`](../runtime/core): strings,
+arrays, maps, number formatting (Ryu), JSON, the scheduler with its context
+switch in assembly, channels and `select`, the network poller and sockets,
+printing, panics, the `ore test` runner, files and the program's entry point.
+Only libc and the Boehm GC are outside Ore. Most of it is faster than the C it
+replaced, since it inlines into the program (array indexing 17 times,
+float formatting 44 times), and it agrees with JavaScript where the C did
+not (`toFixed`, `parseFloat`, number layout).
 
-- Done: strings (comparison, concatenation, UTF-8 decoding, search, slicing,
-  split and join, trim, case, replace, repeat, pad), about 18% faster on a
-  string benchmark; arrays (new, push, pop, slice, reverse, stable sort),
-  about 1.9 times faster on an array benchmark; maps and hashing, about 15%
-  faster; integers and booleans as strings, about 2.4 times faster in
-  template literals. The speed comes from inlining into the program.
-  Floats as strings, for printing, template literals and JSON: the same as
-  JavaScript in every case (the C version wrote `1e-6` where JavaScript
-  writes `0.000001`), with Ryu about 44 times faster than the C version and
-  close to Bun.
-  JSON: the string builder, the parser and the decoding helpers, the same
-  as the C version in every message and as fast. Numbers: `parseInt`,
-  `parseFloat` and `toFixed` now as JavaScript computes them (the C version
-  rounded `(2.5).toFixed(0)` to `2` and read `parseFloat("0x10")` as 16).
-  The scheduler: tasks with the context switch in assembly, workers,
-  timers, channels, `select` and the network poller, about as fast as the C
-  version. Allocation, inlined into every `new`, at least as fast as the C
-  version; files, the clock, `Math.random`, C strings and the conversion of
-  interface values; TCP sockets.
-  Printing, panics, the `ore test` runner (each test in its own task, so a
-  panic ends only that test) and the program's entry point. Indexing arrays
-  and strings now inlines its bounds check, which made a loop over an array
-  17 times faster. No C file is left in the runtime.
-- Next: the inline helpers of interface values that `ore.h` still gives
-  generated code, then the compiler in Ore;
-  printing moves with the scheduler, since the C runtime's own output
-  (panics, `ore test`) must keep its order with it.
-- Also: the system part of the standard library that the compiler in Ore
-  will need: running a process with its output, directories and paths,
-  hashing, files embedded in the binary.
+Still needed for the compiler in Ore: running a process and reading its
+output, directories and paths. Hashing (`ore:crypto`) and files embedded at
+compile time (`import x from "./f" with { type: "text" }`) are done.
 
 ## 2. Compiler in Ore
 

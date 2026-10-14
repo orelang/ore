@@ -62,14 +62,12 @@ Everything a program needs at run time is in [`runtime/`](../runtime):
 - **Panics** print a message and, in debug builds, a stack trace from a
   shadow stack of frames kept by generated code.
 
-The runtime moves from C to Ore: a function in `runtime/core` marked
-`//ore:runtime ore_rt_name` replaces the C function of that name, and
-generated code calls it directly. Being in the same LLVM module as the
-program, it inlines into it. Calls to what is still C go through generated
-wrappers `ore_abi_*` that pass structs by pointer and integers as 64 bits, a
-convention that is the same in LLVM IR on every target. The tools for writing
-the runtime in Ore are the `unsafe` namespace and `//ore:` directives
-([spec](spec/09-unsafe.md)).
+The runtime is written in Ore: a function in `runtime/core` marked
+`//ore:runtime ore_rt_name` is what generated code calls for `ore_rt_name`.
+Being in the same LLVM module as the program, it inlines into it. Only libc
+and the Boehm GC are outside Ore. The tools for writing the runtime in Ore
+are the `unsafe` namespace, `//ore:` directives, variadic C declarations and
+`target.os` / `target.arch` ([spec](spec/09-unsafe.md)).
 
 ## Testing
 

@@ -24,7 +24,7 @@ export const JSON_VALUE = "%ore.json"
 
 export const JSON_CTX = "%ore.json.ctx"
 
-// Kinds of parsed JSON values (ORE_JSON_* in ore.h).
+// Kinds of parsed JSON values, as runtime/core/json.ore makes them.
 export const JSON_NULL = 0
 
 export const JSON_BOOL = 1

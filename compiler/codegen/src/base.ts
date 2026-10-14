@@ -2,7 +2,6 @@
 import * as ir from "@ore/ir"
 import { unionRepr, type IntType, type Type, type UnionType } from "@ore/ir"
 import type { StackPlan } from "@ore/opt"
-import type { CPrototype } from "./abi"
 import { cString, FnBuilder, globalName, intConstant, sizeOf, utf8, voidValue, type V } from "./ll"
 import { type EmitOptions, STR, FN, IFACE, type Breakable, type Storage } from "./context"
 import { boxed } from "./helpers"
@@ -63,7 +62,6 @@ export abstract class EmitterBase {
 
   constructor(
     protected module: ir.Module,
-    protected prototypes: Map<string, CPrototype>,
     protected options: EmitOptions,
   ) {}
 
@@ -165,49 +163,13 @@ export abstract class EmitterBase {
   }
 
   /**
-   * Calls runtime function `name` through its wrapper: structs go by
-   * pointer, integers as i64; a struct result comes back through a pointer.
+   * Calls runtime function `name`, written in Ore (`//ore:runtime name` in
+   * runtime/core). Integers and booleans come back as i64.
    */
   protected rt(name: string, args: V[]): V {
     const own = this.runtime.get(name)
-    if (own) return this.rtOre(own, args)
-    const proto = this.prototypes.get(name)
-    if (!proto) throw new Error(`no runtime function ${name}`)
-    const params: string[] = []
-    const operands: string[] = []
-    proto.params.forEach((p, i) => {
-      const arg = args[i]!
-      if (p.kind === "struct") {
-        params.push("ptr")
-        operands.push(`ptr ${this.spill(arg)}`)
-      } else if (p.kind === "int") {
-        params.push("i64")
-        operands.push(`i64 ${this.toI64(arg).v}`)
-      } else {
-        const ty = p.kind === "double" ? "double" : p.kind === "float" ? "float" : "ptr"
-        params.push(ty)
-        operands.push(`${ty} ${arg.v}`)
-      }
-    })
-    const r = proto.result
-    const wrapper = `@ore_abi_${name}`
-    let ret = r.kind === "int" ? "i64" : r.kind === "struct" || r.kind === "void" ? "void" : r.kind === "ptr" ? "ptr" : r.kind
-    let out: string | undefined
-    if (r.kind === "struct") {
-      const ty = r.type === "ore_string" ? STR : r.type === "ore_closure" ? FN : IFACE
-      out = this.b.alloca(ty)
-      params.push("ptr")
-      operands.push(`ptr ${out}`)
-      if (!this.decls.has(wrapper)) this.decls.set(wrapper, `declare void ${wrapper}(${params.join(", ")})`)
-      this.b.emit(`call void ${wrapper}(${operands.join(", ")})`)
-      return this.b.value(ty, `load ${ty}, ptr ${out}`)
-    }
-    if (!this.decls.has(wrapper)) this.decls.set(wrapper, `declare ${ret} ${wrapper}(${params.join(", ")})`)
-    if (ret === "void") {
-      this.b.emit(`call void ${wrapper}(${operands.join(", ")})`)
-      return voidValue
-    }
-    return this.b.value(ret, `call ${ret} ${wrapper}(${operands.join(", ")})`)
+    if (!own) throw new Error(`no runtime function ${name}`)
+    return this.rtOre(own, args)
   }
 
   /**

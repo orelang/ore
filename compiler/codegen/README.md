@@ -19,8 +19,3 @@ before it, as in the checker:
 
 - `ll.ts`: building LLVM IR text: a function builder with blocks and
   temporaries, and constants (integers, exact hexadecimal floats, strings).
-- `abi.ts`: calls into the part of the runtime still in C. Every function
-  of [`ore.h`](../../runtime/c/ore.h) gets a C wrapper `ore_abi_*` that takes
-  structs by pointer and integers as 64 bits, a convention that is the same
-  in LLVM IR on every target. A runtime function written in Ore
-  (`//ore:runtime`) is called directly instead.

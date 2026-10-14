@@ -117,7 +117,7 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       }
       case "iface-field": {
         const value = this.expr(e.value)
-        return this.load(this.rt("ore_iface_field", [value, this.i64(e.index)]).v, e.type)
+        return this.load(this.ifaceField(value, e.index), e.type)
       }
       case "iface-call": {
         // The receiver is evaluated once, before the arguments.
@@ -164,15 +164,15 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       case "is": {
         const v = this.expr(e.value)
         const id = this.i64(typeId(e.member as ir.StructType))
-        if (e.value.type.kind === "interface") return this.rtBool("ore_iface_is", [v, id])
+        if (e.value.type.kind === "interface") return this.ifaceIs(v, id)
         const u = e.value.type as UnionType
         if (!e.via) return this.slotTest(u, v, memberIndex(u, e.member))
         const i = memberIndex(u, e.via)
-        return this.choose(this.slotTest(u, v, i), () => this.rtBool("ore_iface_is", [this.payload(u, v, i), id]), () => ({ ty: "i1", v: "false" }), "i1")
+        return this.choose(this.slotTest(u, v, i), () => this.ifaceIs(this.payload(u, v, i), id), () => ({ ty: "i1", v: "false" }), "i1")
       }
       case "downcast": {
         const v = this.expr(e.value)
-        this.check(this.rtBool("ore_iface_is", [v, this.i64(typeId(e.type))]), `value is not a ${e.type.name}`)
+        this.check(this.ifaceIs(v, this.i64(typeId(e.type))), `value is not a ${e.type.name}`)
         return this.extract(v, 0, "ptr")
       }
       case "map":
@@ -289,7 +289,7 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
 
   protected placePointer(target: Exclude<ir.LValue, { k: "local" }>, parts: V[], type: Type): string {
     if (target.k === "field") return this.fieldPtr(parts[0]!.v, target.object.type as ir.StructType, target.name)
-    if (target.k === "iface-field") return this.rt("ore_iface_field", [parts[0]!, this.i64(target.index)]).v
+    if (target.k === "iface-field") return this.ifaceField(parts[0]!, target.index)
     return this.rt("ore_rt_array_at", [parts[0]!, parts[1]!, { ty: "i64", v: sizeOf(this.mt(type)) }]).v
   }
 
@@ -498,6 +498,25 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
   }
 
   /** Converts between a union and its members; narrowing panics on a member the target lacks. */
+  /**
+   * The address of member `index` of an interface value that is a field:
+   * entry `index + 1` of its table holds the field's offset in the object.
+   */
+  protected ifaceField(value: V, index: number): string {
+    const data = this.extract(value, 0, "ptr")
+    const table = this.extract(value, 1, "ptr")
+    const entry = this.b.value("ptr", `getelementptr ptr, ptr ${table.v}, i64 ${index + 1}`)
+    const offset = this.b.value("i64", `load i64, ptr ${entry.v}`)
+    return this.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${offset.v}`).v
+  }
+
+  /** Whether an interface value refers to an instance of the struct with type id `id`: entry 0 of its table. */
+  protected ifaceIs(value: V, id: V): V {
+    const table = this.extract(value, 1, "ptr")
+    const present = this.b.value("i1", `icmp ne ptr ${table.v}, null`)
+    return this.choose(present, () => this.b.value("i1", `icmp eq i64 ${this.b.value("i64", `load i64, ptr ${table.v}`).v}, ${id.v}`), () => ({ ty: "i1", v: "false" }), "i1")
+  }
+
   recast(v: V, from: Type, to: Type): V {
     // Unions of string literals widen to `string` without a change.
     if (from.kind === "union" && unionRepr(from).k === "strings" && to.kind === "string") return v
@@ -579,7 +598,7 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       } else {
         const index = (m as ir.InterfaceType).members.findIndex((x) => x.name === e.name)
         type = (m as ir.InterfaceType).members[index]!.type
-        read = this.load(this.rt("ore_iface_field", [object, this.i64(index)]).v, type)
+        read = this.load(this.ifaceField(object, index), type)
       }
       this.b.emit(`store ${ty} ${this.recast(read, type, e.type).v}, ptr ${result}`)
       this.b.br(end)
