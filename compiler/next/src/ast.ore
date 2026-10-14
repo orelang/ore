@@ -114,9 +114,16 @@ export type NodeKind =
     | "GreaterThanGreaterThanEqualsToken"
     | "GreaterThanGreaterThanGreaterThanEqualsToken"
 
-/** A node of the syntax tree: its kind, its span in bytes, and its children. */
+/**
+ * A node of the syntax tree: its kind, its span in bytes, and its children,
+ * each with its role: the name of the TypeScript AST property that holds it,
+ * since optional children are left out and positions alone do not tell which
+ * child is which.
+ */
 export class Node {
     children: Node[] = []
+    /** The role of each child, parallel to `children`; the children of a list share its name. */
+    roles: string[] = []
     /** The text of an identifier or a literal, as written. */
     text: string = ""
 
@@ -126,14 +133,30 @@ export class Node {
         public end: int,
     ) {}
 
-    add(child: Node | null): Node {
-        if (child !== null) this.children.push(child)
+    add(child: Node | null, role: string): Node {
+        if (child !== null) {
+            this.children.push(child)
+            this.roles.push(role)
+        }
         return this
     }
 
-    addAll(children: Node[]): Node {
-        for (const child of children) this.children.push(child)
+    addAll(children: Node[], role: string): Node {
+        for (const child of children) this.add(child, role)
         return this
+    }
+
+    /** The child with a role, or null when it is absent. */
+    child(role: string): Node | null {
+        for (let i = 0; i < this.children.length; i++) if (this.roles[i] === role) return this.children[i]
+        return null
+    }
+
+    /** The children with a role, in order. */
+    list(role: string): Node[] {
+        const found: Node[] = []
+        for (let i = 0; i < this.children.length; i++) if (this.roles[i] === role) found.push(this.children[i])
+        return found
     }
 }
 
@@ -141,4 +164,10 @@ export class Node {
 export function dump(node: Node, out: string[]) {
     out.push(`${node.kind} ${node.start} ${node.end}`)
     for (const child of node.children) dump(child, out)
+}
+
+/** Writes a tree in pre-order, one node per line: its role, kind, start and end. */
+export function dumpRoles(node: Node, role: string, out: string[]) {
+    out.push(`${role} ${node.kind} ${node.start} ${node.end}`)
+    for (let i = 0; i < node.children.length; i++) dumpRoles(node.children[i], node.roles[i], out)
 }

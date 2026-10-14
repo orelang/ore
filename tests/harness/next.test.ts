@@ -9,6 +9,9 @@
  * Parser: for each file without syntax errors, the tree in pre-order (kind and
  * byte span of each node, children as ts.forEachChild visits them) must equal
  * the TypeScript parser's.
+ *
+ * Roles: for the same files, the role of each node (the name of the property
+ * of its parent that holds it, "-" for the root) must equal the TypeScript AST's.
  */
 import { build } from "@ore/driver"
 import { beforeAll, describe, expect, test } from "bun:test"
@@ -83,6 +86,29 @@ function typescriptTree(path: string, text: string): string[] | undefined {
   return lines
 }
 
+/** The name of the property of `parent` that holds `child`, directly or in a NodeArray. */
+function roleOf(parent: ts.Node, child: ts.Node): string {
+  for (const [key, value] of Object.entries(parent)) {
+    if (key === "parent" || key === "original") continue
+    if (value === child || (Array.isArray(value) && value.includes(child))) return key
+  }
+  return "?"
+}
+
+/** The TypeScript parser's tree in pre-order with roles: "role Kind start end", or undefined on syntax errors. */
+function typescriptRoles(path: string, text: string): string[] | undefined {
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  if ((file as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics.length > 0) return undefined
+  const bytes = byteOffsets(text)
+  const lines: string[] = []
+  const visit = (node: ts.Node, role: string) => {
+    lines.push(`${role} ${kindNames.get(node.kind)} ${bytes[node.getStart(file)]} ${bytes[node.end]}`)
+    ts.forEachChild(node, (child) => visit(child, roleOf(node, child)))
+  }
+  visit(file, "-")
+  return lines
+}
+
 async function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([binary, ...args], { stdout: "pipe", stderr: "pipe" })
   const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()])
@@ -111,6 +137,19 @@ describe("selfhost parser", () => {
     if (!expected) continue
     test(relative(root, file), async () => {
       const { stdout, stderr } = await run("tree", file)
+      expect(stderr).toBe("")
+      expect(stdout.trimEnd().split("\n")).toEqual(expected)
+    })
+  }
+})
+
+describe("next roles", () => {
+  for (const file of files) {
+    const text = readFileSync(file, "utf8")
+    const expected = typescriptRoles(file, text)
+    if (!expected) continue
+    test(relative(root, file), async () => {
+      const { stdout, stderr } = await run("roles", file)
       expect(stderr).toBe("")
       expect(stdout.trimEnd().split("\n")).toEqual(expected)
     })

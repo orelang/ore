@@ -2,13 +2,15 @@
 //
 //   ore-next tokens <file.ore>   one token per line: kind, start and end byte
 //   ore-next tree <file.ore>     the syntax tree in pre-order: kind, start and end byte
+//   ore-next roles <file.ore>    the same, each node after its role in its parent ("-" for the root)
 
-import { dump } from "./ast"
+import { dump, dumpRoles } from "./ast"
 import { tokenize } from "./lexer"
 import { parse } from "./parser"
 
-if (process.args.length !== 2 || (process.args[0] !== "tokens" && process.args[0] !== "tree")) {
-    console.error("usage: ore-next tokens|tree <file.ore>")
+const mode = process.args.length === 2 ? process.args[0] : ""
+if (mode !== "tokens" && mode !== "tree" && mode !== "roles") {
+    console.error("usage: ore-next tokens|tree|roles <file.ore>")
     process.exit(2)
 }
 const text = fs.readFile(process.args[1])
@@ -16,13 +18,16 @@ if (text instanceof Error) {
     console.error(text.message)
     process.exit(1)
 }
-if (process.args[0] === "tokens") {
+if (mode === "tokens") {
     for (const token of tokenize(text)) console.log(token.kind, token.start, token.end)
 } else {
     const parser = parse(text)
     for (const error of parser.errors) console.error(error)
     const lines: string[] = []
-    if (parser.file !== null) dump(parser.file, lines)
+    if (parser.file !== null) {
+        if (mode === "roles") dumpRoles(parser.file, "-", lines)
+        else dump(parser.file, lines)
+    }
     for (const line of lines) console.log(line)
     if (parser.errors.length > 0) process.exit(1)
 }
