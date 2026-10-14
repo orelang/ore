@@ -63,3 +63,24 @@ test("inlining keeps objects created by small callees on the stack", () => {
   expect(stack(body, true)).toEqual(["Vec", "Vec", "Vec"])
   expect(stack("const a = new Vec(1, 2); const all = [a.plus(a)]", true)).toEqual(["Vec"])
 })
+
+test("inlining keeps references to globals", () => {
+  const { source } = parse("test.ore", `const names = ["a", "b"]\nfunction known(n: string): bool { return names.includes(n) }\nconsole.log(known("a"))\n`)
+  const { module } = check(source)
+  inlineCalls(module!)
+  const init = module!.inits[0]!
+  const globals = new Set<ir.Local>()
+  const seen = new Set<object>()
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object" || seen.has(node)) return
+    seen.add(node)
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "local" && (value as ir.Local).name === "names") globals.add(value as ir.Local)
+      else if (key !== "type" && key !== "func") visit(value)
+    }
+  }
+  visit(init.body)
+  // The declaration and the inlined use refer to one global.
+  expect(globals.size).toBe(1)
+  expect([...globals][0]!.global).toBe(true)
+})

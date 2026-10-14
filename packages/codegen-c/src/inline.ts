@@ -138,6 +138,8 @@ class Inliner {
   private local(local: ir.Local, values: Map<ir.Local, ir.Expr | ir.Local>): ir.Local {
     const value = values.get(local)
     if (value && !("k" in value)) return value
+    // A global is the same variable wherever the body is inlined.
+    if (local.global) return local
     // Declared inside the inlined body, such as the binding of `?.`.
     const renamed = this.fresh(local)
     values.set(local, renamed)
