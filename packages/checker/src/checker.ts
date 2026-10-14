@@ -1,4 +1,5 @@
 import * as ir from "@ore/ir"
+import { checkAssigned } from "./assigned"
 import {
   arrayOf,
   findField,
@@ -193,6 +194,15 @@ class Checker {
   private readonly itabs = new Map<string, ir.Itab>()
   /** Declarations of fields and methods, for tooling. */
   private readonly memberDecls = new Map<StructType | InterfaceType, Map<string, ts.Node>>()
+  /** Variables declared without a value that must be assigned before they are read. */
+  private readonly unassigned = new Set<ir.Local>()
+  /** Variables declared without a type or a value, typed by their first assignment. */
+  private readonly untyped = new Set<ir.Local>()
+  /** Where variables and closures were written, for messages about reads of unassigned variables. */
+  private readonly refNodes = new WeakMap<object, ts.Node>()
+  private readonly declNodes = new Map<ir.Local, ts.Node>()
+  /** Variables already reported as read before assigned. */
+  private readonly readEarly = new Set<ir.Local>()
   /** Records the declarations that import specifiers refer to, once all are declared. */
   private readonly specifiers: (() => void)[] = []
   /** Getters and setters of classes by property name. */
@@ -272,6 +282,7 @@ class Checker {
     for (const info of this.classes) this.checkClassBodies(info, info.scope)
     while (this.pending.length > 0) this.pending.shift()!()
     this.localizeGlobals()
+    this.checkUnassigned()
 
     const hasErrors = this.diagnostics.some((d) => d.severity === "error")
     return { module: hasErrors ? undefined : this.module, diagnostics: this.diagnostics, info: this.info }
@@ -302,6 +313,25 @@ class Checker {
     this.prefix = ""
     this.module.functions.push(func)
     this.module.inits.push(func)
+  }
+
+  /** Reports variables that may be read before they are assigned; see `checkAssigned`. */
+  private checkUnassigned() {
+    for (const local of this.untyped) {
+      if (!this.readEarly.has(local)) this.error(this.declNodes.get(local)!, `Variable '${local.name}' needs a type annotation or an initializer.`)
+    }
+    for (const local of this.unassigned) {
+      // Functions may run at any time, so a global they use needs its value at once.
+      if (local.global) this.error(this.declNodes.get(local)!, `Variable '${local.name}' is used by functions, so it must have a value where it is declared.`)
+    }
+    if (this.unassigned.size === 0) return
+    for (const func of this.module.functions) {
+      if (func.extern) continue
+      checkAssigned(func.body, this.unassigned, (local, at) => {
+        if (this.readEarly.has(local) || this.untyped.has(local)) return
+        this.error(this.refNodes.get(at) ?? this.declNodes.get(local)!, `Variable '${local.name}' is used before being assigned.`)
+      })
+    }
   }
 
   /**
@@ -1547,7 +1577,8 @@ class Checker {
         if (s.k !== "let" || !captured.has(s.local)) return
         s.local.assigned = true
         boxes.push({ k: "let", local: s.local, line: s.line })
-        statements[i] = { k: "expr", expr: { k: "assign", type: s.local.type, target: { k: "local", local: s.local }, value: s.init! }, line: s.line }
+        const init = s.init
+        statements[i] = init ? { k: "expr", expr: { k: "assign", type: s.local.type, target: { k: "local", local: s.local }, value: init }, line: s.line } : { k: "block", body: [] }
       })
       for (const [i, local] of locals.entries()) if (local) body.push({ k: "let", local, line: this.line(nested[i]!) })
       body.push(...boxes, ...creations, ...statements)
@@ -1759,7 +1790,6 @@ class Checker {
       const name = decl.name.text
       const declared = decl.type ? this.resolveValueType(decl.type, scope) : undefined
       if (isConst && !decl.initializer) this.error(decl.name, "A 'const' declaration must be initialized.")
-      if (!decl.type && !decl.initializer) this.error(decl.name, `Variable '${name}' needs a type annotation or an initializer.`)
 
       const value = decl.initializer ? this.checkExpr(decl.initializer, scope, declared) : undefined
       let symbol: ValueSymbol
@@ -1770,9 +1800,12 @@ class Checker {
         this.info.types.set(decl.name, this.defaultType(value))
       } else {
         let type: Type
+        // Without a value, a variable of a type without a zero value, or without a
+        // type, must be assigned before it is read.
+        let unassigned = false
         if (declared) {
           type = declared
-          if (!value && !hasZeroValue(declared)) this.error(decl.name, `Variable '${name}' of type '${typeToString(declared)}' must be initialized.`)
+          unassigned = !value && !hasZeroValue(declared)
           init = value ? this.coerce(value, declared, decl.initializer!) : zeroValue(declared)
         } else if (value) {
           init = this.toDefault(value, decl.initializer!)
@@ -1780,14 +1813,23 @@ class Checker {
           if (type.kind === "void" || type.kind === "never") this.error(decl.initializer!, `Cannot assign an expression of type '${type.kind}' to a variable.`)
           if (type.kind === "null") this.error(decl.initializer!, `Cannot infer a type from 'null'. Add a type annotation, e.g. 'let ${name}: T | null = null'.`)
         } else {
-          type = types.i64
-          init = zeroValue(type)
+          // Typed by its first assignment.
+          type = types.never
+          init = zeroValue(types.i64)
+          unassigned = true
         }
         const local = this.newLocal(name, type, !isConst)
         if (scope === this.globals) local.global = true
         symbol = { k: "local", local, decl }
-        this.info.types.set(decl.name, type)
-        out.push({ k: "let", local, init })
+        if (!declared && !value) this.untyped.add(local)
+        else this.info.types.set(decl.name, type)
+        if (unassigned) {
+          this.unassigned.add(local)
+          this.declNodes.set(local, decl.name)
+          out.push({ k: "let", local })
+        } else {
+          out.push({ k: "let", local, init })
+        }
         const initType = decl.initializer && this.info.types.get(decl.initializer)
         if (initType) this.narrowTo(`L${local.id}`, type, initType)
       }
@@ -1889,6 +1931,10 @@ class Checker {
       }
       const lvalue = this.assignTarget(target, scope)
       if (!lvalue) return
+      if (lvalue.lvalue?.k === "local" && this.untyped.has(lvalue.lvalue.local)) {
+        if (!this.settle(lvalue.lvalue.local, typed(part), target)) return
+        lvalue.type = lvalue.lvalue.local.type
+      }
       const key = this.refKey(target, scope)
       if (key) this.invalidate(key)
       if (lvalue.accessor) {
@@ -2207,7 +2253,9 @@ class Checker {
       this.fn = savedFn
       this.facts = savedFacts
     }
-    return typed({ k: "closure", type: func.type, func })
+    const closure: ir.Expr = { k: "closure", type: func.type, func }
+    this.refNodes.set(closure, node)
+    return typed(closure)
   }
 
   // ---------------------------------------------------------------------------
@@ -2448,8 +2496,17 @@ class Checker {
   /** The value of a symbol named by `node`, or an error for names that are not values. */
   private symbolValue(symbol: ValueSymbol, node: ts.Identifier | ts.MemberName): Operand {
     switch (symbol.k) {
-      case "local":
-        return typed(this.narrowed(`L${symbol.local.id}`, { k: "local", type: symbol.local.type, local: symbol.local }))
+      case "local": {
+        const local = symbol.local
+        if (this.untyped.has(local)) {
+          // Its type comes from its first assignment, which has not been seen yet.
+          this.readEarly.add(local)
+          return this.fail(node, `Variable '${local.name}' is used before being assigned.`)
+        }
+        const ref: ir.Expr = { k: "local", type: local.type, local }
+        if (this.unassigned.has(local)) this.refNodes.set(ref, node)
+        return typed(this.narrowed(`L${local.id}`, ref))
+      }
       case "const":
         return symbol.value
       case "class":
@@ -2615,6 +2672,21 @@ class Checker {
     return typed({ k: "bind", type, locals, body: { k: "seq", type, exprs: [set, yieldOld ? old! : result] } })
   }
 
+  /** Gives a variable declared without a type the type of its first assigned value. */
+  private settle(local: ir.Local, value: Operand, node: ts.Node): boolean {
+    if (value.k === "error") return false
+    const type = typeOf(this.toDefault(value, node))
+    if (type.kind === "void" || type.kind === "never" || type.kind === "null") {
+      this.error(node, `Cannot infer the type of '${local.name}' from this value. Add a type annotation, e.g. 'let ${local.name}: T'.`)
+      this.readEarly.add(local)
+      return false
+    }
+    local.type = type
+    this.untyped.delete(local)
+    this.info.types.set(this.declNodes.get(local)!, type)
+    return true
+  }
+
   /** Adds a fact that a reference of a union type holds a value of a narrower type. */
   private narrowTo(key: string, declared: Type, actual: Type) {
     if (declared.kind !== "union" || sameType(declared, actual) || actual.kind === "null") return
@@ -2624,8 +2696,18 @@ class Checker {
   private checkAssignInner(node: ts.BinaryExpression, op: ir.ArithOp | undefined, scope: Scope): Operand {
     if (!op && (ts.isArrayLiteralExpression(node.left) || ts.isObjectLiteralExpression(node.left))) return this.checkDestructuringAssign(node, scope)
     const target = this.assignTarget(node.left, scope)
-    const value = this.checkExpr(node.right, scope, op ? undefined : target?.type)
+    // The first assignment of a variable declared without a type gives its type.
+    const untyped = target?.lvalue?.k === "local" && this.untyped.has(target.lvalue.local) ? target.lvalue.local : undefined
+    if (untyped && op) {
+      this.readEarly.add(untyped)
+      return this.fail(node.left, `Variable '${untyped.name}' is used before being assigned.`)
+    }
+    const value = this.checkExpr(node.right, scope, op || untyped ? undefined : target?.type)
     if (!target) return errorOperand
+    if (untyped) {
+      if (!this.settle(untyped, value, node.right)) return errorOperand
+      target.type = untyped.type
+    }
     if (target.accessor) {
       if (value.k === "error") return value
       if (!op) return this.writeAccessor(target, node, () => this.coerce(value, target.type, node.right), false)
@@ -2655,6 +2737,10 @@ class Checker {
   private checkIncDec(node: ts.Expression, operator: ts.SyntaxKind, prefix: boolean, scope: Scope): Operand {
     const target = this.assignTarget(node, scope)
     if (!target) return errorOperand
+    if (target.lvalue?.k === "local" && this.untyped.has(target.lvalue.local)) {
+      this.readEarly.add(target.lvalue.local)
+      return this.fail(node, `Variable '${target.lvalue.local.name}' is used before being assigned.`)
+    }
     const op = operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"
     const type = target.type
     if (!isNumeric(type)) return this.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)

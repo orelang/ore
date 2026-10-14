@@ -196,8 +196,7 @@ work.**
   the tokens equal the TypeScript scanner's and the tree (kinds, spans and
   children) equals the TypeScript parser's.
 - Next: the checker and the C backend.
-- Language gaps found so far: definite assignment (`let x: T` assigned on
-  every path before use) is not supported.
+- Language gaps found so far: definite assignment (now supported).
 
 ## 5. Risks and mitigations
 

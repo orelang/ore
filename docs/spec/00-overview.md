@@ -102,8 +102,15 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
 ### 3.5 Variables
 
 - `let` declares a mutable variable, `const` an immutable one.
-- A variable needs a type annotation or an initializer. `let x: i32` without
-  an initializer starts at the zero value (`0`, `false`, `""`).
+- `let x: i32` without an initializer starts at the zero value of its type
+  (`0`, `false`, `""`, or `null` for a type that includes it).
+- A variable of a type without a zero value (a class, an object type, an
+  interface) may be declared without an initializer, as may `let x` without
+  a type, which takes the type of its first assignment. Such a variable must
+  be assigned on every path before it is read ("definite assignment", as in
+  TypeScript's strict mode): a read where it may not be assigned yet is an
+  error, and so is creating a closure that captures it. A top-level variable
+  used by functions must have a value where it is declared.
 - `const N = 10` with an untyped constant initializer declares a named
   untyped constant, usable as any numeric type it fits.
 - Top-level variables are module variables; see §2.

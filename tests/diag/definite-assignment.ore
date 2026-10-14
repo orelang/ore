@@ -1,0 +1,58 @@
+class Box {
+    constructor(readonly v: int) {}
+}
+
+function branches(flag: bool): int {
+    let b: Box
+    if (flag) b = new Box(1)
+    return b.v // error: Variable 'b' is used before being assigned.
+}
+
+function loops(items: int[]): int {
+    let b: Box
+    for (const n of items) b = new Box(n)
+    return b.v // error: Variable 'b' is used before being assigned.
+}
+
+function shortCircuit(flag: bool): int {
+    let b: Box
+    const positive = flag && (b = new Box(1)).v > 0
+    return b.v // error: Variable 'b' is used before being assigned.
+}
+
+function captured(): () => int {
+    let b: Box
+    const read = () => b.v // error: Variable 'b' is used before being assigned.
+    b = new Box(1)
+    return read
+}
+
+function switches(n: int): int {
+    let b: Box
+    switch (n) {
+        case 1:
+            b = new Box(1)
+            break
+        case 2:
+            b = new Box(2)
+    }
+    return b.v // error: Variable 'b' is used before being assigned.
+}
+
+function untyped(): int {
+    let a
+    console.log(a) // error: Variable 'a' is used before being assigned.
+    a = 1
+    let never // error: Variable 'never' needs a type annotation or an initializer.
+    let fromNull
+    fromNull = null // error: Cannot infer the type of 'fromNull' from this value.
+    let n
+    n = 1
+    n = "text" // error: Type 'string' is not assignable to type 'i64'.
+    return a
+}
+
+let shared: Box // error: Variable 'shared' is used by functions, so it must have a value where it is declared.
+function useShared(): int {
+    return shared.v
+}
