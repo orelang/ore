@@ -297,8 +297,11 @@ export abstract class StatementChecker extends ClassChecker {
         // Its type is unknown: uses of it report nothing more.
         if (!declared && value?.k === "error") this.poisoned.add(local)
         if (scope === this.globals) local.global = true
-        if (scope === this.globals && ts.isVariableStatement(decl.parent.parent) && this.directives(decl.parent.parent).some((d) => d.name === "threadlocal")) {
-          this.threadLocal(decl, local)
+        if (scope === this.globals && ts.isVariableStatement(decl.parent.parent)) {
+          const directives = this.directives(decl.parent.parent)
+          if (directives.some((d) => d.name === "threadlocal")) this.threadLocal(decl, local)
+          const exported = directives.find((d) => d.name === "export" && d.arg !== "")
+          if (exported) this.exportVariable(decl, local, exported.arg)
         }
         symbol = { k: "local", local, decl }
         if (!declared && !value) this.untyped.add(local)

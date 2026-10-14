@@ -22,3 +22,8 @@ double half_of(double x) { return ore_half(x); }
 
 bool negate(bool b) { return !b; }
 uint8_t next_byte(uint8_t x) { return (uint8_t)(x + 1); }
+
+// Defined in main.ore with //ore:export.
+extern int64_t ore_counter;
+int64_t read_counter(void) { return ore_counter; }
+void bump_counter(void) { ore_counter++; }

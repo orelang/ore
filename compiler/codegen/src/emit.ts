@@ -35,7 +35,10 @@ export class ModuleEmitter extends JsonEmitter {
     for (const func of m.functions) if (func.attributes?.runtime) this.runtime.set(func.attributes.runtime, func)
     for (const local of findGlobals(m)) {
       this.globals.add(local)
-      this.out.push(`${this.globalOf(local)} = internal ${local.threadLocal ? "thread_local " : ""}global ${this.mt(local.type)} zeroinitializer`)
+      // An exported global is the definition of a C name, such as the runtime's `ore_rt_top`.
+      if (local.exportName) this.decls.delete(`@${local.exportName}`)
+      const linkage = local.exportName ? "" : "internal "
+      this.out.push(`${this.globalOf(local)} = ${linkage}${local.threadLocal ? "thread_local " : ""}global ${this.mt(local.type)} zeroinitializer`)
     }
     for (const itab of m.itabs) this.out.push(this.itab(itab))
     for (const func of m.functions) {

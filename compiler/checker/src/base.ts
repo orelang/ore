@@ -133,6 +133,8 @@ export abstract class CheckerBase {
   /** Optional and rest parameters of functions, by their parameter list. */
   protected readonly signatures = new WeakMap<ir.Local[], Signature>()
 
+  /** C names of exported variables. */
+  protected readonly exportedVariables = new Set<string>()
   /** Functions by their `//ore:export` name. */
   protected readonly exportNames = new Map<string, ir.Func>()
 

@@ -22,7 +22,8 @@ in it is bounds-, type- or null-checked.
 | `asm<T>(template, constraints, ...operands)` | inline assembly in LLVM's syntax: `$0`, `$1` in the template, constraints such as `"=r,r,~{memory}"` |
 
 `ptr` values are invisible to the garbage collector: memory reachable only
-through a `ptr` may be freed.
+through a `ptr` may be freed. A `ptr` variable without a value starts as the
+null pointer.
 
 ## Directives
 
@@ -36,7 +37,7 @@ errors.
 | `//ore:inline` | function | always inlined by LLVM |
 | `//ore:cold` | function | rarely called: optimized for size, placed apart |
 | `//ore:naked` | function | no prologue or epilogue: the body is only `unsafe.asm`, chosen by `if` on the target, and returns by itself |
-| `//ore:export name` | function | visible to C as `name`, with the C calling convention; numbers, `bool` and `ptr` only |
+| `//ore:export name` | function, or top-level `let` | visible to C as `name`: a function with the C calling convention, or a variable C can read and write; numbers, `bool` and `ptr` only |
 | `//ore:internal` | the module, before its first statement | allows the namespace `internal` and `//ore:runtime`, otherwise only for the standard library |
 | `//ore:runtime name` | function in the standard library | implements the runtime function `name` (see `runtime/core`) |
 | `//ore:threadlocal` | `let name: T` | a separate value in each OS thread, starting at zero; `T` is a number, `bool` or `ptr`, and there is no initializer |

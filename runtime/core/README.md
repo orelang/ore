@@ -19,6 +19,7 @@ Rules for this code:
 
 | Module | Contents |
 |---|---|
+| `frames.ore` | `ore_rt_top`, the top of the shadow stack of debug builds, per OS thread |
 | `string.ore` | Comparison, concatenation, UTF-8 decoding, search, slicing, split and join, trim, case, replace, repeat, pad |
 | `array.ore` | New arrays, push and pop, slicing, reverse, stable sort |
 | `map.ore` | Insertion-ordered hash maps, hashing of keys |

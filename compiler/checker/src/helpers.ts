@@ -203,7 +203,7 @@ export function floatLit(type: ir.FloatType, value: number): ir.FloatLit {
 /** Whether a type has a zero value for variables without an initializer; references do not. */
 export function hasZeroValue(type: Type): boolean {
   if (type.kind === "union") return type.members.some((m) => m.kind === "null")
-  return type.kind !== "struct" && type.kind !== "interface" && type.kind !== "chan" && type.kind !== "func" && type.kind !== "ptr"
+  return type.kind !== "struct" && type.kind !== "interface" && type.kind !== "chan" && type.kind !== "func"
 }
 
 export function zeroValue(type: Type): ir.Expr {
@@ -222,6 +222,9 @@ export function zeroValue(type: Type): ir.Expr {
       return { k: "map", op: "new", type, mapType: type }
     case "union":
       return { k: "null", type }
+    case "ptr":
+      // The null pointer.
+      return { k: "builtin", type, name: "unsafe.fromInt", args: [{ k: "int", type: types.u64, value: 0n }] }
     default:
       return poison(type)
   }

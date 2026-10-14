@@ -93,6 +93,8 @@ export interface Local {
   global?: boolean
   /** `//ore:threadlocal`: a global with a separate value, starting at zero, in each OS thread. */
   threadLocal?: boolean
+  /** `//ore:export name`: a global visible to C as `name`. */
+  exportName?: string
 }
 
 interface StmtBase {

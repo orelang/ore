@@ -319,7 +319,7 @@ export abstract class EmitterBase {
   }
 
   protected globalOf(local: ir.Local): string {
-    return globalName(`G.${local.name}.${local.id}`)
+    return local.exportName ? `@${local.exportName}` : globalName(`G.${local.name}.${local.id}`)
   }
 
   /** The address of a global; a thread-local one is looked up on each access, since tasks move between threads. */

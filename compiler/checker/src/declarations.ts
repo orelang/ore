@@ -71,6 +71,15 @@ export abstract class DeclarationChecker extends CheckerBase {
         if (stmt.getSourceFile().statements[0] !== stmt) this.directiveError(stmt, d, `'//ore:${d.name}' goes at the top of the file, before the first statement.`)
         continue
       }
+      // `//ore:export` also names a top-level variable for C.
+      if (d.name === "export" && ts.isVariableStatement(stmt)) {
+        const ok =
+          (stmt.declarationList.flags & ts.NodeFlags.BlockScoped) === ts.NodeFlags.Let &&
+          stmt.declarationList.declarations.length === 1 &&
+          ts.isIdentifier(stmt.declarationList.declarations[0]!.name)
+        if (!ok) this.directiveError(stmt, d, "'//ore:export' applies to a function, or to a top-level 'let' of one name.")
+        continue
+      }
       if (kind === "function") {
         const ok = ts.isFunctionDeclaration(stmt) && stmt.body !== undefined && !stmt.typeParameters
         if (!ok) this.directiveError(stmt, d, `'//ore:${d.name}' applies to a function declaration with a body, not generic.`)
@@ -141,6 +150,18 @@ export abstract class DeclarationChecker extends CheckerBase {
     func.attributes = attributes
   }
 
+  /** Gives a top-level variable a C name, if its type allows it. */
+  protected exportVariable(decl: ts.VariableDeclaration, local: ir.Local, name: string) {
+    const type = local.type
+    if (!isNumeric(type) && type.kind !== "bool" && type.kind !== "ptr") {
+      return this.error(decl.name, `An exported variable holds a number, 'bool' or 'ptr', not '${typeToString(type)}'.`)
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return this.error(decl.name, `'${name}' is not a C name.`)
+    if (this.exportedVariables.has(name)) return this.error(decl.name, `'${name}' is already exported.`)
+    this.exportedVariables.add(name)
+    local.exportName = name
+  }
+
   /** Makes a top-level variable thread-local, if its type and declaration allow it. */
   protected threadLocal(decl: ts.VariableDeclaration, local: ir.Local) {
     const type = local.type
@@ -182,7 +203,7 @@ export abstract class DeclarationChecker extends CheckerBase {
     for (const init of this.module.inits) visitLocals(init.body, (local) => local.global && owners.set(local, init))
     const shared = new Set<ir.Local>()
     for (const func of this.module.functions) visitLocals(func.body, (local) => local.global && owners.get(local) !== func && shared.add(local))
-    for (const local of owners.keys()) if (!shared.has(local) && !local.threadLocal) local.global = false
+    for (const local of owners.keys()) if (!shared.has(local) && !local.threadLocal && !local.exportName) local.global = false
   }
 
   /** Whether a top-level `const` statement declares only constants, known before any code runs. */

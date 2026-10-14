@@ -40,7 +40,6 @@ int main(int argc, char **argv) {
 // ---------------------------------------------------------------------------
 // Panics
 
-_Thread_local ore_frame *ore_rt_top = NULL;
 
 // While a test runs, a panic in its task returns to the test runner instead of exiting.
 static jmp_buf *test_catch;
