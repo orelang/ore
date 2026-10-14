@@ -30,14 +30,23 @@ import type { InterfaceType, StructType, Type } from "./types"
  *
  * Types are written as `typeToString` writes them, except that a struct is
  * `Name#id` (`#id` if anonymous), an interface `Name@id`, a union
- * `(A | B)%id`, and a string literal type is quoted like `quote` does.
+ * `(A | B)%id`, and a string literal type is quoted like `quote` does. A
+ * struct or interface name that is not an identifier, such as the
+ * `Stack<string>` of a generic instance, is quoted too: `"Stack<string>"#20`.
  * A local is `$id name: T` with its flags; a reference to it is `$id name`.
  * Functions are referred to by `name`, itabs by id. Integer constants are
  * decimal (`u64` values unsigned), floats as JavaScript prints them (`-0`
  * for negative zero).
+ *
+ * The dump is the whole module: compiler/next/src/ir/read.ore reads it back.
  */
 export function dump(module: Module): string {
   return new Dumper().module(module)
+}
+
+/** A struct or interface name as the dump writes it: as is when it is an identifier, else quoted. */
+export function ident(name: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : quote(name)
 }
 
 /** A string in double quotes: `"` and `\` escaped, `\n`, `\r`, `\t`, other control characters as `\u00XX`. */
@@ -431,10 +440,10 @@ class Dumper {
       case "array":
         return t.elem.kind === "func" ? `(${this.type(t.elem)})[]` : `${this.type(t.elem)}[]`
       case "struct":
-        return `${t.name ?? ""}#${t.id}`
+        return `${t.name === undefined ? "" : ident(t.name)}#${t.id}`
       case "interface":
         if (!this.ifaces.includes(t)) this.ifaces.push(t)
-        return `${t.name}@${t.id}`
+        return `${ident(t.name)}@${t.id}`
       case "union":
         return `(${t.members.map((m) => (m.kind === "func" ? `(${this.type(m)})` : this.type(m))).join(" | ")})%${t.id}`
       case "literal":

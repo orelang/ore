@@ -16,7 +16,7 @@ function sample(): Module {
   const int = (value: bigint, type = i64): Expr => ({ k: "int", type, value })
   const ref = (local: Local): Expr => ({ k: "local", type: local.type, local })
 
-  const other: InterfaceType = { kind: "interface", id: 6, name: "Other", members: [] }
+  const other: InterfaceType = { kind: "interface", id: 6, name: "Other<i64>", members: [] }
   const shape: InterfaceType = {
     kind: "interface",
     id: 3,
@@ -28,6 +28,7 @@ function sample(): Module {
   }
   const point: StructType = { kind: "struct", id: 1, name: "Point", nominal: true, fields: [], methods: [] }
   const anon: StructType = { kind: "struct", id: 2, name: undefined, nominal: false, fields: [{ name: "a", type: string, readonly: false }], methods: [] }
+  const pair: StructType = { kind: "struct", id: 9, name: "Pair<i64, string>", nominal: false, fields: [{ name: "a", type: i64, readonly: true }, { name: "b", type: string, readonly: false }], methods: [] }
   const maybe: UnionType = { kind: "union", id: 7, members: [i64, types.null], name: "MaybeInt" }
   const mixed: UnionType = {
     kind: "union",
@@ -232,7 +233,7 @@ function sample(): Module {
     file: "test.ore",
     functions: [norm, ctor, puts, closure, main],
     inits: [init],
-    structs: [point, anon],
+    structs: [point, anon, pair],
     itabs: [itab],
     unions: [maybe, mixed],
   }

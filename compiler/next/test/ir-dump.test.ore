@@ -142,10 +142,11 @@ function sample(): Module {
     const tString = types.string
     const voidType = types.void
 
-    const other = new InterfaceType(6, "Other", [])
+    const other = new InterfaceType(6, "Other<i64>", [])
     const shape = new InterfaceType(3, "Shape", [new InterfaceField("area", tF64, true), new InterfaceMethod("scale", fn([tF64], other))])
     const point = new StructType(1, "Point", true, [], [])
     const anon = new StructType(2, null, false, [new Field("a", tString, false)], [])
+    const pair = new StructType(9, "Pair<i64, string>", false, [new Field("a", tI64, true), new Field("b", tString, false)], [])
     const maybe = new UnionType(7, [tI64, types.null], "MaybeInt")
     const mixed = new UnionType(8, [new LiteralType("a\"b"), fn([tI64], voidType), point, types.null])
     const map = new MapType(tString, tI64)
@@ -284,7 +285,7 @@ function sample(): Module {
     main.attributes = new FuncAttributes(true, true, true, "ore_main", "main", true)
     const init = new Func("init_test", "<init>", 1, fn([], voidType), [], block([withLine(new LetStmt(g, int(1)), 1)]), false)
     init.attributes = new FuncAttributes()
-    return new Module("test.ore", [norm, ctor, puts, closure, main], [init], [point, anon], [itab], [maybe, mixed])
+    return new Module("test.ore", [norm, ctor, puts, closure, main], [init], [point, anon, pair], [itab], [maybe, mixed])
 }
 
 test("the dump of a module equals ir-dump.txt", () => {

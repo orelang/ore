@@ -32,6 +32,26 @@ export function quote(s: string): string {
     return `${out}${s.slice(start)}"`
 }
 
+function isIdentStart(c: u8): bool {
+    return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f || c === 0x24
+}
+
+function isIdentPart(c: u8): bool {
+    return isIdentStart(c) || (c >= 0x30 && c <= 0x39)
+}
+
+/** Whether a name is a plain identifier: ASCII letters, digits, `_` and `$`, not starting with a digit. */
+export function isIdent(name: string): bool {
+    if (name.length === 0 || !isIdentStart(name[0])) return false
+    for (let i = 1; i < name.length; i++) if (!isIdentPart(name[i])) return false
+    return true
+}
+
+/** A struct or interface name as the dump writes it: as is when it is an identifier, else quoted. */
+export function ident(name: string): string {
+    return isIdent(name) ? name : quote(name)
+}
+
 /** A float as JavaScript's `String` writes it, but `-0` for negative zero. */
 function floatText(v: f64): string {
     if (v === 0.0 && 1.0 / v < 0.0) return "-0"
@@ -509,13 +529,15 @@ class Dumper {
             }
             case "array":
                 return t.elem.kind === "func" ? `(${this.type(t.elem)})[]` : `${this.type(t.elem)}[]`
-            case "struct":
-                return `${t.name ?? ""}#${t.id}`
+            case "struct": {
+                const name = t.name
+                return `${name === null ? "" : ident(name)}#${t.id}`
+            }
             case "interface": {
                 let known = false
                 for (const i of this.ifaces) if (i === t) known = true
                 if (!known) this.ifaces.push(t)
-                return `${t.name}@${t.id}`
+                return `${ident(t.name)}@${t.id}`
             }
             case "union": {
                 const members: string[] = []
