@@ -1,0 +1,58 @@
+// The JSON functions of the runtime (runtime/core/json.ore) on edge cases.
+
+type Item = { id: int; name: string; small: u8; big: u64; ratio: f64; tags: string[] }
+
+function show(text: string): void {
+    const v = JSON.parse<Item>(text)
+    if (v instanceof Error) console.log(v.message)
+    else console.log(v.id, v.name, v.small, v.big, v.ratio, v.tags.join("|"))
+}
+
+show(
+    `{"id": -9223372036854775808, "name": "a\\"b\\\\c\\/\\n\\u00e9\\ud83d\\ude00", "small": 255, "big": 18446744073709551615, "ratio": 1e-7, "tags": []}`,
+)
+show(`  {"tags": ["x", "y"], "ratio": -0.5, "big": 0, "small": 0, "name": "", "id": 2, "id": 3}  `)
+show(`{"id": 9223372036854775808, "name": "", "small": 0, "big": 0, "ratio": 0, "tags": []}`)
+show(`{"id": 1, "name": "", "small": 256, "big": 0, "ratio": 0, "tags": []}`)
+show(`{"id": 1, "name": "", "small": 1, "big": -1, "ratio": 0, "tags": []}`)
+show(`{"id": 1, "name": "", "small": 1, "big": 18446744073709551616, "ratio": 0, "tags": []}`)
+show(`{"id": 1.5, "name": "", "small": 1, "big": 1, "ratio": 0, "tags": []}`)
+show(`{"id": 2e3, "name": "", "small": 1, "big": 1e2, "ratio": 0, "tags": []}`)
+show(`{"id": 1, "name": 5, "small": 1, "big": 1, "ratio": 0, "tags": []}`)
+show(`{"id": 1, "name": "", "small": 1, "big": 1, "ratio": 0, "tags": ["a", 7]}`)
+show(`{"id": 1, "small": 1, "big": 1, "ratio": 0, "tags": []}`)
+for (const bad of [
+    "",
+    "   ",
+    "{",
+    "[1, 2",
+    `{"a" 1}`,
+    `{"a": 1,}`,
+    "[1,]",
+    "tru",
+    "nul",
+    "-",
+    "01",
+    "1.",
+    "1e",
+    `"abc`,
+    `"a\\x"`,
+    `"\\u12g4"`,
+    `"tab\there"`,
+    "[1] x",
+    "{1: 2}",
+]) {
+    const v = JSON.parse<int[]>(bad)
+    console.log(JSON.stringify(bad), v instanceof Error ? v.message : "parsed")
+}
+let deep = ""
+for (let i = 0; i < 600; i++) deep += "["
+const tooDeep = JSON.parse<int[]>(deep)
+console.log(tooDeep instanceof Error ? tooDeep.message : "parsed")
+const lone = JSON.parse<string>(`"\\ud83d x \\ude00"`)
+if (!(lone instanceof Error)) console.log(lone, lone.length)
+
+// Writing: escapes, control characters, indentation.
+console.log(JSON.stringify(['q"b\\s/\n\r\t\b\f\u0001\u001f é']))
+const none: int[] = []
+console.log(JSON.stringify({ a: [1, 2], b: { c: "d" }, e: none }, 2))

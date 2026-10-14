@@ -4,6 +4,7 @@ import runtimeArray from "../../../runtime/core/array.ore" with { type: "text" }
 import runtimeFloat from "../../../runtime/core/float.ore" with { type: "text" }
 import runtimeFloatTables from "../../../runtime/core/float-tables.ore" with { type: "text" }
 import runtimeFormat from "../../../runtime/core/format.ore" with { type: "text" }
+import runtimeJson from "../../../runtime/core/json.ore" with { type: "text" }
 import runtimeMap from "../../../runtime/core/map.ore" with { type: "text" }
 import runtimeString from "../../../runtime/core/string.ore" with { type: "text" }
 import netModule from "../../../runtime/std/net.ore" with { type: "text" }
@@ -21,10 +22,11 @@ export const stdModules: Record<string, string> = {
   "ore:runtime/format": runtimeFormat,
   "ore:runtime/float": runtimeFloat,
   "ore:runtime/float-tables": runtimeFloatTables,
+  "ore:runtime/json": runtimeJson,
 }
 
 /** The modules of the runtime written in Ore (runtime/core), part of every program, in load order. */
-export const runtimeModules = ["ore:runtime/string", "ore:runtime/array", "ore:runtime/map", "ore:runtime/format", "ore:runtime/float-tables", "ore:runtime/float"]
+export const runtimeModules = ["ore:runtime/string", "ore:runtime/array", "ore:runtime/map", "ore:runtime/format", "ore:runtime/float-tables", "ore:runtime/float", "ore:runtime/json"]
 
 export interface PackageJson {
   name?: string

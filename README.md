@@ -64,9 +64,9 @@ total: 1000
   The IR becomes LLVM IR, which clang compiles together with the runtime into
   one native binary.
 - **Runtime.** Part of it is written in Ore and compiled with the program, so
-  it inlines into user code: strings, arrays, maps, number formatting. The
-  rest is C: the M:N scheduler of green threads (stackful, on a pool of OS
-  threads), channels and `select`, a netpoller on kqueue or epoll, JSON and
+  it inlines into user code: strings, arrays, maps, number formatting, JSON.
+  The rest is C: the M:N scheduler of green threads (stackful, on a pool of
+  OS threads), channels and `select`, a netpoller on kqueue or epoll, and
   printing. Memory is managed by the Boehm garbage collector, built with
   threads and parallel marking.
 - **Tooling.** One `ore` binary builds, runs, checks, tests and formats code
@@ -343,7 +343,7 @@ Another binary can be set with the `ore.path` setting.
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Runtime in Ore: strings, arrays, maps, number formatting (done); JSON, printing, network, scheduler | in progress |
+| 9. Runtime in Ore: strings, arrays, maps, number formatting, JSON (done); printing, network, scheduler | in progress |
 | 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
 | 11. Own precise garbage collector | planned |
 | 12. Promises and `async`/`await` | planned |
