@@ -287,7 +287,8 @@ The tests run on macOS and Linux, on arm64 and x86-64.
 | `packages/project` | Module resolution, package.json, loading programs |
 | `packages/checker` | Type checker producing IR |
 | `packages/ir` | Type model and typed IR |
-| `packages/codegen-c` | IR to C, escape analysis |
+| `packages/opt` | Optimizations on the IR: escape analysis, inlining |
+| `packages/codegen-c` | IR to C |
 | `packages/driver` | Compilation pipeline, clang, runtime and GC cache |
 | `packages/cli` | The `ore` command, including `test` and `fmt` |
 | `packages/lsp` | Language server |

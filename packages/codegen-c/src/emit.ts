@@ -1,7 +1,6 @@
 import * as ir from "@ore/ir"
 import { isStringLike, typeKey, typeToString, types, unionRepr, type FloatType, type IntType, type Type, type UnionType } from "@ore/ir"
-import { planStack, type StackPlan } from "./escape"
-import { inlineCalls } from "./inline"
+import { inlineCalls, planStack, type StackPlan } from "@ore/opt"
 
 export interface EmitOptions {
   /**
