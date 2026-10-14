@@ -3,7 +3,7 @@
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
 
-test:
+.test:
   image: oven/bun:1.3.14-debian
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends clang git ca-certificates
@@ -13,3 +13,12 @@ test:
     - bun test --timeout 120000
     # The concurrent programs, many times on several threads.
     - ci/stress.sh 5
+
+test:
+  extends: .test
+
+# The LLVM backend, until it replaces the C one.
+test-llvm:
+  extends: .test
+  variables:
+    ORE_BACKEND: llvm
