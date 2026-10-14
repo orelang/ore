@@ -1,0 +1,404 @@
+// TCP on non-blocking sockets, for "ore:net". An operation that would block
+// parks its task until the poller sees the socket ready (netWait), then
+// retries. Struct layouts and constants were read from the system headers of
+// macOS (arm64) and Linux (arm64 and x86-64); the two Linux ones agree.
+//
+// errno is thread-local and a task may resume on another worker after
+// netWait: it is read right after the call that failed, through __error() or
+// __errno_location(), which compute its address on the current thread.
+
+import { blockingEnter, blockingExit } from "ore:runtime/task"
+import { netWait } from "ore:runtime/poll"
+import { isNil, nil, permanent } from "ore:runtime/os"
+
+// ---------------------------------------------------------------------------
+// libc
+
+export declare function socket(domain: i32, kind: i32, protocol: i32): i32
+export declare function bind(fd: i32, address: ptr, length: u32): i32
+export declare function listen(fd: i32, backlog: i32): i32
+export declare function accept(fd: i32, address: ptr, length: ptr): i32
+export declare function connect(fd: i32, address: ptr, length: u32): i32
+export declare function recv(fd: i32, buffer: ptr, size: u64, flags: i32): i64
+export declare function send(fd: i32, buffer: ptr, size: u64, flags: i32): i64
+export declare function close(fd: i32): i32
+export declare function setsockopt(fd: i32, level: i32, name: i32, value: ptr, length: u32): i32
+export declare function getsockopt(fd: i32, level: i32, name: i32, value: ptr, length: ptr): i32
+export declare function getsockname(fd: i32, address: ptr, length: ptr): i32
+export declare function getaddrinfo(host: ptr, service: ptr, hints: ptr, result: ptr): i32
+export declare function freeaddrinfo(addresses: ptr): void
+export declare function gai_strerror(error: i32): ptr
+export declare function strerror(error: i32): ptr
+export declare function signal(signal: i32, handler: ptr): ptr
+export declare function __error(): ptr
+export declare function __errno_location(): ptr
+
+/**
+ * fcntl is variadic, and on macOS arm64 a variadic argument goes on the stack
+ * while elsewhere it goes in the third register. Passing the argument in
+ * every slot puts it in both places: registers x2 to x7 (rdx to r9) and the
+ * first stack slot.
+ */
+export declare function fcntl(fd: i32, command: i32, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64): i32
+
+function fcntlCall(fd: i32, command: i32, argument: int): int {
+    const a = argument
+    return i64(fcntl(fd, command, a, a, a, a, a, a, a))
+}
+
+function errno(): int {
+    if (target.os === "darwin") return i64(unsafe.load<i32>(__error()))
+    return i64(unsafe.load<i32>(__errno_location()))
+}
+
+// ---------------------------------------------------------------------------
+// Constants of each platform
+
+const afUnspec: i32 = 0
+const sockStream: i32 = 1
+const aiPassive: i32 = 1
+const ipprotoTcp: i32 = 6
+const tcpNodelay: i32 = 1
+const fGetfl: i32 = 3
+const fSetfl: i32 = 4
+const fSetfd: i32 = 2
+const fdCloexec = 1
+const eintr = 4
+const sigpipe: i32 = 13
+
+function eagain(): int {
+    return target.os === "darwin" ? 35 : 11
+}
+
+function einprogress(): int {
+    return target.os === "darwin" ? 36 : 115
+}
+
+function econnaborted(): int {
+    return target.os === "darwin" ? 53 : 103
+}
+
+function oNonblock(): int {
+    return target.os === "darwin" ? 4 : 0x800
+}
+
+function solSocket(): i32 {
+    return target.os === "darwin" ? 0xffff : 1
+}
+
+function soReuseaddr(): i32 {
+    return target.os === "darwin" ? 4 : 2
+}
+
+function soError(): i32 {
+    return target.os === "darwin" ? 0x1007 : 4
+}
+
+/** A write to a closed socket returns EPIPE instead of raising SIGPIPE (MSG_NOSIGNAL). */
+function msgNosignal(): i32 {
+    return target.os === "darwin" ? 0x80000 : 0x4000
+}
+
+// struct addrinfo: 48 bytes, the same fields up to ai_addrlen; macOS has
+// ai_canonname before ai_addr, Linux after.
+const addrinfoSize = 48
+const aiFamilyAt = 4
+const aiSocktypeAt = 8
+const aiProtocolAt = 12
+const aiAddrlenAt = 16
+const aiNextAt = 40
+
+function aiAddrAt(): int {
+    return target.os === "darwin" ? 32 : 24
+}
+
+/** sizeof(struct sockaddr_storage). */
+const sockaddrStorageSize = 128
+
+// ---------------------------------------------------------------------------
+// Socket setup
+
+/** The int 1, for setsockopt; never freed. */
+const one = permanentOne()
+
+function permanentOne(): ptr {
+    const p = permanent(4)
+    unsafe.store<i32>(p, 1)
+    return p
+}
+
+/** Whether SIGPIPE is ignored yet; setting it twice is harmless. */
+let sigpipeIgnored: bool
+
+/** A write to a closed socket reports EPIPE instead of killing the process. */
+function ignoreSigpipe(): void {
+    if (sigpipeIgnored) return
+    signal(sigpipe, unsafe.fromInt(1))
+    sigpipeIgnored = true
+}
+
+function setOption(fd: i32, level: i32, name: i32): void {
+    setsockopt(fd, level, name, one, 4)
+}
+
+function configure(fd: i32): void {
+    fcntlCall(fd, fSetfl, fcntlCall(fd, fGetfl, 0) | oNonblock())
+    fcntlCall(fd, fSetfd, fdCloexec)
+    // SO_NOSIGPIPE, which Linux does not have.
+    if (target.os === "darwin") setOption(fd, solSocket(), 0x1022)
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+
+function cLength(s: ptr): int {
+    let n = 0
+    while (unsafe.load<u8>(unsafe.add(s, n)) !== 0) n++
+    return n
+}
+
+/** `prefix` followed by a C string, in one allocation. */
+function withReason(prefix: string, reason: ptr): string {
+    const n = cLength(reason)
+    const p = unsafe.allocBytes(prefix.length + n)
+    unsafe.copy(p, unsafe.stringData(prefix), prefix.length)
+    unsafe.copy(unsafe.add(p, prefix.length), reason, n)
+    return unsafe.makeString(p, prefix.length + n)
+}
+
+/** `prefix` followed by strerror's wording of `error` on this platform. */
+function message(prefix: string, error: int): string {
+    return withReason(prefix, strerror(i32(error)))
+}
+
+// ---------------------------------------------------------------------------
+// Name resolution
+
+// The scratch memory of resolve():
+//   0 the hints (struct addrinfo)
+//  48 the list of addresses getaddrinfo returns
+//  56 the port in decimal, NUL-terminated
+//  72 an int and its length, for getsockopt
+const scratchSize = 80
+const resultAt = 48
+const serviceAt = 56
+const optionAt = 72
+
+/**
+ * Resolves a host and port into the list of addresses at `scratch + 48`;
+ * returns getaddrinfo's error. Name lookup blocks, so another worker takes over meanwhile.
+ */
+function resolve(host: string, port: int, passive: bool, scratch: ptr): i32 {
+    const hints = scratch
+    unsafe.store<i32>(unsafe.add(hints, aiFamilyAt), afUnspec)
+    unsafe.store<i32>(unsafe.add(hints, aiSocktypeAt), sockStream)
+    if (passive) unsafe.store<i32>(hints, aiPassive)
+    // The port in decimal, written backwards from its last digit.
+    const service = unsafe.add(scratch, serviceAt)
+    let digits = 1
+    for (let rest = port; rest >= 10; rest = rest / 10) digits++
+    let rest = port
+    for (let i = digits - 1; i >= 0; i--) {
+        unsafe.store<u8>(unsafe.add(service, i), u8(0x30 + (rest % 10)))
+        rest = rest / 10
+    }
+    // An empty host is NULL: any interface, or this machine.
+    let name = nil()
+    if (host.length > 0) {
+        name = unsafe.allocBytes(host.length + 1)
+        unsafe.copy(name, unsafe.stringData(host), host.length)
+    }
+    blockingEnter()
+    const error = getaddrinfo(name, service, hints, unsafe.add(scratch, resultAt))
+    blockingExit()
+    return error
+}
+
+function nextAddress(a: ptr): ptr {
+    return unsafe.load<ptr>(unsafe.add(a, aiNextAt))
+}
+
+function newSocket(a: ptr): i32 {
+    return socket(
+        unsafe.load<i32>(unsafe.add(a, aiFamilyAt)),
+        unsafe.load<i32>(unsafe.add(a, aiSocktypeAt)),
+        unsafe.load<i32>(unsafe.add(a, aiProtocolAt)),
+    )
+}
+
+function addressOf(a: ptr): ptr {
+    return unsafe.load<ptr>(unsafe.add(a, aiAddrAt()))
+}
+
+function addressLength(a: ptr): u32 {
+    return unsafe.load<u32>(unsafe.add(a, aiAddrlenAt))
+}
+
+// ---------------------------------------------------------------------------
+// The functions of "ore:net"
+
+/** Listens on the first address of `host` that binds; stores the socket in `fd`, or the error in `err`. */
+//ore:runtime ore_rt_net_listen
+function netListen(host: string, port: int, fd: ptr, err: ptr): bool {
+    ignoreSigpipe()
+    if (port < 0 || port > 65535) {
+        unsafe.store<string>(err, "listen: port out of range")
+        return false
+    }
+    const scratch = unsafe.allocBytes(scratchSize)
+    const error = resolve(host, port, true, scratch)
+    if (error !== 0) {
+        unsafe.store<string>(err, withReason("cannot resolve host: ", gai_strerror(error)))
+        return false
+    }
+    const addresses = unsafe.load<ptr>(unsafe.add(scratch, resultAt))
+    let saved = 0
+    for (let a = addresses; !isNil(a); a = nextAddress(a)) {
+        const s = newSocket(a)
+        if (s < 0) {
+            saved = errno()
+            continue
+        }
+        setOption(s, solSocket(), soReuseaddr())
+        if (bind(s, addressOf(a), addressLength(a)) === 0 && listen(s, 128) === 0) {
+            freeaddrinfo(addresses)
+            configure(s)
+            unsafe.store<i64>(fd, i64(s))
+            return true
+        }
+        saved = errno()
+        close(s)
+    }
+    freeaddrinfo(addresses)
+    unsafe.store<string>(err, message("listen: ", saved))
+    return false
+}
+
+/** Connects to the first address of `host` that accepts; stores the socket in `fd`, or the error in `err`. */
+//ore:runtime ore_rt_net_connect
+function netConnect(host: string, port: int, fd: ptr, err: ptr): bool {
+    ignoreSigpipe()
+    if (port < 0 || port > 65535) {
+        unsafe.store<string>(err, "connect: port out of range")
+        return false
+    }
+    const scratch = unsafe.allocBytes(scratchSize)
+    const error = resolve(host, port, false, scratch)
+    if (error !== 0) {
+        unsafe.store<string>(err, withReason("cannot resolve host: ", gai_strerror(error)))
+        return false
+    }
+    const addresses = unsafe.load<ptr>(unsafe.add(scratch, resultAt))
+    const option = unsafe.add(scratch, optionAt)
+    let saved = 0
+    for (let a = addresses; !isNil(a); a = nextAddress(a)) {
+        const s = newSocket(a)
+        if (s < 0) {
+            saved = errno()
+            continue
+        }
+        configure(s)
+        let result = connect(s, addressOf(a), addressLength(a))
+        if (result < 0) saved = errno()
+        if (result < 0 && saved === einprogress()) {
+            netWait(s, true)
+            // The outcome of the connection, as an errno.
+            unsafe.store<i32>(option, 0)
+            unsafe.store<u32>(unsafe.add(option, 4), 4)
+            getsockopt(s, solSocket(), soError(), option, unsafe.add(option, 4))
+            saved = i64(unsafe.load<i32>(option))
+            result = saved === 0 ? 0 : -1
+        }
+        if (result === 0) {
+            freeaddrinfo(addresses)
+            setOption(s, ipprotoTcp, tcpNodelay)
+            unsafe.store<i64>(fd, i64(s))
+            return true
+        }
+        close(s)
+    }
+    freeaddrinfo(addresses)
+    unsafe.store<string>(err, message("connect: ", saved))
+    return false
+}
+
+/** Waits for a connection on `listener`; stores its socket in `fd`, or the error in `err`. */
+//ore:runtime ore_rt_net_accept
+function netAccept(listener: int, fd: ptr, err: ptr): bool {
+    while (true) {
+        const s = accept(i32(listener), nil(), nil())
+        if (s >= 0) {
+            configure(s)
+            setOption(s, ipprotoTcp, tcpNodelay)
+            unsafe.store<i64>(fd, i64(s))
+            return true
+        }
+        const e = errno()
+        if (e === eagain()) netWait(i32(listener), false)
+        else if (e !== eintr && e !== econnaborted()) {
+            unsafe.store<string>(err, message("accept: ", e))
+            return false
+        }
+    }
+}
+
+/** Reads up to `max` bytes, waiting for some; stores them in `data`, or the error. */
+//ore:runtime ore_rt_net_read
+function netRead(fd: int, max: int, data: ptr): bool {
+    if (max <= 0) {
+        unsafe.store<string>(data, "read: the size must be positive")
+        return false
+    }
+    const buffer = unsafe.allocBytes(max)
+    while (true) {
+        const n = recv(i32(fd), buffer, u64(max), 0)
+        if (n >= 0) {
+            unsafe.store<string>(data, unsafe.makeString(buffer, n))
+            return true
+        }
+        const e = errno()
+        if (e === eagain()) netWait(i32(fd), false)
+        else if (e !== eintr) {
+            unsafe.store<string>(data, message("read: ", e))
+            return false
+        }
+    }
+}
+
+/** Writes all of `data`, waiting whenever the socket's buffer is full. */
+//ore:runtime ore_rt_net_write
+function netWrite(fd: int, data: string, err: ptr): bool {
+    let done = 0
+    while (done < data.length) {
+        const n = send(i32(fd), unsafe.add(unsafe.stringData(data), done), u64(data.length - done), msgNosignal())
+        if (n >= 0) {
+            done += n
+            continue
+        }
+        const e = errno()
+        if (e === eagain()) netWait(i32(fd), true)
+        else if (e !== eintr) {
+            unsafe.store<string>(err, message("write: ", e))
+            return false
+        }
+    }
+    return true
+}
+
+//ore:runtime ore_rt_net_close
+function netClose(fd: int): void {
+    close(i32(fd))
+}
+
+/** The local port of a socket, or -1. */
+//ore:runtime ore_rt_net_port
+function netPort(fd: int): int {
+    // A sockaddr_storage, then its length.
+    const address = unsafe.allocBytes(sockaddrStorageSize + 4)
+    const length = unsafe.add(address, sockaddrStorageSize)
+    unsafe.store<u32>(length, sockaddrStorageSize)
+    if (getsockname(i32(fd), address, length) < 0) return -1
+    // sin_port and sin6_port are both at offset 2, in network byte order, on
+    // every platform: the family needs no checking.
+    return (i64(unsafe.load<u8>(unsafe.add(address, 2))) << 8) | i64(unsafe.load<u8>(unsafe.add(address, 3)))
+}
