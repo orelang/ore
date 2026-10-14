@@ -38,7 +38,13 @@ for (const id of [3, -1, 7]) {
         done.send(true)
     })
 }
-for (let i = 0; i < 3; i++) done.receive()
+let finished = 0
+while (finished < 3) {
+    task.select([
+        done.onReceive(() => finished++),
+        task.after(1000, () => process.panic("too slow")),
+    ])
+}
 console.log(`total: ${total}`)
 ```
 
