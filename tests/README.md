@@ -9,7 +9,7 @@ compiler package are in its own `test/` directory. `bun test` runs all.
 | `diag/<topic>/` | Programs that must fail to check, with `// error: <message>` on the lines of the errors |
 | `async/` | Async programs with outputs from Bun (`bun-shim.ts`), until Ore has async |
 | `bench/` | Benchmarks: `bench/run.sh`, `bench/async/run.sh` |
-| `harness/` | The runners: `golden.test.ts` (run and diag), `async.test.ts`, `next.test.ts` (the Ore compiler against TypeScript), `zed-queries.test.ts` |
+| `harness/` | The runners: `golden.test.ts` (run and diag), `async.test.ts`, `next.test.ts` (the Ore compiler against TypeScript), `lsp-next.test.ts` (its language server over stdio), `zed-queries.test.ts` |
 
 Topics: `basics`, `types`, `collections`, `functions`, `errors`,
 `concurrency`, `library`, `runtime`, `modules`. A directory with a `main.ore`

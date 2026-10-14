@@ -1,0 +1,26 @@
+// File descriptors: fs.read and fs.write.
+
+// Unbuffered writes come after what console printed before them.
+console.log("first")
+const written = fs.write(1, "second\n")
+console.log(written === null, "third")
+
+// The test's standard input is empty: its end at once.
+const input = fs.read(0, 16)
+if (input instanceof Error) console.log("error", input.message)
+else console.log("stdin", input.length)
+
+const bad = fs.read(99, 16)
+if (bad instanceof Error) console.log(bad.message)
+const badWrite = fs.write(99, "x")
+if (badWrite instanceof Error) console.log(badWrite.message)
+const zero = fs.read(0, 0)
+if (zero instanceof Error) console.log(zero.message)
+
+// Reading in a task, while the top-level code waits on a channel.
+const done = new Chan<string>(1)
+task.spawn(() => {
+    const r = fs.read(0, 4)
+    done.send(r instanceof Error ? r.message : `read ${r.length}`)
+})
+console.log(done.receive())

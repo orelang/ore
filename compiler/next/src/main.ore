@@ -1,5 +1,5 @@
-// ore-next: for now, prints the tokens or the syntax tree of a file, or the
-// modules of a program.
+// ore-next: for now, prints the tokens or the syntax tree of a file or the
+// modules of a program, or serves the language server.
 //
 //   ore-next tokens <file.ore>    one token per line: kind, start and end byte
 //   ore-next tree <file.ore>      the syntax tree in pre-order: kind, start and end byte
@@ -7,16 +7,22 @@
 //   ore-next modules <entry.ore>  the modules of the program in load order, each with its
 //                                 imports ("import <specifier> <module>") and text imports
 //                                 ("text <specifier> <bytes>"), then the diagnostics
+//   ore-next lsp                  the language server on stdin and stdout
 
+import { serve } from "./lsp/server"
 import { loadProgram } from "./project/load"
 import { dump, dumpRoles } from "./syntax/ast"
 import { formatDiagnostic } from "./syntax/diagnostic"
 import { tokenize } from "./syntax/lexer"
 import { parse } from "./syntax/parser"
 
+const version = "0.1.0-next"
+
+if (process.args.length === 1 && process.args[0] === "lsp") process.exit(i32(serve(version)))
+
 const mode = process.args.length === 2 ? process.args[0] : ""
 if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules") {
-    console.error("usage: ore-next tokens|tree|roles|modules <file.ore>")
+    console.error("usage: ore-next tokens|tree|roles|modules <file.ore> | ore-next lsp")
     process.exit(2)
 }
 if (mode === "modules") {

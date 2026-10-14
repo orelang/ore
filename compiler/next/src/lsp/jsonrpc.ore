@@ -1,0 +1,265 @@
+// JSON-RPC 2.0 over the LSP base protocol: messages framed by a
+// `Content-Length` header (the length of the body in bytes, UTF-8), read from
+// standard input by a task and written to standard output.
+//
+// JSON is typed in Ore: a message is first read as its envelope (id and
+// method), and its params are read again from the same text with the type the
+// method expects (`params<T>`), since unknown fields are ignored.
+
+/** Error codes of JSON-RPC and of LSP. */
+export const ParseError = -32700
+export const InvalidRequest = -32600
+export const MethodNotFound = -32601
+export const InvalidParams = -32602
+export const InternalError = -32603
+export const ServerNotInitialized = -32002
+export const UnknownErrorCode = -32001
+export const RequestFailed = -32803
+export const ServerCancelled = -32802
+export const ContentModified = -32801
+export const RequestCancelled = -32800
+
+/** The id of a request: a number or a string. */
+export type Id = int | string
+
+type Envelope = { id: int | string | null; method: string | null }
+
+/**
+ * A message read: a request (with an id and a method), a notification (a
+ * method only) or a response (an id only), with its whole JSON text.
+ */
+export class Message {
+    /** Set when a `$/cancelRequest` for this request arrived before it was handled. */
+    cancelled = false
+
+    constructor(
+        readonly id: Id | null,
+        readonly method: string,
+        readonly body: string,
+    ) {}
+
+    isRequest(): bool {
+        return this.id !== null && this.method !== ""
+    }
+
+    /** The key of the id, which tells requests apart: ids 1 and "1" differ. */
+    key(): string {
+        return JSON.stringify(this.id)
+    }
+}
+
+/** The params of a message, read as the type its method expects. */
+export function params<T>(message: Message): T | Error {
+    const parsed = JSON.parse<{ params: T }>(message.body)
+    if (parsed instanceof Error) return parsed
+    return parsed.params
+}
+
+/** Reads the envelope of a message body; an Error if it is not JSON or not a JSON-RPC message. */
+export function decode(body: string): Message | Error {
+    const envelope = JSON.parse<Envelope>(body)
+    if (envelope instanceof Error) return envelope
+    if (envelope.method === null && envelope.id === null) return new Error("a message has a method or an id")
+    return new Message(envelope.id, envelope.method ?? "", body)
+}
+
+// ---------------------------------------------------------------------------
+// Framing
+
+/** The header of a message ends with an empty line. */
+const headerEnd = "\r\n\r\n"
+
+/** A header without a valid `Content-Length`. */
+export class FramingError {
+    constructor(readonly message: string) {}
+}
+
+/** Reads framed messages from a file descriptor, as many bytes as are available at a time. */
+export class Reader {
+    private buffer = ""
+    private done = false
+
+    constructor(
+        private readonly fd: int,
+        private readonly chunk: int,
+    ) {}
+
+    /** Reads more bytes into the buffer; false at the end of the input or on an error. */
+    private fill(): bool {
+        if (this.done) return false
+        const data = fs.read(this.fd, this.chunk)
+        if (data instanceof Error || data.length === 0) {
+            this.done = true
+            return false
+        }
+        this.buffer += data
+        return true
+    }
+
+    /**
+     * The body of the next message; null at the end of the input. A header
+     * without a valid `Content-Length` is an Error, and the reader skips it.
+     */
+    next(): string | Error | null {
+        let end = this.buffer.indexOf(headerEnd)
+        while (end < 0) {
+            if (!this.fill()) return null
+            end = this.buffer.indexOf(headerEnd)
+        }
+        const header = this.buffer.slice(0, end)
+        const start = end + headerEnd.length
+        this.buffer = this.buffer.slice(start)
+        const length = contentLength(header)
+        if (length === null) return new FramingError(`no valid Content-Length in the header '${header}'`)
+        while (this.buffer.length < length) if (!this.fill()) return null
+        const body = this.buffer.slice(0, length)
+        this.buffer = this.buffer.slice(length)
+        return body
+    }
+
+    /** Whether a whole message, or a header that is not valid, is in the buffer: `next` returns it without reading. */
+    buffered(): bool {
+        const end = this.buffer.indexOf(headerEnd)
+        if (end < 0) return false
+        const length = contentLength(this.buffer.slice(0, end))
+        return length === null || this.buffer.length >= end + headerEnd.length + length
+    }
+}
+
+/** The value of the `Content-Length` field of a header, whose names are case-insensitive. */
+function contentLength(header: string): int | null {
+    for (const line of header.split("\r\n")) {
+        const colon = line.indexOf(":")
+        if (colon < 0 || line.slice(0, colon).trim().toLowerCase() !== "content-length") continue
+        const value = line.slice(colon + 1).trim()
+        if (value.length === 0) return null
+        for (let i = 0; i < value.length; i++) if (value[i] < 48 || value[i] > 57) return null
+        return Number.parseInt(value)
+    }
+    return null
+}
+
+/** A message with its header. */
+export function frame(body: string): string {
+    return `Content-Length: ${body.length}\r\n\r\n${body}`
+}
+
+// ---------------------------------------------------------------------------
+// The connection
+
+/** What the reader task hands over: a message, or a message that could not be read. */
+type Incoming = Message | Error
+
+function toIncoming(body: string | Error): Incoming {
+    return body instanceof Error ? body : decode(body)
+}
+
+/**
+ * A JSON-RPC connection over a pair of file descriptors. A task reads and
+ * decodes messages as they come, so that a `$/cancelRequest` sent while the
+ * server is busy cancels a request still waiting in the queue. The messages
+ * of one read are handed over together: a cancellation sent right after its
+ * request is seen before the request is handled.
+ */
+export class Connection {
+    /** Batches of messages from the reader task; null at the end of the input. */
+    private readonly incoming = new Chan<Incoming[] | null>(64)
+    /** Messages received and not yet handled, in order. */
+    private queue: Incoming[] = []
+    private closed = false
+
+    constructor(
+        private readonly input: int,
+        private readonly output: int,
+    ) {}
+
+    /** Starts the task that reads the input. */
+    listen(): void {
+        const reader = new Reader(this.input, 65536)
+        const incoming = this.incoming
+        task.spawn(() => {
+            while (true) {
+                const body = reader.next()
+                if (body === null) break
+                const batch: Incoming[] = [toIncoming(body)]
+                while (reader.buffered()) {
+                    const more = reader.next()
+                    if (more !== null) batch.push(toIncoming(more))
+                }
+                incoming.send(batch)
+            }
+            incoming.send(null)
+        })
+    }
+
+    /** Takes messages from the reader into the queue, waiting for some if `wait`; false when none were taken. */
+    private take(wait: bool): bool {
+        if (this.closed) return false
+        let took = false
+        const add = (batch: Incoming[] | null) => {
+            took = true
+            if (batch === null) this.closed = true
+            else for (const m of batch) this.receive(m)
+        }
+        if (wait) add(this.incoming.receive())
+        else task.select([this.incoming.onReceive(add)], () => {})
+        return took && !this.closed
+    }
+
+    /** Queues a message; a cancellation marks the request it names instead. */
+    private receive(m: Incoming): void {
+        if (m instanceof Message && m.method === "$/cancelRequest") {
+            const p = params<{ id: int | string }>(m)
+            if (p instanceof Error) return
+            const key = JSON.stringify(p.id)
+            for (const q of this.queue) if (q instanceof Message && q.isRequest() && q.key() === key) q.cancelled = true
+            return
+        }
+        this.queue.push(m)
+    }
+
+    /**
+     * The next message to handle, or null at the end of the input. Requests
+     * cancelled while they waited are answered with RequestCancelled here,
+     * and messages that are not JSON-RPC with ParseError or InvalidRequest.
+     */
+    next(): Message | null {
+        while (true) {
+            // Everything already received, so that cancellations are seen.
+            while (this.take(false)) {}
+            if (this.queue.length === 0) {
+                if (!this.take(true) && this.queue.length === 0) return null
+                continue
+            }
+            const m = this.queue[0]
+            this.queue = this.queue.slice(1)
+            if (m instanceof Message) {
+                if (!m.cancelled) return m
+                this.respondError(m.id, RequestCancelled, "The request was cancelled.")
+            } else {
+                this.respondError(null, m instanceof FramingError ? InvalidRequest : ParseError, m.message)
+            }
+        }
+    }
+
+    /** Writes a message. */
+    send(body: string): void {
+        fs.write(this.output, frame(body))
+    }
+
+    /** Answers a request with a result, given as JSON text. */
+    respond(id: Id | null, result: string): void {
+        this.send(`{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":${result}}`)
+    }
+
+    /** Answers a request with an error. */
+    respondError(id: Id | null, code: int, message: string): void {
+        const error: { code: int; message: string } = { code, message }
+        this.send(`{"jsonrpc":"2.0","id":${JSON.stringify(id)},"error":${JSON.stringify(error)}}`)
+    }
+
+    /** Sends a notification with params, given as JSON text. */
+    notify(method: string, params: string): void {
+        this.send(`{"jsonrpc":"2.0","method":${JSON.stringify(method)},"params":${params}}`)
+    }
+}

@@ -3,15 +3,16 @@
 The Ore compiler written in Ore, which will replace the TypeScript compiler
 (see the [roadmap](../../docs/roadmap.md)). So far it has the lexer
 and the parser, which build a tree in the shape of TypeScript's, the loading
-of a program's modules, and the IR of `@ore/ir`, which the checker, the
-optimizer and the backend will share.
+of a program's modules, the IR of `@ore/ir`, which the checker, the optimizer
+and the backend will share, and the language server, which reports syntax
+errors until the checker is ported.
 
 | File | Contents |
 |---|---|
 | `syntax/tokens.ore` | Token kinds (named as `ts.SyntaxKind`) and keywords |
 | `syntax/lexer.ore` | Tokens of a file, with byte offsets |
 | `syntax/ast.ore` | The syntax tree: a node kind, a span and children |
-| `syntax/parser.ore` | The parser |
+| `syntax/parser.ore` | The parser, with its syntax errors and their spans |
 | `syntax/source.ore` | A parsed file: path, text, tree; line and column of an offset |
 | `syntax/diagnostic.ore` | Diagnostics and their `path:line:col: error: message` format |
 | `syntax/imports.ore` | Module specifiers, string literal values, text imports |
@@ -21,7 +22,11 @@ optimizer and the backend will share.
 | `ir/types.ore` | The type model (`compiler/ir/src/types.ts`): `Type`, `types`, `sameType`, `typeToString`, `typeKey`, `unionRepr` |
 | `ir/nodes.ore` | The IR nodes (`compiler/ir/src/nodes.ts`): `Module`, `Func`, `Local`, statements and expressions |
 | `ir/dump.ore` | `dump(module)`: the canonical text of a module, the same as `dump` of `compiler/ir/src/dump.ts` |
-| `main.ore` | `ore-next tokens\|tree\|roles\|modules <file>`: prints the tokens, the tree, or the modules of a program |
+| `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
+| `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
+| `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
+| `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
+| `main.ore` | `ore-next tokens\|tree\|roles\|modules <file>`: prints the tokens, the tree, or the modules of a program; `ore-next lsp`: the language server on stdio |
 
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
@@ -31,6 +36,8 @@ the tests of `test/*.test.ore` (also run by `bun run ore test compiler/next/test
 `test/ir-dump.test.ore` and `compiler/ir/test/dump.test.ts` build the same
 IR module by hand and check that their dumps both equal `test/ir-dump.txt`
 (`UPDATE=1 bun test compiler/ir` rewrites it after a change of the format).
+[`tests/harness/lsp-next.test.ts`](../../tests/harness/lsp-next.test.ts) speaks
+LSP to `ore-next lsp`.
 
 Differences from the TypeScript packages: offsets are bytes of the UTF-8 text
 (columns still count UTF-16 code units, as TypeScript and LSP do); syntax
