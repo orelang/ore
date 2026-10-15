@@ -46,3 +46,32 @@ console.log(nested.get("xs")?.length)
 
 counts.clear()
 console.log(counts.size, counts.get("a"))
+
+// Union keys: objects by identity, numbers and strings by value, each as its
+// own member: 1 as i32 and 1 as i64 are different keys.
+class Var {
+    constructor(readonly name: string) {}
+}
+class Call {
+    constructor(readonly callee: string) {}
+}
+const v = new Var("x")
+const c = new Call("f")
+const slots = new Map<Var | Call, string>()
+slots.set(v, "%v").set(c, "%c").set(new Var("x"), "%other")
+console.log(slots.get(v), slots.get(c), slots.get(new Var("x")), slots.size)
+
+const mixed = new Map<i32 | i64 | f64 | string | null, int>()
+const one: i32 = 1
+mixed.set(one, 1).set(1, 2).set("1", 3).set(null, 4).set(zero / zero, 5)
+mixed.set(1, 20)
+console.log(mixed.get(one), mixed.get(1), mixed.get("1"), mixed.get(null), mixed.get(zero / zero), mixed.get(2.5), mixed.size)
+for (const [k, n] of mixed) console.write(k, n, "")
+console.log()
+
+type Mode = "fast" | "slow"
+const modes = new Map<Mode | null, int>()
+modes.set("fast", 1).set(null, 0)
+const optional = new Map<Var | null, int>()
+optional.set(null, 7).set(v, 8)
+console.log(modes.get("fast"), modes.get("slow"), modes.get(null), optional.get(null), optional.get(v), optional.has(new Var("x")))

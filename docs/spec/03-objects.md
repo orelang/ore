@@ -146,5 +146,10 @@ exhaustive: like a `default`, it lets a function end without `return`.
   `keys()` and `values()` return arrays in insertion order.
 - `for (const [key, value] of map)` iterates entries in insertion order.
 - Keys compare like SameValueZero: numbers and strings by value (`NaN`
-  equals `NaN`, `-0` equals `0`), objects, arrays and interface values by
-  identity. Unions cannot be keys yet.
+  equals `NaN`, `-0` equals `0`), objects, arrays, maps and interface values
+  by identity. A union is a key type when each of its members is one or is
+  `null`: two union keys are the same key when they hold the same member
+  and the same value as keys of that member's type, so a `Map<A | B, V>` of
+  classes keys by identity, `null` is one key, and `1` as `i32` and `1` as
+  `int` are different keys of a `Map<i32 | int, V>`. Functions, channels and
+  `ptr` values cannot be keys.

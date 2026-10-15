@@ -1,6 +1,6 @@
 // Arrays, maps, channels and interface tables.
 import * as ir from "@ore/ir"
-import { isStringLike, types, type Type, type UnionType } from "@ore/ir"
+import { isStringLike, types, unionRepr, type Type, type UnionType } from "@ore/ir"
 import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
 import { STR, FN, ARRAY, MAP } from "./context"
 import { typeId } from "./helpers"
@@ -184,7 +184,8 @@ export abstract class CollectionEmitter extends CallEmitter {
 
   /**
    * The hash and equality functions of a map key type, as SameValueZero:
-   * strings by contents, references by identity, NaN equal to NaN.
+   * strings by contents, references by identity, NaN equal to NaN; a union
+   * by its member, then as that member.
    */
   protected keyFunctions(key: Type): { hash: string; eq: string } {
     const id = ir.typeKey(key)
@@ -196,21 +197,72 @@ export abstract class CollectionEmitter extends CallEmitter {
     // Both take an unused environment first, so that the runtime calls them as closures.
     this.helper(hash, `define internal i64 ${hash}(ptr %env, ptr %k)`, (e) => {
       const k = e.load("%k", key)
-      let h: V
-      if (key.kind === "float") h = e.rt("ore_rt_hash_f64", [e.convert(k, key, types.f64)])
-      else if (isStringLike(key)) h = e.rt("ore_rt_hash_bytes", [e.extract(k, 0, "ptr"), e.extract(k, 1, "i64")])
-      else if (key.kind === "interface") h = e.rt("ore_rt_hash_u64", [e.b.value("i64", `ptrtoint ptr ${e.extract(k, 0, "ptr").v} to i64`)])
-      else if (k.ty === "ptr") h = e.rt("ore_rt_hash_u64", [e.b.value("i64", `ptrtoint ptr ${k.v} to i64`)])
-      else h = e.rt("ore_rt_hash_u64", [e.intToI64(k, key)])
-      e.b.terminate(`ret i64 ${h.v}`)
+      e.b.terminate(`ret i64 ${e.keyHash(k, key).v}`)
     })
     this.helper(eq, `define internal i1 ${eq}(ptr %env, ptr %a, ptr %b)`, (e) => {
       const a = e.load("%a", key)
       const b = e.load("%b", key)
-      const same = key.kind === "float" ? e.rtBool("ore_rt_same_f64", [e.convert(a, key, types.f64), e.convert(b, key, types.f64)]) : e.equals(a, b, key)
-      e.b.terminate(`ret i1 ${same.v}`)
+      e.b.terminate(`ret i1 ${e.keyEquals(a, b, key).v}`)
     })
     return { hash, eq }
+  }
+
+  /** The hash of a map key. */
+  protected keyHash(k: V, key: Type): V {
+    if (key.kind === "union") return this.unionKeyHash(k, key)
+    if (key.kind === "float") return this.rt("ore_rt_hash_f64", [this.convert(k, key, types.f64)])
+    if (isStringLike(key)) return this.rt("ore_rt_hash_bytes", [this.extract(k, 0, "ptr"), this.extract(k, 1, "i64")])
+    if (key.kind === "interface") return this.rt("ore_rt_hash_u64", [this.b.value("i64", `ptrtoint ptr ${this.extract(k, 0, "ptr").v} to i64`)])
+    if (k.ty === "ptr") return this.rt("ore_rt_hash_u64", [this.b.value("i64", `ptrtoint ptr ${k.v} to i64`)])
+    return this.rt("ore_rt_hash_u64", [this.intToI64(k, key)])
+  }
+
+  /** The hash of a union key: the hash of its member's value plus the member's index. */
+  protected unionKeyHash(k: V, u: UnionType): V {
+    if (unionRepr(u).k === "strings") return this.keyHash(k, types.string)
+    const result = this.b.alloca("i64")
+    const end = this.b.label("khash")
+    u.members.forEach((m, i) => {
+      const here = this.b.label("kmember")
+      const next = this.b.label("knext")
+      this.b.condBr(this.slotTest(u, k, i), here, next)
+      this.b.start(here)
+      const h = m.kind === "null" ? "0" : this.keyHash(this.payload(u, k, i), m).v
+      this.b.emit(`store i64 ${this.b.value("i64", `add i64 ${h}, ${i}`).v}, ptr ${result}`)
+      this.b.br(end)
+      this.b.start(next)
+    })
+    this.b.terminate("unreachable")
+    this.b.start(end)
+    return this.b.value("i64", `load i64, ptr ${result}`)
+  }
+
+  /** Whether two map keys are the same key. */
+  protected keyEquals(a: V, b: V, key: Type): V {
+    if (key.kind === "float") return this.rtBool("ore_rt_same_f64", [this.convert(a, key, types.f64), this.convert(b, key, types.f64)])
+    if (key.kind !== "union" || unionRepr(key).k !== "tagged") return this.equals(a, b, key)
+    // The same member, with the same value as that member's keys.
+    const u = key
+    const result = this.b.alloca("i1")
+    this.b.emit(`store i1 false, ptr ${result}`)
+    const end = this.b.label("keq")
+    const sameTag = this.b.value("i1", `icmp eq i32 ${this.extract(a, 0, "i32").v}, ${this.extract(b, 0, "i32").v}`)
+    const check = this.b.label("ktag")
+    this.b.condBr(sameTag, check, end)
+    this.b.start(check)
+    u.members.forEach((m, i) => {
+      const here = this.b.label("kmember")
+      const next = this.b.label("knext")
+      this.b.condBr(this.slotTest(u, a, i), here, next)
+      this.b.start(here)
+      const same = m.kind === "null" ? "true" : this.keyEquals(this.payload(u, a, i), this.payload(u, b, i), m).v
+      this.b.emit(`store i1 ${same}, ptr ${result}`)
+      this.b.br(end)
+      this.b.start(next)
+    })
+    this.b.terminate("unreachable")
+    this.b.start(end)
+    return this.b.value("i1", `load i1, ptr ${result}`)
   }
 
   protected mapOp(e: ir.MapOp): V {

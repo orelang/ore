@@ -76,7 +76,7 @@ import {
     CheckInfo,
 } from "./context"
 import { instantiate } from "./declarations"
-import { disposeName, floatLit, isSymbolDispose, memberOf, poison, typeOf } from "./helpers"
+import { disposeName, floatLit, isKeyType, isSymbolDispose, memberOf, poison, typeOf } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
 import { type Generic, type TypeSymbol, Scope } from "./symbols"
 
@@ -407,8 +407,8 @@ export class Checker {
     }
 
     mapOf(key: Type, value: Type, node: Node): MapType | null {
-        const k = key.kind
-        const hashable = isNumeric(key) || k === "bool" || k === "string" || k === "literal" || k === "struct" || k === "array" || k === "interface" || k === "map"
+        // A union is a key if each of its members is, or is null.
+        const hashable = key.kind === "union" ? key.members.every((m) => m.kind === "null" || isKeyType(m)) : isKeyType(key)
         if (!hashable) {
             this.error(node, `Type '${typeToString(key)}' cannot be a Map key.`)
             return null
