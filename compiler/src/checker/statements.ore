@@ -555,8 +555,10 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
                 let threadlocal = false
                 for (const d of found) if (d.name === "threadlocal") threadlocal = true
                 if (threadlocal) threadLocal(c, decl, local)
+                // `//ore:export` applies to a `let` of one name (checkDirectives reports the others).
+                const single = declarations(list).length === 1
                 for (const d of found) {
-                    if (d.name === "export" && d.arg !== "") {
+                    if (d.name === "export" && d.arg !== "" && single) {
                         exportVariable(c, decl, local, d.arg)
                         break
                     }
