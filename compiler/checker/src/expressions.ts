@@ -4,6 +4,7 @@ import {
   arrayOf,
   findField,
   findMethod,
+  isSubclass,
   isNumeric,
   isStringLike,
   membersOf,
@@ -67,6 +68,7 @@ export abstract class ExpressionChecker extends StatementChecker {
       this.capture(self, this.fn?.thisCaptures ?? [])
       return typed({ k: "local", type: self.type, local: self })
     }
+    if (node.kind === ts.SyntaxKind.SuperKeyword) return this.fail(node, "'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'.")
     if (ts.isNewExpression(node)) return this.checkNew(node, scope, expected)
     if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
       return typed(this.condition(node, scope).expr)
@@ -240,7 +242,9 @@ export abstract class ExpressionChecker extends StatementChecker {
     if (!sameType(l.type, r.type) && r.type.kind === "union") l = this.coerce(typed(l), r.type, leftNode)
     else if (!sameType(l.type, r.type) && l.type.kind === "union") r = this.coerce(typed(r), l.type, rightNode)
     const type = typeOf(l)
-    if (!sameType(type, typeOf(r))) {
+    // Instances of a class and of a subclass compare by identity.
+    const related = l.type.kind === "struct" && r.type.kind === "struct" && (isSubclass(l.type, r.type) || isSubclass(r.type, l.type))
+    if (!sameType(type, typeOf(r)) && !related) {
       return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
@@ -409,7 +413,7 @@ export abstract class ExpressionChecker extends StatementChecker {
       this.defineMember(node.name, struct, name)
       if (!this.checkAccess(struct, field, name, node.name)) return undefined
       // A constructor may initialize the read-only fields of its own instance.
-      const initializing = this.fn?.ctor && this.fn.cls === struct && object.k === "local" && object.local === this.fn.this
+      const initializing = this.fn?.ctor && this.fn.cls === struct && this.declaringClass(struct, name) === struct && object.k === "local" && object.local === this.fn.this
       if (field.readonly && !initializing) return this.error(node.name, `Cannot assign to '${name}' because it is a read-only property.`), undefined
       this.info.types.set(node, field.type)
       return { lvalue: { k: "field", object, name }, type: field.type }
@@ -680,9 +684,11 @@ export abstract class ExpressionChecker extends StatementChecker {
       const method = findMethod(struct, name)
       if (method) {
         if (!this.checkAccess(struct, method, name, nameNode)) return errorOperand
-        return typed({ k: "bound-method", type: method.func.type, receiver: value, func: method.func })
+        const bound: ir.Expr = { k: "bound-method", type: method.func.type, receiver: value, func: method.func }
+        this.dispatch(bound, name)
+        return typed(bound)
       }
-      if (this.genericMethods.get(struct)?.has(name)) return this.fail(nameNode, `'${name}' is a generic method and cannot be used as a value; call it.`)
+      if (this.genericMethod(struct, name)) return this.fail(nameNode, `'${name}' is a generic method and cannot be used as a value; call it.`)
     }
     if (value.type.kind === "interface") {
       const index = value.type.members.findIndex((m) => m.name === name)
@@ -739,7 +745,11 @@ export abstract class ExpressionChecker extends StatementChecker {
   protected instanceTest(value: ir.Expr, target: StructType | InterfaceType): ir.Expr | undefined {
     const type = value.type
     if (sameType(type, target)) return { k: "bool", type: types.bool, value: true }
-    if (type.kind === "union" && type.members.some((m) => sameType(m, target))) return { k: "is", type: types.bool, value, member: target }
+    // An instance of a class is an instance of its base classes; one of a base class may be of a subclass.
+    const related = (m: Type) => m.kind === "struct" && target.kind === "struct" && (isSubclass(m, target) || isSubclass(target, m))
+    if (type.kind === "struct" && target.kind === "struct" && isSubclass(type, target)) return { k: "bool", type: types.bool, value: true }
+    if (type.kind === "struct" && related(type)) return { k: "is", type: types.bool, value, member: target }
+    if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m))) return { k: "is", type: types.bool, value, member: target }
     if (target.kind !== "struct") return undefined
     if (type.kind === "interface" && !this.conformance(target, type).reason) return { k: "is", type: types.bool, value, member: target }
     const via = this.interfaceFor(type, target)

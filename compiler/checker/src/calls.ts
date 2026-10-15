@@ -27,6 +27,7 @@ import { ExpressionChecker } from "./expressions"
 export abstract class CallChecker extends ExpressionChecker {
   protected checkCall(node: ts.CallExpression, scope: Scope): Operand {
     const callee = node.expression
+    if (callee.kind === ts.SyntaxKind.SuperKeyword) return this.checkSuperCall(node, scope)
     const symbolOfCallee = ts.isIdentifier(callee) ? scope.lookupValue(callee.text) : this.moduleMember(callee, scope)
     if (symbolOfCallee?.k === "generic-func") {
       if (ts.isIdentifier(callee)) this.info.definitions.set(callee, symbolOfCallee.decl)
@@ -457,6 +458,7 @@ export abstract class CallChecker extends ExpressionChecker {
       if (!call) return errorOperand
       const instance = call.instance as StructType
       if (!instance.ctor) return this.fail(node, this.earlyConstruction(instance.name ?? name))
+      if (this.classInfos.get(instance)?.abstract) return this.fail(node, `Cannot create an instance of an abstract class '${instance.name}'.`)
       return this.callFunc(instance.ctor, node.arguments ?? [], node, scope, `Constructor of '${instance.name}'`, undefined, call.operands.length > 0 ? call.operands : undefined)
     }
     const type = symbol?.type
@@ -464,7 +466,46 @@ export abstract class CallChecker extends ExpressionChecker {
     if (node.typeArguments) return this.fail(node.typeArguments[0]!, `Class '${name}' is not generic.`)
     if (ts.isIdentifier(node.expression)) this.info.definitions.set(node.expression, symbol.decl)
     if (!type.ctor) return this.fail(node, this.earlyConstruction(name))
+    if (this.classInfos.get(type)?.abstract) return this.fail(node, `Cannot create an instance of an abstract class '${name}'.`)
     return this.callFunc(type.ctor, node.arguments ?? [], node, scope, `Constructor of '${name}'`)
+  }
+
+  /**
+   * `super(...)` in the constructor of a class with a base class: the
+   * initialization of the base class on `this`, then the parameter
+   * properties and field initializers of the class.
+   */
+  protected checkSuperCall(node: ts.CallExpression, scope: Scope): Operand {
+    const fn = this.fn
+    const base = fn?.ctor ? fn.cls?.base : undefined
+    if (!fn || !base || !fn.this) return this.fail(node, "A 'super' call is only allowed in the constructor of a class that extends another class.")
+    if (fn.superCall !== node) return this.fail(node, "A 'super' call must be a statement at the top level of the constructor, and the only one.")
+    const self: ir.Expr = { k: "local", type: fn.cls!, local: fn.this }
+    const call = this.callFunc(this.initOf(this.classInfos.get(base)!), node.arguments, node, scope, `Constructor of '${base.name}'`, self)
+    const inits = fn.superInits ?? []
+    if (call.k !== "typed" || inits.length === 0) return call
+    return typed({ k: "seq", type: inits.at(-1)!.type, exprs: [call.expr, ...inits] })
+  }
+
+  /** `super.m(...)`: the method of the base class, called directly on `this`. */
+  protected superMethodCall(node: ts.CallExpression, callee: ts.PropertyAccessExpression, scope: Scope): Operand {
+    const fn = this.fn
+    const self = fn?.this
+    const cls = fn?.cls
+    const base = cls?.base
+    if (!fn || !self || !cls || !base) return this.fail(callee.expression, "'super' can only be used in the methods and constructor of a class that extends another class.")
+    this.capture(self, fn.thisCaptures ?? [])
+    const name = callee.name.text
+    if (node.typeArguments) return this.fail(node.typeArguments[0]!, "Type arguments are only allowed for generic functions and methods.")
+    const method = findMethod(base, name)
+    if (!method) {
+      return this.fail(callee.name, this.genericMethod(base, name) ? `Generic method '${name}' cannot be called through 'super' yet.` : `Method '${name}' does not exist on base class '${base.name}'.`)
+    }
+    this.defineMember(callee.name, base, name)
+    if (!this.checkAccess(base, method, name, callee.name)) return errorOperand
+    const owner = this.abstractMethods.get(method.func)
+    if (owner) return this.fail(callee.name, `Abstract method '${name}' in class '${owner.name}' cannot be accessed via super expression.`)
+    return this.callFunc(method.func, node.arguments, node, scope, `Method '${base.name}.${name}'`, { k: "local", type: cls, local: self })
   }
 
   /**
@@ -581,6 +622,7 @@ export abstract class CallChecker extends ExpressionChecker {
   }
 
   protected checkMethodCall(node: ts.CallExpression, callee: ts.PropertyAccessExpression, scope: Scope): Operand {
+    if (callee.expression.kind === ts.SyntaxKind.SuperKeyword) return this.superMethodCall(node, callee, scope)
     const target = this.checkExpr(callee.expression, scope)
     if (target.k === "error") return target
     const value = this.toDefault(target, callee.expression)
@@ -593,7 +635,7 @@ export abstract class CallChecker extends ExpressionChecker {
     const args = node.arguments
     const type = value.type
 
-    const generic = type.kind === "struct" ? this.genericMethods.get(type)?.get(name) : undefined
+    const generic = type.kind === "struct" ? this.genericMethod(type, name) : undefined
     if (node.typeArguments && !generic) return this.fail(node.typeArguments[0]!, "Type arguments are only allowed for generic functions and methods.")
     if (type.kind === "struct" && generic) {
       this.defineMember(callee.name, type, name)
@@ -609,7 +651,9 @@ export abstract class CallChecker extends ExpressionChecker {
       if (method) {
         this.defineMember(callee.name, type, name)
         if (!this.checkAccess(type, method, name, callee.name)) return errorOperand
-        return this.callFunc(method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
+        const call = this.callFunc(method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
+        if (call.k === "typed") this.dispatch(call.expr, name)
+        return call
       }
       const field = findField(type, name)
       if (field?.type.kind === "func") return this.callValue(this.member(value, callee.name, callee.name.text), node, scope)

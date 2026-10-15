@@ -1,6 +1,6 @@
 // Tables and pure functions of the checker.
 import * as ir from "@ore/ir"
-import { arrayOf, findField, findMethod, isStringLike, membersOf, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
+import { arrayOf, findField, findMethod, isStringLike, isSubclass, membersOf, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
 import ts from "typescript"
 import type { Operand } from "./operand"
 
@@ -108,9 +108,22 @@ export function mentions(node: ts.Node, names: string[]): boolean {
   return ts.forEachChild(node, (child) => mentions(child, names) || undefined) ?? false
 }
 
-/** Whether a value of type `from` can be a member `m` of a union: the same type, or a string literal for `string`. */
+/** Whether a value of type `from` can be a member `m` of a union: the same type, a string literal for `string`, or a subclass for a class. */
 export function memberOf(from: Type, m: Type): boolean {
-  return sameType(from, m) || (from.kind === "literal" && m.kind === "string")
+  return sameType(from, m) || (from.kind === "literal" && m.kind === "string") || (from.kind === "struct" && m.kind === "struct" && isSubclass(from, m))
+}
+
+/** The first `this` or `super` in a subtree, other than the callee of a `super(...)` call. */
+export function findThis(node: ts.Node): ts.Node | undefined {
+  if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword) return node
+  if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.SuperKeyword) {
+    for (const arg of node.arguments) {
+      const found = findThis(arg)
+      if (found) return found
+    }
+    return undefined
+  }
+  return ts.forEachChild(node, findThis)
 }
 
 /** The type of a public field of a struct or interface, if it has one. */

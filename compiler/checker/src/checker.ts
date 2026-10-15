@@ -62,6 +62,7 @@ export class Checker extends CallChecker {
     // so that they can be used before their declaration and recursively.
     each((stmt, m) => ts.isTypeAliasDeclaration(stmt) && this.declareTypeAlias(stmt, m.scope))
     for (const info of this.interfaces.values()) this.fillInterface(info, info.scope)
+    for (const info of this.classes) this.resolveBase(info)
     each((stmt, m) => {
       if (!ts.isFunctionDeclaration(stmt)) return
       const func = this.declareFunction(stmt, m.scope)
@@ -84,6 +85,7 @@ export class Checker extends CallChecker {
     for (const [decl, func, scope] of bodies) this.checkFunctionBody(decl, func, scope)
     for (const info of this.classes) this.checkClassBodies(info, info.scope)
     while (this.pending.length > 0) this.pending.shift()!()
+    this.finishClasses()
     this.localizeGlobals()
     this.checkUnassigned()
 
