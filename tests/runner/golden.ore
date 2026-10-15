@@ -134,8 +134,17 @@ function diagCase(file: string): void {
     }
     const missing: string[] = []
     for (const [key, rest] of expected) for (const a of rest) missing.push(`${basename(key)}: ${a}`)
-    if (unexpected.length > 0 || missing.length > 0) {
+    // Every message has a code (compiler/src/syntax/codes.ore).
+    const uncoded: string[] = []
+    for (const d of diagnostics)
+        if (d.code === "")
+            uncoded.push(`${basename(d.source.path)}:${d.source.position(d.start).line + 1}: ${d.message}`)
+    if (unexpected.length > 0 || missing.length > 0 || uncoded.length > 0) {
         const parts: string[] = []
+        if (uncoded.length > 0)
+            parts.push(
+                `diagnostics without a code (add them to compiler/src/syntax/codes.ore):\n        ${uncoded.join("\n        ")}`,
+            )
         if (unexpected.length > 0) parts.push(`unexpected diagnostics:\n        ${unexpected.join("\n        ")}`)
         if (missing.length > 0) parts.push(`annotations without a diagnostic:\n        ${missing.join("\n        ")}`)
         fail(parts.join("\n      "))

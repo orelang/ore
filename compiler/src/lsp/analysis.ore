@@ -20,7 +20,7 @@ import { type Source } from "../syntax/source"
 import { offsetAt, rangeOf, type Position, type Range } from "./text"
 
 /** A problem in the document, with its span in bytes. */
-export type Diagnostic = { message: string; severity: "error" | "warning"; start: int; end: int }
+export type Diagnostic = { message: string; severity: "error" | "warning"; start: int; end: int; code: string }
 
 /** A location in the analyzed file, or in a file such as `runtime/std/builtin.d.ore`. */
 export type Location = {
@@ -144,7 +144,13 @@ class CheckedAnalysis {
         if (absolute.endsWith("/runtime/std/builtin.d.ore")) {
             // As the checker parses it.
             for (const d of parseFile("runtime/std/builtin.d.ore", text).diagnostics)
-                this.errors.push({ message: d.message, severity: d.severity, start: d.start, end: d.start + d.length })
+                this.errors.push({
+                    message: d.message,
+                    severity: d.severity,
+                    start: d.start,
+                    end: d.start + d.length,
+                    code: d.code,
+                })
             return
         }
         const options = new LoadOptions()
@@ -167,7 +173,7 @@ class CheckedAnalysis {
         if (loaded instanceof Error) {
             const parser = parse(text)
             for (const e of parser.diagnostics)
-                this.errors.push({ message: e.message, severity: "error", start: e.start, end: e.end })
+                this.errors.push({ message: e.message, severity: "error", start: e.start, end: e.end, code: "" })
             return
         }
         let entry = loaded.entry
@@ -175,13 +181,25 @@ class CheckedAnalysis {
         this.source = entry
         for (const d of loaded.diagnostics)
             if (d.source === entry)
-                this.errors.push({ message: d.message, severity: d.severity, start: d.start, end: d.start + d.length })
+                this.errors.push({
+                    message: d.message,
+                    severity: d.severity,
+                    start: d.start,
+                    end: d.start + d.length,
+                    code: d.code,
+                })
         if (loaded.syntaxErrors) return
         const result = check(loaded)
         this.info = result.info
         for (const d of result.diagnostics)
             if (d.source === entry)
-                this.errors.push({ message: d.message, severity: d.severity, start: d.start, end: d.start + d.length })
+                this.errors.push({
+                    message: d.message,
+                    severity: d.severity,
+                    start: d.start,
+                    end: d.start + d.length,
+                    code: d.code,
+                })
     }
 
     diagnostics(): Diagnostic[] {

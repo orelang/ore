@@ -12,6 +12,7 @@ import {
     ServerNotInitialized,
     type Message,
 } from "./jsonrpc"
+import { docsUrl } from "../syntax/codes"
 import { offsetAt, pathToUri, uriToPath, type Position, type Range } from "./text"
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,15 @@ type ReferenceParams = {
 }
 type RenameParams = { textDocument: TextDocumentIdentifier; position: Position; newName: string }
 
-type LspDiagnostic = { range: Range; severity: int; source: string; message: string }
+type LspDiagnostic = {
+    range: Range
+    severity: int
+    source: string
+    message: string
+    /** The code of the message, and the address of its page. */
+    code: string | null
+    codeDescription: { href: string } | null
+}
 type LspLocation = { uri: string; range: Range }
 type TextEdit = { range: Range; newText: string }
 
@@ -233,11 +242,14 @@ export class Server {
         this.analyses.set(document.uri, analysis)
         const diagnostics: LspDiagnostic[] = []
         for (const d of analysis.diagnostics()) {
+            const coded = d.code !== ""
             diagnostics.push({
                 range: analysis.range(d.start, d.end),
                 severity: d.severity === "error" ? severityError : severityWarning,
                 source: "ore",
                 message: d.message,
+                code: coded ? d.code : null,
+                codeDescription: coded ? { href: docsUrl(d.code) } : null,
             })
         }
         this.publish(document.uri, diagnostics)

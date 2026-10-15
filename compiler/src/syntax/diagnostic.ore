@@ -1,19 +1,24 @@
 // Diagnostics: errors and warnings at a span of a source file.
 
 import { type Node } from "./ast"
+import { codeOf, docsUrl } from "./codes"
 import { type Source, utf16Length } from "./source"
 
 export type Severity = "error" | "warning"
 
-/** A message about the bytes from `start` to `start + length` of a source. */
+/** A message about the bytes from `start` to `start + length` of a source, with the code of the message (see ./codes). */
 export class Diagnostic {
+    readonly code: string
+
     constructor(
         readonly source: Source,
         readonly start: int,
         readonly length: int,
         readonly severity: Severity,
         readonly message: string,
-    ) {}
+    ) {
+        this.code = codeOf(message)
+    }
 }
 
 /** A diagnostic spanning a node. */
@@ -22,9 +27,9 @@ export function diagnosticAt(source: Source, node: Node, message: string, severi
 }
 
 /**
- * Formats a diagnostic as `path:line:col: severity: message` followed by the
- * source line and a caret. Columns and widths count UTF-16 code units, as the
- * TypeScript compiler does.
+ * Formats a diagnostic as `path:line:col: severity[code]: message` followed by
+ * the source line, a caret, and the address of the code's page. Columns and
+ * widths count UTF-16 code units, as the TypeScript compiler does.
  */
 export function formatDiagnostic(d: Diagnostic): string {
     const { line, column } = d.source.position(d.start)
@@ -32,9 +37,11 @@ export function formatDiagnostic(d: Diagnostic): string {
     const length = utf16Length(d.source.text, d.start, d.start + d.length)
     const textLength = utf16Length(text, 0, text.length)
     const width = Math.max(1, Math.min(length, textLength - column))
-    return [
-        `${d.source.path}:${line + 1}:${column + 1}: ${d.severity}: ${d.message}`,
+    const lines = [
+        `${d.source.path}:${line + 1}:${column + 1}: ${d.severity}${d.code === "" ? "" : `[${d.code}]`}: ${d.message}`,
         `  ${text}`,
         `  ${" ".repeat(column)}${"^".repeat(width)}`,
-    ].join("\n")
+    ]
+    if (d.code !== "") lines.push(`  see ${docsUrl(d.code)}`)
+    return lines.join("\n")
 }

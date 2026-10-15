@@ -5,6 +5,9 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Diagnostics have codes (`error[ORE2033]`) and a page each in
+  `docs/errors`, linked from the command line and the language server.
+
 - The language server runs the checker: type errors, hover with the
   signature or type and the JSDoc comment, go to definition (also into the
   standard library), completion after `.`, references and rename.

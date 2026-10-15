@@ -13,6 +13,7 @@
 import { test, expect, fail } from "ore:test"
 import { Connection, frame, Reader } from "../src/lsp/jsonrpc"
 import { Server } from "../src/lsp/server"
+import { docsUrl as docs } from "../src/syntax/codes"
 
 declare function pipe(fds: ptr): i32
 declare function close(fd: i32): i32
@@ -41,7 +42,14 @@ function within<T>(ch: Chan<T>, what: string): T {
 
 type Position = { line: int; character: int }
 type Range = { start: Position; end: Position }
-type Diagnostic = { range: Range; severity: int; source: string; message: string }
+type Diagnostic = {
+    code: string | null
+    codeDescription: { href: string } | null
+    message: string
+    range: Range
+    severity: int
+    source: string
+}
 type ResponseError = { code: int; message: string }
 
 /** What the client looks at in every message from the server. */
@@ -270,7 +278,7 @@ test("syntax diagnostics with UTF-16 ranges, through full and incremental change
     const opened = client.diagnostics(uri)
     expect(opened.length > 0).toBe(true)
     expect(JSON.stringify(opened[0])).toBe(
-        `{"message":"Identifier expected.","range":${range(1, 17, 1, 18)},"severity":1,"source":"ore"}`,
+        `{"code":"ORE1001","codeDescription":{"href":"${docs("ORE1001")}"},"message":"Identifier expected.","range":${range(1, 17, 1, 18)},"severity":1,"source":"ore"}`,
     )
 
     // Replace `)` with `1`: ranges after the emoji are in UTF-16 units.
@@ -326,7 +334,7 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     const errors = client.diagnostics(uri)
     expect(errors.length).toBe(1)
     expect(JSON.stringify(errors[0])).toBe(
-        `{"message":"Type 'string' is not assignable to type 'i64'.","range":${range(8, 17, 8, 20)},"severity":1,"source":"ore"}`,
+        `{"code":"ORE2033","codeDescription":{"href":"${docs("ORE2033")}"},"message":"Type 'string' is not assignable to type 'i64'.","range":${range(8, 17, 8, 20)},"severity":1,"source":"ore"}`,
     )
     const at = (line: int, character: int) =>
         `{"textDocument":{"uri":${JSON.stringify(uri)}},"position":{"line":${line},"character":${character}}}`

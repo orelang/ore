@@ -27,7 +27,14 @@ tool, 2 for a wrong command line):
 Without a file, `run`, `build` and `check` take the `main` of the nearest
 package.json. `ore test` prints a file's output once it is done (its stdout,
 then its stderr). The language server checks the program of each open
-document with its unsaved text. Programs are built from the sources every time; a cache would
+document with its unsaved text.
+
+Every diagnostic has a code (`error[ORE2033]`), found by its message in
+`syntax/codes.ore`, and a page in [`docs/errors`](../docs/errors); the
+command line prints the page's address under the diagnostic and the
+language server sends it as the code's description. The address comes from
+`docsPattern` in `syntax/codes.ore` (on GitHub for now; `ORE_DOCS` overrides
+it). A new message needs a code there and a page: the tests check both. Programs are built from the sources every time; a cache would
 go under `$ORE_CACHE` (`~/.cache/ore`), keyed by a hash of the compiler and
 the modules a program loads, in `buildCommand` of `cli/commands.ore`.
 

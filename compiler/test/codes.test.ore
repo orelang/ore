@@ -1,0 +1,29 @@
+// The codes of diagnostics: unique, each with its page in docs/errors, and
+// found for the messages they are for.
+
+import { test, expect, fail } from "ore:test"
+import { codeOf, diagnosticCodes, docsPattern, docsUrl } from "../src/syntax/codes"
+
+test("codes are unique, well formed and have a page", () => {
+    const seen = new Set<string>()
+    for (const c of diagnosticCodes) {
+        if (seen.has(c.code)) fail(`duplicate code ${c.code}`)
+        seen.add(c.code)
+        expect(c.code.length).toBe(7)
+        expect(c.code.startsWith("ORE")).toBe(true)
+        if (!fs.exists(`docs/errors/${c.code}.md`)) fail(`no page docs/errors/${c.code}.md for '${c.template}'`)
+    }
+})
+
+test("a message has the code of the template it fits best", () => {
+    expect(codeOf("Identifier expected.")).toBe("ORE1001")
+    expect(codeOf("Type 'string' is not assignable to type 'i64'.")).toBe("ORE2033")
+    // Also with the instance of a generic it is in.
+    expect(codeOf("Type 'string' is not assignable to type 'i64'. (in 'twice<string>')")).toBe("ORE2033")
+    expect(codeOf("Something no one says.")).toBe("")
+})
+
+test("the address of a page", () => {
+    expect(docsPattern.includes("{code}")).toBe(true)
+    expect(docsUrl("ORE1001")).toBe(docsPattern.replaceAll("{code}", "ORE1001"))
+})
