@@ -1,0 +1,69 @@
+// Sets: insertion-ordered, with the hashing and equality of Map keys.
+
+const seen = new Set<string>()
+for (const w of ["b", "a", "b", "c", "a"]) seen.add(w)
+console.log(seen.size, seen.has("a"), seen.has("z"), seen.values().join(","))
+for (const w of seen) console.write(`${w} `)
+console.log()
+
+// add returns the set; delete tells whether the value was there.
+seen.add("d").add("e")
+console.log(seen.delete("b"), seen.delete("b"), seen.size, seen.values().join(","))
+seen.add("b")
+console.log(seen.values().join(","))
+
+// From an array, a literal or another set; the element type is inferred.
+const primes = new Set([2, 3, 5, 7, 3, 2])
+console.log(primes.size, primes.has(5), primes.has(4))
+const copy = new Set(primes)
+copy.add(11)
+console.log(primes.size, copy.size)
+const words: Set<string> = new Set(["x", "y"])
+const bytes = new Set<u8>([1, 2, 255])
+console.log(words.size, bytes.has(255))
+
+// Numbers by value (NaN equals NaN, -0 equals 0), objects by identity.
+const zero: f64 = 0
+const floats = new Set<f64>()
+floats
+    .add(zero / zero)
+    .add(zero / zero)
+    .add(-0.0)
+    .add(0.0)
+console.log(floats.size, floats.has(zero / zero), floats.has(0.0))
+
+class Point {
+    constructor(
+        public x: int,
+        public y: int,
+    ) {}
+}
+const p = new Point(1, 2)
+const points = new Set<Point>([p, p, new Point(1, 2)])
+console.log(points.size, points.has(p), points.has(new Point(1, 2)))
+
+// Many values, deleted and added again: the order is kept.
+const many = new Set<int>()
+for (let i = 0; i < 1000; i++) many.add(i)
+for (let i = 0; i < 1000; i += 2) many.delete(i)
+many.add(0)
+const values = many.values()
+console.log(many.size, values[0], values[values.length - 1])
+
+// A field or variable without an initializer is a new empty set.
+class Visited {
+    nodes: Set<int>
+}
+const visited = new Visited()
+visited.nodes.add(4)
+let fresh: Set<string>
+fresh.add("only")
+console.log(visited.nodes.size, fresh.size)
+
+seen.clear()
+console.log(seen.size, seen.has("a"), seen === seen, seen === new Set<string>())
+
+// Iteration sees values added during the loop, as in JavaScript.
+const grow = new Set([1])
+for (const n of grow) if (n < 5) grow.add(n + 1)
+console.log(grow.values().join(" "))

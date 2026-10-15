@@ -1,0 +1,32 @@
+// Optional fields `x?: T` have the type `T | null` and start as null, unless
+// initialized; optional parameter properties are null when the argument is
+// left out.
+
+class Node {
+    line?: int
+    label?: string = "start"
+    next?: Node
+    constructor(
+        readonly kind: string,
+        public note?: string,
+    ) {}
+}
+
+function describe(n: Node): string {
+    const line = n.line === null ? "no line" : `line ${n.line}`
+    return `${n.kind}: ${line}, label ${n.label ?? "none"}, note ${n.note ?? "none"}`
+}
+
+const a = new Node("a")
+console.log(describe(a))
+a.line = 4
+a.label = null
+const b = new Node("b", "second")
+b.next = a
+console.log(describe(a))
+console.log(describe(b))
+console.log(nextKind(b), nextKind(a))
+
+function nextKind(n: Node): string {
+    return n.next?.kind ?? "end"
+}
