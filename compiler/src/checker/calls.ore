@@ -1,6 +1,7 @@
 // Calls: functions, methods, closures, constructors, built-ins (including
 // `unsafe` and `JSON`), array and string methods.
 
+import { compileRegExp } from "../../../runtime/core/regexp-syntax"
 import {
     type Expr,
     type MapOpName,
@@ -12,6 +13,7 @@ import {
     Alloc,
     Bind,
     BindLocal,
+    BoolLit,
     FieldGet,
     Block,
     BuiltinCall,
@@ -1447,6 +1449,91 @@ function finishCall(c: Checker, func: Func, values: Expr[], receiver: Expr | nul
     return typed(new Bind(func.type.result, locals, call))
 }
 
+/** The string methods that take a regular expression. */
+const regExpMethods = ["match", "matchAll", "search", "split", "replace", "replaceAll"]
+
+/** The class `RegExp` of runtime/core/regexp.ore, a global name; null without the runtime. */
+function regExpType(c: Checker): StructType | null {
+    const builtins = c.builtins
+    const symbol = builtins !== null ? builtins.lookupType("RegExp") : null
+    if (symbol === null) return null
+    const type = symbol.type
+    return type.kind === "struct" ? type : null
+}
+
+function newRegExp(c: Checker, type: StructType, pattern: Expr, flags: Expr): Operand {
+    const ctor = type.ctor
+    if (ctor === null) return constructEarly(c, type)
+    return typed(new Call(ctor.type.result, ctor, [pattern, flags]))
+}
+
+/**
+ * A regular expression literal, `/ab+c/i`: `new RegExp("ab+c", "i")`, its
+ * pattern and flags checked by the same code that compiles them at run time.
+ */
+export function checkRegExpLiteral(c: Checker, node: Node): Operand {
+    const text = c.text(node)
+    const close = text.lastIndexOf("/")
+    const pattern = text.slice(1, close)
+    const flags = text.slice(close + 1)
+    const program = compileRegExp(pattern, flags)
+    if (program.error !== "") return c.fail(node, `Invalid regular expression: ${program.error}.`)
+    const type = regExpType(c)
+    if (type === null) return c.fail(node, "Regular expressions need the class 'RegExp' of the runtime.")
+    return newRegExp(c, type, new StringLit(types.string, pattern), new StringLit(types.string, flags))
+}
+
+/**
+ * `s.match(re)`, `s.replace(re, x)` and the other string methods given a
+ * `RegExp`: calls of its private methods (`stringMatch`, `stringReplace`...
+ * in runtime/core/regexp.ore), as JavaScript calls `re[Symbol.match](s)`.
+ * `s` is evaluated first.
+ */
+function regExpMethod(
+    c: Checker,
+    str: Expr,
+    re: Expr,
+    type: StructType,
+    name: string,
+    node: Node,
+    scope: Scope,
+): Operand {
+    const args = argsOf(node)
+    const local = c.newLocal("str", types.string, false)
+    const nodes: Node[] = [args[0]]
+    const operands: Operand[] = [typed(new LocalRef(types.string, local))]
+    let method = ""
+    if (name === "match" || name === "matchAll" || name === "search") {
+        if (args.length !== 1) return c.fail(node, `'${name}' expects 1 argument(s), got ${args.length}.`)
+        method = name === "match" ? "stringMatch" : name === "matchAll" ? "stringMatchAll" : "stringSearch"
+    } else if (name === "split") {
+        if (args.length > 2) return c.fail(node, `'split' expects 1 to 2 argument(s), got ${args.length}.`)
+        method = "stringSplit"
+        if (args.length > 1) {
+            nodes.push(args[1])
+            operands.push(checkExpr(c, args[1], scope, types.i64))
+        }
+    } else {
+        if (args.length !== 2) return c.fail(node, `'${name}' expects 2 argument(s), got ${args.length}.`)
+        // A function literal takes its parameters' types from the replacer's.
+        const withFunction = findMethod(type, "stringReplaceWith")
+        const replacer = withFunction !== null ? withFunction.func.type.params[1] : null
+        const literal = args[1].kind === "ArrowFunction" || args[1].kind === "FunctionExpression"
+        const replacement = checkExpr(c, args[1], scope, literal ? replacer : null)
+        if (replacement.k === "error") return replacement
+        const callback = replacement.k === "typed" && replacement.expr.type.kind === "func"
+        method = callback ? "stringReplaceWith" : "stringReplace"
+        nodes.push(args[1])
+        operands.push(replacement)
+        nodes.push(node)
+        operands.push(typed(new BoolLit(types.bool, name === "replaceAll")))
+    }
+    const found = findMethod(type, method)
+    if (found === null) return c.fail(node, `The class 'RegExp' has no method '${method}'.`)
+    const call = callFunc(c, found.func, nodes, node, scope, `'${name}'`, re, operands)
+    return bindAround([new BindLocal(local, str)], call)
+}
+
 export function checkMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Operand {
     if (expression(callee).kind === "SuperKeyword") return superMethodCall(c, node, callee, scope)
     const target = checkExpr(c, expression(callee), scope)
@@ -1684,6 +1771,25 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         return typed(new BuiltinCall(types.string, "Number.toFixed", [number, digits]))
     }
     const stringLike = isStringLike(type) || (type.kind === "union" && type.members.every(isStringLike))
+    // The first argument of a method that takes a regular expression, checked once.
+    let first: Operand = errorOperand
+    let firstChecked = false
+    const reType = stringLike && regExpMethods.includes(name) && args.length > 0 ? regExpType(c) : null
+    if (reType !== null) {
+        const str: Expr = sameType(type, types.string) ? value : new Recast(types.string, value)
+        first = checkExpr(c, args[0], scope, null)
+        firstChecked = true
+        if (first.k === "error") return first
+        if (first.k === "typed" && sameType(first.expr.type, reType))
+            return regExpMethod(c, str, first.expr, reType, name, node, scope)
+        if (name === "match" || name === "matchAll" || name === "search") {
+            // A pattern string, as in JavaScript: `new RegExp(pattern)`, global for `matchAll`.
+            const flags = new StringLit(types.string, name === "matchAll" ? "g" : "")
+            const re = newRegExp(c, reType, c.coerce(first, types.string, args[0]), flags)
+            if (re.k !== "typed") return re
+            return regExpMethod(c, str, re.expr, reType, name, node, scope)
+        }
+    }
     const stringMethod = stringLike ? stringMethods.get(name) : null
     if (stringMethod !== null) {
         const params = stringMethod.params
@@ -1695,8 +1801,10 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             )
         }
         const values: Expr[] = []
-        for (let i = 0; i < args.length; i++)
-            values.push(c.coerce(checkExpr(c, args[i], scope, params[i]), params[i], args[i]))
+        for (let i = 0; i < args.length; i++) {
+            const arg = i === 0 && firstChecked ? first : checkExpr(c, args[i], scope, params[i])
+            values.push(c.coerce(arg, params[i], args[i]))
+        }
         const str: Expr = sameType(type, types.string) ? value : new Recast(types.string, value)
         const result = name === "codePointAt" ? c.unionOf([types.i64, types.null]) : stringMethod.result
         return typed(new StringMethod(name, result, str, values))
