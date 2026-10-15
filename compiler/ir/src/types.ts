@@ -80,6 +80,12 @@ export interface StructType {
   methods: Method[]
   /** The constructor of a class: returns a new instance. */
   ctor?: Func
+  /**
+   * The base class of a class declared with `extends`: its fields come first
+   * in `fields`, and its methods first in `methods`, in the same order (the
+   * slots of the class table), each replaced by the override if there is one.
+   */
+  base?: StructType
 }
 
 export type InterfaceMember =
@@ -155,6 +161,37 @@ export function findField(t: StructType, name: string): Field | undefined {
 
 export function findMethod(t: StructType, name: string): Method | undefined {
   return t.methods.find((m) => m.name === name)
+}
+
+/** Whether class `s` is `base` or a subclass of it. */
+export function isSubclass(s: StructType, base: StructType): boolean {
+  for (let t: StructType | undefined = s; t !== undefined; t = t.base) if (t === base) return true
+  return false
+}
+
+/**
+ * The classes among `structs` whose instances start with a pointer to their
+ * class table: those with a base class or a subclass.
+ */
+export function classTables(structs: readonly StructType[]): Set<StructType> {
+  const tables = new Set<StructType>()
+  for (const s of structs) {
+    if (s.base === undefined) continue
+    tables.add(s)
+    tables.add(s.base)
+  }
+  return tables
+}
+
+/** Whether a subclass of `s` among `structs` overrides its method `name`, so that calls of it on an `s` dispatch through the class table. */
+export function overridden(structs: readonly StructType[], s: StructType, name: string): boolean {
+  const func = findMethod(s, name)?.func
+  return structs.some((t) => t !== s && t.base !== undefined && isSubclass(t, s) && findMethod(t, name)?.func !== func)
+}
+
+/** The slot of a method in the class table of the class that declares or inherits it: its index in the methods of its receiver's class. */
+export function methodSlot(func: Func): number {
+  return (func.receiver!.type as StructType).methods.findIndex((m) => m.func === func)
 }
 
 export function arrayOf(elem: Type): ArrayType {

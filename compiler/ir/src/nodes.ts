@@ -479,13 +479,17 @@ export interface Alloc {
   type: StructType
 }
 
-/** A direct call of a class method. */
+/**
+ * A call of a class method: direct, or with `virtual` through the class
+ * table of the receiver, whose class may override the method.
+ */
 export interface MethodCall {
   k: "method-call"
   type: Type
   func: Func
   receiver: Expr
   args: Expr[]
+  virtual?: boolean
 }
 
 /**
@@ -638,7 +642,8 @@ export interface CallValue {
 
 /**
  * A method bound to its receiver as a function value: a class method
- * (`func`), or method `index` of an interface value.
+ * (`func`, looked up in the class table of the receiver with `virtual`), or
+ * method `index` of an interface value.
  */
 export interface BoundMethod {
   k: "bound-method"
@@ -646,6 +651,7 @@ export interface BoundMethod {
   receiver: Expr
   func?: Func
   index?: number
+  virtual?: boolean
 }
 
 /**
