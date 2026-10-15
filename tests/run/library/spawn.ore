@@ -81,6 +81,12 @@ console.log(lost instanceof Error ? lost.message.replace(dir, "<dir>") : `ran: $
 console.log("before")
 const code = process.run("sh", ["-c", "echo from the child; exit 5"])
 console.log("after", code instanceof Error ? code.message : code)
+// With options: the working directory, and standard input.
+const inDirCode = process.command.run("sh", ["-c", 'test "$(pwd)" = "$0" && echo "in the directory, $(cat)"', real], {
+    cwd: dir,
+    stdin: "read from stdin",
+})
+console.log("status", inDirCode instanceof Error ? inDirCode.message : inDirCode)
 
 // The environment of this process.
 const vars = process.env()

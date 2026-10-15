@@ -2,6 +2,14 @@
 function f(info: fs.Stat): void {} // error: 'fs' has no type 'Stat'.
 fs.listDir(".") // error: 'fs' has no member 'listDir'.
 const code: int = process.run("true") // error: Type 'Error | i64' is not assignable to type 'i64'
+const child: process.Child = process.spawn("true") // error: is not assignable to type 'Child'
 const out: process.Output = process.command.output("ls") // error: is not assignable to type 'Output'
 process.command.run("ls", [], { cwd: 1 }) // error: is not assignable to type 'null | string'
+const options: process.CommandOptions = { stdin: true } // error: is not assignable to type 'null | string'
 fs.mkdir("x", "yes") // error: is not assignable to type 'bool'
+// process.command is a namespace nested in process, implemented by a module of its own.
+process.command.start("ls") // error: 'process.command' has no member 'start'.
+const command = process.command // error: 'process.command' is a namespace; call its functions, e.g. 'process.command.run(...)'.
+function g(o: process.command.Options): void {} // error: 'process.command' has no type 'Options'.
+const old = new process.Command("ls") // error: 'process' has no type 'Command'.
+process.output("ls", [], { cwd: "/" }) // error: Function 'output' expects 1 to 2 argument(s), got 3.
