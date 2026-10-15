@@ -10,6 +10,6 @@ cd "$(dirname "$0")/.."
 : "${ORE_REMOTE:?set ORE_REMOTE to user@host}"
 dir=${ORE_REMOTE_DIR:-ore}
 rsync -az --delete --exclude=node_modules --exclude=dist --exclude=.claude --exclude=.git ./ "$ORE_REMOTE:$dir/"
-command=${*:-bun test --timeout 120000}
+command=${*:-bun run test}
 # shellcheck disable=SC2029
 ssh "$ORE_REMOTE" "cd $dir && export PATH=\$HOME/.bun/bin:/usr/lib/llvm-22/bin:\$PATH && bun install --frozen-lockfile --ignore-scripts >/dev/null && $command"

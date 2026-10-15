@@ -42,9 +42,11 @@ import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import ts from "typescript"
 import { dump } from "../../compiler/ir/src/dump"
+import { oreNext } from "./ore-next"
 
 const root = join(import.meta.dir, "../..")
-const binary = join(mkdtempSync(join(tmpdir(), "ore-next-")), "ore-next")
+/** The compiler in Ore, shared by the test files (./ore-next.ts). */
+let binary = ""
 
 function oreFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -165,14 +167,12 @@ async function run(...args: string[]): Promise<{ code: number; stdout: string; s
 }
 
 beforeAll(async () => {
-  // A debug build: with the checker, a release build of the compiler takes minutes, and runs no faster here.
-  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
-  expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 600_000)
+  binary = await oreNext()
+}, 900_000)
 
 describe("selfhost lexer", () => {
   for (const file of files) {
-    test(relative(root, file), async () => {
+    test.concurrent(relative(root, file), async () => {
       const { code, stdout } = await run("tokens", file)
       expect(code).toBe(0)
       expect(stdout.trimEnd().split("\n")).toEqual(typescriptTokens(readFileSync(file, "utf8")))
@@ -185,7 +185,7 @@ describe("selfhost parser", () => {
     const text = readFileSync(file, "utf8")
     const expected = typescriptTree(file, text)
     if (!expected) continue
-    test(relative(root, file), async () => {
+    test.concurrent(relative(root, file), async () => {
       const { stdout, stderr } = await run("tree", file)
       expect(stderr).toBe("")
       expect(stdout.trimEnd().split("\n")).toEqual(expected)
@@ -198,7 +198,7 @@ describe("next roles", () => {
     const text = readFileSync(file, "utf8")
     const expected = typescriptRoles(file, text)
     if (!expected) continue
-    test(relative(root, file), async () => {
+    test.concurrent(relative(root, file), async () => {
       const { stdout, stderr } = await run("roles", file)
       expect(stderr).toBe("")
       expect(stdout.trimEnd().split("\n")).toEqual(expected)
@@ -211,7 +211,7 @@ describe("next modules", () => {
   for (const file of programs) {
     // Relative to the working directory, as the command line gives it.
     const entry = relative(process.cwd(), file)
-    test(relative(root, file), async () => {
+    test.concurrent(relative(root, file), async () => {
       const expected = typescriptModules(entry)
       const { code, stdout, stderr } = await run("modules", entry)
       expect(stderr).toBe("")
@@ -247,7 +247,7 @@ describe("next ir", () => {
       test.skip(name, () => {})
       continue
     }
-    test(name, async () => {
+    test.concurrent(name, async () => {
       const expected = typescriptIr(entry)
       const actual = await run("ir", entry)
       expect(actual.stderr).toBe(expected.stderr)
@@ -293,7 +293,7 @@ function compile(file: string): Compiled {
 
 describe("next read", () => {
   for (const file of checkedPrograms) {
-    test(relative(root, file), async () => {
+    test.concurrent(relative(root, file), async () => {
       const { dump: text, path } = compile(file)
       const { code, stdout, stderr } = await run("read", path)
       expect(stderr).toBe("")
@@ -333,7 +333,7 @@ describe("next llvm", () => {
 describe("next tests", () => {
   const dir = join(root, "compiler/next/test")
   for (const name of readdirSync(dir).filter((n) => n.endsWith(".test.ore")).sort()) {
-    test(name, async () => {
+    test.concurrent(name, async () => {
       const output = join(mkdtempSync(join(tmpdir(), "ore-next-test-")), "test")
       const result = await build(join(dir, name), { output })
       expect(result.diagnostics.map((d) => d.message)).toEqual([])

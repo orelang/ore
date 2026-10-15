@@ -22,10 +22,12 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import ts from "typescript"
+import { oreNext } from "./ore-next"
 
 const root = join(import.meta.dir, "../..")
 const work = mkdtempSync(join(tmpdir(), "ore-fmt-"))
-const binary = join(work, "ore-next")
+/** The compiler in Ore, shared by the test files (./ore-next.ts). */
+let binary = ""
 
 function oreFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -255,15 +257,13 @@ async function prettierFormat(input: string): Promise<string | undefined> {
 }
 
 beforeAll(async () => {
-  // A debug build: a release build of the compiler, with its checker, takes minutes.
-  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
-  expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 600_000)
+  binary = await oreNext()
+}, 900_000)
 
 for (const [name, variant] of Object.entries(variants)) {
   describe(`fmt, ${name}`, () => {
     for (const file of files) {
-      test(relative(root, file), async () => {
+      test.concurrent(relative(root, file), async () => {
         const input = variant(readFileSync(file, "utf8"))
         const expected = await prettierFormat(input)
         if (expected === undefined) return
