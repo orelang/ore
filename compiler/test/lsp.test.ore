@@ -244,7 +244,7 @@ test("lifecycle: initialize, shutdown and exit", () => {
     const init = client.initialize()
     const capabilities =
         `{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"hoverProvider":true,` +
-        `"referencesProvider":true,"renameProvider":{"prepareProvider":true},"textDocumentSync":2}`
+        `"referencesProvider":true,"renameProvider":{"prepareProvider":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"textDocumentSync":2}`
     expect(init).toBe(
         message(`"id":0,"result":{"capabilities":${capabilities},"serverInfo":{"name":"ore","version":"test"}}`),
     )
@@ -365,6 +365,11 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     )
     const renamed = client.request("6", "textDocument/rename", `${at(9, 14).slice(0, -1)},"newName":"sum"}`)
     expect(renamed.includes(`"newText":"sum"`)).toBe(true)
+
+    // The signature of a call being written, with the parameter at the cursor.
+    const help = client.request("8", "textDocument/signatureHelp", at(7, 21))
+    expect(help.includes(`"label":"function add(a: int, b: int): int"`)).toBe(true)
+    expect(help.includes(`"activeParameter":1`)).toBe(true)
 
     // Members after a dot, while the line does not parse yet.
     const typing = 'const word = "abc"\nword.\n'

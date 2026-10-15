@@ -56,6 +56,9 @@ export type Completion = {
     detail: string
 }
 
+/** The signature of the function being called, its parameters (substrings of `label`), and which one is being written. */
+export type SignatureHelp = { label: string; documentation: string; parameters: string[]; active: int }
+
 /** Markdown hover text and the range of the identifier it describes. */
 export type Hover = { contents: string; range: Range }
 
@@ -75,6 +78,8 @@ export interface Analysis {
     completions(position: Position): Completion[]
     /** Where the identifier at a position is declared. */
     definition(position: Position): Location | null
+    /** The signature of the call whose arguments are being written at a position. */
+    signatureHelp(position: Position): SignatureHelp | null
 }
 
 /** Kinds of nodes whose leading comment documents the declaration inside them. */
@@ -386,6 +391,58 @@ class CheckedAnalysis {
         return ""
     }
 
+    signatureHelp(position: Position): SignatureHelp | null {
+        const offset = offsetAt(this.text, position)
+        // The `(` of the call around the offset, and the commas of its arguments before the offset.
+        let depth = 0
+        let commas = 0
+        let open = -1
+        for (let i = offset - 1; i >= 0 && open < 0; i--) {
+            const c = this.text[i]
+            if (c === 41 || c === 93 || c === 125) depth++
+            else if (c === 40 || c === 91 || c === 123) {
+                if (depth === 0 && c === 40) open = i
+                else if (depth === 0) return null
+                else depth--
+            } else if (c === 44 && depth === 0) commas++
+            else if (c === 59) return null
+        }
+        if (open < 0) return null
+        let end = open
+        while (end > 0 && (this.text[end - 1] === 32 || this.text[end - 1] === 9)) end--
+        // A call being written does not parse: its signature comes from the program with the call closed.
+        if (this.info === null) {
+            // The rest of the line, which may be half written, is left out.
+            const lineEnd = this.text.indexOf("\n", offset)
+            const rest = lineEnd < 0 ? "" : this.text.slice(lineEnd)
+            const patched = new CheckedAnalysis(this.path, this.text.slice(0, offset) + ")" + rest)
+            return patched.signatureAt(end, commas)
+        }
+        return this.signatureAt(end, commas)
+    }
+
+    /** The signature of the function named by the identifier that ends at `end`. */
+    signatureAt(end: int, active: int): SignatureHelp | null {
+        const source = this.source
+        if (source === null || this.info === null) return null
+        const callee = identifierIn(source.ast, end)
+        if (callee === null || callee.end !== end) return null
+        const decl = this.declarationOf(callee)
+        if (decl === null) return null
+        const declSource = this.sourceOf(decl)
+        if (declSource === null) return null
+        const k = decl.kind
+        if (k !== "FunctionDeclaration" && k !== "MethodDeclaration" && k !== "MethodSignature") return null
+        const parameters: string[] = []
+        for (const p of decl.list("parameters")) parameters.push(collapse(declSource.text.slice(p.start, p.end)))
+        return {
+            label: this.header(declSource, decl, callee.text, null),
+            documentation: this.docOf(declSource, decl),
+            parameters,
+            active,
+        }
+    }
+
     completions(position: Position): Completion[] {
         const offset = offsetAt(this.text, position)
         // The start of the name being typed after the dot.
@@ -610,9 +667,7 @@ function jsdocBefore(text: string, pos: int): string {
 function paramDoc(inner: string, name: string): string {
     let found = ""
     let collecting = false
-    for (const raw of inner.split("\n")) {
-        let line = raw.trim()
-        if (line.startsWith("*")) line = line.slice(1).trim()
+    for (const line of jsdocLines(inner)) {
         if (line.startsWith("@")) {
             collecting = false
             const words = line.split(" ")
@@ -627,15 +682,36 @@ function paramDoc(inner: string, name: string): string {
     return found.trim()
 }
 
+/** A line of a JSDoc comment split before each ` @tag` that follows other text. */
+function splitTags(line: string): string[] {
+    const parts: string[] = []
+    let start = 0
+    for (let i = 1; i + 1 < line.length; i++) {
+        const letter = (line[i + 1] >= 97 && line[i + 1] <= 122) || (line[i + 1] >= 65 && line[i + 1] <= 90)
+        if (line[i] === 64 && line[i - 1] === 32 && letter && line.slice(start, i).trim() !== "") {
+            parts.push(line.slice(start, i).trimEnd())
+            start = i
+        }
+    }
+    parts.push(line.slice(start))
+    return parts
+}
+
 /** The text of a JSDoc comment as Markdown: the description, then its tags. */
-function renderJsdoc(inner: string): string {
+/** The lines of a JSDoc comment without their `*`; a tag after text on the same line starts a line of its own. */
+function jsdocLines(inner: string): string[] {
     const lines: string[] = []
     for (const raw of inner.split("\n")) {
         let line = raw.trim()
         if (line.startsWith("*")) line = line.slice(1)
         if (line.startsWith(" ")) line = line.slice(1)
-        lines.push(line.trimEnd())
+        for (const part of splitTags(line.trimEnd())) lines.push(part)
     }
+    return lines
+}
+
+function renderJsdoc(inner: string): string {
+    const lines = jsdocLines(inner)
     const description: string[] = []
     const tags: string[] = []
     let inTags = false

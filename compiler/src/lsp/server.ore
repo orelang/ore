@@ -154,6 +154,9 @@ export class Server {
             case "textDocument/definition":
                 this.definition(m)
                 return
+            case "textDocument/signatureHelp":
+                this.signatureHelp(m)
+                return
             case "textDocument/references":
                 this.references(m)
                 return
@@ -203,6 +206,7 @@ export class Server {
                 referencesProvider: true,
                 renameProvider: { prepareProvider: true },
                 completionProvider: { triggerCharacters: ["."] },
+                signatureHelpProvider: { triggerCharacters: ["(", ","] },
             },
             serverInfo: { name: "ore", version: this.version },
         }
@@ -345,6 +349,34 @@ export class Server {
                 items.push({ label: c.label, kind: c.kind === "method" ? kindMethod : kindField, detail: c.detail })
         }
         this.connection.respond(m.id, JSON.stringify(items))
+    }
+
+    private signatureHelp(m: Message): void {
+        const p = params<PositionParams>(m)
+        if (p instanceof Error) return this.invalid(m, p)
+        // The current text: signature help is requested right after typing.
+        const document = this.documents.get(p.textDocument.uri)
+        const help =
+            document === null ? null : analyze(uriToPath(document.uri), document.text).signatureHelp(p.position)
+        if (help === null) return this.connection.respond(m.id, "null")
+        const parameters: { label: string }[] = []
+        for (const label of help.parameters) parameters.push({ label })
+        const result: {
+            signatures: {
+                label: string
+                documentation: { kind: string; value: string }
+                parameters: { label: string }[]
+            }[]
+            activeSignature: int
+            activeParameter: int
+        } = {
+            signatures: [
+                { label: help.label, documentation: { kind: "markdown", value: help.documentation }, parameters },
+            ],
+            activeSignature: 0,
+            activeParameter: help.active,
+        }
+        this.connection.respond(m.id, JSON.stringify(result))
     }
 
     private definition(m: Message): void {
