@@ -1,3 +1,3 @@
 export * from "./types"
 export type * from "./nodes"
-export { dump, quote } from "./dump"
+export { dump, ident, quote } from "./dump"

@@ -7,6 +7,9 @@ struct Point#1 nominal
   ctor: Point_new
 struct #2
   field a: string
+struct "Pair<i64, string>"#9
+  field a: i64 readonly
+  field b: string
 union (i64 | null)%7 name="MaybeInt"
 union ("a\"b" | ((i64) => void) | Point#1 | null)%8
 itab 0: Point#1 -> Shape@3
@@ -24,7 +27,10 @@ func Point_new "constructor" line=2 : (f64) => Point#1
 func puts "puts" line=1 file="c.ore" extern variadic=ptr : (string) => i32
   param: $2 s: string
   body: block
-func main_lambda_1 "" line=9 : (i64) => void
+func puts "puts" line=2 file="d.ore" extern : (ptr) => i32
+  param: $3 p: ptr
+  body: block
+func main_lambda_1 "" line=9 closure : (i64) => void
   param: $21 y: i64
   capture: $10 n: i64 mut captured assigned
   body: block
@@ -150,8 +156,10 @@ func main "main" line=4 exported : (i64[], Point#1, Shape@3, (i64 | null)%7, Cha
       expr: convert : f64
         value: local $10 n : i64
     expr
-      expr: call puts : i32
+      expr: call puts#0 : i32
         arg: string "hi" : string
+    expr
+      expr: call puts#1 : i32
     expr
       expr: builtin console.log : void
         arg: local $10 n : i64
@@ -208,7 +216,7 @@ func main "main" line=4 exported : (i64[], Point#1, Shape@3, (i64 | null)%7, Cha
       expr: iface-field 0 : f64
         value: local $13 s : Shape@3
     expr
-      expr: iface-call 1 method=(f64) => Other@6 : Other@6
+      expr: iface-call 1 method=(f64) => "Other<i64>"@6 : "Other<i64>"@6
         value: local $13 s : Shape@3
         arg: float 2 : f64
     expr
@@ -251,7 +259,7 @@ func main "main" line=4 exported : (i64[], Point#1, Shape@3, (i64 | null)%7, Cha
         key: local $16 k : string
         value: int 1 : i64
     expr
-      expr: func-ref puts : (string) => i32
+      expr: func-ref puts#0 : (string) => i32
     expr
       expr: closure main_lambda_1 : (i64) => void
     expr
@@ -262,7 +270,7 @@ func main "main" line=4 exported : (i64[], Point#1, Shape@3, (i64 | null)%7, Cha
       expr: bound-method func=Point_norm : () => f64
         receiver: local $12 p : Point#1
     expr
-      expr: bound-method index=1 : (f64) => Other@6
+      expr: bound-method index=1 : (f64) => "Other<i64>"@6
         receiver: local $13 s : Shape@3
     expr
       expr: array-method map arity=1 : i64[]
@@ -299,5 +307,5 @@ init init_test "<init>" line=1 : () => void
       init: int 1 : i64
 interface Shape@3
   field area: f64 readonly
-  method scale: (f64) => Other@6
-interface Other@6
+  method scale: (f64) => "Other<i64>"@6
+interface "Other<i64>"@6

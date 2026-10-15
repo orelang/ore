@@ -17,7 +17,7 @@ const binary = join(work, "ore-next")
 beforeAll(async () => {
   const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
   expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 120_000)
+}, 600_000)
 
 afterAll(() => rmSync(work, { recursive: true, force: true }))
 

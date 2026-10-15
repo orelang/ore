@@ -10,11 +10,18 @@
 //   ore-next fmt <file.ore>       the file formatted in the Ore style, as `ore fmt` formats it
 //   ore-next ir <entry.ore>       the IR of the checked program (`dump` of ir/dump.ore), or
 //                                 its diagnostics on stderr with status 1
+//   ore-next read <dump.txt>      reads the dump of an IR module (compiler/ir/src/dump.ts) and
+//                                 writes it again: the round trip of ir/read.ore
+//   ore-next llvm <dump.txt> [--debug]
+//                                 the LLVM IR of the module of a dump, from opt/ and llvm/:
+//                                 inlined unless --debug, which keeps frames for stack traces
 //   ore-next lsp                  the language server on stdin and stdout
 
 import { check } from "./checker/checker"
 import { format } from "./fmt/print"
 import { dump as dumpModule } from "./ir/dump"
+import { readModule } from "./ir/read"
+import { emitModule, EmitOptions } from "./llvm/emit"
 import { serve } from "./lsp/server"
 import { loadProgram } from "./project/load"
 import { dump, dumpRoles } from "./syntax/ast"
@@ -26,10 +33,26 @@ const version = "0.1.0-next"
 
 if (process.args.length === 1 && process.args[0] === "lsp") process.exit(i32(serve(version)))
 
-const mode = process.args.length === 2 ? process.args[0] : ""
-if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "fmt" && mode !== "ir") {
-    console.error("usage: ore-next tokens|tree|roles|modules|fmt|ir <file.ore> | ore-next lsp")
+const llvm = process.args.length >= 2 && process.args.length <= 3 && process.args[0] === "llvm" && (process.args.length === 2 || process.args[2] === "--debug")
+const mode = llvm ? "llvm" : process.args.length === 2 ? process.args[0] : ""
+if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "fmt" && mode !== "ir" && mode !== "read" && mode !== "llvm") {
+    console.error("usage: ore-next tokens|tree|roles|modules|fmt|ir <file.ore> | ore-next read <dump.txt> | ore-next llvm <dump.txt> [--debug] | ore-next lsp")
     process.exit(2)
+}
+if (mode === "read" || mode === "llvm") {
+    const text = fs.readFile(process.args[1])
+    if (text instanceof Error) {
+        console.error(text.message)
+        process.exit(1)
+    }
+    const module = readModule(text)
+    if (module instanceof Error) {
+        console.error(module.message)
+        process.exit(1)
+    }
+    if (mode === "read") console.write(dumpModule(module))
+    else console.write(emitModule(module, new EmitOptions(process.args.length === 3)))
+    process.exit(0)
 }
 if (mode === "ir") {
     const program = loadProgram(process.args[1])
