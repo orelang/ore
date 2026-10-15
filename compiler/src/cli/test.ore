@@ -1,5 +1,6 @@
-// `ore test [paths...]`: builds and runs the *.test.ore files below the paths
-// (default: "."), and reports which failed.
+// `ore test [--watch] [paths...]`: builds and runs the *.test.ore files below
+// the paths (default: "."), and reports which failed; with `--watch`, again
+// after each change of the files the test programs are made of (watch.ore).
 //
 // A test file is a program whose `test(...)` calls (ore:test) run each test
 // in its own task and print `✓ name` or `✗ name` and the failure; its
@@ -9,10 +10,12 @@
 // same compiler (the checker keeps state that tasks would share); their
 // outputs are printed in the order of the files.
 
-import { join } from "ore:path"
+import { join, resolve } from "ore:path"
 import { toolError } from "./commands"
 import { oreFiles } from "./files"
 import { executablePath } from "../driver/self"
+import { loadProgram, programFiles } from "../project/load"
+import { baselineOf, describe, stamps, waitForChange, watched } from "./watch"
 
 /** What building and running a test file printed, and whether it passed. */
 class FileResult {
@@ -24,7 +27,36 @@ class FileResult {
 }
 
 export function testCommand(args: string[]): i32 {
-    const files = oreFiles(args, true)
+    const paths = args.filter((a) => a !== "--watch" && a !== "-w")
+    if (paths.length === args.length) return runTests(paths)
+    let files: string[] = []
+    while (true) {
+        const before = stamps(files)
+        const status = runTests(paths)
+        const tested = testedFiles(paths)
+        if (tested.length === 0) return status
+        files = watched(tested, files)
+        const changed = waitForChange(baselineOf(files, before), null)
+        console.error(`[ore] testing again: ${describe(changed)} changed`)
+    }
+}
+
+/** The files that the test programs below the paths are made of (`programFiles`), each once. */
+function testedFiles(paths: string[]): string[] {
+    const tests = oreFiles(paths, true)
+    if (tests instanceof Error) return []
+    const files: string[] = []
+    for (const test of tests) {
+        const program = loadProgram(test)
+        const found: string[] = program instanceof Error ? [resolve(test)] : programFiles(program)
+        for (const file of found) if (!files.includes(file)) files.push(file)
+    }
+    return files
+}
+
+/** Builds and runs the test files below the paths, and prints the results. */
+function runTests(paths: string[]): i32 {
+    const files = oreFiles(paths, true)
     if (files instanceof Error) return toolError(files)
     if (files.length === 0) {
         console.error("ore: no *.test.ore files found")

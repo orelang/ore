@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `ore run --watch` builds and runs the program again whenever one of its
+  files changes (its modules, the files they import as text, package.json),
+  stopping the one that runs; a build error is printed and the next change
+  builds again. `ore build --watch` and `ore test --watch` too.
 - `process.Command.spawn()` starts a program without waiting for it: a
   `process.Child` with `pid`, `wait()` and `kill(signal)`.
 - Diagnostics have codes (`error[ORE2033]`) and a page each in
