@@ -1,0 +1,651 @@
+// Regular expressions, as in JavaScript: the class `RegExp` of `/ab+c/i`
+// literals and `new RegExp(pattern, flags)`, its matches (`RegExpMatch`),
+// and the string methods that take one: `s.match(re)` is `re`'s private
+// `stringMatch(s)`, and so on, as JavaScript's `String.prototype.match`
+// calls `re[Symbol.match](s)`. Both classes are global names.
+//
+// A pattern is compiled once (regexp-syntax.ore), and a backtracking
+// matcher runs its program over the UTF-8 bytes of a string, a character
+// (a code point) at a time; positions and `lastIndex` are byte offsets, as
+// everywhere in strings.
+
+import {
+    type Program,
+    canonicalize,
+    compileRegExp,
+    inRanges,
+    isLineTerminator,
+    isWordChar,
+    lowercase,
+    OP_ANY,
+    OP_ANY_ALL,
+    OP_BACKREF,
+    OP_BOL,
+    OP_CHAR,
+    OP_CHAR_I,
+    OP_CLASS,
+    OP_CLASS_I,
+    OP_EOL,
+    OP_JUMP,
+    OP_LOOK,
+    OP_LOOK_END,
+    OP_MATCH,
+    OP_PROGRESS,
+    OP_RESET,
+    OP_SAVE,
+    OP_SPLIT,
+    OP_WORD,
+} from "ore:runtime/regexp-syntax"
+
+/** A run of a program over a string: the backtracking stack and the slots. */
+class Matcher {
+    /** Pairs: a choice point (instruction, position), or an undo (-1 - slot, old value). */
+    stack: int[] = []
+    sp = 0
+    /** The start and end of each group, then the positions of loops; -1 when unset. */
+    slots: int[] = []
+    /** The width in bytes of the last character decoded. */
+    width = 1
+
+    constructor(
+        readonly program: Program,
+        readonly s: string,
+    ) {
+        for (let i = 0; i < program.slots; i++) this.slots.push(-1)
+    }
+
+    /** The code point at a position (U+FFFD for an invalid byte), its width in `width`. */
+    decode(pos: int): int {
+        const s = this.s
+        const b = int(s[pos])
+        if (b < 0x80) {
+            this.width = 1
+            return b
+        }
+        let n = 0
+        let c = 0
+        if (b >= 0xf0 && b < 0xf8) {
+            n = 4
+            c = b & 7
+        } else if (b >= 0xe0 && b < 0xf0) {
+            n = 3
+            c = b & 15
+        } else if (b >= 0xc0 && b < 0xe0) {
+            n = 2
+            c = b & 31
+        }
+        this.width = 1
+        if (n === 0 || pos + n > s.length) return 0xfffd
+        for (let k = 1; k < n; k++) {
+            const x = int(s[pos + k])
+            if ((x & 0xc0) !== 0x80) return 0xfffd
+            c = (c << 6) | (x & 63)
+        }
+        this.width = n
+        return c
+    }
+
+    /** Whether the character before a position ends a line. */
+    afterLineTerminator(pos: int): bool {
+        const b = this.s[pos - 1]
+        if (b === 10 || b === 13) return true
+        // U+2028 and U+2029: E2 80 A8 and E2 80 A9.
+        return pos >= 3 && (b === 0xa8 || b === 0xa9) && this.s[pos - 2] === 0x80 && this.s[pos - 3] === 0xe2
+    }
+
+    push(a: int, b: int) {
+        if (this.sp === this.stack.length) {
+            this.stack.push(a)
+            this.stack.push(b)
+        } else {
+            this.stack[this.sp] = a
+            this.stack[this.sp + 1] = b
+        }
+        this.sp += 2
+    }
+
+    set(slot: int, value: int) {
+        this.push(-1 - slot, this.slots[slot])
+        this.slots[slot] = value
+    }
+
+    /** Whether a class (by set) holds a character, ignoring case when asked. */
+    inClass(set: int, c: int, ignoreCase: bool): bool {
+        const ranges = this.program.sets[set]
+        if (inRanges(ranges, c)) return true
+        if (!ignoreCase) return false
+        const upper = canonicalize(c)
+        if (upper !== c && inRanges(ranges, upper)) return true
+        const lower = lowercase(upper)
+        if (lower !== c && inRanges(ranges, lower)) return true
+        // Two lowercase letters with one uppercase: ς and σ, µ and μ.
+        return (upper === 0x3a3 && inRanges(ranges, 0x3c2)) || (upper === 0x39c && inRanges(ranges, 0xb5))
+    }
+
+    /** Whether the text of a group is at a position; its length in `width`. */
+    backref(group: int, pos: int): bool {
+        const start = this.slots[2 * group]
+        const end = this.slots[2 * group + 1]
+        this.width = 0
+        if (start < 0 || end < 0) return true
+        const s = this.s
+        if (!this.program.ignoreCase) {
+            const length = end - start
+            if (pos + length > s.length) return false
+            for (let i = 0; i < length; i++) if (s[start + i] !== s[pos + i]) return false
+            this.width = length
+            return true
+        }
+        let at = pos
+        let i = start
+        while (i < end) {
+            if (at >= s.length) return false
+            const a = this.decode(i)
+            i += this.width
+            const b = this.decode(at)
+            at += this.width
+            if (canonicalize(a) !== canonicalize(b)) return false
+        }
+        this.width = at - pos
+        return true
+    }
+
+    /**
+     * Runs the program from an instruction at a position, backtracking until
+     * it reaches `MATCH` or `LOOK_END` (true; the end in `width`) or has no
+     * choice left above the stack as it found it (false, every slot restored).
+     */
+    run(start: int, from: int): bool {
+        const program = this.program
+        const code = program.code
+        const s = this.s
+        const n = s.length
+        const base = this.sp
+        let pc = start
+        let pos = from
+        for (;;) {
+            let ok = true
+            const op = code[pc]
+            if (op === OP_CHAR) {
+                const want = code[pc + 1]
+                if (pos < n && want < 128) {
+                    ok = int(s[pos]) === want
+                    pos++
+                } else {
+                    ok = pos < n && this.decode(pos) === want
+                    pos += this.width
+                }
+                pc += 2
+            } else if (op === OP_CHAR_I) {
+                ok = pos < n && canonicalize(this.decode(pos)) === code[pc + 1]
+                pos += this.width
+                pc += 2
+            } else if (op === OP_ANY) {
+                ok = pos < n && !isLineTerminator(this.decode(pos))
+                pos += this.width
+                pc++
+            } else if (op === OP_ANY_ALL) {
+                ok = pos < n
+                if (ok) this.decode(pos)
+                pos += this.width
+                pc++
+            } else if (op === OP_CLASS || op === OP_CLASS_I) {
+                ok = pos < n && this.inClass(code[pc + 1], this.decode(pos), op === OP_CLASS_I) !== (code[pc + 2] === 1)
+                pos += this.width
+                pc += 3
+            } else if (op === OP_SPLIT) {
+                this.push(code[pc + 2], pos)
+                pc = code[pc + 1]
+            } else if (op === OP_JUMP) {
+                pc = code[pc + 1]
+            } else if (op === OP_SAVE) {
+                this.set(code[pc + 1], pos)
+                pc += 2
+            } else if (op === OP_RESET) {
+                for (let slot = code[pc + 1]; slot < code[pc + 2]; slot++)
+                    if (this.slots[slot] !== -1) this.set(slot, -1)
+                pc += 3
+            } else if (op === OP_BOL) {
+                ok = pos === 0 || (program.multiline && this.afterLineTerminator(pos))
+                pc++
+            } else if (op === OP_EOL) {
+                ok = pos === n || (program.multiline && isLineTerminator(this.decode(pos)))
+                pc++
+            } else if (op === OP_WORD) {
+                const before = pos > 0 && isWordChar(int(s[pos - 1]))
+                const after = pos < n && isWordChar(int(s[pos]))
+                ok = (before !== after) !== (code[pc + 1] === 1)
+                pc += 2
+            } else if (op === OP_BACKREF) {
+                ok = this.backref(code[pc + 1], pos)
+                pos += this.width
+                pc += 2
+            } else if (op === OP_LOOK) {
+                const negate = code[pc + 1] === 1
+                const mark = this.sp
+                const matched = this.run(pc + 3, pos)
+                if (matched && !negate) {
+                    // The groups set inside stay set; only the undoing of them is kept.
+                    let top = mark
+                    for (let i = mark; i < this.sp; i += 2) {
+                        if (this.stack[i] < 0) {
+                            this.stack[top] = this.stack[i]
+                            this.stack[top + 1] = this.stack[i + 1]
+                            top += 2
+                        }
+                    }
+                    this.sp = top
+                } else if (matched) {
+                    this.unwind(mark)
+                }
+                ok = matched !== negate
+                pc = code[pc + 2]
+            } else if (op === OP_PROGRESS) {
+                ok = this.slots[code[pc + 1]] !== pos
+                pc += 2
+            } else {
+                // OP_MATCH or OP_LOOK_END.
+                this.width = pos
+                return true
+            }
+            if (!ok) {
+                // Back to the last choice, undoing what was set since.
+                let resumed = false
+                while (!resumed) {
+                    if (this.sp === base) return false
+                    this.sp -= 2
+                    const a = this.stack[this.sp]
+                    const b = this.stack[this.sp + 1]
+                    if (a < 0) {
+                        this.slots[-1 - a] = b
+                    } else {
+                        pc = a
+                        pos = b
+                        resumed = true
+                    }
+                }
+            }
+        }
+    }
+
+    /** Pops the stack down to `mark`, undoing the slots set above it. */
+    unwind(mark: int) {
+        while (this.sp > mark) {
+            this.sp -= 2
+            const a = this.stack[this.sp]
+            if (a < 0) this.slots[-1 - a] = this.stack[this.sp + 1]
+        }
+    }
+
+    /** Finds the first match at or after `start` (only at `start` when sticky); its groups in `slots`. */
+    search(start: int, sticky: bool): bool {
+        const program = this.program
+        const n = this.s.length
+        if (start > n) return false
+        if (program.anchored && start > 0) return false
+        let at = start
+        for (;;) {
+            if (program.prefix !== "" && !sticky) {
+                const next = this.s.indexOf(program.prefix, at)
+                if (next < 0) return false
+                at = next
+            }
+            for (let i = 0; i < this.slots.length; i++) this.slots[i] = -1
+            this.sp = 0
+            if (this.run(0, at)) {
+                this.slots[0] = at
+                this.slots[1] = this.width
+                return true
+            }
+            if (sticky || program.anchored || at >= n) return false
+            this.decode(at)
+            at += this.width
+        }
+    }
+
+    /** The match found by `search`. */
+    result(): RegExpMatch {
+        const captures: (string | null)[] = []
+        for (let g = 0; g < this.program.groups; g++) {
+            const start = this.slots[2 * g]
+            const end = this.slots[2 * g + 1]
+            captures.push(start < 0 || end < 0 ? null : this.s.slice(start, end))
+        }
+        return new RegExpMatch(captures, this.slots[0], this.s, this.program.names)
+    }
+
+    /** The text of the match found by `search`. */
+    matched(): string {
+        return this.s.slice(this.slots[0], this.slots[1])
+    }
+
+    /** The position after the character at `pos`, to go on past an empty match. */
+    advance(pos: int): int {
+        if (pos >= this.s.length) return pos + 1
+        this.decode(pos)
+        return pos + this.width
+    }
+}
+
+/**
+ * A match of a regular expression: what `exec` returns. Like JavaScript's
+ * match arrays, `at(0)` is the matched text and `at(i)` the text of group
+ * `i`, `index` is where the match starts and `groups` holds the named
+ * groups (a new map at each use).
+ */
+export class RegExpMatch {
+    constructor(
+        /** The matched text, then the text of each group: null for a group that took no part in the match. */
+        readonly captures: (string | null)[],
+        /** The byte offset of the match in the input (-1 for the list of matches of `s.match` with the `g` flag). */
+        readonly index: int,
+        readonly input: string,
+        /** The name of each group, "" for one without. */
+        private names: string[],
+    ) {}
+
+    /** The text of each named group, by name. */
+    get groups(): Map<string, string | null> {
+        const groups = new Map<string, string | null>()
+        for (let g = 1; g < this.names.length; g++)
+            if (this.names[g] !== "") groups.set(this.names[g], this.captures[g])
+        return groups
+    }
+
+    /** The text of the group with a name, null when unset or when there is no such group. */
+    group(name: string): string | null {
+        for (let g = 1; g < this.names.length; g++) if (this.names[g] === name) return this.captures[g]
+        return null
+    }
+
+    /** Whether the expression has named groups. */
+    hasNames(): bool {
+        for (const name of this.names) if (name !== "") return true
+        return false
+    }
+
+    /** The number of captures: one more than the groups. */
+    get length(): int {
+        return this.captures.length
+    }
+
+    /** The capture at `i`, counting from the end when negative; null for one out of range or unset. */
+    at(i: int): string | null {
+        const k = i < 0 ? i + this.captures.length : i
+        if (k < 0 || k >= this.captures.length) return null
+        return this.captures[k]
+    }
+}
+
+/** What a function given to `s.replace(re, fn)` receives: the matched text and the match. */
+export type Replacer = (matched: string, match: RegExpMatch) => string
+
+/** The pattern as `source` shows it: `/` escaped outside classes, line breaks escaped, `(?:)` for "". */
+function escapeSource(pattern: string): string {
+    if (pattern === "") return "(?:)"
+    let out = ""
+    let from = 0
+    let inClass = false
+    for (let i = 0; i < pattern.length; i++) {
+        const c = pattern[i]
+        let escaped = ""
+        if (c === 92) {
+            i++
+            continue
+        }
+        if (c === 91) inClass = true
+        else if (c === 93) inClass = false
+        else if (c === 47 && !inClass) escaped = "\\/"
+        else if (c === 10) escaped = "\\n"
+        else if (c === 13) escaped = "\\r"
+        if (escaped !== "") {
+            out += pattern.slice(from, i) + escaped
+            from = i + 1
+        }
+    }
+    return out + pattern.slice(from)
+}
+
+/**
+ * A regular expression, as in JavaScript: `/ab+c/gi`, or
+ * `new RegExp("ab+c", "gi")`, which panics on an invalid pattern. Flags:
+ * `g` (global), `i` (ignore case), `m` (multiline), `s` (dot matches line
+ * breaks), `y` (sticky).
+ */
+export class RegExp {
+    readonly source: string
+    /** The flags, in the order `gimsy`. */
+    readonly flags: string
+    readonly global: bool
+    readonly ignoreCase: bool
+    readonly multiline: bool
+    readonly dotAll: bool
+    readonly sticky: bool
+    /** Where `exec` and `test` start, with the `g` or `y` flag: a byte offset, set past each match and to 0 after none. */
+    lastIndex = 0
+    private program: Program
+
+    constructor(pattern: string, flags = "") {
+        const program = compileRegExp(pattern, flags)
+        if (program.error !== "") process.panic(`Invalid regular expression: /${pattern}/${flags}: ${program.error}`)
+        this.program = program
+        this.source = escapeSource(pattern)
+        this.global = program.global
+        this.ignoreCase = program.ignoreCase
+        this.multiline = program.multiline
+        this.dotAll = program.dotAll
+        this.sticky = program.sticky
+        let canonical = ""
+        if (program.global) canonical += "g"
+        if (program.ignoreCase) canonical += "i"
+        if (program.multiline) canonical += "m"
+        if (program.dotAll) canonical += "s"
+        if (program.sticky) canonical += "y"
+        this.flags = canonical
+    }
+
+    /** The first match in `s` (from `lastIndex` with `g` or `y`, which it then updates), or null. */
+    exec(s: string): RegExpMatch | null {
+        const matcher = this.find(s)
+        return matcher === null ? null : matcher.result()
+    }
+
+    /** Whether `s` has a match, as `exec` finds it. */
+    test(s: string): bool {
+        return this.find(s) !== null
+    }
+
+    toString(): string {
+        return `/${this.source}/${this.flags}`
+    }
+
+    /** `exec` without building the match. */
+    private find(s: string): Matcher | null {
+        const tracked = this.global || this.sticky
+        const start = tracked ? (this.lastIndex < 0 ? 0 : this.lastIndex) : 0
+        const matcher = new Matcher(this.program, s)
+        if (!matcher.search(start, this.sticky)) {
+            if (tracked) this.lastIndex = 0
+            return null
+        }
+        if (tracked) this.lastIndex = matcher.slots[1]
+        return matcher
+    }
+
+    /** Calls `each` with the matcher at every match from `start` on, as `exec` with the `g` flag finds them. */
+    private all(s: string, start: int, each: (matcher: Matcher) => void) {
+        const matcher = new Matcher(this.program, s)
+        let at = start
+        while (matcher.search(at, this.sticky)) {
+            each(matcher)
+            at = matcher.slots[1]
+            if (at === matcher.slots[0]) at = matcher.advance(at)
+        }
+    }
+
+    /** `s.match(re)`: the first match; with `g`, the list of every matched text. */
+    private stringMatch(s: string): RegExpMatch | null {
+        if (!this.global) return this.exec(s)
+        this.lastIndex = 0
+        const texts: (string | null)[] = []
+        this.all(s, 0, (matcher) => {
+            texts.push(matcher.matched())
+        })
+        if (texts.length === 0) return null
+        return new RegExpMatch(texts, -1, s, [])
+    }
+
+    /** `s.matchAll(re)`: every match, from `lastIndex`; `re` must have the `g` flag. */
+    private stringMatchAll(s: string): RegExpMatch[] {
+        if (!this.global) process.panic("String.prototype.matchAll called with a non-global RegExp argument")
+        const out: RegExpMatch[] = []
+        this.all(s, this.lastIndex < 0 ? 0 : this.lastIndex, (matcher) => {
+            out.push(matcher.result())
+        })
+        return out
+    }
+
+    /** `s.search(re)`: the offset of the first match, or -1; `lastIndex` is left as it was. */
+    private stringSearch(s: string): int {
+        const matcher = new Matcher(this.program, s)
+        return matcher.search(0, this.sticky) ? matcher.slots[0] : -1
+    }
+
+    /**
+     * `s.replace(re, x)` and `s.replaceAll`: the parts between the matches
+     * that `replace` replaces (all of them with `g`, which `replaceAll`
+     * requires, else the first), and the replacement of each.
+     */
+    private replace(s: string, all: bool, replacement: (matcher: Matcher) => string): string {
+        if (all && !this.global) process.panic("replaceAll must be called with a global RegExp")
+        const parts: string[] = []
+        let from = 0
+        const each = (matcher: Matcher) => {
+            parts.push(s.slice(from, matcher.slots[0]))
+            parts.push(replacement(matcher))
+            from = matcher.slots[1]
+        }
+        if (this.global) {
+            this.lastIndex = 0
+            this.all(s, 0, each)
+        } else {
+            const matcher = this.find(s)
+            if (matcher !== null) each(matcher)
+        }
+        if (parts.length === 0) return s
+        parts.push(s.slice(from))
+        return parts.join("")
+    }
+
+    /** `s.replace(re, replacement)` and `s.replaceAll`, with `$&`, `$1`, `$<name>`, `` $` ``, `$'` and `$$`. */
+    private stringReplace(s: string, replacement: string, all: bool): string {
+        if (replacement.indexOf("$") < 0) return this.replace(s, all, (matcher) => replacement)
+        return this.replace(s, all, (matcher) => substitute(matcher.result(), replacement))
+    }
+
+    /** `s.replace(re, fn)` and `s.replaceAll`: each match replaced by what the function returns for it. */
+    private stringReplaceWith(s: string, replacer: Replacer, all: bool): string {
+        return this.replace(s, all, (matcher) => {
+            const match = matcher.result()
+            return replacer(match.captures[0]!, match)
+        })
+    }
+
+    /**
+     * `s.split(re, limit?)`: the parts between the matches, and the text of
+     * the groups of each match (an unset group is ""), at most `limit` of
+     * them. The flags `g` and `y` do not matter.
+     */
+    private stringSplit(s: string, limit = -1): string[] {
+        const out: string[] = []
+        if (limit === 0) return out
+        const matcher = new Matcher(this.program, s)
+        const n = s.length
+        if (n === 0) {
+            if (!matcher.search(0, true)) out.push(s)
+            return out
+        }
+        let p = 0
+        let q = 0
+        while (q < n && matcher.search(q, false)) {
+            const start = matcher.slots[0]
+            const end = matcher.slots[1]
+            if (start >= n) break
+            if (end === p) {
+                q = matcher.advance(start)
+                continue
+            }
+            out.push(s.slice(p, start))
+            if (out.length === limit) return out
+            for (let g = 1; g < this.program.groups; g++) {
+                const a = matcher.slots[2 * g]
+                const b = matcher.slots[2 * g + 1]
+                out.push(a < 0 || b < 0 ? "" : s.slice(a, b))
+                if (out.length === limit) return out
+            }
+            p = end
+            q = p
+        }
+        out.push(s.slice(p))
+        return out
+    }
+}
+
+/** A replacement text with its `$` patterns replaced for a match, as JavaScript's GetSubstitution. */
+function substitute(match: RegExpMatch, replacement: string): string {
+    const s = match.input
+    const matched = match.captures[0]!
+    const groups = match.captures.length - 1
+    const parts: string[] = []
+    let i = 0
+    let from = 0
+    while (i < replacement.length) {
+        if (replacement[i] !== 36 || i + 1 >= replacement.length) {
+            i++
+            continue
+        }
+        const c = replacement[i + 1]
+        let text = ""
+        let length = 0
+        if (c === 36) {
+            text = "$"
+            length = 2
+        } else if (c === 38) {
+            text = matched
+            length = 2
+        } else if (c === 96) {
+            text = s.slice(0, match.index)
+            length = 2
+        } else if (c === 39) {
+            text = s.slice(match.index + matched.length)
+            length = 2
+        } else if (c >= 48 && c <= 57) {
+            const one = int(c) - 48
+            const d = i + 2 < replacement.length ? int(replacement[i + 2]) - 48 : -1
+            const two = d >= 0 && d <= 9 ? one * 10 + d : -1
+            if (two >= 1 && two <= groups) {
+                text = match.captures[two] ?? ""
+                length = 3
+            } else if (one >= 1 && one <= groups) {
+                text = match.captures[one] ?? ""
+                length = 2
+            }
+        } else if (c === 60 && match.hasNames()) {
+            const close = replacement.indexOf(">", i + 2)
+            if (close >= 0) {
+                text = match.group(replacement.slice(i + 2, close)) ?? ""
+                length = close + 1 - i
+            }
+        }
+        if (length === 0) {
+            i++
+            continue
+        }
+        parts.push(replacement.slice(from, i))
+        parts.push(text)
+        i += length
+        from = i
+    }
+    parts.push(replacement.slice(from))
+    return parts.join("")
+}
