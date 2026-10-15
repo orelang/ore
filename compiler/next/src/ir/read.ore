@@ -64,6 +64,7 @@ import {
     Logical,
     LoopStmt,
     MapOp,
+    SetOp,
     MethodCall,
     Module,
     Not,
@@ -92,6 +93,7 @@ import {
     type Expr,
     type LValue,
     type MapOpName,
+    type SetOpName,
     type Stmt,
 } from "./nodes"
 import {
@@ -104,6 +106,7 @@ import {
     InterfaceType,
     LiteralType,
     MapType,
+    SetType,
     Method,
     StructType,
     UnionType,
@@ -424,6 +427,11 @@ class Reader {
             c.expect(">")
             return new MapType(key, value)
         }
+        if (c.eat("Set<")) {
+            const elem = this.type(c)
+            c.expect(">")
+            return new SetType(elem)
+        }
         if (c.eat("Chan<")) {
             const elem = this.type(c)
             c.expect(">")
@@ -547,6 +555,12 @@ class Reader {
         if (t.kind === "map") return t
         this.fail("expected a map type")
         return new MapType(types.void, types.void)
+    }
+
+    setType(t: Type): SetType {
+        if (t.kind === "set") return t
+        this.fail("expected a set type")
+        return new SetType(types.void)
     }
 
     chanType(t: Type): ChanType {
@@ -1154,6 +1168,18 @@ class Reader {
                 if (this.has(d, "value: ")) value = this.expr(d, "value")
                 return new MapOp(op, type, mapType, map, key, value)
             }
+            case "set": {
+                c.expect(" ")
+                const op = this.setOp(c.word())
+                c.expect(" setType=")
+                const setType = this.setType(this.type(c))
+                const type = this.exprType(c)
+                let set: Expr | null = null
+                if (this.has(d, "set: ")) set = this.expr(d, "set")
+                let value: Expr | null = null
+                if (this.has(d, "value: ")) value = this.expr(d, "value")
+                return new SetOp(op, type, setType, set, value)
+            }
             case "func-ref": {
                 c.expect(" ")
                 const func = this.func(c.word(), c)
@@ -1294,6 +1320,28 @@ class Reader {
                 return "values"
             default:
                 this.fail(`unknown map operation ${JSON.stringify(op)}`)
+                return "new"
+        }
+    }
+
+    setOp(op: string): SetOpName {
+        switch (op) {
+            case "new":
+                return "new"
+            case "add":
+                return "add"
+            case "has":
+                return "has"
+            case "delete":
+                return "delete"
+            case "clear":
+                return "clear"
+            case "size":
+                return "size"
+            case "values":
+                return "values"
+            default:
+                this.fail(`unknown set operation ${JSON.stringify(op)}`)
                 return "new"
         }
     }

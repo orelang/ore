@@ -480,6 +480,14 @@ class Dumper {
                 if (value !== null) this.expr(value, d, "value")
                 return
             }
+            case "set": {
+                this.exprHead(e, depth, role, `set ${e.op} setType=${this.type(e.setType)}`)
+                const set = e.set
+                if (set !== null) this.expr(set, d, "set")
+                const value = e.value
+                if (value !== null) this.expr(value, d, "value")
+                return
+            }
             case "func-ref":
                 this.exprHead(e, depth, role, `func-ref ${this.ref(e.func)}`)
                 return
@@ -569,6 +577,8 @@ class Dumper {
                 return quote(t.value)
             case "map":
                 return `Map<${this.type(t.key)}, ${this.type(t.value)}>`
+            case "set":
+                return `Set<${this.type(t.elem)}>`
             case "chan":
                 return `Chan<${this.type(t.elem)}>`
             case "select-case":

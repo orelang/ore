@@ -15,6 +15,7 @@ import {
     type LiteralType,
     type MapType,
     type NullType,
+    type SetType,
     type StringType,
     type StructType,
     type Type,
@@ -365,6 +366,7 @@ export type Expr =
     | Is
     | Downcast
     | MapOp
+    | SetOp
     | FuncRef
     | Closure
     | CallValue
@@ -844,6 +846,25 @@ export class MapOp {
         public mapType: MapType,
         public map: Expr | null = null,
         public key: Expr | null = null,
+        public value: Expr | null = null,
+    ) {}
+}
+
+/** The operations of `SetOp` (an inline union in TypeScript). */
+export type SetOpName = "new" | "add" | "has" | "delete" | "clear" | "size" | "values"
+
+/**
+ * An operation of `Set`: `new Set()` (with `value`, an array whose elements
+ * it adds), `set.add(value)` (the set), `has`, `delete`, `clear`, `size`, and
+ * `values` as an array in insertion order.
+ */
+export class SetOp {
+    readonly k: "set" = "set"
+    constructor(
+        public op: SetOpName,
+        public type: Type,
+        public setType: SetType,
+        public set: Expr | null = null,
         public value: Expr | null = null,
     ) {}
 }
