@@ -30,7 +30,7 @@ lld=$(command -v "$linker" || true)
 [ -n "$lld" ] || lld=$(llvm-config --bindir)/$linker
 [ -x "$lld" ] || { echo "package: $linker not found" >&2; exit 1; }
 cp "$lld" "$root/lib/ore/$linker"
-cp README.md "$root/"
+cp README.md LICENSE-MIT LICENSE-APACHE "$root/"
 
 # A system library stays where the system has it.
 system() {

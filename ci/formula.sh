@@ -14,6 +14,7 @@ cat <<EOF
 class Ore < Formula
   desc "Compiler of the Ore language: TypeScript syntax, Go-like semantics, native code"
   homepage "https://github.com/orelang/ore"
+  license any_of: ["MIT", "Apache-2.0"]
   version "$version"
 
   on_macos do
