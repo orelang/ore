@@ -46,7 +46,7 @@ errors until it uses the checker.
 | `ir/read.ore` | `readModule(text)`: the module of a dump, so that `dump(readModule(dump(m)))` is `dump(m)`; how the backend is checked on the IR of the TypeScript checker |
 | `opt/inline.ore` | `inlineCalls(module)`: calls of small functions replaced by their bodies (`compiler/opt/src/inline.ts`) |
 | `opt/escape.ore` | `planStack(module)`: escape analysis, the allocations placed on the stack (`compiler/opt/src/escape.ts`) |
-| `codegen/*.ore` | `emitModule(module, options)` of `codegen/emit.ore`, the LLVM IR text of a module, ported file by file from `compiler/codegen/src` (`ll`, `context`, `helpers`, `base`, `functions`, `expressions`, `calls`, `collections`, `json`, `emit`) |
+| `llvm/*.ore` | The LLVM backend: `emitModule(module, options)` of `llvm/emit.ore`, the LLVM IR text of a module, ported file by file from `compiler/codegen/src` (`ll`, `context`, `helpers`, `base`, `functions`, `expressions`, `calls`, `collections`, `json`, `emit`) |
 | `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
 | `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
@@ -114,7 +114,7 @@ equivalent in Ore:
 | `WeakMap` / `Set` of objects | `Map<K, bool>`; maps of struct and interface types are keyed by their id |
 | `withFacts(facts, () => ...)` | `c.pushFacts(facts)` ... `c.popFacts()` |
 | a function's `.length` (`writeAccessor`'s `next`) | an explicit `usesOld` flag |
-| a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `codegen/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names |
+| a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `llvm/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names |
 | `Map` keyed by a union (`Map<ir.Expr \| ir.Local, string>`) | one map per class of key (`SlotMap`, `NodeIds`) |
 
 Ore limitations to keep in mind: an array literal passed where `T[] | null` is
