@@ -22,13 +22,14 @@ tool, 2 for a wrong command line):
 | `ore test [paths...]` | builds and runs every `*.test.ore` file below the paths (default `.`, without `node_modules` and hidden directories), in parallel, one task per CPU, each build in a child process of the same `ore`; prints each file's output in order, then `All N test file(s) passed.` or `F of N test file(s) failed.` (status 1) |
 | `ore fmt [--check] [--stdout] [paths...]` | formats `.ore` files in place; `--check` lists the unformatted ones (status 1), `--stdout` prints them formatted |
 | `ore init [dir]` | `package.json` (name from the directory) and `src/main.ore` |
+| `ore cache [clean]` | where the build cache is, its object files and their size; `clean` removes them |
 | `ore lsp`, `ore version`, `ore help` | |
 
 Without a file, `run`, `build` and `check` take the `main` of the nearest
 package.json. `ore test` prints a file's output once it is done (its stdout,
-then its stderr); the language server has no checker yet. Programs are built from the sources every time; a cache would
-go under `$ORE_CACHE` (`~/.cache/ore`), keyed by a hash of the compiler and
-the modules a program loads, in `buildCommand` of `cli/commands.ore`.
+then its stderr); the language server has no checker yet. Programs are
+loaded, checked and emitted from the sources every time; LLVM's object files
+come from the build cache when it has them (see below).
 
 | File | Contents |
 |---|---|
@@ -69,10 +70,13 @@ the modules a program loads, in `buildCommand` of `cli/commands.ore`.
 | `opt/escape.ore` | `planStack(module)`: escape analysis, the allocations placed on the stack (`compiler/opt/src/escape.ts`) |
 | `llvm/*.ore` | The LLVM backend: `emitModule(module, options)` of `llvm/emit.ore`, the LLVM IR text of a module, ported file by file from `compiler/codegen/src` (`ll`, `context`, `helpers`, `base`, `functions`, `expressions`, `calls`, `collections`, `json`, `emit`) |
 | `llvm/bindings.ore` | The LLVM C API the compiler calls (contexts, the IR parser, the verifier, target machines, the new pass manager), and the registration of the host's target by `target.arch` |
-| `llvm/object.ore` | `emitObject(ir, options)`: LLVM IR text to an object file, as `clang -c -O0\|-O2` does: parsed in memory, verified, `default<O0>` or `default<O2>`, code generation for the host's CPU at -O0 or -O2; errors keep LLVM's `name:line:col` |
+| `llvm/names.ore` | Names in the IR that do not depend on the checker's numbering: types after what they are, strings after their bytes, closures after their file, globals after their names, class ids from a hash of the class's name |
+| `llvm/split.ore` | `splitModule(ir)`: a debug build's IR in parts, one per source file (several for a large one), each with only the types, declarations and constants it uses |
+| `llvm/object.ore` | `emitObject(ir, options)`: LLVM IR text to an object file, as `clang -c -O0\|-O2` does: parsed in memory, verified, `default<O0>` or `default<O2>`, code generation for the host's CPU at -O0 or -O2; errors keep LLVM's `name:line:col`; `objectTarget`, what else decides the object |
 | `driver/native.ore` | `nativeCode(paths)`: the libraries, C sources and library directories (`libDirs`) of a program's packages |
 | `driver/link.ore` | Linking with lld: `ld64.lld` with the macOS SDK, `ld.lld` with glibc's start files and dynamic linker; C sources compiled with `$CC` (cc); the target triple |
 | `driver/build.ore` | `compileToIr(entry, debug)` and `build(entry, options)` of `compiler/driver/src/build.ts`: load, check, emit, object, link; `buildIr` for IR already emitted |
+| `driver/cache.ore` | The build cache: its directory, the keys of objects, `ore cache`'s size and cleaning |
 | `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
 | `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
@@ -80,6 +84,7 @@ the modules a program loads, in `buildCommand` of `cli/commands.ore`.
 | `cli/main.ore` | The `ore` command: the usage, and the dispatch to the commands |
 | `cli/commands.ore` | `ore build`, `run`, `check`, `init`: the entry of a program (a file or package.json's `main`), errors and statuses |
 | `cli/test.ore`, `cli/fmt.ore`, `cli/files.ore` | `ore test`, `ore fmt`, and the `.ore` files below the paths they are given |
+| `cli/cache.ore` | `ore cache [clean]` |
 | `cli/self.ore` | The path of the running executable (`/proc/self/exe`, `_NSGetExecutablePath`) |
 | `main.ore` | `process.exit(main(process.args))` |
 
@@ -103,6 +108,36 @@ Code is generated for the baseline CPU of the architecture (`generic`), so
 that programs, `ore` itself included, run on any machine of it;
 `ORE_CPU=native` generates it for the machine that builds.
 
-Debug builds split the module into one part per CPU (`llvm/split.ore`) and
-compile the parts in parallel; release builds keep one module, so that the
-runtime inlines into the program.
+Debug builds split the module into parts by source file (`llvm/split.ore`)
+and compile the parts in parallel; release builds keep one module, so that
+the runtime inlines into the program.
+
+## The build cache
+
+LLVM's object files are kept in `<cache>/objects/<sha256>.o`, where
+`<cache>` is `$ORE_CACHE`, else `$XDG_CACHE_HOME/ore`, else
+`~/.cache/ore` (`ORE_CACHE=off` turns the cache off). The key is the SHA-256
+of the IR and of what else decides the object: the `ore` executable (its
+path, size and modification time, so that a rebuilt compiler never reuses
+the objects of another), LLVM's version, the target triple, the CPU
+(`ORE_CPU`) and the optimization level. A debug build looks up each of its
+parts, a release build its one module; on a hit, LLVM does not run, and the
+object is linked from the cache.
+
+The parts of a debug build are those of its source files, and the emitter
+names what they contain after what it is rather than after the order of the
+whole program (`llvm/names.ore`), so that a part's text, and its key, change
+only when its file does: editing a file recompiles that file's parts (and
+part 0, with the globals, when they change), and the runtime's parts are
+the same in every program, compiled once per compiler and target. Linking
+and the steps before LLVM (loading, checking, emitting) run every time: on
+a 16-core Linux machine, a debug build of the compiler takes 3.7 s, then
+3.2 s (LLVM 0.5 s, then 0.02 s), hello world 0.28 s, then 0.21 s, and a
+release build of the compiler 53 s, then 3.7 s.
+
+Builds running at the same time share the cache: an object is written to a
+temporary file of its own, then renamed. Nothing is removed but by `ore
+cache clean`: each debug build of a changed program adds the objects of
+its changed parts (the objects of a debug build of the compiler take about
+6 MB, those of the runtime 0.4 MB), and a release build one object of the
+whole program (3 MB for the compiler). `ore cache` prints the size.

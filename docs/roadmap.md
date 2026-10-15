@@ -72,7 +72,8 @@ exports, type assertions (Ore converts: `i32(x)`).
 ## 4. Toolchain
 
 - A build cache in `~/.cache/ore`: the runtime compiled once per compiler
-  and target, objects of unchanged modules reused.
+  and target, objects of unchanged modules reused (done; loading, checking
+  and emitting still run on every build).
 - The language server on the checker: hover, go to definition, completion,
   references, rename, signature help; JSDoc comments shown in hover and
   completion.

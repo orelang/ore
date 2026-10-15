@@ -42,9 +42,13 @@ always underneath; they are in the [specification](spec).
   on the stack) and, in release builds, inlining of small functions.
 - **llvm** writes textual LLVM IR, with the runtime in the same module so
   that it inlines; **driver** hands it to LLVM through its C API (parsed in
-  memory, optimized by LLVM's pass pipeline, one module per CPU in debug
-  builds) and links the objects with lld. A C compiler is only needed for
-  the C sources of packages.
+  memory, optimized by LLVM's pass pipeline, in debug builds one module per
+  source file, compiled on every CPU) and links the objects with lld. A C
+  compiler is only needed for the C sources of packages.
+- **The build cache** (`~/.cache/ore`) keeps LLVM's object files by a hash
+  of their IR, the compiler and the target: the runtime's parts of a debug
+  build are compiled once, and an edit recompiles the parts of the files it
+  changes.
 
 The compiler is written in Ore ([`compiler`](../compiler)) and builds itself:
 `ci/bootstrap.sh` checks that stages 2 and 3 emit the same LLVM IR. It was
