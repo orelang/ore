@@ -258,17 +258,25 @@ What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
 
 ## Getting started
 
-`ore` needs LLVM 19 or newer (its library, `libLLVM`) and lld, and a C
-compiler only for packages with C sources: `apt install llvm-22 lld-22` on
-Linux, `brew install llvm lld` on macOS. The compiler, written in Ore,
-builds itself (`ci/bootstrap.sh` checks that it reproduces itself); until a
-release of `ore` exists, the bootstrap starts from the seed, the last commit
-with the compiler in TypeScript, which it builds once with
-[Bun](https://bun.sh):
+On Linux (x86-64, arm64) and macOS (arm64):
 
 ```sh
-ci/bootstrap.sh dist                 # dist/ore
-ln -sf "$PWD/dist/ore" ~/.local/bin/ore
+curl -fsSL https://raw.githubusercontent.com/orelang/ore/main/install.sh | sh
+```
+
+or `brew install orelang/tap/ore`. A release carries its LLVM and lld; the
+script installs what linking needs from the system, puts `ore` in
+`~/.ore/bin` and adds it to the PATH. `ore update` updates it to the latest
+release.
+
+From source, the compiler (written in Ore) builds itself and checks that it
+reproduces itself; it needs LLVM 19 or newer and lld (`apt install llvm-22-dev
+lld-22`, `brew install llvm lld`), and starts from the previous release, or
+from the seed (the last commit with the compiler in TypeScript, built once
+with [Bun](https://bun.sh)):
+
+```sh
+ORE=~/.ore/bin/ore ci/bootstrap.sh dist   # dist/ore
 ```
 
 Then:

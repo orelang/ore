@@ -13,6 +13,8 @@ default:
 # The compiler in Ore builds itself until it reproduces itself (stages 2 and 3
 # emit the same LLVM IR), then runs the test suite and the concurrent programs.
 test:
+  rules:
+    - if: $CI_COMMIT_TAG == null
   script:
     - ci/bootstrap.sh dist
     - ORE=dist/ore ci/test.sh
@@ -21,3 +23,34 @@ test:
     paths:
       - dist/ore
     expire_in: 1 week
+# On a tag vX.Y.Z: the files of the GitHub Release (built and published by
+# .github/workflows/release.yml), checked against their SHA256SUMS and copied
+# to this project's package registry, with a GitLab Release linking them.
+release:
+  image: alpine:3.20
+  before_script: []
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  timeout: 2h
+  script:
+    - apk add --no-cache curl jq coreutils
+    - |
+      set -e
+      api="https://api.github.com/repos/orelang/ore/releases/tags/$CI_COMMIT_TAG"
+      # The GitHub workflow builds three platforms first: wait for its release.
+      for attempt in $(seq 1 180); do
+        if curl -fsSL "$api" -o release.json && [ "$(jq '[.assets[].name] | length' release.json)" -ge 4 ]; then break; fi
+        sleep 30
+      done
+      jq -r '.assets[] | .browser_download_url' release.json | while read -r url; do curl -fsSL -O "$url"; done
+      sha256sum -c SHA256SUMS
+      registry="$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/ore/$CI_COMMIT_TAG"
+      links='[]'
+      for file in $(jq -r '.assets[].name' release.json); do
+        curl -fsS --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$file" "$registry/$file"
+        links=$(echo "$links" | jq --arg name "$file" --arg url "$registry/$file" '. + [{name: $name, url: $url, link_type: "package"}]')
+      done
+      jq -n --arg tag "$CI_COMMIT_TAG" --argjson links "$links" \
+        '{tag_name: $tag, name: $tag, description: "ore \($tag): its LLVM and lld are included.", assets: {links: $links}}' > body.json
+      curl -fsS --header "JOB-TOKEN: $CI_JOB_TOKEN" --header "Content-Type: application/json" \
+        --data @body.json "$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases"
