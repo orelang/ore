@@ -1,6 +1,6 @@
 // The state of the emitter, LLVM types, constants, runtime calls, memory and locals: what every layer uses.
 import * as ir from "@ore/ir"
-import { unionRepr, type IntType, type Type, type UnionType } from "@ore/ir"
+import { isSubclass, methodSlot, unionRepr, type IntType, type StructType, type Type, type UnionType } from "@ore/ir"
 import type { StackPlan } from "@ore/opt"
 import { cString, FnBuilder, globalName, intConstant, sizeOf, utf8, voidValue, type V } from "./ll"
 import { type EmitOptions, STR, FN, IFACE, type Breakable, type Storage } from "./context"
@@ -37,6 +37,9 @@ export abstract class EmitterBase {
   protected globals = new Set<ir.Local>()
 
   protected plan: StackPlan = { slots: new Map(), ctorsAt: new Set() }
+
+  /** The classes whose instances start with a pointer to their class table; see `classTables`. */
+  protected tables = new Set<StructType>()
 
   protected file = ""
 
@@ -104,10 +107,45 @@ export abstract class EmitterBase {
     const name = `%S.${s.id}`
     if (!this.defs.has(name)) {
       this.defs.set(name, "")
-      const fields = s.fields.length === 0 ? ["i8"] : s.fields.map((f) => this.mt(f.type))
-      this.defs.set(name, `${name} = type { ${fields.join(", ")} }`)
+      const fields = s.fields.map((f) => this.mt(f.type))
+      // The pointer to the class table comes first.
+      if (this.tables.has(s)) fields.unshift("ptr")
+      this.defs.set(name, `${name} = type { ${fields.length === 0 ? "i8" : fields.join(", ")} }`)
     }
     return name
+  }
+
+  /** The index of a field in the LLVM type of a struct, after the class table's pointer if there is one. */
+  protected fieldIndex(s: StructType, name: string): number {
+    return s.fields.findIndex((f) => f.name === name) + (this.tables.has(s) ? 1 : 0)
+  }
+
+  /** Points a new instance of a class with a class table to it. */
+  protected setTable(object: V, s: StructType) {
+    if (this.tables.has(s)) this.b.emit(`store ptr @vt.${s.id}, ptr ${object.v}`)
+  }
+
+  /** The function in the class table of an instance, in the slot of a method. */
+  protected virtualMethod(object: V, func: ir.Func): V {
+    const table = this.b.value("ptr", `load ptr, ptr ${object.v}`)
+    const entry = this.b.value("ptr", `getelementptr ptr, ptr ${table.v}, i64 ${methodSlot(func) + 1}`)
+    return this.b.value("ptr", `load ptr, ptr ${entry.v}`)
+  }
+
+  /** The classes with a class table whose instances are instances of `s`: `s` and its subclasses. */
+  protected subclasses(s: StructType): StructType[] {
+    return this.module.structs.filter((t) => this.tables.has(t) && isSubclass(t, s))
+  }
+
+  /** Whether an instance of a class with a class table is an instance of `s`: its table is that of `s` or of a subclass. */
+  protected classIs(object: V, s: StructType): V {
+    const table = this.b.value("ptr", `load ptr, ptr ${object.v}`)
+    let result: V = { ty: "i1", v: "false" }
+    this.subclasses(s).forEach((t, i) => {
+      const test = this.b.value("i1", `icmp eq ptr ${table.v}, @vt.${t.id}`)
+      result = i === 0 ? test : this.b.value("i1", `or i1 ${result.v}, ${test.v}`)
+    })
+    return result
   }
 
   protected unionType(u: UnionType): string {

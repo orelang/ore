@@ -32,6 +32,7 @@ export class ModuleEmitter extends JsonEmitter {
     this.decls.set("@ore_rt_top", "@ore_rt_top = external thread_local global ptr")
     this.decls.set("@llvm.threadlocal.address.p0", "declare ptr @llvm.threadlocal.address.p0(ptr)")
     this.plan = planStack(m)
+    this.tables = ir.classTables(m.structs)
     for (const func of m.functions) if (func.attributes?.runtime) this.runtime.set(func.attributes.runtime, func)
     const roots: string[] = []
     for (const local of findGlobals(m)) {
@@ -46,6 +47,7 @@ export class ModuleEmitter extends JsonEmitter {
       this.out.push(`${this.globalOf(local)} = ${linkage}${local.threadLocal ? "thread_local " : ""}global ${this.mt(local.type)} zeroinitializer`)
     }
     for (const itab of m.itabs) this.out.push(this.itab(itab))
+    for (const s of m.structs) if (this.tables.has(s)) this.out.push(this.classTable(s))
     for (const func of m.functions) {
       if (func.extern) {
         this.declareExtern(func)

@@ -319,10 +319,19 @@ export abstract class CollectionEmitter extends CallEmitter {
   protected itab(itab: ir.Itab): string {
     const s = this.structType(itab.struct)
     const entries = itab.iface.members.map((m) => {
-      if (m.k === "field") return `ptr getelementptr (${s}, ptr null, i32 0, i32 ${itab.struct.fields.findIndex((f) => f.name === m.name)})`
-      return `ptr ${globalName(ir.findMethod(itab.struct, m.name)!.func.name)}`
+      if (m.k === "field") return `ptr getelementptr (${s}, ptr null, i32 0, i32 ${this.fieldIndex(itab.struct, m.name)})`
+      const func = ir.findMethod(itab.struct, m.name)!.func
+      // A method that a subclass overrides is called through the class table of the instance.
+      if (this.tables.has(itab.struct) && ir.overridden(this.module.structs, itab.struct, m.name)) return `ptr ${this.virtualThunk(func)}`
+      return `ptr ${globalName(func.name)}`
     })
     const all = [`ptr getelementptr (i8, ptr null, i64 ${typeId(itab.struct)})`, ...entries]
     return `@itab.${itab.id} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
+  }
+
+  /** The class table of a class with a base class or subclasses: its type id, then its methods by slot. */
+  protected classTable(s: ir.StructType): string {
+    const all = [`ptr getelementptr (i8, ptr null, i64 ${typeId(s)})`, ...s.methods.map((m) => `ptr ${globalName(m.func.name)}`)]
+    return `@vt.${s.id} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
   }
 }

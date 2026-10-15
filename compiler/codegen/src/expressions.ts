@@ -1,6 +1,6 @@
 // Expressions and unions.
 import * as ir from "@ore/ir"
-import { isStringLike, typeofName, typeToString, types, unionRepr, type IntType, type Type, type UnionType } from "@ore/ir"
+import { isStringLike, isSubclass, typeofName, typeToString, types, unionRepr, type IntType, type Type, type UnionType } from "@ore/ir"
 import { floatConstant, sizeOf, voidValue, type V } from "./ll"
 import { STR, FN, IFACE, ARRAY, DIVIDE_BY_ZERO } from "./context"
 import { typeId, memberIndex } from "./helpers"
@@ -44,6 +44,7 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       case "method-call": {
         const receiver = this.expr(e.receiver)
         const args = e.args.map((a) => this.expr(a))
+        if (e.virtual) return this.callIndirect(this.virtualMethod(receiver, e.func).v, this.lt(e.type), [receiver, ...args])
         return this.callDirect(e.func.name, this.lt(e.type), [receiver, ...args])
       }
       case "builtin":
@@ -96,8 +97,8 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
         const s = this.structType(e.type)
         const object = this.slot(e) ?? this.alloc(s).v
         for (const f of e.fields) {
-          const index = e.type.fields.findIndex((x) => x.name === f.name)
-          this.store(this.expr(f.value), this.field(object, s, index), e.type.fields[index]!.type)
+          const field = e.type.fields.find((x) => x.name === f.name)!
+          this.store(this.expr(f.value), this.field(object, s, this.fieldIndex(e.type, f.name)), field.type)
         }
         return { ty: "ptr", v: object }
       }
@@ -105,9 +106,11 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
         const object = this.expr(e.object)
         return this.load(this.fieldPtr(object.v, e.object.type as ir.StructType, e.name), e.type)
       }
-      case "alloc":
-        if (this.at) return { ty: "ptr", v: "%mem" }
-        return this.alloc(this.structType(e.type))
+      case "alloc": {
+        const object = this.at ? { ty: "ptr", v: "%mem" } : this.alloc(this.structType(e.type))
+        this.setTable(object, e.type)
+        return object
+      }
       case "to-iface": {
         const value = this.expr(e.value!)
         if (e.itab) return this.aggregate(IFACE, [value, { ty: "ptr", v: `@itab.${e.itab.id}` }])
@@ -163,16 +166,24 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       }
       case "is": {
         const v = this.expr(e.value)
-        const id = this.i64(typeId(e.member as ir.StructType))
-        if (e.value.type.kind === "interface") return this.ifaceIs(v, id)
+        const member = e.member
+        if (e.value.type.kind === "struct") return this.classIs(v, member as ir.StructType)
+        if (e.value.type.kind === "interface") return this.ifaceIs(v, member as ir.StructType)
         const u = e.value.type as UnionType
-        if (!e.via) return this.slotTest(u, v, memberIndex(u, e.member))
-        const i = memberIndex(u, e.via)
-        return this.choose(this.slotTest(u, v, i), () => this.ifaceIs(this.payload(u, v, i), id), () => ({ ty: "i1", v: "false" }), "i1")
+        if (e.via) {
+          const i = memberIndex(u, e.via)
+          return this.choose(this.slotTest(u, v, i), () => this.ifaceIs(this.payload(u, v, i), member as ir.StructType), () => ({ ty: "i1", v: "false" }), "i1")
+        }
+        if (member.kind !== "struct") return this.slotTest(u, v, memberIndex(u, member))
+        return this.unionIs(u, v, member)
       }
       case "downcast": {
         const v = this.expr(e.value)
-        this.check(this.ifaceIs(v, this.i64(typeId(e.type))), `value is not a ${e.type.name}`)
+        if (e.value.type.kind === "struct") {
+          this.check(this.classIs(v, e.type), `value is not a ${e.type.name}`)
+          return v
+        }
+        this.check(this.ifaceIs(v, e.type), `value is not a ${e.type.name}`)
         return this.extract(v, 0, "ptr")
       }
       case "map":
@@ -207,7 +218,7 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
   }
 
   protected fieldPtr(object: string, s: ir.StructType, name: string): string {
-    return this.field(object, this.structType(s), s.fields.findIndex((f) => f.name === name))
+    return this.field(object, this.structType(s), this.fieldIndex(s, name))
   }
 
   /** A pointer to a constant array of `ty` elements. */
@@ -510,11 +521,52 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
     return this.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${offset.v}`).v
   }
 
-  /** Whether an interface value refers to an instance of the struct with type id `id`: entry 0 of its table. */
-  protected ifaceIs(value: V, id: V): V {
+  /**
+   * Whether an interface value refers to an instance of class `s`: entry 0
+   * of its table is the id of the class it was converted from, which for a
+   * class with a class table may be a base class of the instance's.
+   */
+  protected ifaceIs(value: V, s: ir.StructType): V {
     const table = this.extract(value, 1, "ptr")
     const present = this.b.value("i1", `icmp ne ptr ${table.v}, null`)
-    return this.choose(present, () => this.b.value("i1", `icmp eq i64 ${this.b.value("i64", `load i64, ptr ${table.v}`).v}, ${id.v}`), () => ({ ty: "i1", v: "false" }), "i1")
+    if (!this.tables.has(s)) {
+      return this.choose(present, () => this.b.value("i1", `icmp eq i64 ${this.b.value("i64", `load i64, ptr ${table.v}`).v}, ${typeId(s)}`), () => ({ ty: "i1", v: "false" }), "i1")
+    }
+    const related = this.module.structs.filter((t) => this.tables.has(t) && (isSubclass(t, s) || isSubclass(s, t)))
+    return this.choose(
+      present,
+      () => {
+        const id = this.b.value("i64", `load i64, ptr ${table.v}`)
+        let known: V = { ty: "i1", v: "false" }
+        related.forEach((t, i) => {
+          const test = this.b.value("i1", `icmp eq i64 ${id.v}, ${typeId(t)}`)
+          known = i === 0 ? test : this.b.value("i1", `or i1 ${known.v}, ${test.v}`)
+        })
+        return this.choose(known, () => this.classIs(this.extract(value, 0, "ptr"), s), () => ({ ty: "i1", v: "false" }), "i1")
+      },
+      () => ({ ty: "i1", v: "false" }),
+      "i1",
+    )
+  }
+
+  /**
+   * Whether a union value holds an instance of class `s`: in the slot of `s`
+   * or of a subclass, or in the slot of a base class with the class table of
+   * `s` or of a subclass.
+   */
+  protected unionIs(u: UnionType, v: V, s: ir.StructType): V {
+    let result: V = { ty: "i1", v: "false" }
+    let first = true
+    u.members.forEach((m, i) => {
+      if (m.kind !== "struct") return
+      let test: V
+      if (isSubclass(m, s)) test = this.slotTest(u, v, i)
+      else if (isSubclass(s, m)) test = this.choose(this.slotTest(u, v, i), () => this.classIs(this.payload(u, v, i), s), () => ({ ty: "i1", v: "false" }), "i1")
+      else return
+      result = first ? test : this.b.value("i1", `or i1 ${result.v}, ${test.v}`)
+      first = false
+    })
+    return result
   }
 
   recast(v: V, from: Type, to: Type): V {
@@ -524,6 +576,7 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       if (to.kind !== "union") return v
       return this.inject(to, memberIndex(to, from), v)
     }
+    if (to.kind !== "union" && memberIndex(from, to) === -1 && to.kind === "struct") return this.recastToBase(v, from, to)
     if (to.kind !== "union") {
       const i = memberIndex(from, to)
       const message = from.members.some((m) => m.kind === "null") && from.members.length === 2 ? "unexpected null" : `value is not of type ${typeToString(to)}`
@@ -551,6 +604,25 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
     this.panic(`value is not of type ${typeToString(to)}`)
     this.b.start(end)
     return this.b.value(ty, `load ${ty}, ptr ${result}`)
+  }
+
+  /** A union value holding an instance of a subclass of class `to`, as a `to`; other members panic. */
+  protected recastToBase(v: V, from: UnionType, to: ir.StructType): V {
+    const result = this.b.alloca("ptr")
+    const end = this.b.label("recast")
+    from.members.forEach((m, i) => {
+      if (m.kind !== "struct" || !isSubclass(m, to)) return
+      const here = this.b.label("rmember")
+      const next = this.b.label("rnext")
+      this.b.condBr(this.slotTest(from, v, i), here, next)
+      this.b.start(here)
+      this.b.emit(`store ptr ${this.payload(from, v, i).v}, ptr ${result}`)
+      this.b.br(end)
+      this.b.start(next)
+    })
+    this.panic(`value is not of type ${typeToString(to)}`)
+    this.b.start(end)
+    return this.b.value("ptr", `load ptr, ptr ${result}`)
   }
 
   protected optional(e: ir.Optional): V {
