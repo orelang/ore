@@ -1,0 +1,94 @@
+# A release of `ore` for every platform, on a tag vX.Y.Z: the compiler in Ore
+# bootstrapped from the previous release (from the TypeScript compiler for the
+# first one), checked to reproduce itself, packed and published as a GitHub
+# Release with SHA256SUMS. GitLab's pipeline for the same tag copies these
+# files to its package registry and its release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, os: linux, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
+          - { runner: macos-14, os: darwin, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LLVM and lld (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 22
+          sudo apt-get install -y --no-install-recommends llvm-22-dev lld-22 clang
+          echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
+
+      - name: LLVM and lld (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          brew install llvm lld
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+
+      - name: The previous release, to build stage 1
+        id: previous
+        run: |
+          if ore=$(ci/fetch-ore.sh latest); then echo "ore=$ore" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Bun, for the TypeScript compiler (first release only)
+        if: steps.previous.outputs.ore == ''
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Dependencies of the TypeScript compiler (first release only)
+        if: steps.previous.outputs.ore == ''
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Bootstrap
+        env:
+          ORE: ${{ steps.previous.outputs.ore }}
+        run: ci/bootstrap.sh dist
+
+      - name: Smoke test
+        run: |
+          dist/ore build tests/run/basics/hello.ore -o hello
+          ./hello > hello.out
+          cmp hello.out tests/run/basics/hello.out
+
+      - name: Pack
+        run: ci/package.sh "$GITHUB_REF_NAME" ${{ matrix.os }} ${{ matrix.arch }} dist/ore out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ore-${{ matrix.os }}-${{ matrix.arch }}
+          path: out/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Checksums
+        working-directory: out
+        run: sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "ore $GITHUB_REF_NAME. Needs LLVM's library and lld: \`apt install llvm-22 lld-22\` on Linux, \`brew install llvm lld\` on macOS."

@@ -257,12 +257,19 @@ inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
 
 ## Getting started
 
-Requirements: [Bun](https://bun.sh) and clang.
+`ore` needs LLVM's library and lld: `apt install llvm-22 lld-22` on Linux,
+`brew install llvm lld` on macOS. Releases for Linux (amd64, arm64) and
+macOS (arm64) are on [GitHub](https://github.com/orelang/ore/releases):
 
 ```sh
-bun install
-bun run build                       # the standalone compiler, dist/ore
-ln -sf "$PWD/dist/ore" ~/.local/bin/ore
+ln -sf "$(ci/fetch-ore.sh latest)" ~/.local/bin/ore   # the latest release, checked against its SHA256SUMS
+```
+
+To build it from source, the compiler in Ore builds itself from the previous
+release (`ci/bootstrap.sh` checks that it reproduces itself):
+
+```sh
+ORE=$(ci/fetch-ore.sh latest) ci/bootstrap.sh dist   # dist/ore
 ```
 
 Then:
