@@ -46,7 +46,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   - tuples `[A, B]`: literals, constant indexing, `length`, destructuring,
     JSON as arrays; `new Map(entries)` from any array of pairs (done);
   - the constants and predicates of `Number` (done);
-  - `JSON.stringify(value, replacer, space)` as in JavaScript;
+  - `JSON.stringify(value, null, space)` as in JavaScript (done; replacer
+    functions are not supported);
   - narrowing through `||` and by assigning with `?:`;
   - object spread `{ ...o }` (done);
   - methods and accessors in object literals;

@@ -135,7 +135,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `fs.realpath(path)` | the absolute path without links, `.` and `..`, or an `Error` |
 | `fs.tempDir()`, `fs.mkdtemp(prefix?, dir?)` | `$TMPDIR` or `/tmp`; a new uniquely named directory in it |
 | `Date.now()` | milliseconds since the Unix epoch |
-| `JSON.stringify(value, indent?)` | the JSON text of a value |
+| `JSON.stringify(value, null?, space?)` | the JSON text of a value, indented by `space` spaces per level; the replacer must be null |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
