@@ -32,7 +32,9 @@ console.log(results.receive())
 - Each task has a fixed stack (256 KiB; 8 MiB for the top-level code) with a guard page:
   overflowing it crashes the program.
 - A file operation blocks only its OS thread: the scheduler starts another
-  thread for the other tasks meanwhile. `async`, `await` and `Promise` are
+  thread for the other tasks meanwhile. A task waiting for a program it ran
+  (`process.output`, `process.run`) parks on the poller, like one waiting
+  for a socket, and is no deadlock. `async`, `await` and `Promise` are
   rejected.
 
 The standard module `ore:sync` provides `Mutex` (`lock`, `unlock`, and

@@ -23,8 +23,13 @@ export type ValueSymbol =
   | { k: "builtin"; name: BuiltinFunc; decl: ts.Node }
   | { k: "class"; type: StructType | undefined; decl: ts.Node }
   | { k: "generic-func"; generic: Generic; decl: ts.Node }
-  /** A built-in namespace such as `console`, whose members are called as `console.log(...)`. */
-  | { k: "namespace"; name: string; members: Map<string, ValueSymbol>; decl: ts.Node }
+  /**
+   * A built-in namespace such as `console`, whose members are called as
+   * `console.log(...)`. The exports of the runtime module that implements it
+   * in Ore, if any, are members too (`fs.stat`, `fs.FileInfo`), before those
+   * of builtin.d.ore.
+   */
+  | { k: "namespace"; name: string; members: Map<string, ValueSymbol>; decl: ts.Node; module?: (name: string) => Exported | undefined }
   /** A module imported with `import * as m`, whose exports are used as `m.name`. */
   | { k: "module"; name: string; exports: (name: string) => Exported | undefined; decl: ts.Node }
 

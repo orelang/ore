@@ -46,6 +46,21 @@ export declare function epoll_create1(flags: i32): i32
 export declare function epoll_ctl(poller: i32, op: i32, fd: i32, event: ptr): i32
 export declare function epoll_wait(poller: i32, events: ptr, count: i32, timeout: i32): i32
 
+// Files and directories, for fs (runtime/core/fs.ore). `stat` and `readdir`
+// fill structs whose layouts differ by platform: see fs.ore.
+export declare function stat(path: string, info: ptr): i32
+export declare function lstat(path: string, info: ptr): i32
+export declare function mkdir(path: string, mode: u32): i32
+export declare function rmdir(path: string): i32
+export declare function unlink(path: string): i32
+export declare function rename(from: string, to: string): i32
+export declare function opendir(path: string): ptr
+export declare function readdir(dir: ptr): ptr
+export declare function closedir(dir: ptr): i32
+export declare function realpath(path: string, resolved: ptr): ptr
+export declare function mkdtemp(template: ptr): ptr
+export declare function free(p: ptr): void
+
 // ---------------------------------------------------------------------------
 // Threads and signals, for the collector
 
@@ -253,4 +268,23 @@ export function pollOnce(poller: i32, fd: i32, write: bool, data: ptr): bool {
     unsafe.store<u32>(event, flags)
     unsafe.store<ptr>(unsafe.add(event, target.arch === "x86_64" ? 4 : 8), data)
     return epoll_ctl(poller, 3, fd, event) >= 0 || epoll_ctl(poller, 1, fd, event) >= 0
+}
+
+/**
+ * Asks kqueue for one event when process `pid` exits (EVFILT_PROC with
+ * NOTE_EXIT), carrying `data`; false if it failed, as for a process that
+ * already exited. macOS only: Linux waits on a pidfd with pollOnce.
+ */
+export function pollExitOnce(poller: i32, pid: i32, data: ptr): bool {
+    if (target.os === "darwin") {
+        // EV_SET(event, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, data)
+        const event = unsafe.allocBytes(32)
+        unsafe.store<u64>(event, u64(pid))
+        unsafe.store<i16>(unsafe.add(event, 8), -5)
+        unsafe.store<u16>(unsafe.add(event, 10), 0x1 | 0x10)
+        unsafe.store<u32>(unsafe.add(event, 12), 0x80000000)
+        unsafe.store<ptr>(unsafe.add(event, 24), data)
+        return kevent(poller, event, 1, nil(), 0, nil()) >= 0
+    }
+    return false
 }

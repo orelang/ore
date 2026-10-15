@@ -1,0 +1,298 @@
+// The namespace `fs` in Ore: directories and file metadata. Its exports are
+// members of `fs` (see `namespaceModules` in compiler/checker/src/builtins.ts):
+// `fs.readDir`, `fs.stat`, `fs.FileInfo`. readFile, writeFile and exists are
+// runtime functions of sys.ore.
+//
+// File system calls block their OS thread, so they run between blockingEnter
+// and blockingExit, and another worker runs the other tasks meanwhile. errno
+// is read right after the call that failed, on the same thread.
+//
+// The layouts of struct stat and struct dirent were read from the system
+// headers of macOS (arm64) and Linux (glibc, arm64 and x86-64).
+
+import {
+    closedir,
+    free,
+    isNil,
+    lstat as cLstat,
+    mkdir as cMkdir,
+    mkdtemp as cMkdtemp,
+    nil,
+    opendir,
+    readdir,
+    realpath as cRealpath,
+    rename as cRename,
+    rmdir,
+    stat as cStat,
+    unlink,
+} from "ore:runtime/os"
+import { cString, errno, failure, fromCString } from "ore:runtime/sys"
+import { blockingEnter, blockingExit } from "ore:runtime/task"
+
+// ---------------------------------------------------------------------------
+// Constants and layouts of each platform
+
+const eexist: i32 = 17
+const enoent: i32 = 2
+
+// The file type bits of st_mode, the same everywhere.
+const typeMask = 0xf000
+const typeDir = 0x4000
+const typeFile = 0x8000
+const typeSymlink = 0xa000
+
+/** Room for a struct stat: 144 bytes on macOS and Linux x86-64, 128 on Linux arm64. */
+const statBufferSize = 256
+
+function modeOf(info: ptr): int {
+    if (target.os === "darwin") return i64(unsafe.load<u16>(unsafe.add(info, 4)))
+    return i64(unsafe.load<u32>(unsafe.add(info, target.arch === "x86_64" ? 24 : 16)))
+}
+
+function sizeOf(info: ptr): int {
+    return unsafe.load<i64>(unsafe.add(info, target.os === "darwin" ? 96 : 48))
+}
+
+/** st_mtimespec on macOS, st_mtim on Linux: seconds then nanoseconds. */
+function mtimeOf(info: ptr): int {
+    const at = unsafe.add(info, target.os === "darwin" ? 48 : 88)
+    return unsafe.load<i64>(at) * 1000 + unsafe.load<i64>(unsafe.add(at, 8)) / 1000000
+}
+
+/** The offset of d_name in struct dirent. */
+function direntNameAt(): int {
+    return target.os === "darwin" ? 21 : 19
+}
+
+// ---------------------------------------------------------------------------
+// Metadata
+
+/** What `fs.stat` tells about a file. */
+export class FileInfo {
+    constructor(
+        /** A regular file. */
+        readonly isFile: bool,
+        /** A directory. */
+        readonly isDir: bool,
+        /** A symbolic link: only from `fs.lstat`, as `fs.stat` follows links. */
+        readonly isSymlink: bool,
+        /** The size in bytes. */
+        readonly size: int,
+        /** The time of the last modification, in milliseconds since the Unix epoch. */
+        readonly mtime: int,
+        /** The permission bits, such as 0o755. */
+        readonly mode: int,
+    ) {}
+}
+
+function infoOf(buffer: ptr): FileInfo {
+    const mode = modeOf(buffer)
+    const kind = mode & typeMask
+    return new FileInfo(
+        kind === typeFile,
+        kind === typeDir,
+        kind === typeSymlink,
+        sizeOf(buffer),
+        mtimeOf(buffer),
+        mode & 0xfff,
+    )
+}
+
+/** The metadata of a file, following symbolic links. */
+export function stat(path: string): FileInfo | Error {
+    const buffer = unsafe.allocBytes(statBufferSize)
+    blockingEnter()
+    const ok = cStat(path, buffer) === 0
+    const message = ok ? "" : failure("cannot stat", path)
+    blockingExit()
+    if (!ok) return new Error(message)
+    return infoOf(buffer)
+}
+
+/** The metadata of a file; of a symbolic link itself rather than of its target. */
+export function lstat(path: string): FileInfo | Error {
+    const buffer = unsafe.allocBytes(statBufferSize)
+    blockingEnter()
+    const ok = lstatInto(path, buffer)
+    const message = ok ? "" : failure("cannot stat", path)
+    blockingExit()
+    if (!ok) return new Error(message)
+    return infoOf(buffer)
+}
+
+function lstatInto(path: string, buffer: ptr): bool {
+    return cLstat(path, buffer) === 0
+}
+
+/** The mode of a file, or -1 if it cannot be read; blocks. */
+function modeAt(path: string): int {
+    const buffer = unsafe.allocBytes(statBufferSize)
+    if (cStat(path, buffer) !== 0) return -1
+    return modeOf(buffer)
+}
+
+function isDirAt(path: string): bool {
+    const mode = modeAt(path)
+    return mode >= 0 && (mode & typeMask) === typeDir
+}
+
+/** Whether `path` is a regular file, following symbolic links. */
+export function isFile(path: string): bool {
+    blockingEnter()
+    const mode = modeAt(path)
+    blockingExit()
+    return mode >= 0 && (mode & typeMask) === typeFile
+}
+
+/** Whether `path` is a directory, following symbolic links. */
+export function isDir(path: string): bool {
+    blockingEnter()
+    const dir = isDirAt(path)
+    blockingExit()
+    return dir
+}
+
+// ---------------------------------------------------------------------------
+// Directories
+
+/** The names in a directory without "." and "..", sorted. */
+export function readDir(path: string): string[] | Error {
+    blockingEnter()
+    const names = namesIn(path)
+    const message = names === null ? failure("cannot read directory", path) : ""
+    blockingExit()
+    if (names === null) return new Error(message)
+    names.sort()
+    return names
+}
+
+/** The entries of a directory, or null with errno set; blocks. */
+function namesIn(path: string): string[] | null {
+    const dir = opendir(path)
+    if (isNil(dir)) return null
+    const names: string[] = []
+    while (true) {
+        const entry = readdir(dir)
+        if (isNil(entry)) break
+        const name = fromCString(unsafe.add(entry, direntNameAt()))
+        if (name !== "." && name !== "..") names.push(name)
+    }
+    closedir(dir)
+    return names
+}
+
+/**
+ * Creates a directory. With `recursive`, it creates the missing parents
+ * too, and a directory that exists already is no error.
+ */
+export function mkdir(path: string, recursive: bool = false): Error | null {
+    blockingEnter()
+    const message = makeDir(path, recursive)
+    blockingExit()
+    return message === null ? null : new Error(message)
+}
+
+/** The directory containing `path`, or "" when it has none to create. */
+function parentOf(path: string): string {
+    const trimmed = withoutTrailingSlashes(path)
+    const slash = trimmed.lastIndexOf("/")
+    if (slash < 0) return ""
+    if (slash === 0) return "/"
+    return withoutTrailingSlashes(trimmed.slice(0, slash))
+}
+
+function withoutTrailingSlashes(path: string): string {
+    let end = path.length
+    while (end > 1 && path[end - 1] === 0x2f) end--
+    return path.slice(0, end)
+}
+
+function makeDir(path: string, recursive: bool): string | null {
+    if (cMkdir(path, 0x1ff) === 0) return null
+    const e = errno()
+    if (recursive && e === eexist && isDirAt(path)) return null
+    if (recursive && e === enoent) {
+        const parent = parentOf(path)
+        if (parent !== "" && parent !== "/" && parent !== path) {
+            const failed = makeDir(parent, true)
+            if (failed !== null) return failed
+            if (cMkdir(path, 0x1ff) === 0) return null
+            if (errno() === eexist && isDirAt(path)) return null
+            return failure("cannot create directory", path)
+        }
+    }
+    return failure("cannot create directory", path)
+}
+
+/**
+ * Removes a file or an empty directory. With `recursive`, a directory is
+ * removed with everything in it; symbolic links are removed, not followed.
+ */
+export function remove(path: string, recursive: bool = false): Error | null {
+    blockingEnter()
+    const message = removeAt(path, recursive)
+    blockingExit()
+    return message === null ? null : new Error(message)
+}
+
+function removeAt(path: string, recursive: bool): string | null {
+    const buffer = unsafe.allocBytes(statBufferSize)
+    if (cLstat(path, buffer) !== 0) return failure("cannot remove", path)
+    if ((modeOf(buffer) & typeMask) !== typeDir) {
+        if (unlink(path) !== 0) return failure("cannot remove", path)
+        return null
+    }
+    if (recursive) {
+        const names = namesIn(path)
+        if (names === null) return failure("cannot remove", path)
+        for (const name of names) {
+            const failed = removeAt(`${path}/${name}`, true)
+            if (failed !== null) return failed
+        }
+    }
+    if (rmdir(path) !== 0) return failure("cannot remove", path)
+    return null
+}
+
+/** Renames or moves a file or directory, replacing a file at `to`. */
+export function rename(from: string, to: string): Error | null {
+    blockingEnter()
+    const ok = cRename(from, to) === 0
+    const message = ok ? "" : failure("cannot rename", `${from} to ${to}`)
+    blockingExit()
+    return ok ? null : new Error(message)
+}
+
+/** The absolute path of a file, without symbolic links, "." or "..". */
+export function realpath(path: string): string | Error {
+    blockingEnter()
+    const resolved = cRealpath(path, nil())
+    const message = isNil(resolved) ? failure("cannot resolve", path) : ""
+    blockingExit()
+    if (isNil(resolved)) return new Error(message)
+    const result = fromCString(resolved)
+    free(resolved)
+    return result
+}
+
+/** The directory for temporary files: $TMPDIR, or /tmp. */
+export function tempDir(): string {
+    const dir = process.getenv("TMPDIR")
+    if (dir === null || dir.length === 0) return "/tmp"
+    return withoutTrailingSlashes(dir)
+}
+
+/**
+ * Creates a new directory with a unique name that starts with `prefix`, in
+ * `dir` (by default `fs.tempDir()`), and returns its path.
+ */
+export function mkdtemp(prefix: string = "ore-", dir: string = ""): string | Error {
+    const parent = dir.length > 0 ? dir : tempDir()
+    const template = cString(`${parent}/${prefix}XXXXXX`)
+    blockingEnter()
+    const made = cMkdtemp(template)
+    const message = isNil(made) ? failure("cannot create a temporary directory in", parent) : ""
+    blockingExit()
+    if (isNil(made)) return new Error(message)
+    return fromCString(template)
+}
