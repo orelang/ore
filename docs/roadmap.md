@@ -32,12 +32,13 @@ Rewrite every package of [`compiler/`](../compiler) in Ore, in
 - The driver calls LLVM's C API instead of clang, and links with lld (done in
   `ore-next build`): the compiler links `libLLVM`, and a C compiler is only
   needed for the C sources of packages.
-- Bootstrap: the TypeScript compiler builds stage 1, stage 1 builds stage 2,
-  stage 2 builds stage 3, and CI checks that stages 2 and 3 emit the same
-  LLVM IR. Then the TypeScript compiler is removed, and the compiler builds
-  from the previous release.
-- Only the oracle tests stay in TypeScript: the parser against TypeScript's,
-  and the async references from Bun.
+- Bootstrap (done): `ci/bootstrap.sh` builds stage 1 with the TypeScript
+  compiler (or `$ORE`, a previous `ore`), stage 1 builds stage 2, stage 2
+  builds stage 3, and CI checks that stages 2 and 3 emit the same LLVM IR;
+  `dist/ore` is the compiler in Ore.
+- Next: the `ore` command and the test runner in Ore, then the TypeScript
+  compiler, Bun and the oracle tests against TypeScript, prettier and Bun are
+  removed, and the compiler builds from the previous release.
 
 This comes before the GC and async, so that both are written once, in Ore.
 

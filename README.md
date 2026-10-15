@@ -345,7 +345,7 @@ Another binary can be set with the `ore.path` setting.
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
 | 9. Runtime in Ore: no C left; only libc outside Ore | done |
-| 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
+| 10. Compiler in Ore: lexer, parser, checker, backend, driver on LLVM's C API, bootstrap (done); `ore` command and tests in Ore, removing TypeScript and Bun | in progress |
 | 11. Own garbage collector: stop-the-world mark-sweep (done); parallel and concurrent marking, precise heap | in progress |
 | 12. Promises and `async`/`await` | planned |
 
