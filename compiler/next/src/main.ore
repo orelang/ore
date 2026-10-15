@@ -16,13 +16,17 @@
 //                                 the LLVM IR of the module of a dump, from opt/ and llvm/:
 //                                 inlined unless --debug, which keeps frames for stack traces
 //   ore-next lsp                  the language server on stdin and stdout
+//   ore-next build <entry.ore> -o <out> [--release] [--emit-llvm <file.ll>] [--time]
+//                                 an executable: the program checked, translated to LLVM IR,
+//                                 compiled through LLVM's C API (no clang) and linked with lld;
+//                                 C sources of packages are compiled with $CC (cc)
 //   ore-next object <in.ll> [<src.c> ...] -o <out> [--release] [-c] [-l lib] [-L dir] [--time]
 //                                 an executable from LLVM IR: compiled through LLVM's C API,
 //                                 with the C sources and libraries, linked with lld; with -c,
 //                                 only the IR's object file
 
 import { check } from "./checker/checker"
-import { BuildOptions, buildIr } from "./driver/build"
+import { build, BuildOptions, buildIr } from "./driver/build"
 import { targetTriple } from "./driver/link"
 import { NativeCode } from "./driver/native"
 import { format } from "./fmt/print"
@@ -41,6 +45,7 @@ const version = "0.1.0-next"
 
 if (process.args.length === 1 && process.args[0] === "lsp") process.exit(i32(serve(version)))
 if (process.args.length > 0 && process.args[0] === "object") process.exit(objectCommand(process.args.slice(1)))
+if (process.args.length > 0 && process.args[0] === "build") process.exit(buildCommand(process.args.slice(1)))
 
 /** The arguments of a build: the files, and the flags (`-o out`, `-l lib`, `-L dir`, `--release`...). */
 class BuildArgs {
@@ -49,6 +54,7 @@ class BuildArgs {
     release = false
     objectOnly = false
     times = false
+    emitLlvm = ""
     native = new NativeCode()
 }
 
@@ -59,11 +65,12 @@ function parseBuildArgs(args: string[]): BuildArgs | Error {
         if (arg === "--release") parsed.release = true
         else if (arg === "--time") parsed.times = true
         else if (arg === "-c") parsed.objectOnly = true
-        else if (arg === "-o" || arg === "-l" || arg === "-L") {
+        else if (arg === "-o" || arg === "-l" || arg === "-L" || arg === "--emit-llvm") {
             if (i + 1 >= args.length) return new Error(`${arg} needs a value`)
             i++
             const value = args[i]
             if (arg === "-o") parsed.output = value
+            else if (arg === "--emit-llvm") parsed.emitLlvm = value
             else if (arg === "-l") parsed.native.link.push(value)
             else parsed.native.libDirs.push(value)
         } else if (arg.startsWith("-")) return new Error(`unknown option ${arg}`)
@@ -71,6 +78,22 @@ function parseBuildArgs(args: string[]): BuildArgs | Error {
     }
     if (parsed.output === "") return new Error("no output: -o <file>")
     return parsed
+}
+
+function buildCommand(args: string[]): i32 {
+    const parsed = parseBuildArgs(args)
+    if (parsed instanceof Error || parsed.files.length !== 1 || parsed.objectOnly || parsed.native.link.length > 0 || parsed.native.libDirs.length > 0) {
+        if (parsed instanceof Error) console.error(parsed.message)
+        console.error("usage: ore-next build <entry.ore> -o <out> [--release] [--emit-llvm <file.ll>] [--time]")
+        return 2
+    }
+    const result = build(parsed.files[0], new BuildOptions(parsed.output, parsed.release, parsed.emitLlvm, parsed.times))
+    if (result instanceof Error) {
+        console.error(result.message)
+        return 1
+    }
+    for (const d of result.diagnostics) console.error(formatDiagnostic(d))
+    return result.ok ? 0 : 1
 }
 
 function objectCommand(args: string[]): i32 {
