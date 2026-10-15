@@ -610,18 +610,90 @@ function onDump(signal: i32): void {
         const next = unsafe.load<ptr>(fp)
         writeRaw(2, "  ")
         writeNumber(2, i64(unsafe.toInt(ret)), true, scratch)
-        if (dladdr(ret, info) !== 0 && !isNil(unsafe.load<ptr>(unsafe.add(info, 16)))) {
-            const name = unsafe.load<ptr>(unsafe.add(info, 16))
-            writeRaw(2, " ")
-            writeRaw(2, unsafe.makeString(name, i64(strlen(name))))
-            writeRaw(2, " + ")
-            writeNumber(2, unsafe.diff(ret, unsafe.load<ptr>(unsafe.add(info, 24))), false, scratch)
-        }
+        writeSymbol(ret, info, scratch)
         writeRaw(2, "\n")
         if (unsafe.toInt(next) <= unsafe.toInt(fp)) break
         fp = next
     }
     unsafe.atomicStore<i64>(unsafe.add(t, threadDumped), 1)
+}
+
+/**
+ * Writes " name + offset" for a return address: dladdr's name, or on Linux,
+ * where dladdr knows only exported symbols, the function of the executable's
+ * own symbol table that contains it.
+ */
+function writeSymbol(address: ptr, info: ptr, scratch: ptr): void {
+    if (dladdr(address, info) === 0) return
+    let name = unsafe.load<ptr>(unsafe.add(info, 16))
+    let offset = 0
+    if (!isNil(name)) {
+        offset = unsafe.diff(address, unsafe.load<ptr>(unsafe.add(info, 24)))
+    } else {
+        if (target.os === "darwin") return
+        const base = unsafe.load<ptr>(unsafe.add(info, 8))
+        // The executable's own functions: a library's are its exported ones.
+        if (base !== elfBase) return
+        const symbol = elfFunction(unsafe.diff(address, base))
+        if (isNil(symbol)) return
+        name = unsafe.add(elfNames, i64(unsafe.load<u32>(symbol)))
+        offset = unsafe.diff(address, base) - unsafe.load<i64>(unsafe.add(symbol, 8))
+    }
+    writeRaw(2, " ")
+    writeRaw(2, unsafe.makeString(name, i64(strlen(name))))
+    writeRaw(2, " + ")
+    writeNumber(2, offset, false, scratch)
+}
+
+declare function open(path: ptr, flags: i32): i32
+declare function lseek(fd: i32, offset: i64, whence: i32): i64
+declare function close(fd: i32): i32
+
+/** The executable's ELF symbols (24 bytes each) and their names, mapped by `loadElfSymbols`; Linux only. */
+let elfSymbols: ptr
+let elfSymbolCount: int
+let elfNames: ptr
+/** Where the executable is loaded: the symbols' values are relative to it. */
+let elfBase: ptr
+
+/** Maps /proc/self/exe and finds its symbol table: once, from the watchdog's thread. Allocates nothing. */
+function loadElfSymbols(): void {
+    if (target.os === "darwin" || !isNil(elfSymbols)) return
+    const path = "/proc/self/exe\x00"
+    const fd = open(unsafe.stringData(path), 0)
+    if (fd < 0) return
+    const size = lseek(fd, 0, 2)
+    const image = size > 0 ? mmap(nil(), u64(size), 1, 2, fd, 0) : nil()
+    close(fd)
+    if (isNil(image) || unsafe.toInt(image) === ~u64(0)) return
+    // Elf64_Ehdr: e_shoff at 0x28, e_shentsize at 0x3a, e_shnum at 0x3c.
+    const sections = unsafe.add(image, unsafe.load<i64>(unsafe.add(image, 0x28)))
+    const entry = i64(unsafe.load<u16>(unsafe.add(image, 0x3a)))
+    const count = i64(unsafe.load<u16>(unsafe.add(image, 0x3c)))
+    for (let i = 0; i < count; i++) {
+        // Elf64_Shdr: sh_type at 4, sh_offset at 0x18, sh_size at 0x20, sh_link at 0x28; SHT_SYMTAB is 2.
+        const section = unsafe.add(sections, i * entry)
+        if (unsafe.load<u32>(unsafe.add(section, 4)) !== u32(2)) continue
+        const names = unsafe.add(sections, i64(unsafe.load<u32>(unsafe.add(section, 0x28))) * entry)
+        elfNames = unsafe.add(image, unsafe.load<i64>(unsafe.add(names, 0x18)))
+        elfSymbolCount = unsafe.load<i64>(unsafe.add(section, 0x20)) / 24
+        elfSymbols = unsafe.add(image, unsafe.load<i64>(unsafe.add(section, 0x18)))
+        const info = permanent(32)
+        if (dladdr(unsafe.functionAddress(onDump), info) !== 0) elfBase = unsafe.load<ptr>(unsafe.add(info, 8))
+        return
+    }
+}
+
+/** The function symbol (Elf64_Sym) whose range holds `offset` from the executable's base, or null. */
+function elfFunction(offset: int): ptr {
+    for (let i = 0; i < elfSymbolCount; i++) {
+        // Elf64_Sym: st_name at 0, st_info at 4 (STT_FUNC is 2), st_value at 8, st_size at 16.
+        const symbol = unsafe.add(elfSymbols, i * 24)
+        if ((unsafe.load<u8>(unsafe.add(symbol, 4)) & 15) !== 2) continue
+        const start = unsafe.load<i64>(unsafe.add(symbol, 8))
+        if (offset >= start && offset < start + unsafe.load<i64>(unsafe.add(symbol, 16))) return symbol
+    }
+    return nil()
 }
 
 function currentFp(): ptr {
@@ -635,6 +707,7 @@ function currentFp(): ptr {
  * stuck. Allocates nothing and takes no lock, since the program may hold any.
  */
 export function dumpThreads(): void {
+    loadElfSymbols()
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
         unsafe.atomicStore<i64>(unsafe.add(t, threadDumped), 0)
         pthread_kill(pointerAt(t, threadId), dumpSignal())
