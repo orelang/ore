@@ -101,6 +101,12 @@ The codes are grouped by the part of the language they concern:
 | [ORE2050](ORE2050.md) | A class or a tuple cannot be part of an intersection; use an interface, or extend the class. |
 | [ORE2051](ORE2051.md) | Only object types and interfaces can be intersected, not '…'. |
 | [ORE2052](ORE2052.md) | Member '…' has the type '…' in one part of the intersection and '…' in another. |
+| [ORE2053](ORE2053.md) | 'keyof' needs an object type, a class or an interface with members, not '…'. |
+| [ORE2054](ORE2054.md) | An index type is a string literal or a union of them, not '…'. |
+| [ORE2055](ORE2055.md) | Type '…' has no elements indexed by number. |
+| [ORE2056](ORE2056.md) | '…' is not known yet here: give it a type annotation to use 'typeof …' before it. |
+| [ORE2057](ORE2057.md) | 'typeof …' needs a variable or a function with a known type. |
+| [ORE2058](ORE2058.md) | This type operator is not supported. |
 
 ## ORE3xxx: Expressions
 

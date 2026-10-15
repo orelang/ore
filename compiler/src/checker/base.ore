@@ -66,6 +66,7 @@ import { type Source } from "../syntax/source"
 import { type Program } from "../project/load"
 import { bigGt, bigLt, bigOf, bigOfU64, bigText, bigToF64, bigToI64 } from "./bigint"
 import { conformance, intersection, itab, objectInterface, resolveBase } from "./classes"
+import { indexedType, typeOperator, typeQuery } from "./computed"
 import {
     type Accessor,
     type ClassInfo,
@@ -356,6 +357,9 @@ export class Checker {
         }
         if (node.kind === "ParenthesizedType") return this.resolveType(typeNode(node)!, scope)
         if (node.kind === "IntersectionType") return intersection(this, node, scope)
+        if (node.kind === "TypeOperator") return typeOperator(this, node, scope)
+        if (node.kind === "IndexedAccessType") return indexedType(this, node, scope)
+        if (node.kind === "TypeQuery") return typeQuery(this, node, scope)
         if (node.kind === "TypeLiteral") return this.resolveTypeLiteral(node, scope)
         if (node.kind === "FunctionType") {
             const typeParams = typeParameters(node)

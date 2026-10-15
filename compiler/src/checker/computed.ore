@@ -1,0 +1,183 @@
+// Types computed from other types and values: `keyof T`, `T["k"]` and
+// `typeof x`, resolved when the type that names them is.
+
+import { type Type, typeToString } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { declarationList, declarations, isIdentifier, nameNode, typeNode } from "../syntax/nodes"
+import { type Checker } from "./base"
+import { type Scope } from "./symbols"
+
+/** The names of the members of a type that `keyof` lists: public fields and methods, or interface members. */
+function memberNames(type: Type): string[] | null {
+    const names: string[] = []
+    if (type.kind === "struct") {
+        if (type.tuple) return null
+        for (const f of type.fields) if (!f.private) names.push(f.name)
+        for (const m of type.methods) if (!m.private && !names.includes(m.name)) names.push(m.name)
+        return names
+    }
+    if (type.kind === "interface") {
+        for (const m of type.members) names.push(m.name)
+        return names
+    }
+    return null
+}
+
+/** `keyof T`: the union of the names of T's members, as string literal types. */
+export function keyofType(c: Checker, node: Node, scope: Scope): Type | null {
+    const inner = typeNode(node)
+    if (inner === null) return null
+    const type = c.resolveValueType(inner, scope)
+    if (type === null) return null
+    const names = memberNames(type)
+    if (names === null || names.length === 0) {
+        c.error(
+            node,
+            `'keyof' needs an object type, a class or an interface with members, not '${typeToString(type)}'.`,
+        )
+        return null
+    }
+    const literals: Type[] = []
+    for (const n of names) literals.push(c.literal(n))
+    return literals.length === 1 ? literals[0] : c.unionOf(literals)
+}
+
+/** The type of a member of a struct or interface by name, or null. */
+function memberType(type: Type, name: string): Type | null {
+    if (type.kind === "struct") {
+        for (const f of type.fields) if (f.name === name && !f.private) return f.type
+        for (const m of type.methods) if (m.name === name && !m.private) return m.func.type
+        return null
+    }
+    if (type.kind === "interface") {
+        for (const m of type.members) if (m.name === name) return m.type
+    }
+    return null
+}
+
+/** `T["k"]`, `T["a" | "b"]`, `T[number]` of an array or tuple, `T[0]` of a tuple. */
+export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
+    const objectNode = node.child("objectType")
+    const indexNode = node.child("indexType")
+    if (objectNode === null || indexNode === null) return null
+    const object = c.resolveValueType(objectNode, scope)
+    if (object === null) return null
+    // A number: the elements of an array or a tuple.
+    if (indexNode.kind === "NumberKeyword") {
+        if (object.kind === "array") return object.elem
+        if (object.kind === "struct" && object.tuple) {
+            const elems: Type[] = []
+            for (const f of object.fields) elems.push(f.type)
+            return elems.length === 1 ? elems[0] : c.unionOf(elems)
+        }
+        c.error(indexNode, `Type '${typeToString(object)}' has no elements indexed by number.`)
+        return null
+    }
+    // A numeric literal: an element of a tuple.
+    const literal = indexNode.kind === "LiteralType" ? indexNode.child("literal") : null
+    if (literal !== null && literal.kind === "NumericLiteral" && object.kind === "struct" && object.tuple) {
+        const found = memberType(object, literal.text)
+        if (found === null)
+            c.error(
+                indexNode,
+                `Tuple type '${typeToString(object)}' of length ${object.fields.length} has no element at index ${literal.text}.`,
+            )
+        return found
+    }
+    const index = c.resolveType(indexNode, scope)
+    if (index === null) return null
+    const keys: string[] = []
+    if (index.kind === "literal") keys.push(index.value)
+    else if (index.kind === "union") {
+        for (const m of index.members) {
+            if (m.kind !== "literal") {
+                c.error(
+                    indexNode,
+                    `An index type is a string literal or a union of them, not '${typeToString(index)}'.`,
+                )
+                return null
+            }
+            keys.push(m.value)
+        }
+    } else {
+        c.error(indexNode, `An index type is a string literal or a union of them, not '${typeToString(index)}'.`)
+        return null
+    }
+    const found: Type[] = []
+    for (const k of keys) {
+        const t = memberType(object, k)
+        if (t === null) {
+            c.error(indexNode, `Property '${k}' does not exist on type '${typeToString(object)}'.`)
+            return null
+        }
+        found.push(t)
+    }
+    return found.length === 1 ? found[0] : c.unionOf(found)
+}
+
+/** The declared type of a top-level variable named `name` of a module, from its annotation; null without one. */
+function annotatedTopLevel(c: Checker, scope: Scope, name: string, at: Node): Type | null {
+    const source = c.sourceOf(at)
+    for (const stmt of source.ast.list("statements")) {
+        if (stmt.kind !== "VariableStatement") continue
+        for (const d of declarations(declarationList(stmt))) {
+            const n = nameNode(d)
+            if (!isIdentifier(n) || n.text !== name) continue
+            const annotation = typeNode(d)
+            return annotation !== null ? c.resolveValueType(annotation, scope) : null
+        }
+    }
+    return null
+}
+
+/** `typeof x` or `typeof x.y`: the type of a variable, a function, or a field of one. */
+export function typeQuery(c: Checker, node: Node, scope: Scope): Type | null {
+    const name = node.child("exprName")
+    if (name === null) return null
+    // The path: `a.b.c` from the left.
+    const parts: Node[] = []
+    let n: Node = name
+    while (n.kind === "QualifiedName") {
+        parts.push(n.child("right")!)
+        n = n.child("left")!
+    }
+    parts.reverse()
+    if (!isIdentifier(n)) return null
+    let type: Type | null = null
+    const symbol = scope.lookupValue(n.text)
+    if (symbol !== null && symbol.k === "local" && !c.untyped.has(symbol.local)) type = symbol.local.type
+    else if (symbol !== null && symbol.k === "func") type = symbol.func.type
+    else if (symbol === null) type = annotatedTopLevel(c, scope, n.text, node)
+    if (type === null) {
+        c.error(
+            n,
+            symbol === null
+                ? `'${n.text}' is not known yet here: give it a type annotation to use 'typeof ${n.text}' before it.`
+                : `'typeof ${n.text}' needs a variable or a function with a known type.`,
+        )
+        return null
+    }
+    let current: Type = type
+    for (const part of parts) {
+        const next = memberType(current, part.text)
+        if (next === null) {
+            c.error(part, `Property '${part.text}' does not exist on type '${typeToString(current)}'.`)
+            return null
+        }
+        current = next
+    }
+    return current
+}
+
+/** `keyof T` and the other type operators. */
+export function typeOperator(c: Checker, node: Node, scope: Scope): Type | null {
+    const text = c.text(node)
+    if (text.startsWith("keyof")) return keyofType(c, node, scope)
+    // `readonly T[]` is `T[]`: Ore does not have read-only arrays yet.
+    if (text.startsWith("readonly")) {
+        const inner = typeNode(node)
+        return inner !== null ? c.resolveType(inner, scope) : null
+    }
+    c.error(node, "This type operator is not supported.")
+    return null
+}

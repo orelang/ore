@@ -66,7 +66,7 @@ exports, type assertions (Ore converts: `i32(x)`).
   - intersections `A & B` (done, of object types and interfaces);
   - methods in object types (`{ f(): void }`, done), optional members of
     interfaces (done; not methods), generic methods in interfaces;
-  - `keyof`, `typeof x` as a type, indexed access `T["k"]`;
+  - `keyof`, `typeof x` as a type, indexed access `T["k"]` (done);
   - conditional types, mapped types and template literal types, and with
     them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...).
 - Regular expressions: literals `/re/`, `RegExp` and the string methods

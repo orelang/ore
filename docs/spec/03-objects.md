@@ -263,6 +263,22 @@ exhaustive: like a `default`, it lets a function end without `return`.
   parameter types from the type arguments inferred from the other arguments,
   and its result binds the rest: `box.map((n) => n * 2)`.
 
+## Computed types
+
+Types computed from other types and from values, resolved when the type that
+names them is:
+
+- `keyof T` is the union of the names of T's members as string literal types:
+  the public fields and methods of a class or an object type, the members of
+  an interface. `keyof { x: int; y: int }` is `"x" | "y"`.
+- `T["k"]` is the type of member `k` of T; `T["a" | "b"]` the union of the
+  types of both. `T[number]` is the element type of an array, or the union of
+  the element types of a tuple; `T[0]` an element of a tuple.
+- `typeof x` is the type of a variable or a function, and `typeof x.y` that of
+  a field of one. A top-level variable used this way before its declaration
+  needs a type annotation, since its value is checked later than the types.
+- `readonly T[]` is accepted and is `T[]`: arrays are not read-only yet.
+
 ## Maps
 
 - `Map<K, V>` is a reference to a hash map that iterates in insertion order.
