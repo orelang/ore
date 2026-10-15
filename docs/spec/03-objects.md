@@ -67,6 +67,11 @@
 - A value converts implicitly to a union containing its type. A class or
   object converts to a union member that is an interface it implements, if
   exactly one does.
+- A field that every member of a union of classes, object types and
+  interfaces (without `null`) has, public, can be read without narrowing
+  (`stmt.line`); its type is the union of the members' field types. It can
+  be assigned (`stmt.line = 3`, `stmt.count++`) when it is writable and has
+  the same type in every member.
 - Representation: a reference type with `null` is a nullable reference; a
   union of string literals is a string; other unions are tagged values.
 
@@ -85,11 +90,21 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
   union.
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
-of `&&`, `||` and `?:`, `switch` clauses on a literal (clauses reached by
-falling through code are not narrowed), and after an `if` whose branch always
-exits (`if (x === null) return`). An assignment narrows to the assigned
-value's type until the next assignment. Loops forget facts about variables
-they assign.
+of `&&`, `||` and `?:`, and `switch` clauses on a literal (clauses reached by
+falling through code are not narrowed). An assignment narrows to the assigned
+value's type until the next assignment.
+
+Narrowing follows the flow of the code: after an `if`, a reference is
+narrowed to the union of its types at the ends of the branches that do not
+exit (with `return`, `break`, `continue` or a call that never returns, such
+as `process.exit`), and not at all if one of them leaves it unnarrowed. So
+after `if (x === null) return`, `x` is not null, and after
+`let x = map.get(k); if (x === null) { x = make(); map.set(k, x) }`,
+neither is it. What holds at the end of a block holds after it. Loops
+forget facts about variables they assign, and the body of a function
+literal knows only the facts about constants where it is created: a `let`
+it captures may be assigned by other code (or by the literal itself) when
+it runs.
 
 A narrowed read is checked at run time and panics if the value is not of the
 narrowed type, so a check made stale by a call cannot corrupt memory.
@@ -131,5 +146,10 @@ exhaustive: like a `default`, it lets a function end without `return`.
   `keys()` and `values()` return arrays in insertion order.
 - `for (const [key, value] of map)` iterates entries in insertion order.
 - Keys compare like SameValueZero: numbers and strings by value (`NaN`
-  equals `NaN`, `-0` equals `0`), objects, arrays and interface values by
-  identity. Unions cannot be keys yet.
+  equals `NaN`, `-0` equals `0`), objects, arrays, maps and interface values
+  by identity. A union is a key type when each of its members is one or is
+  `null`: two union keys are the same key when they hold the same member
+  and the same value as keys of that member's type, so a `Map<A | B, V>` of
+  classes keys by identity, `null` is one key, and `1` as `i32` and `1` as
+  `int` are different keys of a `Map<i32 | int, V>`. Functions, channels and
+  `ptr` values cannot be keys.

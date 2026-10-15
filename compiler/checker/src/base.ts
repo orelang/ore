@@ -23,7 +23,7 @@ import ts from "typescript"
 import { errorOperand, type Operand } from "./operand"
 import { Scope, type Generic, type TypeSymbol } from "./symbols"
 import type { CheckInfo, ProgramInput, ModuleInfo, Signature, FuncContext, ClassInfo, Accessor, AssignTarget, InterfaceInfo } from "./context"
-import { disposeName, isSymbolDispose, memberOf, typeOf, floatLit, poison } from "./helpers"
+import { disposeName, isKeyType, isSymbolDispose, memberOf, typeOf, floatLit, poison } from "./helpers"
 
 /** A program being checked; see Checker in checker.ts. */
 export abstract class CheckerBase {
@@ -86,6 +86,13 @@ export abstract class CheckerBase {
 
   /** Checks of generic instances, run after the other bodies. */
   protected readonly pending: (() => void)[] = []
+
+  /**
+   * Set when a class is constructed before its constructor is declared, in
+   * the default value of a parameter without a type: the value gives its type,
+   * and is checked once every declaration is known.
+   */
+  protected constructedEarly = false
 
   /** The generic and type arguments of each instance type. */
   protected readonly instanceOf = new Map<Type, { generic: Generic; args: Type[] }>()
@@ -289,7 +296,8 @@ export abstract class CheckerBase {
   }
 
   protected mapOf(key: Type, value: Type, node: ts.Node): MapType | undefined {
-    const hashable = isNumeric(key) || ["bool", "string", "literal", "struct", "array", "interface", "map"].includes(key.kind)
+    // A union is a key if each of its members is, or is null.
+    const hashable = key.kind === "union" ? key.members.every((m) => m.kind === "null" || isKeyType(m)) : isKeyType(key)
     if (!hashable) return this.error(node, `Type '${typeToString(key)}' cannot be a Map key.`), undefined
     return { kind: "map", key, value }
   }

@@ -23,9 +23,11 @@ import {
     type FuncType,
     type StructType,
     type Type,
+    Field,
     arrayOf,
     findField,
     findMethod,
+    isNumeric,
     isStringLike,
     membersOf,
     sameType,
@@ -233,6 +235,25 @@ export function fieldType(type: Type, name: string): Type | null {
     }
     if (type.kind === "interface") {
         for (const m of type.members) if (m.name === name) return m.k === "field" ? m.type : null
+        return null
+    }
+    return null
+}
+
+/** Whether a type other than a union can be a `Map` key: numbers, strings and references. */
+export function isKeyType(type: Type): bool {
+    const k = type.kind
+    return isNumeric(type) || k === "bool" || k === "string" || k === "literal" || k === "struct" || k === "array" || k === "interface" || k === "map"
+}
+
+/** A public field of a class or a field of an interface, with its type and whether it is read-only. */
+export function memberField(type: Type, name: string): Field | null {
+    if (type.kind === "struct") {
+        const field = findField(type, name)
+        return field !== null && !field.private ? field : null
+    }
+    if (type.kind === "interface") {
+        for (const m of type.members) if (m.name === name) return m.k === "field" ? new Field(name, m.type, m.readonly) : null
         return null
     }
     return null
@@ -542,6 +563,7 @@ function visitLocalsLValue(target: LValue, visit: (local: Local) => void) {
             visitLocalsExpr(target.object, visit)
             return
         case "iface-field":
+        case "union-field":
             visitLocalsExpr(target.value, visit)
             return
     }

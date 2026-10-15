@@ -308,6 +308,8 @@ export type LValue =
   | { k: "field"; object: Expr; name: string }
   /** The field at `index` of an interface's members. */
   | { k: "iface-field"; value: Expr; index: number }
+  /** A field that every member of a union of structs and interfaces has, with the same type. */
+  | { k: "union-field"; value: Expr; name: string }
 
 /**
  * Assignment. With `op` it is a compound assignment `target op= value`, where

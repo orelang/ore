@@ -278,13 +278,14 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
 
   protected placeParts(target: Exclude<ir.LValue, { k: "local" }>): V[] {
     if (target.k === "field") return [this.expr(target.object)]
-    if (target.k === "iface-field") return [this.expr(target.value)]
+    if (target.k === "iface-field" || target.k === "union-field") return [this.expr(target.value)]
     return [this.expr(target.array), this.intToI64(this.expr(target.index), target.index.type)]
   }
 
   protected placePointer(target: Exclude<ir.LValue, { k: "local" }>, parts: V[], type: Type): string {
     if (target.k === "field") return this.fieldPtr(parts[0]!.v, target.object.type as ir.StructType, target.name)
     if (target.k === "iface-field") return this.ifaceField(parts[0]!, target.index)
+    if (target.k === "union-field") return this.unionFieldPtr(parts[0]!, target.value.type as UnionType, target.name)
     return this.rt("ore_rt_array_at", [parts[0]!, parts[1]!, { ty: "i64", v: sizeOf(this.mt(type)) }]).v
   }
 
@@ -659,6 +660,26 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       },
       this.lt(u),
     )
+  }
+
+  /** The address of a field that every member of a union has, with the same type. */
+  protected unionFieldPtr(v: V, u: UnionType, name: string): string {
+    const end = this.b.label("ufield")
+    const incoming: string[] = []
+    u.members.forEach((m, i) => {
+      const here = this.b.label("umember")
+      const next = this.b.label("unext")
+      this.b.condBr(this.slotTest(u, v, i), here, next)
+      this.b.start(here)
+      const object = this.payload(u, v, i)
+      const ptr = m.kind === "struct" ? this.fieldPtr(object.v, m, name) : this.ifaceField(object, (m as ir.InterfaceType).members.findIndex((x) => x.name === name))
+      incoming.push(`[ ${ptr}, %${this.b.block} ]`)
+      this.b.br(end)
+      this.b.start(next)
+    })
+    this.b.terminate("unreachable")
+    this.b.start(end)
+    return this.b.value("ptr", `phi ptr ${incoming.join(", ")}`).v
   }
 
   protected unionField(e: ir.UnionField): V {

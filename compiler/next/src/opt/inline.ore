@@ -33,6 +33,7 @@ import {
     IfaceCall,
     IfaceField,
     IfaceFieldLValue,
+    UnionFieldLValue,
     IncDec,
     Index,
     IntLit,
@@ -330,6 +331,7 @@ function eachLValueChild(t: LValue, expr: (x: Expr) => void) {
             expr(t.object)
             return
         case "iface-field":
+        case "union-field":
             expr(t.value)
             return
     }
@@ -681,6 +683,9 @@ class Inliner {
             case "iface-field":
                 t.value = this.sub(t.value, depth)
                 return
+            case "union-field":
+                t.value = this.sub(t.value, depth)
+                return
         }
     }
 
@@ -773,6 +778,8 @@ class Inliner {
                 return new FieldLValue(this.clone(t.object, values), t.name)
             case "iface-field":
                 return new IfaceFieldLValue(this.clone(t.value, values), t.index)
+            case "union-field":
+                return new UnionFieldLValue(this.clone(t.value, values), t.name)
         }
     }
 

@@ -148,7 +148,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
         if (symbol.k === "local") return callValue(c, checkExpr(c, callee, scope), node, scope)
         c.info.definitions.set(callee, symbol.decl)
     }
-    const found = symbol!
+    const found = symbol
     // Functions check spread arguments themselves, for rest parameters.
     if (found.k !== "func") for (const arg of args) if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
 
@@ -325,7 +325,7 @@ export function builtinCall(c: Checker, name: string, decl: Node, node: Node, sc
             }
             type = c.defaultType(pick)
         }
-        const t = type!
+        const t = type
         if (!isNumeric(t)) return c.fail(args[0], `'${name}' needs numbers, got '${typeToString(t)}'.`)
         const values: Expr[] = []
         for (let i = 0; i < operands.length; i++) values.push(c.coerce(operands[i], t, args[i]))
@@ -374,8 +374,7 @@ export function jsonCall(c: Checker, name: string, node: Node, scope: Scope): Op
     const text = c.coerce(checkExpr(c, args[0], scope, types.string), types.string, args[0])
     const result = c.unionOf([target, c.errorType!])
     const error = basicErrorOf(c)
-    const targets: Type[] = [target]
-    return typed(new BuiltinCall(result, name, [text], error, targets))
+    return typed(new BuiltinCall(result, name, [text], error, [target]))
 }
 
 /** A value argument of `unsafe` and the type it gives `T`. */
@@ -611,7 +610,7 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         const instance = call.instance
         if (instance instanceof Func || instance.kind !== "struct") return errorOperand
         const ctor = instance.ctor
-        if (ctor === null) return c.fail(node, earlyConstruction(instance.name ?? name))
+        if (ctor === null) return constructEarly(c, instance)
         return callFunc(c, ctor, args, node, scope, `Constructor of '${instance.name}'`, null, call.operands.length > 0 ? call.operands : null)
     }
     const type = symbol !== null ? symbol.type : null
@@ -619,22 +618,23 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
     if (typeArgs.length > 0) return c.fail(typeArgs[0], `Class '${name}' is not generic.`)
     if (isIdentifier(target)) c.info.definitions.set(target, symbol!.decl)
     const ctor = type.ctor
-    if (ctor === null) return c.fail(node, earlyConstruction(name))
+    if (ctor === null) return constructEarly(c, type)
     return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`)
 }
 
 /**
- * The error for a class constructed while declarations are resolved, before
- * its constructor is known: the default value of a parameter without a type.
+ * A class constructed while declarations are resolved, before its
+ * constructor is known: in the default value of a parameter without a type,
+ * which takes the class's type and is checked again later.
  */
-function earlyConstruction(name: string): string {
-    return `Class '${name}' cannot be constructed in the default value of a parameter without a type. Annotate the parameter: 'x: ${name} = new ${name}(...)'.`
+function constructEarly(c: Checker, type: StructType): Operand {
+    c.constructedEarly = true
+    return typed(new Alloc(type))
 }
 
 /** The class created by `new Error(message)`. */
 export function basicErrorClass(c: Checker): StructType {
-    const existing = c.basicError
-    if (existing !== null) return existing
+    if (c.basicError !== null) return c.basicError
     const type = new StructTypeClass(c.nextStructId++, "BasicError", true, [new Field("message", types.string, true)], [])
     const message = c.newLocal("message", types.string, false)
     const self = c.newLocal("this", type, false)
@@ -834,7 +834,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     const generic = generics !== null ? generics.get(name) : null
     if (typeArgs.length > 0 && generic === null) return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
     if (type.kind === "struct" && generic !== null) {
-        defineMember(c, nameId, type.id, name)
+        defineMember(c, nameId, type, name)
         if (!checkAccess(c, type, generic.private, name, nameId)) return errorOperand
         const call = genericCall(c, generic.generic, parameters(generic.generic.decl), typeArgs, args, node, scope)
         if (call === null) return errorOperand
@@ -845,7 +845,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     if (type.kind === "struct") {
         const method = findMethod(type, name)
         if (method !== null) {
-            defineMember(c, nameId, type.id, name)
+            defineMember(c, nameId, type, name)
             if (!checkAccess(c, type, method.private, name, nameId)) return errorOperand
             return callFunc(c, method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
         }
@@ -858,7 +858,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             const m = type.members[index]
             if (m.name !== name) continue
             if (m.k === "method") {
-                defineMember(c, nameId, type.id, name)
+                defineMember(c, nameId, type, name)
                 for (const arg of args) if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
                 const params = m.type.params
                 if (args.length !== params.length) return c.fail(node, `Method '${type.name}.${name}' expects ${params.length} argument(s), got ${args.length}.`)

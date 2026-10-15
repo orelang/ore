@@ -1,6 +1,6 @@
 // Tables and pure functions of the checker.
 import * as ir from "@ore/ir"
-import { arrayOf, findField, findMethod, isStringLike, membersOf, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
+import { arrayOf, findField, findMethod, isNumeric, isStringLike, membersOf, sameType, types, typeToString, type Field, type FuncType, type Type } from "@ore/ir"
 import ts from "typescript"
 import type { Operand } from "./operand"
 
@@ -122,6 +122,24 @@ export function fieldType(type: Type, name: string): Type | undefined {
   if (type.kind === "interface") {
     const member = type.members.find((m) => m.name === name)
     return member?.k === "field" ? member.type : undefined
+  }
+  return undefined
+}
+
+/** Whether a type other than a union can be a `Map` key: numbers, strings and references. */
+export function isKeyType(type: Type): boolean {
+  return isNumeric(type) || ["bool", "string", "literal", "struct", "array", "interface", "map"].includes(type.kind)
+}
+
+/** A public field of a class or a field of an interface, with its type and whether it is read-only. */
+export function memberField(type: Type, name: string): Field | undefined {
+  if (type.kind === "struct") {
+    const field = findField(type, name)
+    return field && !field.private ? field : undefined
+  }
+  if (type.kind === "interface") {
+    const member = type.members.find((m) => m.name === name)
+    return member?.k === "field" ? { name, type: member.type, readonly: member.readonly } : undefined
   }
   return undefined
 }
