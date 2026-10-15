@@ -11,3 +11,6 @@ Builds programs.
   the packages of a program ask for in `"ore"` of their package.json;
   `libDirs` entries are paths or `$(command ...)`, skipped when missing.
 - `clang.ts`: runs `$CC` (clang by default).
+
+The compiler in Ore builds without clang, through LLVM's C API and lld
+(`compiler/next/src/driver`).

@@ -24,7 +24,7 @@ always underneath; they are in the [specification](spec).
 ## Pipeline
 
 ```
-.ore ─ syntax ─ project ─ checker ─ IR ─ opt ─ codegen ─ LLVM IR ─ clang ─ binary
+.ore ─ syntax ─ project ─ checker ─ IR ─ opt ─ codegen ─ LLVM IR ─ LLVM ─ lld ─ binary
                                                               │
                          runtime: core (Ore, with the GC) + std (Ore)
 ```
@@ -40,7 +40,11 @@ always underneath; they are in the [specification](spec).
 - **opt** runs escape analysis (objects that never outlive their function go
   on the stack) and, in release builds, inlining of small functions.
 - **codegen** writes textual LLVM IR; **driver** builds it with clang together
-  with the runtime and the GC, cached in `~/.cache/ore`.
+  with the runtime and the GC, cached in `~/.cache/ore`. The compiler in Ore
+  (`compiler/next`) calls LLVM directly through its C API instead: it parses
+  the IR in memory, optimizes it with LLVM's pass pipeline, writes an object
+  file and links it with lld. clang is then only needed for the C sources of
+  packages.
 
 The compiler is written in TypeScript on Bun, so it gets the TS parser for
 free, shares one codebase with the language server, and compiles to a single
