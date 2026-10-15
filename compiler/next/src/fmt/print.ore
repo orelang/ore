@@ -1,0 +1,3545 @@
+// The printer: the tree in the shape of typescript-estree's printed as a
+// document, following prettier's estree printer for the options of the Ore
+// style (no semicolons, width 120, indentation 4, trailing commas
+// everywhere, parentheses around arrow function parameters, double quotes).
+
+import { tokenize } from "../syntax/lexer"
+import { parse } from "../syntax/parser"
+import {
+    attachComments,
+    commentsOf,
+    ctx,
+    DANGLING,
+    hasComment,
+    hasDangling,
+    hasNewline,
+    hasNewlineInRange,
+    isMethodLike,
+    isNextLineEmpty,
+    isPreviousLineEmpty,
+    isTypeCastComment,
+    LEADING,
+    LINE,
+    literalText,
+    nextLineEmptyAfter,
+    nextNonSpaceIndex,
+    printComments,
+    printDangling,
+    printLeading,
+    printTrailing,
+    sameSpecifier,
+    isStatementBody,
+    lastIndexBefore,
+    TRAILING,
+    BLOCK,
+} from "./comments"
+import {
+    align,
+    breakParent,
+    cleanParts,
+    concat,
+    conditionalGroup,
+    dedentToRoot,
+    type Doc,
+    empty,
+    fill,
+    flatText,
+    group,
+    GROUP,
+    hardline,
+    hasLine,
+    ifBreak,
+    indent,
+    indentIfBreak,
+    join,
+    label,
+    LABEL,
+    line,
+    lineSuffixBoundary,
+    newId,
+    printDoc,
+    removeLines,
+    softline,
+    text,
+    width,
+    willBreak,
+} from "./doc"
+import { blankComments, Converter, ENode, extractComments, locEnd, locStart } from "./estree"
+
+/** Formats an Ore source text in the Ore style. */
+export function format(source: string): string | Error {
+    const parser = parse(source)
+    const file = parser.file
+    if (parser.errors.length > 0 || file === null)
+        return new Error(parser.errors.length > 0 ? parser.errors[0] : "no syntax tree")
+    const tokens = tokenize(source)
+    const comments = extractComments(source, tokens)
+    ctx.text = source
+    ctx.comments = comments
+    ctx.blank = blankComments(source, comments)
+    const converter = new Converter(source, tokens, ctx.blank)
+    const program = converter.file(file)
+    attachComments(program, comments)
+    return printDoc(pr(program), 120)
+}
+
+// -----------------------------------------------------------------------------
+// Basics
+
+class Args {
+    expandLastArg = false
+    expandFirstArg = false
+    assignmentLayout = ""
+}
+
+const noArgs = new Args()
+
+function expandLast(): Args {
+    const a = new Args()
+    a.expandLastArg = true
+    return a
+}
+
+function expandFirst(): Args {
+    const a = new Args()
+    a.expandFirstArg = true
+    return a
+}
+
+function layoutArgs(layout: string): Args {
+    const a = new Args()
+    a.assignmentLayout = layout
+    return a
+}
+
+/** Set when printing parameters for an expanded argument finds that they break, as prettier's ArgExpansionBailout. */
+let bailout = false
+
+const printedCache = new Map<ENode, Doc>()
+
+function t(s: string): Doc {
+    return text(s)
+}
+
+function c(parts: Doc[]): Doc {
+    return concat(parts)
+}
+
+function g(d: Doc): Doc {
+    return group(d)
+}
+
+const space = text(" ")
+
+function isEmptyDoc(d: Doc): bool {
+    if (d.kind === 0) return d.text === ""
+    if (d.kind === 1) {
+        for (const p of d.parts) if (!isEmptyDoc(p)) return false
+        return true
+    }
+    return false
+}
+
+/** Prints a node with its comments and parentheses. */
+function pr(n: ENode | null): Doc {
+    if (n === null) return empty
+    const cached = printedCache.get(n)
+    if (cached !== null) return cached
+    const doc = printWith(n, noArgs)
+    printedCache.set(n, doc)
+    return doc
+}
+
+function pra(n: ENode | null, args: Args): Doc {
+    if (n === null) return empty
+    return printWith(n, args)
+}
+
+function pk(n: ENode, role: string): Doc {
+    return pr(n.get(role))
+}
+
+function printWith(n: ENode, args: Args): Doc {
+    let doc = genericPrint(n, args)
+    if (n.comments.length > 0 && !willPrintOwnComments(n)) doc = printComments(n, doc)
+    return doc
+}
+
+const classMemberTypes = [
+    "PropertyDefinition",
+    "TSAbstractPropertyDefinition",
+    "MethodDefinition",
+    "TSAbstractMethodDefinition",
+]
+
+function genericPrint(n: ENode, args: Args): Doc {
+    let doc = printNode(n, args)
+    if (classMemberTypes.includes(n.type)) return doc
+    if ((hasComment(n, LEADING) || hasComment(n, TRAILING)) && isFunctionCallee(n))
+        doc = c([indent(c([softline, printComments(n, doc)])), softline])
+    if (needsParens(n)) {
+        if (doc.kind === LABEL) return label(doc.label, c([t("("), doc.contents!, t(")")]))
+        return c([t("("), doc, t(")")])
+    }
+    return doc
+}
+
+/** A function or arrow that is called directly. */
+function isFunctionCallee(n: ENode): bool {
+    return (
+        (n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression") &&
+        n.key === "callee" &&
+        n.parent !== null &&
+        isCall(n.parent)
+    )
+}
+
+function willPrintOwnComments(n: ENode): bool {
+    const parent = n.parent
+    if (parent !== null) {
+        if (n.key === "types" && isUnion(parent)) return true
+        if (n.key === "superClass" && parent.type === "ClassDeclaration") return true
+        if ((n.key === "id" || n.key === "typeParameters") && isClassLike(parent)) return true
+    }
+    if (isFunctionCallee(n)) return true
+    if (n.type === "ExpressionStatement") return expressionStatementHasTypeCast(n)
+    if (isUnion(n)) return unionPrintsComments(n)
+    return false
+}
+
+// -----------------------------------------------------------------------------
+// Node predicates
+
+function isCall(n: ENode | null): bool {
+    return n !== null && n.type === "CallExpression"
+}
+
+function isCallLike(n: ENode | null): bool {
+    return n !== null && (n.type === "CallExpression" || n.type === "NewExpression")
+}
+
+function isMember(n: ENode | null): bool {
+    return n !== null && n.type === "MemberExpression"
+}
+
+function isUnion(n: ENode | null): bool {
+    return n !== null && n.type === "TSUnionType"
+}
+
+function isIntersection(n: ENode | null): bool {
+    return n !== null && n.type === "TSIntersectionType"
+}
+
+function isBinaryish(n: ENode | null): bool {
+    return n !== null && (n.type === "BinaryExpression" || n.type === "LogicalExpression")
+}
+
+function isAs(n: ENode | null): bool {
+    return n !== null && (n.type === "TSAsExpression" || n.type === "TSSatisfiesExpression")
+}
+
+function isArray(n: ENode | null): bool {
+    return n !== null && n.type === "ArrayExpression"
+}
+
+function isObject(n: ENode | null): bool {
+    return n !== null && n.type === "ObjectExpression"
+}
+
+function isFunction(n: ENode | null): bool {
+    return n !== null && (n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression")
+}
+
+function isLiteral(n: ENode | null): bool {
+    return n !== null && n.type === "Literal"
+}
+
+function isStringLiteral(n: ENode | null): bool {
+    return n !== null && n.type === "Literal" && n.literal === "string"
+}
+
+function isNumericLiteral(n: ENode | null): bool {
+    return n !== null && n.type === "Literal" && n.literal === "number"
+}
+
+function isSignedNumericLiteral(n: ENode): bool {
+    return (
+        n.type === "UnaryExpression" &&
+        (n.operator === "+" || n.operator === "-") &&
+        isNumericLiteral(n.get("argument"))
+    )
+}
+
+function isObjectType(n: ENode | null): bool {
+    return n !== null && (n.type === "TSTypeLiteral" || n.type === "TSMappedType")
+}
+
+function isClassLike(n: ENode | null): bool {
+    return n !== null && (n.type === "ClassDeclaration" || n.type === "TSInterfaceDeclaration")
+}
+
+function isReturnOrThrow(n: ENode | null): bool {
+    return n !== null && (n.type === "ReturnStatement" || n.type === "ThrowStatement")
+}
+
+function isMemberish(n: ENode | null): bool {
+    return isMember(n)
+}
+
+/** A property of an object literal that is not a method or accessor. */
+function isObjectProperty(n: ENode | null): bool {
+    return n !== null && n.type === "Property" && !isMethodLike(n)
+}
+
+function isTemplateOnItsOwnLine(n: ENode): bool {
+    if (n.type !== "TemplateLiteral") return false
+    let multiline = false
+    for (const q of n.all("quasis")) if (q.raw.includes("\n")) multiline = true
+    return multiline && !hasNewline(ctx.text, locStart(n), true)
+}
+
+/** The expression inside chain and non-null wrappers. */
+function stripChain(n: ENode): ENode {
+    let e = n
+    while (e.type === "ChainExpression" || e.type === "TSNonNullExpression") e = e.at("expression")
+    return e
+}
+
+function params(n: ENode): ENode[] {
+    return n.all("params")
+}
+
+function args(n: ENode): ENode[] {
+    return n.all("arguments")
+}
+
+function last<T>(xs: T[]): T {
+    return xs[xs.length - 1]
+}
+
+/** Whether a node has a leading comment followed by a line break. */
+function hasLeadingOwnLineComment(n: ENode): bool {
+    for (const cm of n.comments) if (cm.leading && hasNewline(ctx.text, cm.end, false)) return true
+    return false
+}
+
+/** The node at the left of an expression, as prettier's getLeftSide. */
+function leftSide(n: ENode): ENode | null {
+    const expressions = n.all("expressions")
+    if (expressions.length > 0 && n.type === "SequenceExpression") return expressions[0]
+    for (const role of ["left", "test", "callee", "object", "tag", "argument", "expression"]) {
+        const child = n.get(role)
+        if (child !== null) return child
+    }
+    return null
+}
+
+function hasNakedLeftSide(n: ENode): bool {
+    switch (n.type) {
+        case "AssignmentExpression":
+        case "BinaryExpression":
+        case "LogicalExpression":
+        case "ConditionalExpression":
+        case "CallExpression":
+        case "MemberExpression":
+        case "SequenceExpression":
+        case "TSAsExpression":
+        case "TSSatisfiesExpression":
+        case "ChainExpression":
+        case "TSNonNullExpression":
+            return true
+        case "UpdateExpression":
+            return !n.prefix
+    }
+    return false
+}
+
+/** Whether the leftmost node of an expression satisfies a predicate, as prettier's startsWithNoLookaheadToken. */
+function startsWith(n: ENode, pred: (e: ENode) => bool): bool {
+    switch (n.type) {
+        case "BinaryExpression":
+        case "LogicalExpression":
+        case "AssignmentExpression":
+            return startsWith(n.at("left"), pred)
+        case "MemberExpression":
+            return startsWith(n.at("object"), pred)
+        case "CallExpression":
+            return n.at("callee").type === "FunctionExpression" ? false : startsWith(n.at("callee"), pred)
+        case "ConditionalExpression":
+            return startsWith(n.at("test"), pred)
+        case "UpdateExpression":
+            return !n.prefix && startsWith(n.at("argument"), pred)
+        case "SequenceExpression":
+            return startsWith(n.all("expressions")[0], pred)
+        case "ChainExpression":
+        case "TSNonNullExpression":
+        case "TSSatisfiesExpression":
+        case "TSAsExpression":
+            return startsWith(n.at("expression"), pred)
+    }
+    return pred(n)
+}
+
+function returnArgumentHasLeadingComment(n: ENode): bool {
+    if (hasLeadingOwnLineComment(n)) return true
+    for (const cm of n.comments) if (cm.leading && hasNewlineInRange(ctx.text, cm.start, cm.end)) return true
+    if (hasNakedLeftSide(n)) {
+        let e: ENode | null = n
+        while (e !== null) {
+            e = leftSide(e)
+            if (e === null) break
+            if (hasLeadingOwnLineComment(e)) return true
+        }
+    }
+    return false
+}
+
+// -----------------------------------------------------------------------------
+// Parentheses
+
+const statementTypes = [
+    "BlockStatement",
+    "BreakStatement",
+    "ClassBody",
+    "ClassDeclaration",
+    "MethodDefinition",
+    "PropertyDefinition",
+    "ContinueStatement",
+    "DoWhileStatement",
+    "ExportAllDeclaration",
+    "ExportDefaultDeclaration",
+    "ExportNamedDeclaration",
+    "ExpressionStatement",
+    "ForInStatement",
+    "ForOfStatement",
+    "ForStatement",
+    "FunctionDeclaration",
+    "IfStatement",
+    "ImportDeclaration",
+    "LabeledStatement",
+    "ReturnStatement",
+    "SwitchStatement",
+    "ThrowStatement",
+    "TryStatement",
+    "TSDeclareFunction",
+    "TSEnumDeclaration",
+    "TSInterfaceDeclaration",
+    "TSModuleDeclaration",
+    "VariableDeclaration",
+    "WhileStatement",
+]
+
+const precedences = new Map<string, int>()
+function setPrecedence(ops: string[], p: int) {
+    for (const op of ops) precedences.set(op, p)
+}
+setPrecedence(["??"], 1)
+setPrecedence(["||"], 2)
+setPrecedence(["&&"], 3)
+setPrecedence(["|"], 4)
+setPrecedence(["^"], 5)
+setPrecedence(["&"], 6)
+setPrecedence(["==", "===", "!=", "!=="], 7)
+setPrecedence(["<", ">", "<=", ">=", "in", "instanceof"], 8)
+setPrecedence([">>", "<<", ">>>"], 9)
+setPrecedence(["+", "-"], 10)
+setPrecedence(["*", "/", "%"], 11)
+setPrecedence(["**"], 12)
+
+function precedence(op: string): int {
+    const p = precedences.get(op)
+    return p === null ? -1 : p
+}
+
+function isEquality(op: string): bool {
+    return op === "==" || op === "===" || op === "!=" || op === "!=="
+}
+
+function isMultiplicative(op: string): bool {
+    return op === "*" || op === "/" || op === "%"
+}
+
+function isShift(op: string): bool {
+    return op === ">>" || op === ">>>" || op === "<<"
+}
+
+function shouldFlatten(parentOp: string, nodeOp: string): bool {
+    if (precedence(nodeOp) !== precedence(parentOp)) return false
+    if (parentOp === "**") return false
+    if (isEquality(parentOp) && isEquality(nodeOp)) return false
+    if ((nodeOp === "%" && isMultiplicative(parentOp)) || (parentOp === "%" && isMultiplicative(nodeOp))) return false
+    if (nodeOp !== parentOp && isMultiplicative(nodeOp) && isMultiplicative(parentOp)) return false
+    if (isShift(parentOp) && isShift(nodeOp)) return false
+    return true
+}
+
+function isBitwise(op: string): bool {
+    return isShift(op) || op === "|" || op === "^" || op === "&"
+}
+
+function needsParens(n: ENode): bool {
+    const parent = n.parent
+    if (parent === null) return false
+    const key = n.key
+    if (statementTypes.includes(n.type)) return false
+    if (n.type === "Identifier") return false
+    if (n.type === "ObjectExpression" || n.type === "FunctionExpression") {
+        let a: ENode | null = parent
+        while (a !== null && a.type !== "ExpressionStatement") a = a.parent
+        if (a !== null && startsWith(a.at("expression"), (e) => e === n)) return true
+    }
+    if (n.type === "ObjectExpression") {
+        let a: ENode | null = parent
+        while (a !== null && a.type !== "ArrowFunctionExpression") a = a.parent
+        if (a !== null) {
+            const body = a.at("body")
+            if (
+                body.type !== "SequenceExpression" &&
+                body.type !== "AssignmentExpression" &&
+                startsWith(body, (e) => e === n)
+            )
+                return true
+        }
+    }
+    if (isReturnOrThrow(parent) && key === "argument") {
+        if (
+            (n.type === "SequenceExpression" || n.type === "AssignmentExpression") &&
+            returnArgumentHasLeadingComment(n)
+        )
+            return false
+    }
+    if (parent.type === "ClassDeclaration" && key === "superClass") {
+        const s = stripChain(n)
+        switch (s.type) {
+            case "ArrowFunctionExpression":
+            case "AssignmentExpression":
+            case "AwaitExpression":
+            case "BinaryExpression":
+            case "ConditionalExpression":
+            case "LogicalExpression":
+            case "NewExpression":
+            case "ObjectExpression":
+            case "SequenceExpression":
+            case "UnaryExpression":
+            case "UpdateExpression":
+                return true
+        }
+    }
+    switch (n.type) {
+        case "UpdateExpression":
+            if (parent.type === "UnaryExpression")
+                return (
+                    n.prefix &&
+                    ((n.operator === "++" && parent.operator === "+") ||
+                        (n.operator === "--" && parent.operator === "-"))
+                )
+            return unaryNeedsParens(n, parent, key)
+        case "UnaryExpression":
+            return unaryNeedsParens(n, parent, key)
+        case "BinaryExpression":
+            if (parent.type === "UpdateExpression") return true
+            if (n.operator === "in" && inForInit(n)) return true
+            return binaryNeedsParens(n, parent, key)
+        case "TSAsExpression":
+        case "TSSatisfiesExpression":
+        case "LogicalExpression":
+            return binaryNeedsParens(n, parent, key)
+        case "SequenceExpression":
+            return parent.type !== "ForStatement" && parent.type !== "ExpressionStatement"
+        case "AwaitExpression":
+            switch (parent.type) {
+                case "UnaryExpression":
+                case "LogicalExpression":
+                case "SpreadElement":
+                case "TSAsExpression":
+                case "TSSatisfiesExpression":
+                case "TSNonNullExpression":
+                    return true
+                case "MemberExpression":
+                    return key === "object"
+                case "NewExpression":
+                case "CallExpression":
+                    return key === "callee"
+                case "ConditionalExpression":
+                    return key === "test"
+                case "BinaryExpression":
+                    return true
+            }
+            return false
+        case "TSFunctionType":
+            if (
+                parent.type === "TSTypeAnnotation" &&
+                parent.key === "returnType" &&
+                parent.parent !== null &&
+                parent.parent.type === "ArrowFunctionExpression"
+            )
+                return true
+            return typeNeedsParens(n, parent, key, true)
+        case "TSConditionalType":
+        case "TSConstructorType":
+        case "TSUnionType":
+        case "TSIntersectionType":
+            return typeNeedsParens(n, parent, key, true)
+        case "TSTypeOperator":
+            return typeNeedsParens(n, parent, key, false)
+        case "TSTypeQuery":
+            return (
+                (key === "objectType" && parent.type === "TSIndexedAccessType") ||
+                (key === "elementType" && parent.type === "TSArrayType")
+            )
+        case "Literal":
+            if (n.literal === "string" && parent.type === "ExpressionStatement") {
+                const gp = parent.parent
+                return gp !== null && (gp.type === "Program" || gp.type === "BlockStatement")
+            }
+            return key === "object" && isMember(parent) && n.literal === "number"
+        case "AssignmentExpression":
+            if ((key === "init" || key === "update") && parent.type === "ForStatement") return false
+            if (key === "expression" && n.at("left").type !== "ObjectPattern" && parent.type === "ExpressionStatement")
+                return false
+            if (key === "key" && parent.type === "TSPropertySignature") return false
+            if (parent.type === "AssignmentExpression") return false
+            if (key === "expressions" && parent.type === "SequenceExpression") {
+                const gp = parent.parent
+                if (gp !== null && gp.type === "ForStatement" && (parent.key === "init" || parent.key === "update"))
+                    return false
+            }
+            if (key === "value" && parent.type === "Property") {
+                const gp = parent.parent
+                if (gp !== null && gp.type === "ObjectPattern" && parent.key === "properties") return false
+            }
+            return true
+        case "ConditionalExpression":
+            switch (parent.type) {
+                case "UnaryExpression":
+                case "SpreadElement":
+                case "BinaryExpression":
+                case "LogicalExpression":
+                case "AwaitExpression":
+                case "TSAsExpression":
+                case "TSSatisfiesExpression":
+                case "TSNonNullExpression":
+                    return true
+                case "NewExpression":
+                case "CallExpression":
+                    return key === "callee"
+                case "ConditionalExpression":
+                    return key === "test"
+                case "MemberExpression":
+                    return key === "object"
+            }
+            return false
+        case "FunctionExpression":
+            switch (parent.type) {
+                case "NewExpression":
+                case "CallExpression":
+                    return key === "callee"
+                case "ExportDefaultDeclaration":
+                    return key === "declaration"
+            }
+            return false
+        case "ArrowFunctionExpression":
+            switch (parent.type) {
+                case "BinaryExpression":
+                    return true
+                case "NewExpression":
+                case "CallExpression":
+                    return key === "callee"
+                case "MemberExpression":
+                    return key === "object"
+                case "TSAsExpression":
+                case "TSSatisfiesExpression":
+                case "TSNonNullExpression":
+                case "UnaryExpression":
+                case "LogicalExpression":
+                case "AwaitExpression":
+                    return true
+                case "ConditionalExpression":
+                    return key === "test"
+            }
+            return false
+        case "ChainExpression":
+            if (
+                (key === "expression" && parent.type === "TSNonNullExpression") ||
+                (key === "object" && isMember(parent) && !parent.optional) ||
+                (key === "callee" && isCall(parent) && !parent.optional) ||
+                (key === "callee" && parent.type === "NewExpression")
+            )
+                return true
+            return calleeOfNew(n, parent, key)
+        case "TSNonNullExpression":
+        case "CallExpression":
+        case "MemberExpression":
+            return calleeOfNew(n, parent, key)
+    }
+    return false
+}
+
+function calleeOfNew(n: ENode, parent: ENode, key: string): bool {
+    if (key !== "callee" || parent.type !== "NewExpression") return false
+    let e: ENode = n
+    for (;;) {
+        if (e.type === "CallExpression") return true
+        if (e.type === "MemberExpression") e = e.at("object")
+        else if (e.type === "TSNonNullExpression") e = e.at("expression")
+        else return false
+    }
+}
+
+function unaryNeedsParens(n: ENode, parent: ENode, key: string): bool {
+    switch (parent.type) {
+        case "UnaryExpression":
+            return n.operator === parent.operator && (n.operator === "+" || n.operator === "-")
+        case "MemberExpression":
+            return key === "object"
+        case "NewExpression":
+        case "CallExpression":
+            return key === "callee"
+        case "BinaryExpression":
+            if (
+                key === "left" &&
+                n.type === "UnaryExpression" &&
+                (parent.operator === "in" || parent.operator === "instanceof")
+            )
+                return true
+            return key === "left" && parent.operator === "**"
+        case "TSNonNullExpression":
+            return true
+    }
+    return false
+}
+
+function inForInit(n: ENode): bool {
+    let e: ENode | null = n
+    while (e !== null) {
+        const p: ENode | null = e.parent
+        if (p !== null && p.type === "ForStatement" && e.key === "init") return true
+        e = p
+    }
+    return false
+}
+
+function binaryNeedsParens(n: ENode, parent: ENode, key: string): bool {
+    switch (parent.type) {
+        case "TSAsExpression":
+        case "TSSatisfiesExpression":
+            return !isAs(n)
+        case "ConditionalExpression":
+            return isAs(n) || (n.type === "LogicalExpression" && n.operator === "??")
+        case "CallExpression":
+        case "NewExpression":
+            return key === "callee"
+        case "ClassDeclaration":
+            return key === "superClass"
+        case "SpreadElement":
+        case "AwaitExpression":
+        case "TSNonNullExpression":
+        case "UpdateExpression":
+            return true
+        case "UnaryExpression":
+            return n.comments.length === 0
+        case "MemberExpression":
+            return key === "object"
+        case "AssignmentExpression":
+        case "AssignmentPattern":
+            return key === "left" && isAs(n)
+        case "LogicalExpression":
+            if (n.type === "LogicalExpression") return parent.operator !== n.operator
+            return binaryInBinary(n, parent, key)
+        case "BinaryExpression":
+            return binaryInBinary(n, parent, key)
+    }
+    return false
+}
+
+function binaryInBinary(n: ENode, parent: ENode, key: string): bool {
+    const op = n.operator
+    if (op === "") return true
+    const np = precedence(op)
+    const po = parent.operator
+    const pp = precedence(po)
+    if (pp > np) return true
+    if (key === "right" && pp === np) return true
+    if (pp === np && !shouldFlatten(po, op)) return true
+    if (pp < np && op === "%" && (po === "+" || po === "-")) return true
+    return isBitwise(po)
+}
+
+function typeNeedsParens(n: ENode, parent: ENode, key: string, unionLike: bool): bool {
+    if (unionLike && (isUnion(parent) || isIntersection(parent)) && (n.type !== "TSUnionType" || true)) {
+        if (
+            n.type === "TSFunctionType" ||
+            n.type === "TSConditionalType" ||
+            n.type === "TSConstructorType" ||
+            isUnion(n) ||
+            isIntersection(n)
+        )
+            return true
+    }
+    return (
+        parent.type === "TSArrayType" ||
+        parent.type === "TSOptionalType" ||
+        parent.type === "TSRestType" ||
+        (key === "objectType" && parent.type === "TSIndexedAccessType") ||
+        parent.type === "TSTypeOperator"
+    )
+}
+
+// -----------------------------------------------------------------------------
+// Dispatch
+
+function printNode(n: ENode, args: Args): Doc {
+    switch (n.type) {
+        case "Program":
+        case "BlockStatement":
+        case "TSModuleBlock":
+            return printBlock(n)
+        case "EmptyStatement":
+            return isStatementBody(n) ? t(";") : empty
+        case "Hole":
+            return empty
+        case "ExpressionStatement":
+            return printExpressionStatement(n)
+        case "ChainExpression":
+            return pk(n, "expression")
+        case "AssignmentExpression":
+            return printAssignment(n, pk(n, "left"), t(" " + n.operator), "right")
+        case "VariableDeclarator":
+            return printAssignment(n, pk(n, "id"), t(" ="), "init")
+        case "BinaryExpression":
+        case "LogicalExpression":
+            return printBinary(n)
+        case "AssignmentPattern":
+            return c([pk(n, "left"), t(" = "), pk(n, "right")])
+        case "MemberExpression":
+            return printMember(n)
+        case "Identifier":
+            return c([t(n.name), optionalToken(n), definiteToken(n), printTypeAnnotationProperty(n, "typeAnnotation")])
+        case "SpreadElement":
+        case "RestElement":
+            return c([t("..."), pk(n, "argument"), printTypeAnnotationProperty(n, "typeAnnotation")])
+        case "FunctionDeclaration":
+        case "FunctionExpression":
+        case "TSDeclareFunction":
+            return printFunction(n, args)
+        case "ArrowFunctionExpression":
+            return printArrow(n, args)
+        case "AwaitExpression":
+            return printAwait(n)
+        case "ExportDefaultDeclaration":
+        case "ExportNamedDeclaration":
+        case "ExportAllDeclaration":
+            return printExport(n)
+        case "ImportDeclaration":
+            return printImport(n)
+        case "ImportSpecifier":
+        case "ExportSpecifier":
+        case "ImportNamespaceSpecifier":
+        case "ImportDefaultSpecifier":
+            return printSpecifier(n)
+        case "ImportAttribute":
+            return printProperty(n)
+        case "ClassBody":
+        case "TSInterfaceBody":
+        case "TSTypeLiteral":
+            return printClassBody(n)
+        case "ThrowStatement":
+        case "ReturnStatement":
+            return printReturn(n)
+        case "NewExpression":
+        case "CallExpression":
+            return printCall(n)
+        case "ObjectExpression":
+        case "ObjectPattern":
+        case "TSEnumBody":
+            return printObject(n)
+        case "Property":
+            return isMethodLike(n) ? printMethod(n) : printProperty(n)
+        case "ArrayExpression":
+        case "ArrayPattern":
+        case "TSTupleType":
+            return printArray(n)
+        case "SequenceExpression":
+            return printSequence(n)
+        case "ThisExpression":
+            return t("this")
+        case "Super":
+            return t("super")
+        case "UnaryExpression": {
+            const parts: Doc[] = [t(n.operator)]
+            const last_ = n.operator[n.operator.length - 1]
+            if (last_ >= 97 && last_ <= 122) parts.push(space)
+            const arg = pk(n, "argument")
+            if (hasComment(n.get("argument"))) parts.push(g(c([t("("), indent(c([softline, arg])), softline, t(")")])))
+            else parts.push(arg)
+            return c(parts)
+        }
+        case "UpdateExpression":
+            return c([t(n.prefix ? n.operator : ""), pk(n, "argument"), t(n.prefix ? "" : n.operator)])
+        case "ConditionalExpression":
+            return printTernary(n)
+        case "VariableDeclaration":
+            return printVariableDeclaration(n)
+        case "IfStatement":
+            return printIf(n)
+        case "ForStatement":
+            return printFor(n)
+        case "WhileStatement":
+            return g(c([t("while ("), printTest(n), t(")"), adjustClause(n, "body")]))
+        case "DoWhileStatement":
+            return c([
+                g(c([t("do"), adjustClause(n, "body")])),
+                n.at("body").type === "BlockStatement" ? space : hardline,
+                t("while ("),
+                printTest(n),
+                t(")"),
+            ])
+        case "ForInStatement":
+        case "ForOfStatement":
+            return g(
+                c([
+                    t("for ("),
+                    pk(n, "left"),
+                    t(n.type === "ForOfStatement" ? " of " : " in "),
+                    pk(n, "right"),
+                    t(")"),
+                    adjustClause(n, "body"),
+                ]),
+            )
+        case "BreakStatement":
+        case "ContinueStatement": {
+            const labelNode = n.get("label")
+            return c([
+                t(n.type === "BreakStatement" ? "break" : "continue"),
+                labelNode !== null ? c([space, pr(labelNode)]) : empty,
+            ])
+        }
+        case "LabeledStatement": {
+            const body = n.at("body")
+            return c([
+                pk(n, "label"),
+                t(body.type === "EmptyStatement" && !hasComment(body, LEADING) ? ":" : ": "),
+                pr(body),
+            ])
+        }
+        case "TryStatement": {
+            const handler = n.get("handler")
+            const finalizer = n.get("finalizer")
+            return c([
+                t("try "),
+                pk(n, "block"),
+                handler !== null ? c([space, pr(handler)]) : empty,
+                finalizer !== null ? c([t(" finally "), pr(finalizer)]) : empty,
+            ])
+        }
+        case "CatchClause":
+            return printCatch(n)
+        case "SwitchStatement":
+            return printSwitch(n)
+        case "SwitchCase":
+            return printSwitchCase(n)
+        case "ClassDeclaration":
+        case "TSInterfaceDeclaration":
+            return printClass(n)
+        case "MethodDefinition":
+        case "TSAbstractMethodDefinition":
+            return printClassMethod(n)
+        case "PropertyDefinition":
+        case "TSAbstractPropertyDefinition":
+            return printClassProperty(n)
+        case "TemplateElement":
+            return literalText(n.raw)
+        case "TemplateLiteral":
+            return printTemplateLiteral(n)
+        case "PrivateIdentifier":
+            return t("#" + n.name)
+        case "Literal":
+            return printLiteral(n)
+        // TypeScript
+        case "TSStringKeyword":
+        case "TSNumberKeyword":
+        case "TSBooleanKeyword":
+        case "TSBigIntKeyword":
+        case "TSSymbolKeyword":
+        case "TSObjectKeyword":
+        case "TSNeverKeyword":
+        case "TSUnknownKeyword":
+        case "TSAnyKeyword":
+        case "TSUndefinedKeyword":
+        case "TSVoidKeyword":
+        case "TSIntrinsicKeyword":
+        case "TSNullKeyword":
+            return t(n.type.slice(2, n.type.length - 7).toLowerCase())
+        case "TSExportAssignment":
+            return c([t("export = "), pk(n, "expression")])
+        case "TSTypeAliasDeclaration": {
+            const left = c([t(n.declare ? "declare " : ""), t("type "), pk(n, "id"), pk(n, "typeParameters")])
+            return printAssignment(n, left, t(" ="), "typeAnnotation")
+        }
+        case "TSQualifiedName":
+            return c([pk(n, "left"), t("."), pk(n, "right")])
+        case "TSInterfaceHeritage":
+        case "TSClassImplements":
+            return c([pk(n, "expression"), pk(n, "typeArguments")])
+        case "TSTypeParameterDeclaration":
+        case "TSTypeParameterInstantiation":
+            return printTypeParameters(n)
+        case "TSTypeParameter":
+            return printTypeParameter(n)
+        case "TSAsExpression":
+        case "TSSatisfiesExpression": {
+            const parts = [
+                pk(n, "expression"),
+                t(n.type === "TSAsExpression" ? " as " : " satisfies "),
+                pk(n, "typeAnnotation"),
+            ]
+            const parent = n.parent!
+            if ((n.key === "callee" && isCallLike(parent)) || (n.key === "object" && isMember(parent)))
+                return g(c([indent(c([softline, c(parts)])), softline]))
+            return c(parts)
+        }
+        case "TSArrayType":
+            return c([pk(n, "elementType"), t("[]")])
+        case "TSPropertySignature":
+            return c([
+                t(n.readonly ? "readonly " : ""),
+                printPropertyKey(n),
+                optionalToken(n),
+                printTypeAnnotationProperty(n, "typeAnnotation"),
+                memberSeparator(n),
+            ])
+        case "TSParameterProperty":
+            return c([
+                t(n.accessibility !== "" ? n.accessibility + " " : ""),
+                t(n.isStatic ? "static " : ""),
+                t(n.override ? "override " : ""),
+                t(n.readonly ? "readonly " : ""),
+                pk(n, "parameter"),
+            ])
+        case "TSTypeQuery":
+            return c([t("typeof "), pk(n, "exprName"), pk(n, "typeArguments")])
+        case "TSNonNullExpression":
+            return c([pk(n, "expression"), t("!")])
+        case "TSLiteralType":
+            return pk(n, "literal")
+        case "TSIndexedAccessType":
+            return c([pk(n, "objectType"), t("["), pk(n, "indexType"), t("]")])
+        case "TSTypeOperator":
+            return c([t(n.operator + " "), pk(n, "typeAnnotation")])
+        case "TSMethodSignature":
+            return printMethodSignature(n)
+        case "TSEnumDeclaration":
+            return c([
+                t(n.declare ? "declare " : ""),
+                t(n.isConst ? "const " : ""),
+                t("enum "),
+                pk(n, "id"),
+                space,
+                pk(n, "body"),
+            ])
+        case "TSEnumMember": {
+            const init = n.get("initializer")
+            const id = printPropertyKeyRole(n, "id")
+            return init !== null ? c([id, t(" = "), pr(init)]) : id
+        }
+        case "TSModuleDeclaration": {
+            const body = n.get("body")
+            return c([
+                t(n.declare ? "declare " : ""),
+                t(n.kind === "global" ? "" : n.kind + " "),
+                pk(n, "id"),
+                body !== null ? c([space, g(pr(body))]) : empty,
+            ])
+        }
+        case "TSIntersectionType":
+            return printIntersection(n)
+        case "TSUnionType":
+            return printUnion(n, args)
+        case "TSFunctionType": {
+            let ps = printParams(n, false, true)
+            const returnType = printTypeAnnotationProperty(n, "returnType")
+            if (shouldGroupParams(n, returnType)) ps = g(ps)
+            return g(c([ps, returnType]))
+        }
+        case "TSTypeReference":
+            return c([pk(n, "typeName"), pk(n, "typeArguments")])
+        case "TSTypeAnnotation": {
+            const prefix = annotationPrefix(n)
+            return prefix !== "" ? c([t(prefix + " "), pk(n, "typeAnnotation")]) : pk(n, "typeAnnotation")
+        }
+        case "TSEmptyBodyFunctionExpression":
+            return printMethodValue(n)
+    }
+    process.panic(`fmt: cannot print ${n.type}`)
+}
+
+// -----------------------------------------------------------------------------
+// Statements
+
+function printStatementSequence(n: ENode, role: string): Doc[] {
+    const parts: Doc[] = []
+    const list = n.all(role)
+    let lastStatement: ENode | null = null
+    for (const s of list) if (s.type !== "EmptyStatement") lastStatement = s
+    for (const s of list) {
+        if (s.type === "EmptyStatement") continue
+        parts.push(pr(s))
+        if (s !== lastStatement) {
+            parts.push(hardline)
+            if (nextLineEmptyAfter(s)) parts.push(hardline)
+        }
+    }
+    return parts
+}
+
+function printBlock(n: ENode): Doc {
+    let hasBody = false
+    for (const s of n.all("body")) if (s.type !== "EmptyStatement") hasBody = true
+    const dangling = hasDangling(n)
+    let body: Doc | null = null
+    if (hasBody || dangling) {
+        const parts: Doc[] = []
+        if (hasBody) parts.push(c(printStatementSequence(n, "body")))
+        if (dangling) parts.push(printDangling(n, false))
+        body = c(parts)
+    }
+    if (n.type === "Program") return body !== null ? c([body, hardline]) : empty
+    const parts: Doc[] = [t("{")]
+    if (body !== null) parts.push(indent(c([hardline, body])), hardline)
+    else {
+        const parent = n.parent!
+        const gp = parent.parent
+        const t_ = parent.type
+        const bare =
+            t_ === "ArrowFunctionExpression" ||
+            t_ === "FunctionExpression" ||
+            t_ === "FunctionDeclaration" ||
+            t_ === "ForStatement" ||
+            t_ === "WhileStatement" ||
+            t_ === "DoWhileStatement" ||
+            (t_ === "CatchClause" && gp !== null && !gp.has("finalizer")) ||
+            t_ === "TSModuleDeclaration"
+        if (!bare) parts.push(hardline)
+    }
+    parts.push(t("}"))
+    return c(parts)
+}
+
+/** Whether a statement needs a `;` before it: without semicolons, a line starting with `(`, `[` or `` ` ``. */
+function statementNeedsASIProtection(n: ENode): bool {
+    const parent = n.parent
+    if (parent === null) return false
+    const inBody =
+        (n.key === "body" &&
+            (parent.type === "Program" || parent.type === "BlockStatement" || parent.type === "TSModuleBlock")) ||
+        (n.key === "consequent" && parent.type === "SwitchCase")
+    return inBody && expressionNeedsASIProtection(n.at("expression"))
+}
+
+function expressionNeedsASIProtection(n: ENode): bool {
+    switch (n.type) {
+        case "ArrayExpression":
+        case "ArrayPattern":
+        case "TemplateLiteral":
+        case "TemplateElement":
+        case "ArrowFunctionExpression":
+            return true
+        case "UnaryExpression":
+            if (n.prefix && (n.operator === "+" || n.operator === "-")) return true
+            break
+    }
+    if (needsParens(n)) return true
+    if (!hasNakedLeftSide(n)) return false
+    const left = leftSide(n)
+    return left !== null && expressionNeedsASIProtection(left)
+}
+
+function expressionStatementHasTypeCast(n: ENode): bool {
+    if (!statementNeedsASIProtection(n)) return false
+    const leading = commentsOf(n, LEADING)
+    return leading.length > 0 && isTypeCastComment(last(leading))
+}
+
+function printExpressionStatement(n: ENode): Doc {
+    const expression = pk(n, "expression")
+    if (statementNeedsASIProtection(n)) {
+        if (expressionStatementHasTypeCast(n)) return printComments(n, c([t(";"), expression]))
+        return c([t(";"), expression])
+    }
+    return expression
+}
+
+function printVariableDeclaration(n: ENode): Doc {
+    const declarations = n.all("declarations")
+    const printed: Doc[] = []
+    for (const d of declarations) printed.push(pr(d))
+    const parent = n.parent!
+    const isLoopHead =
+        (n.key === "init" && parent.type === "ForStatement") ||
+        (n.key === "left" && (parent.type === "ForInStatement" || parent.type === "ForOfStatement"))
+    let hasValue = false
+    for (const d of declarations) if (d.has("init")) hasValue = true
+    const first = printed.length === 1 && !hasComment(declarations[0]) ? printed[0] : indent(printed[0])
+    const rest: Doc[] = []
+    for (let i = 1; i < printed.length; i++)
+        rest.push(c([t(","), hasValue && !isLoopHead ? hardline : line, printed[i]]))
+    return g(c([t(n.declare ? "declare " : ""), t(n.kind), space, first, indent(c(rest))]))
+}
+
+/** The body of an `if`, a loop or `else`: on the same line for blocks, indented otherwise. */
+function adjustClause(n: ENode, role: string): Doc {
+    const body = n.at(role)
+    const printed = pr(body)
+    if (body.type === "EmptyStatement") return hasComment(body, LEADING) ? c([space, printed]) : printed
+    const isBlock = body.type === "BlockStatement"
+    const leading = commentsOf(body, LEADING)
+    if (leading.length > 0) {
+        const first = leading[0]
+        if (hasNewlineInRange(ctx.text, first.start, first.end) || hasNewline(ctx.text, first.start, true))
+            return isBlock ? c([hardline, printed]) : indent(c([hardline, printed]))
+    }
+    if (isBlock || (body.type === "IfStatement" && n.type === "IfStatement" && role === "alternate"))
+        return c([space, printed])
+    return indent(c([line, printed]))
+}
+
+/** The condition of a statement, which breaks inside its parentheses unless it is a negated logical expression. */
+function printTest(n: ENode): Doc {
+    const test = n.at("test")
+    const printed = pr(test)
+    if (test.comments.length === 0 && test.type === "UnaryExpression" && test.operator === "!") {
+        let arg = test.at("argument")
+        if (arg.type === "UnaryExpression" && arg.operator === "!") arg = arg.at("argument")
+        if (arg.type === "LogicalExpression") return printed
+    }
+    return g(c([indent(c([softline, printed])), softline]))
+}
+
+function printIf(n: ENode): Doc {
+    const opening = g(c([t("if ("), printTest(n), t(")"), adjustClause(n, "consequent")]))
+    const alternate = n.get("alternate")
+    if (alternate === null) return opening
+    const consequentIsBlock = n.at("consequent").type === "BlockStatement"
+    const parts: Doc[] = [opening]
+    let spaceBeforeElse = consequentIsBlock
+    if (!consequentIsBlock) {
+        parts.push(hardline)
+        spaceBeforeElse = false
+    }
+    const dangling = commentsOf(n, DANGLING)
+    if (dangling.length > 0) {
+        const first = dangling[0]
+        if (isPreviousLineEmpty(ctx.text, first.start))
+            parts.push(consequentIsBlock ? c([hardline, hardline]) : hardline)
+        else if (hasNewline(ctx.text, first.start, true)) parts.push(consequentIsBlock ? hardline : empty)
+        else parts.push(space)
+        const lastComment = last(dangling)
+        parts.push(
+            printDangling(n, false),
+            !lastComment.block || hasNewline(ctx.text, lastComment.end, false) ? hardline : space,
+        )
+        spaceBeforeElse = false
+    }
+    parts.push(t(spaceBeforeElse ? " else" : "else"), g(adjustClause(n, "alternate")))
+    return c(parts)
+}
+
+function printFor(n: ENode): Doc {
+    const body = adjustClause(n, "body")
+    const dangling = printDangling(n, false)
+    const prefix = isEmptyDoc(dangling) ? empty : c([dangling, softline])
+    const init = n.get("init")
+    const test = n.get("test")
+    const update = n.get("update")
+    if (init === null && test === null && update === null) return c([prefix, g(c([t("for (;;)"), body]))])
+    return c([
+        prefix,
+        g(
+            c([
+                t("for ("),
+                g(
+                    c([
+                        indent(
+                            c([
+                                softline,
+                                pr(init),
+                                t(";"),
+                                line,
+                                pr(test),
+                                t(";"),
+                                update !== null ? c([line, pr(update)]) : empty,
+                            ]),
+                        ),
+                        softline,
+                    ]),
+                ),
+                t(")"),
+                body,
+            ]),
+        ),
+    ])
+}
+
+function printReturn(n: ENode): Doc {
+    const argument = n.get("argument")
+    const keyword = t(n.type === "ThrowStatement" ? "throw" : "return")
+    if (argument === null) return keyword
+    const printed = pr(argument)
+    let body: Doc
+    if (returnArgumentHasLeadingComment(argument)) body = c([t("("), indent(c([hardline, printed])), hardline, t(")")])
+    else if (isBinaryish(argument))
+        body = g(c([ifBreak(t("(")), indent(c([softline, printed])), softline, ifBreak(t(")"))]))
+    else body = printed
+    return c([keyword, space, body])
+}
+
+function printCatch(n: ENode): Doc {
+    const param = n.get("param")
+    if (param === null) return c([t("catch "), pk(n, "body")])
+    let breaks = false
+    for (const cm of param.comments)
+        if (
+            !cm.block ||
+            (cm.leading && hasNewline(ctx.text, cm.end, false)) ||
+            (cm.trailing && hasNewline(ctx.text, cm.start, true))
+        )
+            breaks = true
+    const printed = pr(param)
+    return c([
+        t("catch "),
+        breaks ? c([t("("), indent(c([softline, printed])), softline, t(") ")]) : c([t("("), printed, t(") ")]),
+        pk(n, "body"),
+    ])
+}
+
+function printSwitch(n: ENode): Doc {
+    const cases = n.all("cases")
+    let body: Doc
+    if (cases.length > 0) {
+        const printed: Doc[] = []
+        for (let i = 0; i < cases.length; i++)
+            printed.push(c([pr(cases[i]), i < cases.length - 1 && nextLineEmptyAfter(cases[i]) ? hardline : empty]))
+        body = indent(c([hardline, join(hardline, printed)]))
+    } else body = printDangling(n, true)
+    return c([
+        g(c([t("switch ("), indent(c([softline, pk(n, "discriminant")])), softline, t(")")])),
+        t(" {"),
+        body,
+        hardline,
+        t("}"),
+    ])
+}
+
+function printSwitchCase(n: ENode): Doc {
+    const parts: Doc[] = []
+    const test = n.get("test")
+    if (test !== null) parts.push(t("case "), pr(test), t(":"))
+    else parts.push(t("default:"))
+    if (hasDangling(n)) parts.push(space, printDangling(n, false))
+    const consequent: ENode[] = []
+    for (const s of n.all("consequent")) if (s.type !== "EmptyStatement") consequent.push(s)
+    if (consequent.length > 0) {
+        const body = c(printStatementSequence(n, "consequent"))
+        parts.push(
+            consequent.length === 1 && consequent[0].type === "BlockStatement"
+                ? c([space, body])
+                : indent(c([hardline, body])),
+        )
+    }
+    return c(parts)
+}
+
+// -----------------------------------------------------------------------------
+// Assignments
+
+function printAssignment(n: ENode, left: Doc, operator: Doc, rightRole: string): Doc {
+    const layout = chooseLayout(n, left, rightRole)
+    const rightNode = n.get(rightRole)
+    const right = rightNode !== null ? pra(rightNode, layoutArgs(layout)) : empty
+    switch (layout) {
+        case "break-after-operator":
+            return g(c([g(left), operator, g(indent(c([line, right])))]))
+        case "never-break-after-operator":
+            return g(c([g(left), operator, space, right]))
+        case "fluid": {
+            const id = newId()
+            return g(
+                c([g(left), operator, group(indent(line), false, id), lineSuffixBoundary, indentIfBreak(right, id)]),
+            )
+        }
+        case "break-lhs":
+            return g(c([left, operator, space, g(right)]))
+        case "chain":
+            return c([g(left), operator, line, right])
+        case "chain-tail":
+            return c([g(left), operator, indent(c([line, right]))])
+        case "chain-tail-arrow-chain":
+            return c([g(left), operator, right])
+    }
+    return left
+}
+
+function isAssignment(n: ENode | null): bool {
+    return n !== null && n.type === "AssignmentExpression"
+}
+
+function isAssignmentOrDeclarator(n: ENode | null): bool {
+    return isAssignment(n) || (n !== null && n.type === "VariableDeclarator")
+}
+
+function chooseLayout(n: ENode, left: Doc, rightRole: string): string {
+    const right = n.get(rightRole)
+    if (right === null) return "only-left"
+    const isTail = !isAssignment(right)
+    const parent = n.parent
+    const gp = parent !== null ? parent.parent : null
+    if (
+        isAssignment(n) &&
+        isAssignmentOrDeclarator(parent) &&
+        gp !== null &&
+        (!isTail || (gp.type !== "ExpressionStatement" && gp.type !== "VariableDeclaration"))
+    ) {
+        if (!isTail) return "chain"
+        return right.type === "ArrowFunctionExpression" && right.at("body").type === "ArrowFunctionExpression"
+            ? "chain-tail-arrow-chain"
+            : "chain-tail"
+    }
+    if (
+        (!isTail && isAssignment(right.get("right"))) ||
+        (isUnion(right) && !shouldHugUnion(right)) ||
+        hasLeadingOwnLineComment(right) ||
+        hasJsdocLeadingComment(right)
+    )
+        return "break-after-operator"
+    if (n.type === "ImportAttribute" || (right.type === "CallExpression" && right.at("callee").name === "require"))
+        return "never-break-after-operator"
+    const leftHasLine = hasLine(left)
+    if (isComplexDestructuring(n) || hasComplexTypeAnnotation(n) || (isArrowDeclarator(n) && leftHasLine))
+        return "break-lhs"
+    const shortKey = hasShortKey(n, left)
+    if (shouldBreakAfterOperator(right, shortKey)) return "break-after-operator"
+    if (isComplexTypeAliasParams(n)) return "break-lhs"
+    if (
+        !leftHasLine &&
+        (shortKey ||
+            right.type === "TemplateLiteral" ||
+            (right.type === "Literal" && (right.literal === "boolean" || right.literal === "number")))
+    )
+        return "never-break-after-operator"
+    return "fluid"
+}
+
+function hasJsdocLeadingComment(n: ENode): bool {
+    for (const cm of n.comments) {
+        if (!cm.leading || !cm.block || !cm.value.includes("\n")) continue
+        let ok = true
+        for (const l of `*${cm.value}*`.split("\n")) if (!l.trimStart().startsWith("*")) ok = false
+        if (ok) return true
+    }
+    return false
+}
+
+function isComplexDestructuring(n: ENode): bool {
+    if (!isAssignmentOrDeclarator(n)) return false
+    const target = n.type === "VariableDeclarator" ? n.at("id") : n.at("left")
+    if (target.type !== "ObjectPattern") return false
+    const properties = target.all("properties")
+    if (properties.length <= 2) return false
+    for (const p of properties) {
+        if (!isObjectProperty(p)) continue
+        const value = p.get("value")
+        if (!p.shorthand || (value !== null && value.type === "AssignmentPattern")) return true
+    }
+    return false
+}
+
+function typeArgumentsOf(n: ENode): ENode[] {
+    if (n.type !== "TSTypeReference") return []
+    const ta = n.get("typeArguments")
+    return ta === null ? [] : ta.all("params")
+}
+
+function hasComplexTypeAnnotation(n: ENode): bool {
+    if (n.type !== "VariableDeclarator") return false
+    const annotation = n.at("id").get("typeAnnotation")
+    if (annotation === null) return false
+    const typeArgs = typeArgumentsOf(annotation.at("typeAnnotation"))
+    if (typeArgs.length <= 1) return false
+    for (const a of typeArgs) if (typeArgumentsOf(a).length > 0 || a.type === "TSConditionalType") return true
+    return false
+}
+
+function isArrowDeclarator(n: ENode): bool {
+    if (n.type !== "VariableDeclarator") return false
+    const init = n.get("init")
+    return init !== null && init.type === "ArrowFunctionExpression"
+}
+
+function isComplexTypeAliasParams(n: ENode): bool {
+    if (n.type !== "TSTypeAliasDeclaration") return false
+    const tp = n.get("typeParameters")
+    if (tp === null) return false
+    const ps = tp.all("params")
+    if (ps.length <= 1) return false
+    for (const p of ps) if (p.has("constraint") || p.has("default")) return true
+    return false
+}
+
+function hasShortKey(n: ENode, left: Doc): bool {
+    if (!isObjectProperty(n)) return false
+    const s = flatText(left)
+    return s !== null && width(s) < 4 + 3
+}
+
+function shouldBreakAfterOperator(right: ENode, shortKey: bool): bool {
+    if (isBinaryish(right) && !shouldInlineLogical(right)) return true
+    switch (right.type) {
+        case "SequenceExpression":
+            return true
+        case "ConditionalExpression": {
+            const test = right.at("test")
+            return isBinaryish(test) && !shouldInlineLogical(test)
+        }
+    }
+    if (shortKey) return false
+    let e = right
+    for (;;) {
+        if (e.type === "UnaryExpression" || e.type === "AwaitExpression") e = e.at("argument")
+        else if (e.type === "TSNonNullExpression") e = e.at("expression")
+        else break
+    }
+    return isStringLiteral(e) || isPoorlyBreakableMemberOrCallChain(e, false)
+}
+
+function isPoorlyBreakableMemberOrCallChain(n: ENode, deep: bool): bool {
+    if (n.type === "ChainExpression" || n.type === "TSNonNullExpression")
+        return isPoorlyBreakableMemberOrCallChain(n.at("expression"), true)
+    if (isCall(n)) {
+        const printed = printCall(n)
+        if (printed.kind === LABEL && printed.label === "member-chain") return false
+        const a = args(n)
+        if (!(a.length === 0 || (a.length === 1 && isLoneShortArgument(a[0])))) return false
+        if (isComplexTypeArguments(n)) return false
+        return isPoorlyBreakableMemberOrCallChain(n.at("callee"), true)
+    }
+    if (isMember(n)) return isPoorlyBreakableMemberOrCallChain(n.at("object"), true)
+    return deep && (n.type === "Identifier" || n.type === "ThisExpression")
+}
+
+function isComplexTypeArguments(n: ENode): bool {
+    const ta = n.get("typeArguments")
+    if (ta === null) return false
+    const ps = ta.all("params")
+    if (ps.length > 1) return true
+    if (ps.length === 1) {
+        const p = ps[0]
+        if (isUnion(p) || isIntersection(p) || p.type === "TSTypeLiteral") return true
+    }
+    return willBreak(pr(ta))
+}
+
+function isLoneShortArgument(n: ENode): bool {
+    if (hasComment(n)) return false
+    const threshold = 30
+    if (n.type === "ThisExpression" || (n.type === "Identifier" && n.name.length <= threshold)) return true
+    if (isSignedNumericLiteral(n) && !hasComment(n.get("argument"))) return true
+    if (isStringLiteral(n)) return quoteString(n.raw).length <= threshold
+    if (n.type === "TemplateLiteral") {
+        const quasis = n.all("quasis")
+        return n.all("expressions").length === 0 && quasis[0].raw.length <= threshold && !quasis[0].raw.includes("\n")
+    }
+    if (n.type === "UnaryExpression") return isLoneShortArgument(n.at("argument"))
+    if (n.type === "CallExpression" && args(n).length === 0 && n.at("callee").type === "Identifier")
+        return n.at("callee").name.length <= threshold - 2
+    return isLiteral(n)
+}
+
+// -----------------------------------------------------------------------------
+// Binary expressions
+
+function shouldInlineLogical(n: ENode): bool {
+    if (n.type !== "LogicalExpression") return false
+    const right = n.at("right")
+    return (
+        (isObject(right) && right.all("properties").length > 0) || (isArray(right) && right.all("elements").length > 0)
+    )
+}
+
+function printBinary(n: ENode): Doc {
+    const parent = n.parent!
+    const gp = parent.parent
+    const key = n.key
+    const insideParens =
+        key !== "body" &&
+        (parent.type === "IfStatement" ||
+            parent.type === "WhileStatement" ||
+            parent.type === "SwitchStatement" ||
+            parent.type === "DoWhileStatement")
+    const parts = printBinaryParts(n, false, insideParens)
+    if (insideParens) return c(parts)
+    if (
+        (key === "callee" && isCallLike(parent)) ||
+        (parent.type === "UnaryExpression" && !hasComment(n)) ||
+        (isMember(parent) && !parent.computed)
+    )
+        return g(c([indent(c([softline, c(parts)])), softline]))
+    const shouldNotIndent =
+        isReturnOrThrow(parent) ||
+        (parent.type === "ArrowFunctionExpression" && key === "body") ||
+        (parent.type === "ForStatement" && key !== "body") ||
+        (parent.type === "ConditionalExpression" && !isReturnOrThrow(gp) && !isCallLike(gp)) ||
+        parent.type === "TemplateLiteral" ||
+        (key === "argument" && parent.type === "UnaryExpression") ||
+        (key === "arguments" && isBooleanCall(parent))
+    const shouldIndentIfInlining =
+        parent.type === "AssignmentExpression" ||
+        parent.type === "VariableDeclarator" ||
+        parent.type === "PropertyDefinition" ||
+        parent.type === "TSAbstractPropertyDefinition" ||
+        isObjectProperty(parent)
+    const left = n.at("left")
+    const samePrecedenceSubExpression = isBinaryish(left) && shouldFlatten(n.operator, left.operator)
+    if (
+        shouldNotIndent ||
+        (shouldInlineLogical(n) && !samePrecedenceSubExpression) ||
+        (!shouldInlineLogical(n) && shouldIndentIfInlining)
+    )
+        return g(c(parts))
+    if (parts.length === 0) return empty
+    let groupIndex = -1
+    for (let i = 0; i < parts.length; i++)
+        if (parts[i].kind === GROUP) {
+            groupIndex = i
+            break
+        }
+    const headCount = groupIndex === -1 ? 1 : groupIndex + 1
+    const head = parts.slice(0, headCount)
+    const rest = parts.slice(headCount)
+    head.push(indent(c(rest)))
+    return group(c(head), false, newId())
+}
+
+function isBooleanCall(n: ENode): bool {
+    return (
+        n.type === "CallExpression" &&
+        !n.optional &&
+        args(n).length === 1 &&
+        n.at("callee").type === "Identifier" &&
+        n.at("callee").name === "Boolean"
+    )
+}
+
+function printBinaryParts(n: ENode, isNested: bool, insideParens: bool): Doc[] {
+    if (!isBinaryish(n)) return [g(pr(n))]
+    let parts: Doc[] = []
+    const left = n.at("left")
+    if (isBinaryish(left) && shouldFlatten(n.operator, left.operator))
+        parts = printBinaryParts(left, true, insideParens)
+    else parts.push(g(pr(left)))
+    const inline = shouldInlineLogical(n)
+    let right = n.at("right")
+    if (right.type === "ChainExpression") right = right.at("expression")
+    let rightDoc: Doc
+    if (inline) {
+        rightDoc = c([
+            t(n.operator),
+            hasLeadingOwnLineComment(right) ? indent(c([line, pk(n, "right")])) : c([space, pk(n, "right")]),
+        ])
+    } else rightDoc = c([t(n.operator), line, pk(n, "right")])
+    const parent = n.parent!
+    const leftHasLineComment = hasComment(left, TRAILING | LINE)
+    if (
+        leftHasLineComment ||
+        (!(insideParens && n.type === "LogicalExpression") &&
+            parent.type !== n.type &&
+            left.type !== n.type &&
+            n.at("right").type !== n.type)
+    )
+        rightDoc = group(rightDoc, leftHasLineComment)
+    parts.push(space, rightDoc)
+    if (isNested && hasComment(n)) return cleanParts(printComments(n, c(parts)))
+    return parts
+}
+
+// -----------------------------------------------------------------------------
+// Ternaries
+
+function printTernary(n: ENode): Doc {
+    const consequent = n.at("consequent")
+    const alternate = n.at("alternate")
+    const parent = n.parent!
+    const isParentTest = parent.type === n.type && parent.get("test") === n
+    const forceNoIndent = parent.type === n.type && !isParentTest
+    // The closest ancestor that is not a ternary of which this is a branch.
+    let current: ENode = n
+    let ancestor: ENode | null = parent
+    while (ancestor !== null && ancestor.type === n.type && ancestor.get("test") !== current) {
+        current = ancestor
+        ancestor = ancestor.parent
+    }
+    const top = ancestor !== null ? ancestor : parent
+    const branch = (role: string) => align(2, pk(n, role))
+    const consequentIsTernary = consequent.type === n.type
+    const branches = c([
+        line,
+        t("? "),
+        consequentIsTernary ? ifBreak(empty, t("(")) : empty,
+        branch("consequent"),
+        consequentIsTernary ? ifBreak(empty, t(")")) : empty,
+        line,
+        t(": "),
+        branch("alternate"),
+    ])
+    const parts: Doc[] = []
+    parts.push(parent.type !== n.type || parent.get("alternate") === n || isParentTest ? branches : align(2, branches))
+    const breakClosingParen = isMember(parent) && !parent.computed
+    const extraIndent = shouldExtraIndentForConditional(n)
+    const test = parent.type === n.type && parent.get("alternate") === n ? align(2, pk(n, "test")) : pk(n, "test")
+    const contents = c([
+        test,
+        forceNoIndent ? c(parts) : indent(c(parts)),
+        breakClosingParen && !extraIndent ? softline : empty,
+    ])
+    const result = parent === top ? g(contents) : contents
+    return isParentTest || extraIndent ? g(c([indent(c([softline, result])), softline])) : result
+}
+
+function shouldExtraIndentForConditional(n: ENode): bool {
+    let node = n
+    let target: ENode | null = null
+    let p: ENode | null = n.parent
+    while (target === null) {
+        if (p === null) break
+        const q: ENode = p
+        if (
+            ((q.type === "ChainExpression" || q.type === "TSNonNullExpression") && q.get("expression") === node) ||
+            (isCall(q) && q.get("callee") === node) ||
+            (isMember(q) && q.get("object") === node)
+        ) {
+            node = q
+            p = q.parent
+            continue
+        }
+        if ((q.type === "NewExpression" && q.get("callee") === node) || (isAs(q) && q.get("expression") === node)) {
+            target = q.parent
+            node = q
+        } else target = q
+    }
+    if (node === n || target === null) return false
+    const role =
+        target.type === "AssignmentExpression"
+            ? "right"
+            : target.type === "VariableDeclarator"
+              ? "init"
+              : isReturnOrThrow(target) || target.type === "UnaryExpression" || target.type === "AwaitExpression"
+                ? "argument"
+                : ""
+    return role !== "" && target.get(role) === node
+}
+
+// -----------------------------------------------------------------------------
+// Functions
+
+function printFunction(n: ENode, a: Args): Doc {
+    const parent = n.parent
+    if (
+        n.type === "FunctionExpression" &&
+        n.key === "value" &&
+        parent !== null &&
+        (parent.type === "MethodDefinition" ||
+            parent.type === "TSAbstractMethodDefinition" ||
+            (parent.type === "Property" && isMethodLike(parent)))
+    )
+        return printMethodValue(n)
+    let expandArg = false
+    if (n.type === "FunctionExpression" && a.expandLastArg && isCall(parent)) {
+        let simple = true
+        for (const p of params(n)) if (p.type !== "Identifier" || p.has("typeAnnotation")) simple = false
+        if (args(parent!).length > 1 || simple) expandArg = true
+    }
+    const ps = printParams(n, expandArg, false)
+    const returnType = printReturnType(n)
+    const grouped = shouldGroupParams(n, returnType)
+    const body = n.get("body")
+    return c([
+        t(n.declare ? "declare " : ""),
+        t(n.isAsync ? "async " : ""),
+        t("function"),
+        t(n.generator ? "*" : ""),
+        space,
+        pk(n, "id"),
+        pk(n, "typeParameters"),
+        g(c([grouped ? g(ps) : ps, returnType])),
+        body !== null ? space : empty,
+        pr(body),
+    ])
+}
+
+function printMethodValue(n: ENode): Doc {
+    const ps = printParams(n, false, false)
+    const returnType = printReturnType(n)
+    const breakParams = shouldBreakParams(n)
+    const grouped = shouldGroupParams(n, returnType)
+    const parts: Doc[] = [
+        pk(n, "typeParameters"),
+        g(c([breakParams ? group(ps, true) : grouped ? g(ps) : ps, returnType])),
+    ]
+    const body = n.get("body")
+    if (body !== null) parts.push(space, pr(body))
+    return c(parts)
+}
+
+function shouldBreakParams(n: ENode): bool {
+    const ps = params(n)
+    if (ps.length <= 1) return false
+    for (const p of ps) if (p.type === "TSParameterProperty") return true
+    return false
+}
+
+function printReturnType(n: ENode): Doc {
+    return printTypeAnnotationProperty(n, "returnType")
+}
+
+/** Whether the only parameter of a function hugs its parentheses: an object pattern or an object type. */
+function shouldHugTheOnlyParameter(n: ENode): bool {
+    const ps = params(n)
+    if (ps.length !== 1) return false
+    const p = ps[0]
+    if (hasComment(p)) return false
+    if (p.type === "ObjectPattern" || p.type === "ArrayPattern") return true
+    if (p.type === "Identifier") {
+        const annotation = p.get("typeAnnotation")
+        return annotation !== null && isObjectType(annotation.at("typeAnnotation"))
+    }
+    if (p.type === "AssignmentPattern") {
+        const left = p.at("left")
+        const right = p.at("right")
+        return (
+            (left.type === "ObjectPattern" || left.type === "ArrayPattern") &&
+            (right.type === "Identifier" ||
+                (isObject(right) && right.all("properties").length === 0) ||
+                (isArray(right) && right.all("elements").length === 0))
+        )
+    }
+    return false
+}
+
+function shouldGroupParams(n: ENode, returnType: Doc): bool {
+    const annotation = n.get("returnType")
+    if (annotation === null) return false
+    const type = annotation.at("typeAnnotation")
+    const tp = n.get("typeParameters")
+    if (tp !== null) {
+        const ps = tp.all("params")
+        if (ps.length > 1) return false
+        if (ps.length === 1 && (ps[0].has("constraint") || ps[0].has("default"))) return false
+    }
+    return params(n).length === 1 && (isObjectType(type) || willBreak(returnType))
+}
+
+/** A React hook with a dependency array, as prettier's isReactHookCallWithDepsArray. */
+function isTestCall(n: ENode | null): bool {
+    if (n === null || n.type !== "CallExpression" || n.optional) return false
+    const a = args(n)
+    if (a.length === 2 || a.length === 3) {
+        if (!(a[0].type === "TemplateLiteral" || isStringLiteral(a[0]))) return false
+        if (!isTestCallCallee(n.at("callee"))) return false
+        if (a.length === 3 && !isNumericLiteral(a[2])) return false
+        if (a.length === 2) return isFunction(a[1])
+        return (
+            (a[1].type === "FunctionExpression" ||
+                (a[1].type === "ArrowFunctionExpression" && a[1].at("body").type === "BlockStatement")) &&
+            params(a[1]).length <= 1
+        )
+    }
+    return false
+}
+
+const testCallNames = [
+    "it",
+    "it.only",
+    "it.skip",
+    "describe",
+    "describe.only",
+    "describe.skip",
+    "test",
+    "test.only",
+    "test.skip",
+    "test.fixme",
+    "test.step",
+    "test.describe",
+    "test.describe.only",
+    "test.describe.skip",
+    "test.describe.fixme",
+    "test.describe.parallel",
+    "test.describe.parallel.only",
+    "test.describe.serial",
+    "test.describe.serial.only",
+    "skip",
+    "xit",
+    "xdescribe",
+    "xtest",
+    "fit",
+    "fdescribe",
+    "ftest",
+]
+
+function calleeName(n: ENode): string {
+    if (n.type === "Identifier") return n.name
+    if (isMember(n) && !n.computed && !n.optional && n.at("property").type === "Identifier") {
+        const object = calleeName(n.at("object"))
+        return object === "" ? "" : object + "." + n.at("property").name
+    }
+    return ""
+}
+
+function isTestCallCallee(n: ENode): bool {
+    const name = calleeName(n)
+    return name !== "" && testCallNames.includes(name)
+}
+
+function printParams(n: ENode, expandArg: bool, printTypeParams: bool): Doc {
+    const ps = params(n)
+    const typeParams = printTypeParams ? pk(n, "typeParameters") : empty
+    if (ps.length === 0) {
+        let dangling = empty
+        if (hasDangling(n)) {
+            let lineComment = false
+            for (const cm of n.comments)
+                if (!cm.leading && !cm.trailing && cm.marker === "" && !cm.block) lineComment = true
+            dangling = c([indent(c([softline, printDangling(n, false)])), lineComment ? hardline : softline])
+        }
+        return c([typeParams, t("("), dangling, t(")")])
+    }
+    const parent = n.parent
+    const hugged = isTestCall(parent)
+    const hug = shouldHugTheOnlyParameter(n)
+    const printed: Doc[] = []
+    for (let i = 0; i < ps.length; i++) {
+        printed.push(pr(ps[i]))
+        if (i < ps.length - 1) {
+            printed.push(t(","))
+            if (hugged || hug) printed.push(space)
+            else if (nextLineEmptyAfter(ps[i])) printed.push(hardline, hardline)
+            else printed.push(line)
+        }
+    }
+    if (expandArg && !isReactHookArrow(n)) {
+        if (willBreak(typeParams) || willBreak(c(printed))) bailout = true
+        return g(c([removeLines(typeParams), t("("), removeLines(c(printed)), t(")")]))
+    }
+    if (hug || hugged) return c([typeParams, t("("), c(printed), t(")")])
+    const lastParam = last(ps)
+    return c([
+        typeParams,
+        t("("),
+        indent(c([softline, c(printed)])),
+        lastParam.type === "RestElement" ? empty : ifBreak(t(",")),
+        softline,
+        t(")"),
+    ])
+}
+
+function isReactHookArrow(n: ENode): bool {
+    if (n.type !== "ArrowFunctionExpression" || n.at("body").type !== "BlockStatement") return false
+    const call = n.parent
+    if (call === null || call.type !== "CallExpression" || n.key !== "arguments" || args(call).length !== 1)
+        return false
+    const callee = call.at("callee")
+    if (callee.type !== "CallExpression") return false
+    const inner = callee.at("callee")
+    if (!(
+        inner.type === "Identifier" ||
+        (isMember(inner) &&
+            !inner.computed &&
+            inner.at("object").type === "Identifier" &&
+            inner.at("property").type === "Identifier")
+    ))
+        return false
+    const declarator = call.parent
+    if (declarator === null) return false
+    if (!(
+        (declarator.type === "VariableDeclarator" && call.key === "init") ||
+        (declarator.type === "ExportDefaultDeclaration" && call.key === "declaration") ||
+        (declarator.type === "TSExportAssignment" && call.key === "expression")
+    ))
+        return false
+    const declaration = declarator.parent
+    return (
+        declaration === null ||
+        declaration.type !== "VariableDeclaration" ||
+        (declaration.kind === "const" && declaration.all("declarations").length === 1)
+    )
+}
+
+function optionalToken(n: ENode): Doc {
+    const parent = n.parent
+    if (!n.optional || (n.type === "Identifier" && parent !== null && parent.get("key") === n)) return empty
+    if (isCall(n) || (isMember(n) && n.computed)) return t("?.")
+    return t("?")
+}
+
+function definiteToken(n: ENode): Doc {
+    const parent = n.parent
+    if (n.definite || (parent !== null && n.key === "id" && parent.type === "VariableDeclarator" && parent.definite))
+        return t("!")
+    return empty
+}
+
+/** The prefix of a type annotation: `=>` for function types, `:` otherwise. */
+function annotationPrefix(n: ENode): string {
+    const parent = n.parent
+    if (
+        parent !== null &&
+        (n.key === "returnType" || n.key === "typeAnnotation") &&
+        (parent.type === "TSFunctionType" || parent.type === "TSConstructorType")
+    )
+        return "=>"
+    return ":"
+}
+
+function printTypeAnnotationProperty(n: ENode, role: string): Doc {
+    const annotation = n.get(role)
+    if (annotation === null) return empty
+    const prefix = annotationPrefix(annotation)
+    const printed = pr(annotation)
+    if (prefix === "=>" || hasComment(annotation, LEADING)) return c([space, printed])
+    return printed
+}
+
+// -----------------------------------------------------------------------------
+// Arrow functions
+
+function printArrow(n: ENode, a: Args): Doc {
+    const signatures: Doc[] = []
+    const bodyComments: Doc[] = []
+    let shouldBreakChain = false
+    const isChain = !a.expandLastArg && n.at("body").type === "ArrowFunctionExpression"
+    let current = n
+    let bodyDoc: Doc = empty
+    let body: ENode = n
+    for (;;) {
+        const signature = printArrowSignature(current, a)
+        if (signatures.length === 0) signatures.push(signature)
+        else {
+            signatures.push(c([printLeading(current), signature]))
+            bodyComments.push(printTrailing(current))
+        }
+        if (isChain) {
+            const ps = params(current)
+            let nonIdentifier = false
+            for (const p of ps) if (p.type !== "Identifier") nonIdentifier = true
+            shouldBreakChain =
+                shouldBreakChain ||
+                (current.has("returnType") && ps.length > 0) ||
+                current.has("typeParameters") ||
+                nonIdentifier
+        }
+        const next = current.at("body")
+        if (!isChain || next.type !== "ArrowFunctionExpression") {
+            bodyDoc = pra(next, a)
+            body = next
+            break
+        }
+        current = next
+    }
+    const sameLine =
+        !hasLeadingOwnLineComment(body) &&
+        (body.type === "SequenceExpression" ||
+            mayBreakAfterShortPrefix(body) ||
+            (!shouldBreakChain && isConditionalWithoutObject(body)))
+    const isCallee = n.key === "callee" && isCallLike(n.parent)
+    const chainId = newId()
+    const signaturesDoc = printArrowChainSignatures(n, a, signatures, shouldBreakChain)
+    let shouldBreakSignatures = false
+    let shouldIndentSignatures = false
+    let shouldPrintAsChain = false
+    if (isChain && (isCallee || a.assignmentLayout !== "")) {
+        shouldIndentSignatures = true
+        shouldPrintAsChain = !hasComment(n)
+        shouldBreakSignatures = a.assignmentLayout === "chain-tail-arrow-chain" || (isCallee && !sameLine)
+    }
+    const bodyPrinted = printArrowBody(n, a, bodyDoc, bodyComments, body, sameLine)
+    return g(
+        c([
+            group(
+                shouldIndentSignatures
+                    ? indent(c([shouldPrintAsChain ? softline : empty, signaturesDoc]))
+                    : signaturesDoc,
+                shouldBreakSignatures,
+                chainId,
+            ),
+            t(" =>"),
+            isChain ? indentIfBreak(bodyPrinted, chainId) : g(bodyPrinted),
+            isChain && isCallee ? ifBreak(softline, empty, chainId) : empty,
+        ]),
+    )
+}
+
+function printArrowSignature(n: ENode, a: Args): Doc {
+    const parts: Doc[] = []
+    if (n.isAsync) parts.push(t("async "))
+    const expand = a.expandLastArg || a.expandFirstArg
+    let returnType = printReturnType(n)
+    if (expand) {
+        if (willBreak(returnType)) bailout = true
+        returnType = g(removeLines(returnType))
+    }
+    parts.push(g(c([printParams(n, expand, true), returnType])))
+    const dangling = printDangling(n, false, "commentBeforeArrow")
+    if (!isEmptyDoc(dangling)) parts.push(space, dangling)
+    return c(parts)
+}
+
+function mayBreakAfterShortPrefix(n: ENode): bool {
+    return (
+        isArray(n) ||
+        isObject(n) ||
+        n.type === "ArrowFunctionExpression" ||
+        n.type === "BlockStatement" ||
+        isTemplateOnItsOwnLine(n)
+    )
+}
+
+function isConditionalWithoutObject(n: ENode): bool {
+    return n.type === "ConditionalExpression" && !startsWith(n, (e) => e.type === "ObjectExpression")
+}
+
+function printArrowChainSignatures(n: ENode, a: Args, signatures: Doc[], shouldBreak: bool): Doc {
+    if (signatures.length === 1) return signatures[0]
+    const parent = n.parent
+    const key = n.key
+    if ((key !== "callee" && isCallLike(parent)) || isBinaryish(parent))
+        return group(
+            c([signatures[0], t(" =>"), indent(c([line, join(c([t(" =>"), line]), signatures.slice(1))]))]),
+            shouldBreak,
+        )
+    if ((key === "callee" && isCallLike(parent)) || a.assignmentLayout !== "")
+        return group(join(c([t(" =>"), line]), signatures), shouldBreak)
+    return group(indent(join(c([t(" =>"), line]), signatures)), shouldBreak)
+}
+
+function printArrowBody(n: ENode, a: Args, bodyDoc: Doc, bodyComments: Doc[], body: ENode, sameLine: bool): Doc {
+    const trailingComma = a.expandLastArg ? ifBreak(t(",")) : empty
+    const trailingSpace = a.expandLastArg && !hasComment(n) ? softline : empty
+    const reversed: Doc[] = []
+    for (let i = bodyComments.length - 1; i >= 0; i--) reversed.push(bodyComments[i])
+    const comments = c(reversed)
+    if (sameLine && isConditionalWithoutObject(body))
+        return c([
+            space,
+            g(
+                c([
+                    ifBreak(empty, t("(")),
+                    indent(c([softline, bodyDoc])),
+                    ifBreak(empty, t(")")),
+                    trailingComma,
+                    trailingSpace,
+                ]),
+            ),
+            comments,
+        ])
+    if (sameLine) return c([space, bodyDoc, comments])
+    return c([indent(c([line, bodyDoc, comments])), trailingComma, trailingSpace])
+}
+
+function printAwait(n: ENode): Doc {
+    let parts: Doc[] = [t("await")]
+    const argument = n.get("argument")
+    if (argument !== null) {
+        parts.push(space, pr(argument))
+        const parent = n.parent!
+        if ((isCall(parent) && parent.get("callee") === n) || (isMember(parent) && parent.get("object") === n)) {
+            parts = [indent(c([softline, c(parts)])), softline]
+            let a: ENode | null = parent
+            while (a !== null && a.type !== "AwaitExpression" && a.type !== "BlockStatement") a = a.parent
+            if (a === null || a.type !== "AwaitExpression" || !startsWith(a.at("argument"), (e) => e === n))
+                return g(c(parts))
+        }
+    }
+    return c(parts)
+}
+
+// -----------------------------------------------------------------------------
+// Calls and members
+
+function printCall(n: ENode): Doc {
+    const isNew = n.type === "NewExpression"
+    const optional = optionalToken(n)
+    const a = args(n)
+    const typeArguments = n.has("typeArguments") ? c([pk(n, "typeArguments"), lineSuffixBoundary]) : empty
+    const callee = c([t(isNew ? "new " : ""), pk(n, "callee"), lineSuffixBoundary])
+    const templateArg = a.length === 1 && isTemplateOnItsOwnLine(a[0])
+    if (templateArg || isRequireCall(n) || isTestCall(n)) {
+        const printed: Doc[] = []
+        for (const arg of a) printed.push(pr(arg))
+        return c([callee, optional, typeArguments, t("("), join(t(", "), printed), t(")")])
+    }
+    const calleeNode = n.at("callee")
+    if (!isNew && isMemberish(calleeNode) && !needsParens(calleeNode)) return printMemberChain(n)
+    const parts = c([callee, optional, typeArguments, printCallArguments(n)])
+    return isCall(calleeNode) ? g(parts) : parts
+}
+
+function isRequireCall(n: ENode): bool {
+    if (n.type !== "CallExpression" || n.optional) return false
+    const callee = n.at("callee")
+    if (callee.type !== "Identifier") return false
+    const a = args(n)
+    if (callee.name === "require")
+        return ((a.length === 1 && isStringLiteral(a[0])) || a.length > 1) && !hasComment(a[0])
+    return false
+}
+
+function printMember(n: ENode): Doc {
+    const object = pk(n, "object")
+    const lookup = printMemberLookup(n)
+    let firstNonMember: ENode | null = n.parent
+    while (firstNonMember !== null && (isMember(firstNonMember) || firstNonMember.type === "TSNonNullExpression"))
+        firstNonMember = firstNonMember.parent
+    let firstNonChain: ENode | null = n.parent
+    while (
+        firstNonChain !== null &&
+        (firstNonChain.type === "ChainExpression" || firstNonChain.type === "TSNonNullExpression")
+    )
+        firstNonChain = firstNonChain.parent
+    const objectNode = n.at("object")
+    const shouldInline =
+        (firstNonMember !== null &&
+            firstNonMember.type === "AssignmentExpression" &&
+            firstNonMember.at("left").type !== "Identifier") ||
+        isInNewCallee(n) ||
+        n.computed ||
+        (objectNode.type === "Identifier" && n.at("property").type === "Identifier" && !isMember(firstNonChain)) ||
+        (firstNonChain !== null &&
+            isAssignmentOrDeclarator(firstNonChain) &&
+            ((isCall(stripChain(objectNode)) && args(stripChain(objectNode)).length > 0) ||
+                (object.kind === LABEL && object.label === "member-chain")))
+    const objectLabel = object.kind === LABEL ? object.label : ""
+    return label(objectLabel, c([object, lineSuffixBoundary, shouldInline ? lookup : g(indent(c([softline, lookup])))]))
+}
+
+function isInNewCallee(n: ENode): bool {
+    let node = n
+    let p = n.parent
+    while (p !== null) {
+        if (!(
+            (isMember(p) && p.get("object") === node) ||
+            (p.type === "TSNonNullExpression" && p.get("expression") === node)
+        ))
+            return p.type === "NewExpression" && p.get("callee") === node
+        node = p
+        p = p.parent
+    }
+    return false
+}
+
+function printMemberLookup(n: ENode): Doc {
+    const property = pk(n, "property")
+    const optional = optionalToken(n)
+    if (!n.computed) return c([optional, t("."), property])
+    const propertyNode = n.get("property")
+    if (propertyNode === null || isNumericLiteral(propertyNode)) return c([optional, t("["), property, t("]")])
+    return g(c([optional, t("["), indent(c([softline, property])), softline, t("]")]))
+}
+
+function isFunctionCompositionArgs(a: ENode[]): bool {
+    if (a.length <= 1) return false
+    let count = 0
+    for (const arg of a) {
+        if (isFunction(arg)) {
+            count++
+            if (count > 1) return true
+        } else {
+            const e = stripChain(arg)
+            if (isCall(e)) for (const inner of args(e)) if (isFunction(inner)) return true
+        }
+    }
+    return false
+}
+
+function isReactHookCallWithDepsArray(a: ENode[]): bool {
+    if (a.length === 2) return hookArgs(a, 0)
+    if (a.length === 3) return a[0].type === "Identifier" && hookArgs(a, 1)
+    return false
+}
+
+function hookArgs(a: ENode[], i: int): bool {
+    const fn = a[i]
+    const deps = a[i + 1]
+    if (fn.type !== "ArrowFunctionExpression" || params(fn).length !== 0 || fn.at("body").type !== "BlockStatement")
+        return false
+    if (deps.type !== "ArrayExpression") return false
+    for (const arg of a) if (hasComment(arg)) return false
+    return true
+}
+
+function printCallArguments(n: ENode): Doc {
+    const a = args(n)
+    if (a.length === 0) {
+        let dangling = empty
+        if (hasDangling(n)) {
+            let lineComment = false
+            for (const cm of n.comments) if (!cm.leading && !cm.trailing && !cm.block) lineComment = true
+            dangling = c([indent(c([softline, printDangling(n, false)])), lineComment ? hardline : softline])
+        }
+        return g(c([t("("), dangling, t(")")]))
+    }
+    const lastIndex = a.length - 1
+    if (isReactHookCallWithDepsArray(a)) {
+        const parts: Doc[] = [t("(")]
+        for (let i = 0; i < a.length; i++) {
+            parts.push(pr(a[i]))
+            if (i !== lastIndex) parts.push(t(", "))
+        }
+        parts.push(t(")"))
+        return c(parts)
+    }
+    let anyArgEmptyLine = false
+    const printed: Doc[] = []
+    for (let i = 0; i < a.length; i++) {
+        let doc = pr(a[i])
+        if (i !== lastIndex) {
+            if (nextLineEmptyAfter(a[i])) {
+                anyArgEmptyLine = true
+                doc = c([doc, t(","), hardline, hardline])
+            } else doc = c([doc, t(","), line])
+        }
+        printed.push(doc)
+    }
+    const trailingComma = ifBreak(t(","))
+    const allBroken = () => group(c([t("("), indent(c([line, c(printed)])), trailingComma, line, t(")")]), true)
+    if (anyArgEmptyLine || isFunctionCompositionArgs(a)) return allBroken()
+    if (shouldGroupFirst(a)) {
+        const rest = printed.slice(1)
+        for (const r of rest) if (willBreak(r)) return allBroken()
+        const saved = bailout
+        bailout = false
+        const first = pra(a[0], expandFirst())
+        const failed = bailout
+        bailout = saved
+        if (failed) return allBroken()
+        if (willBreak(first))
+            return c([
+                breakParent,
+                conditionalGroup([c([t("("), group(first, true), t(", "), c(rest), t(")")]), allBroken()]),
+            ])
+        return conditionalGroup([
+            c([t("("), first, t(", "), c(rest), t(")")]),
+            c([t("("), group(first, true), t(", "), c(rest), t(")")]),
+            allBroken(),
+        ])
+    }
+    if (shouldGroupLast(a, printed)) {
+        const head = printed.slice(0, lastIndex)
+        for (const h of head) if (willBreak(h)) return allBroken()
+        const saved = bailout
+        bailout = false
+        const lastDoc = pra(a[lastIndex], expandLast())
+        const failed = bailout
+        bailout = saved
+        if (failed) return allBroken()
+        if (willBreak(lastDoc))
+            return c([breakParent, conditionalGroup([c([t("("), c(head), group(lastDoc, true), t(")")]), allBroken()])])
+        return conditionalGroup([
+            c([t("("), c(head), lastDoc, t(")")]),
+            c([t("("), c(head), group(lastDoc, true), t(")")]),
+            allBroken(),
+        ])
+    }
+    const contents = c([t("("), indent(c([softline, c(printed)])), trailingComma, softline, t(")")])
+    if (isCommentsInsideCall(n)) return contents
+    let anyBreaks = false
+    for (const p of printed) if (willBreak(p)) anyBreaks = true
+    return group(contents, anyBreaks)
+}
+
+function isCommentsInsideCall(n: ENode): bool {
+    const parent = n.parent
+    return (
+        n.key === "callee" &&
+        isCall(n) &&
+        isCall(parent) &&
+        args(parent!).length > 0 &&
+        args(n).length > args(parent!).length
+    )
+}
+
+function couldExpandArg(n: ENode, arrowChainRecursion: bool): bool {
+    if (isObject(n) && (n.all("properties").length > 0 || hasComment(n))) return true
+    if (isArray(n) && (n.all("elements").length > 0 || hasComment(n))) return true
+    if (isAs(n)) return couldExpandArg(n.at("expression"), false)
+    if (n.type === "FunctionExpression") return true
+    if (n.type === "ArrowFunctionExpression") {
+        const body = n.at("body")
+        if (body.type === "BlockStatement" || isObject(body) || isArray(body)) return true
+        if (body.type === "ArrowFunctionExpression" && couldExpandArg(body, true)) return true
+        if (!arrowChainRecursion && (body.type === "ConditionalExpression" || isCall(stripChain(body)))) return true
+    }
+    return false
+}
+
+function shouldGroupLast(a: ENode[], printed: Doc[]): bool {
+    const lastArg = last(a)
+    const penultimate = a.length > 1 ? a[a.length - 2] : null
+    return (
+        !hasComment(lastArg, LEADING) &&
+        !hasComment(lastArg, TRAILING) &&
+        couldExpandArg(lastArg, false) &&
+        (penultimate === null || penultimate.type !== lastArg.type) &&
+        (a.length !== 2 || penultimate!.type !== "ArrowFunctionExpression" || !isArray(lastArg)) &&
+        !(a.length > 1 && isConciselyPrintedArray(lastArg))
+    )
+}
+
+function shouldGroupFirst(a: ENode[]): bool {
+    if (a.length !== 2) return false
+    const first = a[0]
+    const second = a[1]
+    return (
+        !hasComment(first) &&
+        (first.type === "FunctionExpression" ||
+            (first.type === "ArrowFunctionExpression" && first.at("body").type === "BlockStatement")) &&
+        second.type !== "FunctionExpression" &&
+        second.type !== "ArrowFunctionExpression" &&
+        second.type !== "ConditionalExpression" &&
+        isHopefullyShortCallArgument(second) &&
+        !couldExpandArg(second, false)
+    )
+}
+
+function isSimpleType(n: ENode): bool {
+    if (n.type.startsWith("TS") && n.type.endsWith("Keyword")) return true
+    if (n.type === "TSLiteralType") return true
+    return n.type === "TSTypeReference" && !n.has("typeArguments")
+}
+
+function isHopefullyShortCallArgument(n: ENode): bool {
+    if (isAs(n)) {
+        let type = n.at("typeAnnotation")
+        if (type.type === "TSArrayType") {
+            type = type.at("elementType")
+            if (type.type === "TSArrayType") type = type.at("elementType")
+        }
+        if (type.type === "TSTypeReference") {
+            const ta = typeArgumentsOf(type)
+            if (ta.length === 1) type = ta[0]
+        }
+        return isSimpleType(type) && isSimpleCallArgument(n.at("expression"), 1)
+    }
+    if (isCallLike(n) && args(n).length > 1) return false
+    if (isBinaryish(n)) return isSimpleCallArgument(n.at("left"), 1) && isSimpleCallArgument(n.at("right"), 1)
+    return isSimpleCallArgument(n, 2)
+}
+
+function isSimpleCallArgument(n0: ENode, depth: int): bool {
+    if (depth <= 0) return false
+    const n = stripChain(n0)
+    if (
+        isLiteral(n) ||
+        n.type === "Identifier" ||
+        n.type === "ThisExpression" ||
+        n.type === "Super" ||
+        n.type === "PrivateIdentifier"
+    )
+        return true
+    if (n.type === "TemplateLiteral") {
+        for (const q of n.all("quasis")) if (q.raw.includes("\n")) return false
+        for (const e of n.all("expressions")) if (!isSimpleCallArgument(e, depth - 1)) return false
+        return true
+    }
+    if (isObject(n)) {
+        for (const p of n.all("properties")) {
+            if (p.computed) return false
+            const value = p.get("value")
+            if (!(p.shorthand || (value !== null && isSimpleCallArgument(value, depth - 1)))) return false
+        }
+        return true
+    }
+    if (isArray(n)) {
+        for (const e of n.all("elements")) if (e.type !== "Hole" && !isSimpleCallArgument(e, depth - 1)) return false
+        return true
+    }
+    if (isCallLike(n)) {
+        if (isSimpleCallArgument(n.at("callee"), depth)) {
+            const a = args(n)
+            if (a.length > depth) return false
+            for (const arg of a) if (!isSimpleCallArgument(arg, depth - 1)) return false
+            return true
+        }
+        return false
+    }
+    if (isMember(n)) return isSimpleCallArgument(n.at("object"), depth) && isSimpleCallArgument(n.at("property"), depth)
+    if (
+        (n.type === "UnaryExpression" &&
+            (n.operator === "!" || n.operator === "-" || n.operator === "+" || n.operator === "~")) ||
+        n.type === "UpdateExpression"
+    )
+        return isSimpleCallArgument(n.at("argument"), depth)
+    return false
+}
+
+function isConciselyPrintedArray(n: ENode): bool {
+    if (!isArray(n)) return false
+    const elements = n.all("elements")
+    if (elements.length === 0) return false
+    for (const e of elements) {
+        if (!(isNumericLiteral(e) || (isSignedNumericLiteral(e) && !hasComment(e.get("argument"))))) return false
+        for (const cm of e.comments) if (cm.trailing && !cm.block && !hasNewline(ctx.text, cm.start, true)) return false
+    }
+    return true
+}
+
+class ChainItem {
+    hasTrailingEmptyLine = false
+    constructor(
+        readonly node: ENode,
+        readonly printed: Doc,
+    ) {}
+}
+
+function shouldInsertEmptyLineAfter(node: ENode): bool {
+    const s = ctx.text
+    const next = nextNonSpaceIndex(s, locEnd(node))
+    if (next < s.length && s[next] === 41) return isNextLineEmpty(s, next + 1)
+    return nextLineEmptyAfter(node)
+}
+
+/** The nodes of a member chain, from the outermost to the innermost. */
+function collectChain(node: ENode, out: ChainItem[]) {
+    if (isCall(node) && (isMemberish(node.at("callee")) || isCall(node.at("callee"))) && !needsParens(node)) {
+        const emptyLine = shouldInsertEmptyLineAfter(node)
+        const item = new ChainItem(
+            node,
+            c([
+                printComments(node, c([optionalToken(node), pk(node, "typeArguments"), printCallArguments(node)])),
+                emptyLine ? hardline : empty,
+            ]),
+        )
+        item.hasTrailingEmptyLine = emptyLine
+        out.push(item)
+        collectChain(node.at("callee"), out)
+    } else if (isMemberish(node) && !needsParens(node)) {
+        out.push(new ChainItem(node, printComments(node, printMemberLookup(node))))
+        collectChain(node.at("object"), out)
+    } else if (node.type === "ChainExpression" && !needsParens(node)) {
+        collectChain(node.at("expression"), out)
+    } else if (node.type === "TSNonNullExpression" && !needsParens(node)) {
+        out.push(new ChainItem(node, printComments(node, t("!"))))
+        collectChain(node.at("expression"), out)
+    } else out.push(new ChainItem(node, pr(node)))
+}
+
+function printMemberChain(n: ENode): Doc {
+    const parent = n.parent!
+    const statementParent = parent.type === "ChainExpression" ? parent.parent : parent
+    const isExpressionStatement = statementParent !== null && statementParent.type === "ExpressionStatement"
+    const reversed: ChainItem[] = [
+        new ChainItem(n, c([optionalToken(n), pk(n, "typeArguments"), printCallArguments(n)])),
+    ]
+    collectChain(n.at("callee"), reversed)
+    const printedNodes: ChainItem[] = []
+    for (let k = reversed.length - 1; k >= 0; k--) printedNodes.push(reversed[k])
+
+    const groups: ChainItem[][] = []
+    let currentGroup: ChainItem[] = [printedNodes[0]]
+    let i = 1
+    for (; i < printedNodes.length; ++i) {
+        const node = printedNodes[i].node
+        if (
+            node.type === "TSNonNullExpression" ||
+            node.type === "ChainExpression" ||
+            isCall(node) ||
+            (isMember(node) && node.computed && isNumericLiteral(node.get("property")))
+        )
+            currentGroup.push(printedNodes[i])
+        else break
+    }
+    if (!isCall(printedNodes[0].node))
+        for (; i + 1 < printedNodes.length; ++i) {
+            if (isMemberish(printedNodes[i].node) && isMemberish(printedNodes[i + 1].node))
+                currentGroup.push(printedNodes[i])
+            else break
+        }
+    groups.push(currentGroup)
+    currentGroup = []
+    let hasSeenCall = false
+    for (; i < printedNodes.length; ++i) {
+        const node = printedNodes[i].node
+        if (hasSeenCall && isMemberish(node)) {
+            if (node.computed && isNumericLiteral(node.get("property"))) {
+                currentGroup.push(printedNodes[i])
+                continue
+            }
+            groups.push(currentGroup)
+            currentGroup = []
+            hasSeenCall = false
+        }
+        if (isCall(node)) hasSeenCall = true
+        currentGroup.push(printedNodes[i])
+        if (hasComment(node, TRAILING)) {
+            groups.push(currentGroup)
+            currentGroup = []
+            hasSeenCall = false
+        }
+    }
+    if (currentGroup.length > 0) groups.push(currentGroup)
+
+    const isFactory = (name: string): bool => {
+        if (name.length > 0 && name[0] >= 65 && name[0] <= 90) return true
+        for (let k = 0; k < name.length; k++) if (name[k] !== 36 && name[k] !== 95) return false
+        return name.length > 0
+    }
+    const isShort = (name: string): bool => name.length <= 4
+    const shouldNotWrap = (gs: ChainItem[][]): bool => {
+        const second = gs[1]
+        const hasComputed = second.length > 0 && second[0].node.computed
+        if (gs[0].length === 1) {
+            const first = gs[0][0].node
+            return (
+                first.type === "ThisExpression" ||
+                (first.type === "Identifier" &&
+                    (isFactory(first.name) || (isExpressionStatement && isShort(first.name)) || hasComputed))
+            )
+        }
+        const lastNode = last(gs[0]).node
+        return (
+            isMember(lastNode) &&
+            lastNode.at("property").type === "Identifier" &&
+            (isFactory(lastNode.at("property").name) || hasComputed)
+        )
+    }
+    const shouldMerge =
+        groups.length >= 2 && groups[1].length > 0 && !hasComment(groups[1][0].node) && shouldNotWrap(groups)
+
+    const printGroup = (items: ChainItem[]): Doc => {
+        const docs: Doc[] = []
+        for (const item of items) docs.push(item.printed)
+        return c(docs)
+    }
+    const printIndentedGroup = (gs: ChainItem[][]): Doc => {
+        if (gs.length === 0) return empty
+        const docs: Doc[] = []
+        for (const gr of gs) docs.push(printGroup(gr))
+        return indent(c([hardline, join(hardline, docs)]))
+    }
+    const printedGroups: Doc[] = []
+    for (const gr of groups) printedGroups.push(printGroup(gr))
+    const oneLine = c(printedGroups)
+    const cutoff = shouldMerge ? 3 : 2
+    const flat: ChainItem[] = []
+    for (const gr of groups) for (const item of gr) flat.push(item)
+    let hasComments = false
+    for (let k = 1; k < flat.length - 1; k++) if (hasComment(flat[k].node, LEADING)) hasComments = true
+    for (let k = 0; k < flat.length - 1; k++) if (hasComment(flat[k].node, TRAILING)) hasComments = true
+    if (groups.length > cutoff && groups[cutoff].length > 0 && hasComment(groups[cutoff][0].node, LEADING))
+        hasComments = true
+
+    let noTrailingEmptyLine = true
+    for (const gr of groups) if (gr.length > 0 && last(gr).hasTrailingEmptyLine) noTrailingEmptyLine = false
+    if (groups.length <= cutoff && !hasComments && noTrailingEmptyLine)
+        return isCommentsInsideCall(n) ? oneLine : g(oneLine)
+
+    const lastOfHead = last(groups[shouldMerge ? 1 : 0]).node
+    const emptyLineAfterHead = !isCall(lastOfHead) && shouldInsertEmptyLineAfter(lastOfHead)
+    const expanded = c([
+        printGroup(groups[0]),
+        shouldMerge ? printGroup(groups[1]) : empty,
+        emptyLineAfterHead ? hardline : empty,
+        printIndentedGroup(groups.slice(shouldMerge ? 2 : 1)),
+    ])
+    const callExpressions: ENode[] = []
+    for (const item of printedNodes) if (isCall(item.node)) callExpressions.push(item.node)
+
+    const lastGroupWillBreakAndOtherCallsAreFunctionArguments = (): bool => {
+        const lastNode = last(last(groups)).node
+        const lastDoc = last(printedGroups)
+        if (!isCall(lastNode) || !willBreak(lastDoc)) return false
+        for (let k = 0; k < callExpressions.length - 1; k++)
+            for (const arg of args(callExpressions[k])) if (isFunction(arg)) return true
+        return false
+    }
+    let complexArguments = false
+    if (callExpressions.length > 2)
+        for (const call of callExpressions)
+            for (const arg of args(call)) if (!isSimpleCallArgument(arg, 2)) complexArguments = true
+    let headBreaks = false
+    for (let k = 0; k < printedGroups.length - 1; k++) if (willBreak(printedGroups[k])) headBreaks = true
+    let result: Doc
+    if (hasComments || complexArguments || headBreaks || lastGroupWillBreakAndOtherCallsAreFunctionArguments())
+        result = g(expanded)
+    else
+        result = c([
+            willBreak(oneLine) || emptyLineAfterHead ? breakParent : empty,
+            conditionalGroup([oneLine, expanded]),
+        ])
+    return label("member-chain", result)
+}
+
+// -----------------------------------------------------------------------------
+// Objects and arrays
+
+function printObject(n: ENode): Doc {
+    const isEnum = n.type === "TSEnumBody"
+    const role = isEnum ? "members" : n.type === "ImportDeclaration" ? "attributes" : "properties"
+    const items = n.all(role)
+    const parent = n.parent!
+    let shouldBreak = isEnum
+    if (!shouldBreak && n.type === "ObjectPattern") {
+        const pt = parent.type
+        if (
+            pt !== "FunctionDeclaration" &&
+            pt !== "FunctionExpression" &&
+            pt !== "ArrowFunctionExpression" &&
+            pt !== "AssignmentPattern" &&
+            pt !== "CatchClause"
+        ) {
+            for (const p of items) {
+                const value = p.get("value")
+                if (value !== null && (value.type === "ObjectPattern" || value.type === "ArrayPattern"))
+                    shouldBreak = true
+            }
+        }
+    }
+    if (!shouldBreak && n.type !== "ObjectPattern" && items.length > 0) {
+        let start = locStart(n)
+        if (n.type === "ImportDeclaration") start = lastIndexBefore(ctx.blank, "{", locStart(items[0]))
+        shouldBreak = hasNewlineInRange(ctx.text, start, locStart(items[0]))
+    }
+    const printed: Doc[] = []
+    let separator: Doc[] = []
+    for (const item of items) {
+        const parts = separator.slice()
+        parts.push(pr(item))
+        printed.push(c(parts))
+        separator = [t(","), line]
+        if (nextLineEmptyAfter(item)) separator.push(hardline)
+    }
+    const lastItem = items.length > 0 ? last(items) : null
+    const canHaveTrailingComma = !(lastItem !== null && lastItem.type === "RestElement")
+    let doc: Doc
+    if (printed.length === 0) {
+        let dangling = empty
+        if (hasDangling(n)) {
+            let lineComment = false
+            for (const cm of n.comments) if (!cm.leading && !cm.trailing && !cm.block) lineComment = true
+            dangling = c([indent(c([softline, printDangling(n, false)])), lineComment ? hardline : softline])
+        }
+        doc = g(c([t("{"), dangling, t("}"), optionalToken(n), printTypeAnnotationProperty(n, "typeAnnotation")]))
+    } else
+        doc = c([
+            t("{"),
+            indent(c([line, c(printed)])),
+            canHaveTrailingComma ? ifBreak(t(",")) : empty,
+            line,
+            t("}"),
+            optionalToken(n),
+            printTypeAnnotationProperty(n, "typeAnnotation"),
+        ])
+    if (n.type === "ObjectPattern" && isHuggedParam(n)) return doc
+    if (!shouldBreak && n.type === "ObjectPattern" && isAssignmentOrDeclarator(parent)) return doc
+    return group(doc, shouldBreak)
+}
+
+/** A parameter that hugs the parentheses of its function, as prettier's shouldHugTheOnlyFunctionParameter on the path. */
+function isHuggedParam(n: ENode): bool {
+    const parent = n.parent
+    return parent !== null && n.key === "params" && shouldHugTheOnlyParameter(parent)
+}
+
+/** An object type that is the type of a hugged parameter. */
+function isHuggedType(n: ENode): bool {
+    const annotation = n.parent
+    if (annotation === null || n.key !== "typeAnnotation" || annotation.type !== "TSTypeAnnotation") return false
+    const param = annotation.parent
+    if (param === null || annotation.key !== "typeAnnotation") return false
+    return isHuggedParam(param)
+}
+
+function printProperty(n: ENode): Doc {
+    if (n.shorthand) return pk(n, "value")
+    return printAssignment(n, printPropertyKey(n), t(":"), "value")
+}
+
+function isIdentifierName(s: string): bool {
+    if (s.length === 0) return false
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i]
+        const letter = (ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90) || ch === 36 || ch === 95 || ch >= 128
+        if (!(letter || (i > 0 && ch >= 48 && ch <= 57))) return false
+    }
+    return true
+}
+
+function printPropertyKey(n: ENode): Doc {
+    return printPropertyKeyRole(n, "key")
+}
+
+function printPropertyKeyRole(n: ENode, role: string): Doc {
+    const key = n.at(role)
+    if (n.computed) return c([t("["), pr(key), t("]")])
+    if (isStringLiteral(key) && n.type !== "PropertyDefinition" && !(n.type === "TSMethodSignature")) {
+        const value = key.raw.slice(1, key.raw.length - 1)
+        if (
+            quoteString(key.raw).slice(1, key.raw.length - 1) === value &&
+            !value.includes("\\") &&
+            isIdentifierName(value)
+        )
+            return printComments(key, t(value))
+    }
+    return pr(key)
+}
+
+function printArray(n: ENode): Doc {
+    const role = n.type === "TSTupleType" ? "elementTypes" : "elements"
+    const elements = n.all(role)
+    const parts: Doc[] = []
+    if (elements.length === 0) {
+        let dangling = empty
+        if (hasDangling(n)) {
+            let lineComment = false
+            for (const cm of n.comments) if (!cm.leading && !cm.trailing && !cm.block) lineComment = true
+            dangling = c([indent(c([softline, printDangling(n, false)])), lineComment ? hardline : softline])
+        }
+        parts.push(g(c([t("["), dangling, t("]")])))
+    } else {
+        const lastElement = last(elements)
+        const canHaveTrailingComma = lastElement.type !== "RestElement"
+        const isHole = lastElement.type === "Hole"
+        const id = newId()
+        let shouldBreak = false
+        if (elements.length > 1) {
+            shouldBreak = true
+            for (let i = 0; i < elements.length; i++) {
+                const e = elements[i]
+                if (!isArray(e) && !isObject(e)) {
+                    shouldBreak = false
+                    break
+                }
+                const next = i + 1 < elements.length ? elements[i + 1] : null
+                if (next !== null && next.type !== e.type) {
+                    shouldBreak = false
+                    break
+                }
+                const count = isArray(e) ? e.all("elements").length : e.all("properties").length
+                if (count <= 1) {
+                    shouldBreak = false
+                    break
+                }
+            }
+        }
+        if (hasComment(n, DANGLING | LINE)) shouldBreak = true
+        const concise = isConciselyPrintedArray(n)
+        const trailingComma = canHaveTrailingComma
+            ? isHole
+                ? t(",")
+                : concise
+                  ? ifBreak(t(","), empty, id)
+                  : ifBreak(t(","))
+            : empty
+        const items = concise
+            ? printArrayItemsConcisely(elements, trailingComma)
+            : c([printArrayItems(elements), trailingComma])
+        parts.push(
+            group(
+                c([t("["), indent(c([softline, items, printDangling(n, false)])), softline, t("]")]),
+                shouldBreak,
+                id,
+            ),
+        )
+    }
+    parts.push(optionalToken(n), printTypeAnnotationProperty(n, "typeAnnotation"))
+    return c(parts)
+}
+
+/** Whether an empty line follows an element of a list, after its comma. */
+function isNextLineEmptyAfterElement(n: ENode): bool {
+    let end = locEnd(n)
+    if (end === locStart(n)) return false
+    const s = ctx.text
+    while (end < s.length && s[end] !== 44) {
+        let next = end + 1
+        if (next + 1 < s.length && s[next] === 47 && s[next + 1] === 47) {
+            while (next < s.length && s[next] !== 10 && s[next] !== 13) next++
+        }
+        if (next + 1 < s.length && s[next] === 47 && s[next + 1] === 42) {
+            const close = s.indexOf("*/", next + 2)
+            if (close >= 0) next = close + 2
+        }
+        end = next
+    }
+    return isNextLineEmpty(s, end)
+}
+
+function printArrayItems(elements: ENode[]): Doc {
+    const parts: Doc[] = []
+    for (let i = 0; i < elements.length; i++) {
+        const e = elements[i]
+        const isHole = e.type === "Hole"
+        parts.push(isHole ? empty : g(pr(e)))
+        if (i < elements.length - 1)
+            parts.push(c([t(","), line, !isHole && isNextLineEmptyAfterElement(e) ? softline : empty]))
+    }
+    return c(parts)
+}
+
+function printArrayItemsConcisely(elements: ENode[], trailingComma: Doc): Doc {
+    const parts: Doc[] = []
+    for (let i = 0; i < elements.length; i++) {
+        const isLast = i === elements.length - 1
+        parts.push(c([pr(elements[i]), isLast ? trailingComma : t(",")]))
+        if (!isLast) {
+            const next = elements[i + 1]
+            parts.push(
+                isNextLineEmptyAfterElement(elements[i])
+                    ? c([hardline, hardline])
+                    : hasComment(next, LEADING | LINE)
+                      ? hardline
+                      : line,
+            )
+        }
+    }
+    return fill(parts)
+}
+
+function printSequence(n: ENode): Doc {
+    const parent = n.parent!
+    const expressions = n.all("expressions")
+    if (parent.type === "ExpressionStatement" || parent.type === "ForStatement") {
+        const parts: Doc[] = []
+        for (let i = 0; i < expressions.length; i++) {
+            if (i === 0) parts.push(pr(expressions[i]))
+            else parts.push(t(","), indent(c([line, pr(expressions[i])])))
+        }
+        return g(c(parts))
+    }
+    const printed: Doc[] = []
+    for (const e of expressions) printed.push(pr(e))
+    const joined = join(c([t(","), line]), printed)
+    const key = n.key
+    if (
+        (key === "argument" && isReturnOrThrow(parent) && needsParens(n)) ||
+        (key === "body" && parent.type === "ArrowFunctionExpression")
+    )
+        return g(ifBreak(c([indent(c([softline, joined])), softline]), joined))
+    return g(joined)
+}
+
+// -----------------------------------------------------------------------------
+// Literals
+
+function printLiteral(n: ENode): Doc {
+    switch (n.literal) {
+        case "number":
+            return t(printNumber(n.raw))
+        case "bigint":
+            return t(n.raw.toLowerCase())
+        case "string":
+            return literalText(quoteString(n.raw))
+    }
+    return t(n.raw)
+}
+
+function isDigit(ch: u8): bool {
+    return ch >= 48 && ch <= 57
+}
+
+/** A number as prettier prints it: lowercase, without useless zeros, signs and dots. */
+function printNumber(raw: string): string {
+    let s = raw.toLowerCase()
+    if (s.startsWith("0x") || s.startsWith("0b") || s.startsWith("0o")) return s
+    // Exponent: no `+`, no leading zeros.
+    const e = s.indexOf("e")
+    let mantissa = e >= 0 ? s.slice(0, e) : s
+    let exponent = e >= 0 ? s.slice(e + 1) : ""
+    if (e >= 0) {
+        let sign = ""
+        if (exponent.startsWith("+")) exponent = exponent.slice(1)
+        else if (exponent.startsWith("-")) {
+            sign = "-"
+            exponent = exponent.slice(1)
+        }
+        let k = 0
+        while (k < exponent.length - 1 && exponent[k] === 48) k++
+        exponent = exponent.slice(k)
+        if (exponent === "0" || exponent === "") exponent = ""
+        else exponent = sign + exponent
+    }
+    if (mantissa.startsWith(".")) mantissa = "0" + mantissa
+    const dot = mantissa.indexOf(".")
+    if (dot >= 0) {
+        // Trailing zeros go, but one digit stays after the dot: `1.50` is `1.5`, `1.0` stays.
+        let end = mantissa.length
+        while (end > dot + 2 && mantissa[end - 1] === 48) end--
+        mantissa = mantissa.slice(0, end)
+        if (mantissa.endsWith(".")) mantissa = mantissa.slice(0, mantissa.length - 1)
+    }
+    return exponent === "" ? mantissa : mantissa + "e" + exponent
+}
+
+/** A string literal with double quotes, unless it has more double than single quotes. */
+function quoteString(raw: string): string {
+    const content = raw.slice(1, raw.length - 1)
+    let doubles = 0
+    let singles = 0
+    for (let i = 0; i < content.length; i++) {
+        if (content[i] === 34) doubles++
+        else if (content[i] === 39) singles++
+    }
+    const quote: u8 = doubles > singles ? 39 : 34
+    if (raw[0] === quote) return raw
+    const other: u8 = quote === 34 ? 39 : 34
+    const q = quote === 34 ? '"' : "'"
+    const parts: string[] = [q]
+    let i = 0
+    while (i < content.length) {
+        const ch = content[i]
+        if (ch === 92 && i + 1 < content.length) {
+            const next = content[i + 1]
+            if (next === other) parts.push(content.slice(i + 1, i + 2))
+            else parts.push(content.slice(i, i + 2))
+            i += 2
+            continue
+        }
+        if (ch === quote) parts.push("\\" + q)
+        else parts.push(content.slice(i, i + 1))
+        i++
+    }
+    parts.push(q)
+    return parts.join("")
+}
+
+// -----------------------------------------------------------------------------
+// Template literals
+
+function printTemplateLiteral(n: ENode): Doc {
+    const quasis = n.all("quasis")
+    const expressions = n.all("expressions")
+    const parts: Doc[] = [lineSuffixBoundary, t("`")]
+    // The indentation of the last line of the latest quasi with a line break, for each expression.
+    let indentSize = 0
+    for (let i = 0; i < quasis.length; i++) {
+        parts.push(pr(quasis[i]))
+        if (i >= expressions.length) break
+        const raw = quasis[i].raw
+        if (raw.includes("\n")) {
+            const lastLine = raw.slice(raw.lastIndexOf("\n") + 1)
+            let w = 0
+            for (let k = 0; k < lastLine.length; k++) {
+                if (lastLine[k] === 9) w = w + 4 - (w % 4)
+                else if (lastLine[k] === 32) w++
+                else break
+            }
+            indentSize = w
+        }
+        parts.push(printTemplateExpression(expressions[i], quasis[i], quasis[i + 1], indentSize))
+    }
+    parts.push(t("`"))
+    return c(parts)
+}
+
+function printTemplateExpression(e: ENode, before: ENode, after: ENode, indentSize: int): Doc {
+    let printed = pr(e)
+    let hasNewlineInside = hasNewlineInRange(ctx.text, locEnd(before), locStart(after))
+    if (!hasNewlineInside) {
+        const flat = printDoc(printed, -1)
+        if (flat.includes("\n")) hasNewlineInside = true
+        else printed = t(flat)
+    }
+    if (
+        hasNewlineInside &&
+        (hasComment(e) ||
+            e.type === "Identifier" ||
+            isMember(stripChain(e)) ||
+            e.type === "ConditionalExpression" ||
+            e.type === "SequenceExpression" ||
+            isAs(e) ||
+            isBinaryish(e))
+    )
+        printed = c([indent(c([softline, printed])), softline])
+    const raw = before.raw
+    if (indentSize === 0 && raw.endsWith("\n")) printed = dedentToRoot(printed)
+    else if (indentSize > 0) {
+        let d = printed
+        for (let k = 0; k < indentSize / 4; k++) d = indent(d)
+        d = align(indentSize % 4, d)
+        printed = dedentToRoot(d)
+    }
+    return g(c([t("${"), printed, lineSuffixBoundary, t("}")]))
+}
+
+// -----------------------------------------------------------------------------
+// Modules
+
+function printImport(n: ENode): Doc {
+    return c([
+        t("import"),
+        t(n.importKind === "type" ? " type" : ""),
+        printModuleSpecifiers(n),
+        printModuleSource(n),
+        printImportAttributes(n),
+    ])
+}
+
+function hasModuleSpecifiersSyntax(n: ENode): bool {
+    if (n.type !== "ImportDeclaration" || n.all("specifiers").length > 0 || n.importKind === "type") return true
+    return ctx.blank
+        .slice(locStart(n), locStart(n.at("source")))
+        .trimEnd()
+        .endsWith("from")
+}
+
+function printModuleSpecifiers(n: ENode): Doc {
+    if (!hasModuleSpecifiersSyntax(n)) return empty
+    const parts: Doc[] = [space]
+    const specifiers = n.all("specifiers")
+    if (specifiers.length === 0) {
+        parts.push(t("{}"))
+        return c(parts)
+    }
+    const standalone: Doc[] = []
+    const grouped: Doc[] = []
+    for (const s of specifiers) {
+        if (s.type === "ImportNamespaceSpecifier" || s.type === "ImportDefaultSpecifier") standalone.push(pr(s))
+        else grouped.push(pr(s))
+    }
+    parts.push(join(t(", "), standalone))
+    if (grouped.length > 0) {
+        if (standalone.length > 0) parts.push(t(", "))
+        let anyComment = false
+        for (const s of specifiers) if (hasComment(s)) anyComment = true
+        if (grouped.length > 1 || standalone.length > 0 || anyComment)
+            parts.push(
+                g(c([t("{"), indent(c([line, join(c([t(","), line]), grouped)])), ifBreak(t(",")), line, t("}")])),
+            )
+        else parts.push(t("{ "), c(grouped), t(" }"))
+    }
+    return c(parts)
+}
+
+function printModuleSource(n: ENode): Doc {
+    const source = n.get("source")
+    if (source === null) return empty
+    return c([t(hasModuleSpecifiersSyntax(n) ? " from" : ""), space, pr(source)])
+}
+
+function printImportAttributes(n: ENode): Doc {
+    const source = n.get("source")
+    if (source === null) return empty
+    const attributes = n.all("attributes")
+    const after = ctx.blank
+        .slice(locEnd(source), attributes.length > 0 ? locStart(attributes[0]) : locEnd(n))
+        .trimStart()
+    let keyword = ""
+    if (after.startsWith("assert")) keyword = "assert"
+    else if (after.startsWith("with") || attributes.length > 0) keyword = "with"
+    if (keyword === "") return empty
+    let printed = printObject(n)
+    if (attributes.length === 1) {
+        const a = attributes[0]
+        const key = a.at("key")
+        const value = a.at("value")
+        if (
+            ((key.type === "Identifier" && key.name === "type") ||
+                (isStringLiteral(key) && key.raw.slice(1, key.raw.length - 1) === "type")) &&
+            isStringLiteral(value) &&
+            !hasComment(a) &&
+            !hasComment(key) &&
+            !hasComment(value)
+        )
+            printed = removeLines(printed)
+    }
+    return c([t(` ${keyword} `), printed])
+}
+
+function printSpecifier(n: ENode): Doc {
+    const isImport = n.type.startsWith("Import")
+    let left = empty
+    let right = empty
+    if (n.type === "ImportNamespaceSpecifier") left = t("*")
+    else {
+        const first = n.get(isImport ? "imported" : "local")
+        if (first !== null) left = pr(first)
+    }
+    const second = n.get(isImport ? "local" : "exported")
+    if (second !== null && !sameSpecifier(n)) right = pr(second)
+    if (n.type === "ImportDefaultSpecifier") {
+        left = empty
+        right = pk(n, "local")
+    }
+    const hasLeft = !isEmptyDoc(left)
+    const hasRight = !isEmptyDoc(right)
+    return c([t(n.importKind === "type" ? "type " : ""), left, t(hasLeft && hasRight ? " as " : ""), right])
+}
+
+function printExport(n: ENode): Doc {
+    const parts: Doc[] = [t("export"), t(n.type === "ExportDefaultDeclaration" ? " default" : "")]
+    if (hasDangling(n)) {
+        parts.push(space, printDangling(n, false))
+        const dangling = commentsOf(n, DANGLING)
+        if (!last(dangling).block) parts.push(hardline)
+    }
+    const declaration = n.get("declaration")
+    if (declaration !== null) parts.push(space, pr(declaration))
+    else {
+        parts.push(t(n.importKind === "type" ? " type" : ""))
+        if (n.type === "ExportAllDeclaration") parts.push(t(" *"))
+        else parts.push(printModuleSpecifiers(n))
+        parts.push(printModuleSource(n), printImportAttributes(n))
+    }
+    return c(parts)
+}
+
+// -----------------------------------------------------------------------------
+// Classes and interfaces
+
+function hasMultipleHeritage(n: ENode): bool {
+    let count = n.has("superClass") ? 1 : 0
+    count += n.all("extends").length + n.all("implements").length
+    return count > 1
+}
+
+function shouldIndentOnlyHeritageClauses(n: ENode): bool {
+    if (
+        hasComment(n.get("id"), TRAILING) ||
+        hasComment(n.get("typeParameters"), TRAILING) ||
+        hasComment(n.get("superClass")) ||
+        hasMultipleHeritage(n)
+    )
+        return true
+    const superClass = n.get("superClass")
+    if (superClass !== null) return !n.has("superTypeArguments") && isMember(stripChain(superClass))
+    let first: ENode | null = null
+    const extends_ = n.all("extends")
+    const implements_ = n.all("implements")
+    if (extends_.length > 0) first = extends_[0]
+    else if (implements_.length > 0) first = implements_[0]
+    return first !== null && isMember(first.get("expression")) && !first.has("typeArguments")
+}
+
+function printHeritage(n: ENode, role: string): Doc {
+    const list = n.all(role)
+    if (list.length === 0) return empty
+    const dangling = printDangling(n, false, role)
+    const printed: Doc[] = []
+    for (const item of list) printed.push(pr(item))
+    const joined = join(c([t(","), line]), printed)
+    if (!hasMultipleHeritage(n)) {
+        const parts = c([t(role + " "), dangling, joined])
+        return shouldIndentOnlyHeritageClauses(n) ? c([line, g(parts)]) : c([space, parts])
+    }
+    return c([line, dangling, isEmptyDoc(dangling) ? empty : hardline, t(role), g(indent(c([line, joined])))])
+}
+
+function printClass(n: ENode): Doc {
+    const isInterface = n.type === "TSInterfaceDeclaration"
+    const parts: Doc[] = [
+        t(n.declare ? "declare " : ""),
+        t(n.isAbstract ? "abstract " : ""),
+        t(isInterface ? "interface" : "class"),
+    ]
+    const groupMode = shouldIndentOnlyHeritageClauses(n)
+    const partsGroup: Doc[] = []
+    const heritage: Doc[] = []
+    if (n.has("id")) partsGroup.push(space)
+    for (const role of ["id", "typeParameters"]) {
+        const child = n.get(role)
+        if (child !== null) partsGroup.push(printLeading(child), pr(child), indent(printTrailing(child)))
+    }
+    const superClass = n.get("superClass")
+    if (superClass !== null) {
+        const printed = printComments(superClass, c([pr(superClass), pk(n, "superTypeArguments")]))
+        const extendsDoc = c([t("extends "), printed])
+        if (groupMode) heritage.push(line, g(extendsDoc))
+        else heritage.push(space, extendsDoc)
+    } else heritage.push(printHeritage(n, "extends"))
+    heritage.push(printHeritage(n, "implements"))
+    let id = 0
+    if (groupMode) {
+        id = newId()
+        partsGroup.push(indent(c(heritage)))
+        parts.push(group(c(partsGroup), false, id))
+    } else {
+        for (const p of partsGroup) parts.push(p)
+        for (const h of heritage) parts.push(h)
+    }
+    const body = n.at("body")
+    if (!isInterface && groupMode && body.all("body").length > 0) parts.push(ifBreak(hardline, space, id))
+    else parts.push(space)
+    parts.push(pr(body))
+    return c(parts)
+}
+
+function isClassProperty(n: ENode | null): bool {
+    return n !== null && (n.type === "PropertyDefinition" || n.type === "TSAbstractPropertyDefinition")
+}
+
+/** Whether a class property needs a `;` before the next member, without semicolons. */
+function classPropertyNeedsSemicolon(n: ENode, next: ENode | null): bool {
+    if (!isClassProperty(n)) return false
+    const key = n.get("key")
+    if (
+        !n.has("value") &&
+        !n.computed &&
+        !n.has("typeAnnotation") &&
+        key !== null &&
+        key.type === "Identifier" &&
+        (key.name === "static" || key.name === "get" || key.name === "set")
+    )
+        return true
+    if (next === null || next.isStatic || next.accessibility !== "" || next.readonly) return false
+    if (!next.computed) {
+        const nextKey = next.get("key")
+        if (
+            nextKey !== null &&
+            nextKey.type === "Identifier" &&
+            (nextKey.name === "in" || nextKey.name === "instanceof")
+        )
+            return true
+    }
+    switch (next.type) {
+        case "PropertyDefinition":
+        case "TSAbstractPropertyDefinition":
+            return next.computed
+        case "MethodDefinition":
+        case "TSAbstractMethodDefinition": {
+            const value = next.get("value")
+            if ((value !== null && value.isAsync) || next.kind === "get" || next.kind === "set") return false
+            return next.computed || (value !== null && value.generator)
+        }
+    }
+    return false
+}
+
+function printClassBody(n: ENode): Doc {
+    const isTypeLiteral = n.type === "TSTypeLiteral"
+    const role = isTypeLiteral ? "members" : "body"
+    const members = n.all(role)
+    const separator = isTypeLiteral ? line : hardline
+    const parts: Doc[] = []
+    for (let i = 0; i < members.length; i++) {
+        const member = members[i]
+        parts.push(pr(member))
+        const next = i + 1 < members.length ? members[i + 1] : null
+        if (!isTypeLiteral && classPropertyNeedsSemicolon(member, next)) parts.push(t(";"))
+        if (i < members.length - 1) {
+            parts.push(separator)
+            if (nextLineEmptyAfter(member)) parts.push(hardline)
+        }
+    }
+    if (hasDangling(n)) parts.push(printDangling(n, false))
+    if (isTypeLiteral) {
+        const shouldBreak =
+            hasComment(n, DANGLING | LINE) ||
+            (members.length > 0 && hasNewlineInRange(ctx.text, locStart(n), locStart(members[0])))
+        let doc: Doc
+        if (parts.length === 0) doc = t("{}")
+        else doc = c([t("{"), indent(c([line, c(parts)])), line, t("}")])
+        if (isHuggedType(n)) return doc
+        return group(doc, shouldBreak)
+    }
+    return c([t("{"), parts.length > 0 ? c([indent(c([hardline, c(parts)])), hardline]) : empty, t("}")])
+}
+
+/** The separator after a member of an object type: `;` when it is printed on one line. */
+function memberSeparator(n: ENode): Doc {
+    const parent = n.parent
+    if (parent === null || parent.type !== "TSTypeLiteral") return empty
+    if (n.isLast()) return empty
+    return ifBreak(empty, t(";"))
+}
+
+function printMethod(n: ENode): Doc {
+    const parts: Doc[] = []
+    const value = n.at("value")
+    const kind = n.kind
+    if (kind === "" || kind === "init" || kind === "method" || kind === "constructor") {
+        if (value.isAsync) parts.push(t("async "))
+    } else parts.push(t(kind + " "))
+    if (value.generator) parts.push(t("*"))
+    parts.push(printPropertyKey(n), t(n.optional ? "?" : ""), pr(value))
+    return c(parts)
+}
+
+function printClassMethod(n: ENode): Doc {
+    return c([
+        t(n.accessibility !== "" ? n.accessibility + " " : ""),
+        t(n.isStatic ? "static " : ""),
+        t(n.type === "TSAbstractMethodDefinition" ? "abstract " : ""),
+        t(n.override ? "override " : ""),
+        printMethod(n),
+    ])
+}
+
+function printClassProperty(n: ENode): Doc {
+    const left = c([
+        t(n.declare ? "declare " : ""),
+        t(n.accessibility !== "" ? n.accessibility + " " : ""),
+        t(n.isStatic ? "static " : ""),
+        t(n.type === "TSAbstractPropertyDefinition" ? "abstract " : ""),
+        t(n.override ? "override " : ""),
+        t(n.readonly ? "readonly " : ""),
+        printPropertyKey(n),
+        optionalToken(n),
+        definiteToken(n),
+        printTypeAnnotationProperty(n, "typeAnnotation"),
+    ])
+    return printAssignment(n, left, t(" ="), n.type === "TSAbstractPropertyDefinition" ? "" : "value")
+}
+
+function printMethodSignature(n: ENode): Doc {
+    const parts: Doc[] = [
+        t(n.accessibility !== "" ? n.accessibility + " " : ""),
+        t(n.kind !== "" && n.kind !== "method" ? n.kind + " " : ""),
+        printPropertyKey(n),
+        optionalToken(n),
+    ]
+    const ps = printParams(n, false, true)
+    const returnType = printTypeAnnotationProperty(n, "returnType")
+    parts.push(shouldGroupParams(n, returnType) ? g(ps) : ps)
+    if (n.has("returnType")) parts.push(g(returnType))
+    return c([g(c(parts)), memberSeparator(n)])
+}
+
+// -----------------------------------------------------------------------------
+// Types
+
+function printTypeParameters(n: ENode): Doc {
+    const ps = n.all("params")
+    const printed: Doc[] = []
+    for (const p of ps) printed.push(pr(p))
+    if (ps.length === 0) return c([t("<"), t(">")])
+    const gp = n.grandparent()
+    const isParameterInTestCall = isTestCall(gp)
+    let isArrowFunctionVariable = false
+    if (!(ps.length === 1 && isObjectType(ps[0]))) {
+        const parent = n.parent
+        const annotation = parent !== null ? parent.parent : null
+        const id = annotation !== null ? annotation.parent : null
+        const declarator = id !== null ? id.parent : null
+        isArrowFunctionVariable =
+            annotation !== null &&
+            parent!.key === "typeAnnotation" &&
+            id !== null &&
+            annotation.key === "typeAnnotation" &&
+            id.type === "Identifier" &&
+            declarator !== null &&
+            isArrowDeclarator(declarator)
+    }
+    if (
+        !isArrowFunctionVariable &&
+        (isParameterInTestCall ||
+            (ps.length === 1 &&
+                (isSimpleType(ps[0]) || isObjectType(ps[0]) || (isUnion(ps[0]) && shouldHugUnion(ps[0])))))
+    ) {
+        let commentBreaks = false
+        for (const p of ps)
+            for (const cm of p.comments)
+                if ((cm.leading || cm.trailing) && (!cm.block || hasNewline(ctx.text, cm.end, false)))
+                    commentBreaks = true
+        if (!commentBreaks) return c([t("<"), join(t(", "), printed), t(">")])
+    }
+    const trailingComma = n.type === "TSTypeParameterInstantiation" ? empty : ifBreak(t(","))
+    return g(c([t("<"), indent(c([softline, join(c([t(","), line]), printed)])), trailingComma, softline, t(">")]))
+}
+
+function printTypeParameter(n: ENode): Doc {
+    const parts: Doc[] = [t(n.isConst ? "const " : ""), pk(n, "name")]
+    const constraint = n.get("constraint")
+    if (constraint !== null) {
+        const id = newId()
+        parts.push(t(" extends"), group(indent(line), false, id), lineSuffixBoundary, indentIfBreak(pr(constraint), id))
+    }
+    const d = n.get("default")
+    if (d !== null) {
+        const id = newId()
+        parts.push(t(" ="), group(indent(line), false, id), lineSuffixBoundary, indentIfBreak(pr(d), id))
+    }
+    return g(c(parts))
+}
+
+function isVoidOrNull(n: ENode): bool {
+    return n.type === "TSVoidKeyword" || n.type === "TSNullKeyword"
+}
+
+/** A union of one object type with `null` or `void`, printed on one line. */
+function shouldHugUnion(n: ENode): bool {
+    const types = n.all("types")
+    for (const ty of types) if (hasComment(ty)) return false
+    let object: ENode | null = null
+    for (const ty of types)
+        if (ty.type === "TSTypeLiteral" || ty.type === "TSTypeReference") {
+            object = ty
+            break
+        }
+    if (object === null) return false
+    for (const ty of types) if (ty !== object && !isVoidOrNull(ty)) return false
+    return true
+}
+
+function isInTuple(n: ENode): bool {
+    const parent = n.parent
+    return (
+        n.key === "elementTypes" &&
+        parent !== null &&
+        parent.type === "TSTupleType" &&
+        parent.all("elementTypes").length > 1
+    )
+}
+
+function unionPrintsComments(n: ENode): bool {
+    const parent = n.parent
+    if (shouldHugUnion(n)) return false
+    if (parent !== null && n.key === "types" && (isUnion(parent) || isIntersection(parent))) return false
+    return !isInTuple(n)
+}
+
+function printUnion(n: ENode, a: Args): Doc {
+    const types = n.all("types")
+    if (shouldHugUnion(n)) {
+        const printed: Doc[] = []
+        for (const ty of types) printed.push(pr(ty))
+        return join(t(" | "), printed)
+    }
+    const items: Doc[] = []
+    for (let i = 0; i < types.length; i++) {
+        const ty = types[i]
+        const prefix = i === 0 ? ifBreak(t("| ")) : c([line, t("| ")])
+        const printed = pr(ty)
+        if (hasComment(ty, LEADING)) items.push(c([prefix, align(2, printComments(ty, printed))]))
+        else items.push(c([prefix, printComments(ty, align(2, printed))]))
+    }
+    let doc = g(c(items))
+    if (unionPrintsComments(n)) doc = printComments(n, doc)
+    if (needsParens(n)) return g(c([indent(c([softline, doc])), softline]))
+    if (isInTuple(n)) return g(c([indent(c([ifBreak(c([t("("), softline])), doc])), softline, ifBreak(t(")"))]))
+    const parent = n.parent!
+    const shouldIndent =
+        !(n.key === "elementTypes" && parent.type === "TSTupleType") &&
+        !(n.key === "params" && parent.type === "TSTypeParameterInstantiation")
+    if (a.assignmentLayout === "break-after-operator" || !shouldIndent) return doc
+    return g(indent(c([softline, doc])))
+}
+
+function printIntersection(n: ENode): Doc {
+    const types = n.all("types")
+    const parts: Doc[] = []
+    let wasIndented = false
+    for (let i = 0; i < types.length; i++) {
+        const ty = types[i]
+        const printed = pr(ty)
+        if (i === 0) {
+            parts.push(printed)
+            continue
+        }
+        const isObj = isObjectType(ty)
+        const prevObj = isObjectType(types[i - 1])
+        if (prevObj && isObj) parts.push(c([t(" & "), wasIndented ? indent(printed) : printed]))
+        else if ((!prevObj && !isObj) || hasLeadingOwnLineComment(ty)) parts.push(indent(c([t(" &"), line, printed])))
+        else {
+            if (i > 1) wasIndented = true
+            parts.push(c([t(" & "), i > 1 ? indent(printed) : printed]))
+        }
+    }
+    return g(c(parts))
+}

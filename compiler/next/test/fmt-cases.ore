@@ -1,0 +1,234 @@
+// Cases for the formatter; tests/harness/fmt.test.ts compares its output with prettier's.
+// The file is deliberately not formatted.
+import Default, { a as b, type T, c } from "./module"
+import * as everything from 'ore:runtime/format'
+import type { OnlyTypes } from "./types"
+import text from "./data.txt" with { type: "text" }
+import { averyveryverylongnameone, averyveryverylongnametwo, averyveryverylongnamethree, averyveryverylongnamefour } from "./long"
+import {} from "./nothing"
+import "./side-effect"
+export { b, c as d }
+export * from "./all"
+export type { OnlyTypes }
+
+const numbers = [0XFF, 1E5, .5, 5., 1_000, 0.50, 10.00, 1e+10, 2E-05, 0b11, 0O17]
+const strings = ['it\'s', "say \"hi\"", 'a "b" c', 'plain', "back\\slash", '\x41']
+const object = { "quoted-key": 1, "valid": 2, 'single': 3, unquoted: 4, 5: "five", [computed]: 6 }
+const preserved = {
+  a: 1, b: 2 }
+const collapsed = { a: 1,
+  b: 2 }
+const nested = { outer: { inner: { deepest: [1, 2, 3], other: "value" } }, list: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }
+const matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+const objects = [{ a: 1, b: 2 }, { a: 3, b: 4 }]
+const holes = [, 1, , 2, ]
+const empty = {}, emptyArray = [], emptyString = ""
+let a1 = b1 = c1 = d1
+const shortKey = { a: someVeryLongFunctionName(argumentNumberOne, argumentNumberTwo, argumentNumberThree, argumentNumberFour) }
+
+function longSignature(firstParameter: string, secondParameter: number, thirdParameter: boolean, fourth?: Map<string, int>): Promise<void> {}
+function returnsObject(x: int): { a: int; b: string; c: boolean; d: Map<string, Array<int>>; e: (x: int) => string; f: string } {
+    return { a: x, b: "", c: true, d: new Map(), e: (y) => `${y}`, f: "" }
+}
+function defaults(a = 1, { b, c }: { b: int; c: int } = { b: 1, c: 2 }, ...rest: int[]) {}
+function hugged({ alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda, mu }: Options) {}
+async function* generator(): AsyncGenerator<int> { await sleep(1) }
+declare function declared(x: int): int
+function empty() {
+    // only a comment
+}
+function emptyParams(/* nothing */) {}
+
+const curried = (a: int) => (b: int) => (c: int) => (d: int) => a + b + c + d + someOtherLongValueThatMakesItBreak + anotherOne
+const returnsObject2 = () => ({ a: 1 })
+const conditionalBody = (x: int) => x > 0 ? "positive" : x < 0 ? "negative" : "zero and some more text to make it long enough to break"
+const sequenceBody = () => (a(), b())
+const assignBody = () => (x = 1)
+const asyncArrow = async (x) => { await x }
+promise.then((result) => { console.log(result) }, (error) => { console.error(error) })
+useEffect(() => {
+    doSomething()
+}, [dependency])
+setTimeout(function () { tick() }, 1000)
+describe("a test", () => { it("works", async () => { expect(1).toBe(1) }) })
+
+const ternary = condition ? someValue : otherCondition ? anotherValue : yetAnotherCondition ? moreValues : finalValueThatIsLong
+const nestedTernary = a ? (b ? 1 : 2) : c ? 3 : 4
+const memberTernary = (isEnabled ? enabledConfiguration : disabledConfigurationThatHasAVeryLongName).someProperty.another
+const result = veryLongConditionName && anotherVeryLongConditionName || yetAnotherCondition && theLastConditionInTheChain
+const mixed = (a ?? b) || c
+const arithmetic = a + b * c - d / e % f + (g - h) * (i + j) - k ** l ** m
+const comparison = first === second && third !== fourth || fifth < sixth && seventh >= eighth || ninth instanceof Tenth
+const bits = a & b | c ^ d << 2 >> 3
+const unary = !a, neg = -b, pos = +c, inv = ~d, ty = typeof e, vo = void 0
+const updates = [i++, --j]
+const notNull = value!.property!.another!
+const cast = value as unknown as string
+const optional = object?.property?.method?.()?.[index] ?? fallback
+const chain = this.items.filter((item) => item.enabled).map((item) => item.value).reduce((sum, value) => sum + value, 0)
+const shortChain = a.b().c().d()
+const factoryChain = Object.keys(someObject).filter((key) => key.startsWith("prefix")).map((key) => someObject[key])
+const computedChain = data[0].items[1].values.map((x) => x * 2).filter(Boolean).slice(0, 10).join(", ").trim()
+const newChain = new Builder().setName("name").setValue(42).setOther(true).setAnotherVeryLongOption(false).build()
+wrapper.find('SomeSelector').prop('children')(argument).props.onChange({ target: { value: "x" } })
+const template = `line ${a} and ${b + c} and ${object.property.another} and ${call(argument)} and ${cond ? x : y}`
+const multiline = `
+    first ${value}
+    second ${other.value}
+`
+const longString = "a very long string that goes on and on " + variableName + " and continues even further " + another
+const assigned = someFunctionCall(withArguments, andMore) || someOtherFunctionCall(withDifferentArguments, andEvenMore)
+someObject.someProperty.someMethod(argumentOne).anotherMethod(argumentTwo, argumentThree).finalMethod()
+x = condition ? { a: 1, b: 2 } : { a: 3, b: 4 }
+const fn = function named(a, b) { return a + b }
+const iife = (() => { return 1 })()
+const deeply = a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z.aa.bb.cc.dd.ee.ff.gg.hh.ii.jj.kk.ll.mm.nn
+
+type Union = "first" | "second" | "third" | "fourth" | "fifth" | "sixth" | "seventh" | "eighth" | "ninth" | "tenth"
+type Short = "a" | "b"
+type Nullable = { a: int; b: string } | null
+type Commented =
+    // the first group
+    | "one"
+    /** the second */
+    | "two"
+type Fn = (a: int, b: string) => Map<string, Array<{ key: string; value: int }>>
+type Generic<T extends object = {}, U = T[]> = { value: T; values: U; keys: keyof T; first: T[keyof T] }
+type Tuple = [int, string, boolean]
+type Intersection = { a: int } & { b: string } & Other
+type Query = typeof someValue
+type ReadonlyArr = readonly int[]
+type Arr = (int | string)[]
+type Ret = () => void
+type Obj = {
+    a: int
+    b?: string
+    readonly c: boolean
+    method(x: int): string
+}
+
+interface Shape extends Base, Other<T> {
+    readonly kind: "circle" | "square"
+    area(): f64
+    optional?: int
+    // a comment in an interface
+    callback: (value: int) => void
+}
+interface Empty {}
+
+class Point<T> implements Shape, Serializable {
+    #secret = 1
+    static origin = new Point(0, 0)
+    private readonly x: f64
+    protected y = 0
+    declare z: int
+    value!: string
+    [Symbol.dispose](): void {}
+    constructor(public a: int, private b: string) {}
+    get length(): f64 { return Math.sqrt(this.x * this.x + this.y * this.y) }
+    set length(value: f64) { this.x = value }
+    static create<U>(): Point<U> { return new Point() }
+    async load() { await fetch() }
+    abstractish?(): void
+    /** Documented method. */
+    documented() {}
+}
+abstract class Base { abstract area(): f64; abstract name: string }
+class Empty2 {}
+class Extending extends someModule.Base {}
+
+enum Color { Red, Green = "green", Blue = 4 }
+declare const enum Flags { A = 1 << 0, B = 1 << 1 }
+namespace Outer { export const inner = 1 }
+declare module "external" { export function f(): void }
+declare global { interface Window { custom: int } }
+
+if (a) b()
+else if (c) d()
+else { e() }
+if (a) {
+    // comment in if
+} else {
+    // comment in else
+}
+if (a) {
+    b()
+}
+// comment before else
+else {
+    c()
+}
+if (!(a && b)) c()
+if (someVeryLongConditionName && anotherVeryLongConditionName && yetAnotherVeryLongConditionName && moreConditions) {}
+for (let i = 0, n = list.length; i < n; i++) {}
+for (;;) {}
+for (const key in object) {}
+for (const [key, value] of map) continue
+while (x) x--
+while ((match = regex.exec(text)) !== null) {}
+do { x++ } while (x < 10)
+outer: for (const a of b) { inner: for (const c of d) { if (c) break outer; else continue inner } }
+switch (value) {
+    case 1:
+    case 2: {
+        doSomething()
+        break
+    }
+    case 3:
+        doOther()
+        // fall through
+    default:
+        // nothing
+}
+switch (empty) {}
+try { risky() } catch (error) { handle(error) } finally { cleanup() }
+try { risky() } catch { ignore() }
+label: {
+    break label
+}
+
+function comments(a /* inline */, b) {
+    const x = 1 // trailing
+    /* leading block */ const y = 2
+    call(a, // after a
+        b)
+    call(
+        // leading in arguments
+        a,
+    )
+    return (
+        // a comment before the value
+        x + y
+    )
+}
+
+const array = [
+    // first comment
+    1,
+    2, // second
+    3,
+]
+
+const objectWithComments = {
+    // leading
+    a: 1, // trailing a
+    /** documented */
+    b: 2,
+}
+
+let value = // a comment after equals
+    compute()
+
+const arrow = () => // comment after arrow
+    1
+
+/**
+ * A JSDoc comment
+ *   with indentation
+ */
+export default function main(): void {}
+
+//ore:export ore_symbol
+export function exported() {}
+
+export const veryLongExportedConstantName = someFunction(firstArgument, secondArgument) + anotherFunction(thirdArgument)
