@@ -2,12 +2,13 @@
 // and checked against their expected output (tests/run, tests/async, the
 // tests of the compiler), or checked for the errors they are annotated with
 // (tests/diag); and what the runtime and the driver must do beyond that
-// (the watchdog, an executable from LLVM IR).
+// (the watchdog, an executable from LLVM IR, the build cache). The builds
+// share a build cache of their own in the work directory.
 
 import { basename, join } from "ore:path"
 import { fail } from "ore:test"
 import { check } from "../../compiler/src/checker/checker"
-import { build, BuildOptions, buildIr, compileToIr } from "../../compiler/src/driver/build"
+import { build, BuildOptions, buildIr, BuildResult, compileToIr } from "../../compiler/src/driver/build"
 import { NativeCode } from "../../compiler/src/driver/native"
 import { loadProgram } from "../../compiler/src/project/load"
 import { formatDiagnostic } from "../../compiler/src/syntax/diagnostic"
@@ -18,22 +19,33 @@ const asyncImplemented = false
 
 /** Where the cases write executables and other files. */
 export class Settings {
+    /** The build cache of the builds of the cases, rather than the user's. */
+    readonly cache: string
+
     constructor(
         readonly work: string,
         /** ORE_BLESS=1: write the actual output of run tests to their .out files. */
         readonly bless: bool,
-    ) {}
+    ) {
+        this.cache = join(work, "cache")
+    }
 }
 
-/** Builds a program into `output` with the compiler in Ore; fails on diagnostics. */
-function buildProgram(entry: string, output: string): void {
-    const result = build(entry, new BuildOptions(output))
+/** Builds a program into `output` with the compiler in Ore, with the cases' build cache; fails on diagnostics. */
+function buildProgram(settings: Settings, entry: string, output: string): void {
+    buildWith(entry, new BuildOptions(output, false, "", false, settings.cache))
+}
+
+/** Builds a program with these options; fails on diagnostics. */
+function buildWith(entry: string, options: BuildOptions): BuildResult {
+    const result = build(entry, options)
     if (result instanceof Error) fail(`${entry} does not build: ${result.message}`)
     if (result.diagnostics.length > 0 || !result.ok) {
         const shown: string[] = []
         for (const d of result.diagnostics) shown.push(formatDiagnostic(d))
         fail(`${entry} does not build:\n${shown.join("\n")}`)
     }
+    return result
 }
 
 /** An executable's path in the work directory for a test file. */
@@ -46,7 +58,7 @@ function runCase(settings: Settings, group: string, dir: string, file: string): 
     const path = join(dir, file)
     const source = read(path)
     const output = executable(settings, group, file)
-    buildProgram(path, output)
+    buildProgram(settings, path, output)
     const env = new Map<string, string>()
     env.set("ORE_THREADS", header(source, "threads", "1"))
     const run = runProgram(output, env)
@@ -156,7 +168,7 @@ export function unitCases(settings: Settings): Case[] {
         cases.push(
             new Case(`unit/${name}`, () => {
                 const output = executable(settings, "unit", name)
-                buildProgram(path, output)
+                buildProgram(settings, path, output)
                 const run = runProgram(output, new Map<string, string>())
                 if (run.code !== 0 || run.stderr !== "" || !run.stdout.includes(" 0 failed")) {
                     fail(`exit status ${run.code}\n${run.stdout}\n      stderr: ${quote(run.stderr)}`)
@@ -175,7 +187,7 @@ function buildText(settings: Settings, name: string, text: string): string {
     const written = fs.writeFile(join(dir, "main.ore"), text)
     if (written !== null) fail(written.message)
     const output = join(dir, "main")
-    buildProgram(join(dir, "main.ore"), output)
+    buildProgram(settings, join(dir, "main.ore"), output)
     return output
 }
 
@@ -242,7 +254,7 @@ export function objectCases(settings: Settings): Case[] {
         for (const source of native.sources) given.sources.push(source)
         given.link.push("m")
         given.libDirs.push("/usr/lib")
-        const error = buildIr(ir, `${output}.ll`, given, new BuildOptions(output, true))
+        const error = buildIr(ir, `${output}.ll`, given, new BuildOptions(output, true, "", false, settings.cache))
         if (error !== null) fail(error.message)
         expectRun(
             read(path),
@@ -267,9 +279,11 @@ export function objectCases(settings: Settings): Case[] {
     return [ffi, invalid]
 }
 
-/** Runs a program with arguments; fails unless it succeeds without writing to stderr. */
-function succeed(program: string, args: string[]): string {
-    const run = new process.Command(program, args).output()
+/** Runs a program with arguments and the cases' build cache; fails unless it succeeds without writing to stderr. */
+function succeed(settings: Settings, program: string, args: string[]): string {
+    const command = new process.Command(program, args)
+    command.env.set("ORE_CACHE", settings.cache)
+    const run = command.output()
     if (run instanceof Error) fail(run.message)
     if (run.code !== 0 || run.stderr !== "") {
         fail(`${program} ${args.join(" ")}: exit status ${run.code}, stderr ${quote(run.stderr)}`)
@@ -285,15 +299,90 @@ function succeed(program: string, args: string[]): string {
 export function selfhostCases(settings: Settings): Case[] {
     const selfhost = new Case("selfhost/compiler/src/main.ore builds and runs", () => {
         const ore = join(settings.work, "ore")
-        buildProgram("compiler/src/main.ore", ore)
+        buildProgram(settings, "compiler/src/main.ore", ore)
         const file = "compiler/src/driver/build.ore"
-        const formatted = succeed(ore, ["fmt", "--stdout", file])
+        const formatted = succeed(settings, ore, ["fmt", "--stdout", file])
         if (formatted !== read(file)) fail(difference("the output of ore fmt --stdout", read(file), formatted))
         const hello = join(settings.work, "selfhost-hello")
-        succeed(ore, ["build", "tests/run/basics/hello.ore", "-o", hello])
-        const out = succeed(hello, [])
+        succeed(settings, ore, ["build", "tests/run/basics/hello.ore", "-o", hello])
+        const out = succeed(settings, hello, [])
         if (out !== read("tests/run/basics/hello.out"))
             fail(difference("stdout", read("tests/run/basics/hello.out"), out))
     })
     return [selfhost]
+}
+
+/** Fails unless a build took `cached` of its objects from the cache (any from 1 to all but one with -1). */
+function expectCached(what: string, result: BuildResult, cached: int): void {
+    const ok = cached >= 0 ? result.cached === cached : result.cached > 0 && result.cached < result.objects
+    if (!ok) {
+        const expected = cached >= 0 ? `${cached}` : "some but not all"
+        fail(`${what}: ${result.cached} of ${result.objects} objects from the cache, expected ${expected}`)
+    }
+}
+
+/** Fails unless a program prints what a file has. */
+function expectOutput(program: string, out: string): void {
+    const run = runProgram(program, new Map<string, string>())
+    if (run.code !== 0 || run.stdout !== read(out)) fail(difference(`the output of ${program}`, read(out), run.stdout))
+}
+
+/**
+ * The build cache (driver/cache.ore), each case with its own: a second
+ * build takes every object from it and works; another program takes the
+ * runtime's; editing a file of a program recompiles its parts and not the
+ * others; a release build takes its one object.
+ */
+export function cacheCases(settings: Settings): Case[] {
+    const again = new Case("cache/a second build takes every object from the cache and works", () => {
+        const cache = join(settings.work, "cache-again")
+        const output = join(settings.work, "cache-hello")
+        const options = new BuildOptions(output, false, "", false, cache)
+        const first = buildWith("tests/run/basics/hello.ore", options)
+        if (first.objects < 2) fail(`a debug build of hello.ore has ${first.objects} parts`)
+        expectCached("the first build", first, 0)
+        const second = buildWith("tests/run/basics/hello.ore", options)
+        expectCached("the second build", second, second.objects)
+        expectOutput(output, "tests/run/basics/hello.out")
+        const other = join(settings.work, "cache-inheritance")
+        const third = buildWith("tests/run/types/inheritance.ore", new BuildOptions(other, false, "", false, cache))
+        expectCached("another program", third, -1)
+        expectOutput(other, "tests/run/types/inheritance.out")
+    })
+    const edit = new Case("cache/editing a file recompiles its parts only", () => {
+        const dir = join(settings.work, "cache-edit")
+        const made = fs.mkdir(dir, true)
+        if (made !== null) fail(made.message)
+        const main = join(dir, "main.ore")
+        const lib = join(dir, "lib.ore")
+        const write = (path: string, text: string) => {
+            const error = fs.writeFile(path, text)
+            if (error !== null) fail(error.message)
+        }
+        write(
+            main,
+            'import { greet } from "./lib"\n\nconsole.log(greet("main"))\nconsole.log([3, 1, 2].map((x) => x * 2).join(","))\n',
+        )
+        write(lib, "export function greet(name: string): string {\n    return `hello, ${name}`\n}\n")
+        const output = join(dir, "main")
+        const options = new BuildOptions(output, false, "", false, join(dir, "cache"))
+        buildWith(main, options)
+        write(lib, "export function greet(name: string): string {\n    return `hi, ${name}`\n}\n")
+        const result = buildWith(main, options)
+        // The part of lib.ore is compiled again; the others, but perhaps part 0, are not.
+        if (result.cached < result.objects - 2 || result.cached === result.objects)
+            fail(`${result.cached} of ${result.objects} objects from the cache after editing lib.ore`)
+        const run = runProgram(output, new Map<string, string>())
+        if (run.stdout !== "hi, main\n6,2,4\n") fail(`stdout ${quote(run.stdout)}`)
+    })
+    const release = new Case("cache/a release build takes its object from the cache", () => {
+        const output = join(settings.work, "cache-release")
+        const options = new BuildOptions(output, true, "", false, join(settings.work, "cache-release-objects"))
+        const first = buildWith("tests/run/basics/hello.ore", options)
+        if (first.objects !== 1) fail(`a release build has ${first.objects} objects`)
+        expectCached("the first build", first, 0)
+        expectCached("the second build", buildWith("tests/run/basics/hello.ore", options), 1)
+        expectOutput(output, "tests/run/basics/hello.out")
+    })
+    return [again, edit, release]
 }
