@@ -1,5 +1,5 @@
 /**
- * The formatter written in Ore (`ore-next fmt`, compiler/next/src/fmt/)
+ * The formatter written in Ore (`ore-next fmt --stdout`, compiler/next/src/fmt/)
  * checked against prettier with the options of `ore fmt` (formatOre in
  * compiler/cli/src/fmt.ts): on every .ore file of the repository its output
  * must equal prettier's.
@@ -243,7 +243,7 @@ const variants: Record<string, (text: string) => string> = {
 async function oreFormat(input: string): Promise<{ code: number; stdout: string; stderr: string }> {
   const path = join(work, `input-${Math.random().toString(36).slice(2)}.ore`)
   writeFileSync(path, input)
-  const proc = Bun.spawn([binary, "fmt", path], { stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn([binary, "fmt", "--stdout", path], { stdout: "pipe", stderr: "pipe" })
   const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()])
   return { code, stdout, stderr }
 }

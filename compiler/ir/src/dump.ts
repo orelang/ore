@@ -10,7 +10,7 @@ import type { InterfaceType, StructType, Type } from "./types"
  *
  * ```
  * module "<file>"
- * struct Name#id [nominal]               a struct of `structs`, then its
+ * struct Name#id [nominal] [extends B#id] a struct of `structs`, then its
  *   field name: T [readonly] [private]   fields, methods and constructor
  *   method name: <func name> [private]
  *   ctor: <func name>
@@ -104,7 +104,7 @@ class Dumper {
   }
 
   struct(s: StructType) {
-    this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}`)
+    this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}${s.base !== undefined ? ` extends ${this.type(s.base)}` : ""}`)
     for (const f of s.fields) this.line(1, `field ${f.name}: ${this.type(f.type)}${f.readonly ? " readonly" : ""}${f.private ? " private" : ""}`)
     for (const m of s.methods) this.line(1, `method ${m.name}: ${this.ref(m.func)}${m.private ? " private" : ""}`)
     if (s.ctor !== undefined) this.line(1, `ctor: ${this.ref(s.ctor)}`)
@@ -358,7 +358,7 @@ class Dumper {
         head("alloc")
         return
       case "method-call":
-        head(`method-call ${this.ref(e.func)}`)
+        head(`method-call ${this.ref(e.func)}${e.virtual ? " virtual" : ""}`)
         this.expr(e.receiver, d, "receiver")
         all(e.args, "arg")
         return
@@ -422,7 +422,7 @@ class Dumper {
         all(e.args, "arg")
         return
       case "bound-method":
-        head(`bound-method${e.func !== undefined ? ` func=${this.ref(e.func)}` : ""}${e.index !== undefined ? ` index=${e.index}` : ""}`)
+        head(`bound-method${e.func !== undefined ? ` func=${this.ref(e.func)}` : ""}${e.index !== undefined ? ` index=${e.index}` : ""}${e.virtual ? " virtual" : ""}`)
         this.expr(e.receiver, d, "receiver")
         return
       case "array-method":

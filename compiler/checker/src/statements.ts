@@ -1,6 +1,6 @@
 // Statements, destructuring, closures and narrowing.
 import * as ir from "@ore/ir"
-import { findMethod, isNumeric, isStringLike, membersOf, sameType, typeofName, types, typeToString, type FuncType, type Type } from "@ore/ir"
+import { findMethod, isNumeric, isStringLike, isSubclass, membersOf, sameType, typeofName, types, typeToString, type FuncType, type StructType, type Type } from "@ore/ir"
 import ts from "typescript"
 import { errorOperand, type Operand } from "./operand"
 import { Scope, type ValueSymbol } from "./symbols"
@@ -115,7 +115,11 @@ export abstract class StatementChecker extends ClassChecker {
     const type = value.type
     if (type.kind === "struct") {
       const method = findMethod(type, disposeName)
-      if (method && method.func.params.length === 0) return { k: "method-call", type: method.func.type.result, func: method.func, receiver: value, args: [] }
+      if (method && method.func.params.length === 0) {
+        const call: ir.Expr = { k: "method-call", type: method.func.type.result, func: method.func, receiver: value, args: [] }
+        this.dispatch(call, disposeName)
+        return call
+      }
     }
     if (type.kind === "interface") {
       const index = type.members.findIndex((m) => m.name === disposeName)
@@ -797,9 +801,13 @@ export abstract class StatementChecker extends ClassChecker {
         const type = this.info.types.get(node.left)
         const target = ts.isIdentifier(node.right) ? scope.lookupType(node.right.text)?.type : undefined
         if (!key || !type || !target) return { expr, whenTrue: [], whenFalse: [] }
-        // Only a member of a union can be excluded when the test is false.
-        const isMember = membersOf(type).some((m) => sameType(m, target))
-        return { expr, whenTrue: [{ key, type: target }], whenFalse: isMember ? [{ key, type: this.without(type, (m) => sameType(m, target)) }] : [] }
+        // Members that are the class or its subclasses, for which the test is true: one keeps its type.
+        const inside = (m: Type) => sameType(m, target) || (m.kind === "struct" && target.kind === "struct" && isSubclass(m, target))
+        const members = membersOf(type).filter(inside)
+        if (type.kind !== "union" && members.length > 0 && !sameType(type, target)) return { expr, whenTrue: [], whenFalse: [] }
+        const whenTrue = type.kind === "union" && members.length === 1 ? members[0]! : target
+        // Only members of a union can be excluded when the test is false.
+        return { expr, whenTrue: [{ key, type: whenTrue }], whenFalse: members.length > 0 ? [{ key, type: this.without(type, inside) }] : [] }
       }
     }
     return { expr: this.checkCondition(node, scope), whenTrue: [], whenFalse: [] }
@@ -874,7 +882,11 @@ export abstract class StatementChecker extends ClassChecker {
   protected narrowConvert(expr: ir.Expr, type: Type): ir.Expr {
     if (sameType(type, expr.type)) return expr
     if (type.kind === "struct" && expr.type.kind === "interface") return { k: "downcast", type, value: expr }
+    // An instance of a base class narrowed to a subclass, directly or in a union.
+    if (type.kind === "struct" && expr.type.kind === "struct") return { k: "downcast", type, value: expr }
     if (type.kind === "struct" && expr.type.kind === "union" && !expr.type.members.some((m) => sameType(m, type))) {
+      const base = expr.type.members.find((m): m is StructType => m.kind === "struct" && isSubclass(type, m))
+      if (base) return { k: "downcast", type, value: { k: "recast", type: base, value: expr } }
       const via = this.interfaceFor(expr.type, type)
       if (via) return { k: "downcast", type, value: { k: "recast", type: via, value: expr } }
     }

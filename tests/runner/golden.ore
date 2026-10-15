@@ -265,19 +265,33 @@ export function objectCases(settings: Settings): Case[] {
     return [ffi, invalid]
 }
 
+/** Runs a program with arguments; fails unless it succeeds without writing to stderr. */
+function succeed(program: string, args: string[]): string {
+    const run = new process.Command(program, args).output()
+    if (run instanceof Error) fail(run.message)
+    if (run.code !== 0 || run.stderr !== "") {
+        fail(`${program} ${args.join(" ")}: exit status ${run.code}, stderr ${quote(run.stderr)}`)
+    }
+    return run.stdout
+}
+
 /**
  * The compiler in Ore built by itself, from compiler/next/src/main.ore, and
- * run: it formats a file as the formatter in this process does.
+ * run as `ore`: it formats a file as the formatter in this process does, and
+ * builds a program that runs.
  */
 export function selfhostCases(settings: Settings): Case[] {
     const selfhost = new Case("selfhost/compiler/next/src/main.ore builds and runs", () => {
-        const output = join(settings.work, "ore-next")
-        buildProgram("compiler/next/src/main.ore", output)
+        const ore = join(settings.work, "ore")
+        buildProgram("compiler/next/src/main.ore", ore)
         const file = "compiler/next/src/driver/build.ore"
-        const run = new process.Command(output, ["fmt", file]).output()
-        if (run instanceof Error) fail(run.message)
-        if (run.code !== 0 || run.stderr !== "") fail(`exit status ${run.code}, stderr ${quote(run.stderr)}`)
-        if (run.stdout !== read(file)) fail(difference("the output of ore-next fmt", read(file), run.stdout))
+        const formatted = succeed(ore, ["fmt", "--stdout", file])
+        if (formatted !== read(file)) fail(difference("the output of ore fmt --stdout", read(file), formatted))
+        const hello = join(settings.work, "selfhost-hello")
+        succeed(ore, ["build", "tests/run/basics/hello.ore", "-o", hello])
+        const out = succeed(hello, [])
+        if (out !== read("tests/run/basics/hello.out"))
+            fail(difference("stdout", read("tests/run/basics/hello.out"), out))
     })
     return [selfhost]
 }

@@ -1,0 +1,180 @@
+// Single inheritance: fields, virtual methods, super calls, abstract classes,
+// protected members, instanceof against base classes, unions and interfaces.
+
+interface Named {
+    name(): string
+}
+
+abstract class Shape implements Named {
+    protected label: string
+
+    constructor(label: string) {
+        this.label = label
+        console.log("Shape", label)
+    }
+
+    abstract area(): f64
+
+    name(): string {
+        return `${this.label} of area ${this.area()}`
+    }
+
+    describe(): string {
+        return "a shape"
+    }
+}
+
+class Circle extends Shape {
+    constructor(public r: f64) {
+        console.log("before super")
+        super("circle")
+        console.log("Circle", this.r, this.label)
+    }
+
+    area(): f64 {
+        return 3 * this.r * this.r
+    }
+
+    override describe(): string {
+        return `a round ${super.describe()}`
+    }
+}
+
+class Rect extends Shape {
+    sides = 4
+
+    constructor(
+        public w: f64,
+        public h: f64,
+    ) {
+        super("rect")
+    }
+
+    area(): f64 {
+        return this.w * this.h
+    }
+}
+
+// Without a constructor: the base class's parameters.
+class Square extends Rect {
+    corners(): int {
+        return this.sides
+    }
+
+    override area(): f64 {
+        return super.area() + 0
+    }
+
+    override describe(): string {
+        return "a square"
+    }
+}
+
+const shapes: Shape[] = [new Circle(1), new Rect(2, 3), new Square(4, 4)]
+for (const s of shapes) console.log(s.area(), s.describe(), s.name())
+
+// Through an interface implemented by the base class.
+const named: Named[] = [new Circle(2), new Square(1, 1)]
+for (const n of named) console.log(n.name())
+
+// A bound method dispatches too.
+const describe = shapes[2].describe
+console.log(describe())
+
+// instanceof against base classes and subclasses narrows.
+for (const s of shapes) {
+    if (s instanceof Rect) console.log("rect", s.w, s.h, s instanceof Square)
+    else if (s instanceof Circle) console.log("circle", s.r)
+}
+for (const n of named) {
+    if (n instanceof Shape) console.log("shape", n.area())
+    if (n instanceof Square) console.log("square", n.corners())
+}
+
+// Unions: a subclass goes in the slot of its base class.
+function show(x: Rect | string | null): string {
+    if (x === null) return "null"
+    if (x instanceof Square) return `square ${x.corners()}`
+    if (x instanceof Rect) return `rect ${x.area()}`
+    return x
+}
+console.log(show(new Square(2, 2)), show(new Rect(1, 2)), show("text"), show(null))
+const both: Rect | Square = new Square(3, 3)
+console.log(both.area(), both instanceof Square)
+let maybe: Shape | null = null
+maybe = new Circle(3)
+console.log(maybe !== null ? maybe.describe() : "none")
+
+// A subclass converts to its base class; identity is kept.
+const sq = new Square(5, 5)
+const asShape: Shape = sq
+console.log(asShape === sq, asShape.area())
+
+// Generic classes.
+class Box<T> {
+    constructor(public value: T) {}
+
+    get(): T {
+        return this.value
+    }
+
+    show(): string {
+        return "box"
+    }
+}
+
+class Labeled<T> extends Box<T> {
+    constructor(
+        value: T,
+        public tag: string,
+    ) {
+        super(value)
+    }
+
+    override show(): string {
+        return `${this.tag}: ${super.show()}`
+    }
+}
+
+const boxes: Box<int>[] = [new Box(1), new Labeled(2, "two")]
+for (const b of boxes) console.log(b.get(), b.show())
+
+// A method that no subclass overrides is called directly; one that is overridden dispatches.
+class Base {
+    hello(): string {
+        return "base hello"
+    }
+    who(): string {
+        return "base"
+    }
+    greet(): string {
+        return `${this.hello()} from ${this.who()}`
+    }
+}
+class Derived extends Base {
+    override who(): string {
+        return "derived"
+    }
+}
+const items: Base[] = [new Base(), new Derived()]
+for (const b of items) console.log(b.greet())
+
+// An interface value made from a base class's static type still dispatches,
+// and instanceof sees the class of the instance.
+interface Describable {
+    describe(): string
+}
+for (const s of shapes) {
+    const d: Describable = s
+    console.log(d.describe(), d instanceof Square, d instanceof Rect)
+}
+
+// Unions of sibling classes.
+function kind(x: Circle | Rect): string {
+    if (x instanceof Shape) return `shape ${x.area()}`
+    return "never"
+}
+console.log(kind(new Circle(2)), kind(new Rect(1, 1)))
+
+// JSON of a class with a class table: its fields, after the table.
+console.log(JSON.stringify(new Rect(1, 2)))

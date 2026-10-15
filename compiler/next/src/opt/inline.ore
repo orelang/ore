@@ -740,6 +740,8 @@ class Inliner {
             for (const p of func.params) params.push(p)
             for (const a of e.args) args.push(a)
         } else if (e.k === "method-call") {
+            // A call through a class table may run an override.
+            if (e.virtual) return null
             func = e.func
             if (this.bodyOf(func) === null) return null
             const receiver = func.receiver
@@ -902,8 +904,11 @@ class Inliner {
                 return new FieldGet(e.type, this.clone(e.object, values), e.name)
             case "alloc":
                 return new Alloc(e.type)
-            case "method-call":
-                return new MethodCall(e.type, e.func, this.clone(e.receiver, values), this.clones(e.args, values))
+            case "method-call": {
+                const call = new MethodCall(e.type, e.func, this.clone(e.receiver, values), this.clones(e.args, values))
+                call.virtual = e.virtual
+                return call
+            }
             case "to-iface":
                 return new ToIface(e.type, this.clone(e.value, values), e.itab, e.indices)
             case "iface-field":
@@ -958,8 +963,11 @@ class Inliner {
                 return new Closure(e.type, e.func)
             case "call-value":
                 return new CallValue(e.type, this.clone(e.callee, values), this.clones(e.args, values))
-            case "bound-method":
-                return new BoundMethod(e.type, this.clone(e.receiver, values), e.func, e.index)
+            case "bound-method": {
+                const bound = new BoundMethod(e.type, this.clone(e.receiver, values), e.func, e.index)
+                bound.virtual = e.virtual
+                return bound
+            }
             case "array-method":
                 return new ArrayMethod(
                     e.method,

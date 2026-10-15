@@ -104,7 +104,11 @@ class Dumper {
     }
 
     struct(s: StructType) {
-        this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}`)
+        const base = s.base
+        this.line(
+            0,
+            `struct ${this.type(s)}${s.nominal ? " nominal" : ""}${base !== null ? ` extends ${this.type(base)}` : ""}`,
+        )
         for (const f of s.fields)
             this.line(
                 1,
@@ -443,7 +447,7 @@ class Dumper {
                 this.exprHead(e, depth, role, "alloc")
                 return
             case "method-call":
-                this.exprHead(e, depth, role, `method-call ${this.ref(e.func)}`)
+                this.exprHead(e, depth, role, `method-call ${this.ref(e.func)}${e.virtual ? " virtual" : ""}`)
                 this.expr(e.receiver, d, "receiver")
                 this.all(e.args, d, "arg")
                 return
@@ -531,7 +535,7 @@ class Dumper {
                     e,
                     depth,
                     role,
-                    `bound-method${func !== null ? ` func=${this.ref(func)}` : ""}${index !== null ? ` index=${index}` : ""}`,
+                    `bound-method${func !== null ? ` func=${this.ref(func)}` : ""}${index !== null ? ` index=${index}` : ""}${e.virtual ? " virtual" : ""}`,
                 )
                 this.expr(e.receiver, d, "receiver")
                 return

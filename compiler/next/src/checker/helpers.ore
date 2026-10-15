@@ -30,6 +30,7 @@ import {
     findMethod,
     isNumeric,
     isStringLike,
+    isSubclass,
     membersOf,
     sameType,
     types,
@@ -37,7 +38,7 @@ import {
     unionRepr,
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
-import { isIdentifier, nameNode, typeName } from "../syntax/nodes"
+import { args, expression, isIdentifier, nameNode, typeName } from "../syntax/nodes"
 import { bigFromF64, bigParse } from "./bigint"
 import { type Operand, Typed, UntypedFloat, UntypedInt } from "./operand"
 
@@ -222,9 +223,30 @@ export function mentions(node: Node, names: string[]): bool {
     return false
 }
 
-/** Whether a value of type `from` can be a member `m` of a union: the same type, or a string literal for `string`. */
+/** Whether a value of type `from` can be a member `m` of a union: the same type, a string literal for `string`, or a subclass for a class. */
 export function memberOf(from: Type, m: Type): bool {
-    return sameType(from, m) || (from.kind === "literal" && m.kind === "string")
+    return (
+        sameType(from, m) ||
+        (from.kind === "literal" && m.kind === "string") ||
+        (from.kind === "struct" && m.kind === "struct" && isSubclass(from, m))
+    )
+}
+
+/** The first `this` or `super` in a subtree, other than the callee of a `super(...)` call. */
+export function findThis(node: Node): Node | null {
+    if (node.kind === "ThisKeyword" || node.kind === "SuperKeyword") return node
+    if (node.kind === "CallExpression" && expression(node).kind === "SuperKeyword") {
+        for (const arg of args(node)) {
+            const found = findThis(arg)
+            if (found !== null) return found
+        }
+        return null
+    }
+    for (const child of node.children) {
+        const found = findThis(child)
+        if (found !== null) return found
+    }
+    return null
 }
 
 /** The type of a public field of a struct or interface, if it has one. */

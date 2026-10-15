@@ -104,7 +104,8 @@ console.log(word.length, runes, word.slice(0, 3), word.replaceAll("l", "L"))   /
 ```
 
 **Structural interfaces, nominal classes.** Any class or object with the
-members fits an interface, fields included. Classes have no inheritance.
+members fits an interface, fields included. A class may extend one class;
+its methods are virtual.
 
 ```ts
 interface Named {
@@ -252,16 +253,21 @@ files, with no `main`. Built-ins live in namespaces: `console.log`,
 `process.args`, `Math.sqrt`, `fs.readFile`; there are no bare globals.
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
-inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
+`enum`, `namespace`, `prototype`, `eval`, `delete`. See
 [differences from TypeScript](docs/spec/10-differences.md).
 
 ## Getting started
 
-Requirements: [Bun](https://bun.sh) and clang.
+`ore` needs LLVM 19 or newer (its library, `libLLVM`) and lld, and a C
+compiler only for packages with C sources: `apt install llvm-22 lld-22` on
+Linux, `brew install llvm lld` on macOS. The compiler in Ore builds itself
+(`ci/bootstrap.sh` checks that it reproduces itself); until it builds from a
+previous release, stage 1 comes from the TypeScript compiler, which needs
+[Bun](https://bun.sh) and clang:
 
 ```sh
 bun install
-bun run build                       # the standalone compiler, dist/ore
+bun run build                        # dist/ore, the compiler in Ore
 ln -sf "$PWD/dist/ore" ~/.local/bin/ore
 ```
 
@@ -277,7 +283,13 @@ ore test                 # run the tests in *.test.ore files
 ore fmt                  # format .ore files: 4 spaces, no semicolons
 ```
 
-A single file works too: `ore run hello.ore`.
+A single file works too: `ore run hello.ore`. A debug build of a small
+program takes about 0.3 s (LLVM through its C API on every CPU, linked with
+lld), a release build about 1.4 s.
+
+`dist/ore` is the compiler written in Ore ([compiler/next](compiler/next)),
+built by the bootstrap compiler in TypeScript (`bun run ore ...`); it
+rebuilds itself with `ore build compiler/next/src/main.ore -o ore --release`.
 
 ## Projects and packages
 
@@ -308,8 +320,10 @@ Native code is declared in package.json, also by dependencies:
 
 ## Editor support
 
-Both extensions run `ore lsp` from `PATH`, which provides diagnostics, hover,
-go to definition, member completion, find references and rename.
+Both extensions run `ore lsp` from `PATH`. The language server of the
+bootstrap compiler (`bun run ore lsp`) provides diagnostics, hover, go to
+definition, member completion, find references and rename; that of
+`dist/ore` reports syntax errors so far.
 
 **Zed.** Run `zed: install dev extension` and select `editors/zed` (requires
 Rust installed with rustup). Another binary can be set in Zed settings:
@@ -345,7 +359,7 @@ Another binary can be set with the `ore.path` setting.
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
 | 9. Runtime in Ore: no C left; only libc outside Ore | done |
-| 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
+| 10. Compiler in Ore: lexer, parser, checker, backend, driver on LLVM's C API, bootstrap (done); `ore` command and tests in Ore, removing TypeScript and Bun | in progress |
 | 11. Own garbage collector: stop-the-world mark-sweep (done); parallel and concurrent marking, precise heap | in progress |
 | 12. Promises and `async`/`await` | planned |
 
@@ -357,7 +371,7 @@ Another binary can be set with the `ore.path` setting.
   not).
 - A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
   recursion in a task can overflow it.
-- No numeric literal types (`1 | 2`), static members or class inheritance;
+- No numeric literal types (`1 | 2`) or static members;
   case mapping of strings covers ASCII only.
 - A generic function or class that is never used is parsed but not checked.
 
@@ -386,8 +400,8 @@ Every directory below has a README with the details.
 | `compiler/codegen` | IR to LLVM IR, built by clang |
 | `compiler/driver` | Compilation pipeline, clang, runtime and GC cache |
 | `compiler/lsp` | Language server |
-| `compiler/cli` | The `ore` command, including `test` and `fmt` |
-| `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer, the parser and the loading of modules) |
+| `compiler/cli` | The `ore` command of the bootstrap compiler (`bun run ore`) |
+| `compiler/next` | The compiler written in Ore, `dist/ore`: the `ore` command, the checker, the LLVM backend and the build driver; it replaces the TypeScript one |
 | `runtime/core` | The runtime written in Ore (`ore:runtime/...`), part of every program |
 | `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`, `ore:path`) |
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |

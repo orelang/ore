@@ -1,0 +1,113 @@
+interface Named {
+    name(): string
+}
+
+class FromInterface extends Named {} // error: A class can only extend a class.
+
+class Loop1 extends Loop2 {} // error: Class 'Loop1' extends itself.
+class Loop2 extends Loop1 {}
+
+abstract class Animal {
+    protected sound = "..."
+    private secret = 1
+    readonly legs: int = 4
+
+    constructor(public name: string) {}
+
+    abstract speak(): string
+
+    walk(steps: int): int {
+        return steps * this.legs
+    }
+
+    get loud(): string {
+        return this.sound
+    }
+}
+
+class Dog extends Animal {
+    // error: Non-abstract class 'Dog' does not implement inherited abstract member 'speak' from class 'Animal'.
+    bark(): string {
+        return this.sound + this.secret // error: 'secret' is private and only accessible inside class 'Animal'.
+    }
+}
+
+class Cat extends Animal {
+    sound = "meow" // error: 'sound' is already declared in base class 'Animal' as a field; only methods can be overridden.
+    secret(): int {
+        // error: 'secret' is private in base class 'Animal' and cannot be redeclared.
+        return 0
+    }
+    override walk(steps: f64): int {
+        // error: Method 'walk' must have the type of the method it overrides in 'Animal'
+        return 0
+    }
+    override purr(): void {} // error: This member cannot have an 'override' modifier because it is not declared in the base class 'Animal'.
+    get loud(): string {
+        // error: Accessors cannot be overridden yet: 'loud' is an accessor of base class 'Animal'.
+        return "MEOW"
+    }
+    speak(): string {
+        return super.speak() // error: Abstract method 'speak' in class 'Animal' cannot be accessed via super expression.
+    }
+}
+
+class Bird extends Animal {
+    constructor() {
+        // error: Constructors for derived classes must contain a 'super' call.
+        console.log("no super")
+    }
+    speak(): string {
+        return "tweet"
+    }
+}
+
+class Fish extends Animal {
+    constructor() {
+        console.log(this.name) // error: 'super' must be called before accessing 'this' in the constructor of a derived class.
+        super("fish")
+        this.legs = 0 // error: Cannot assign to 'legs' because it is a read-only property.
+    }
+    speak(): string {
+        return super.sound // error: 'super' can only call the constructor or a method of the base class
+    }
+}
+
+class Snake extends Animal {
+    constructor(long: bool) {
+        if (long) {
+            super("long snake") // error: A 'super' call must be a statement at the top level of the constructor, and the only one.
+        }
+        super("snake")
+    }
+    speak(): string {
+        return "hiss"
+    }
+    protected private_(): void {}
+    walk(steps: int): int {
+        super(steps) // error: A 'super' call is only allowed in the constructor of a class that extends another class.
+        return 0
+    }
+}
+
+class Plain {
+    abstract nothing(): void // error: Abstract methods can only appear within an abstract class.
+    override toString(): string {
+        // error: does not extend another class.
+        return "plain"
+    }
+    hello(): string {
+        return super.hello() // error: 'super' can only be used in the methods and constructor of a class that extends another class.
+    }
+}
+
+const a = new Animal("x") // error: Cannot create an instance of an abstract class 'Animal'.
+const s = new Snake(true)
+console.log(s.sound) // error: 'sound' is protected and only accessible inside class 'Animal' and its subclasses.
+s.private_() // error: 'private_' is protected and only accessible inside class 'Snake' and its subclasses.
+const animal: Animal = s
+const snake: Snake = animal // error: Type 'Animal' is not assignable to type 'Snake'.
+const snakes: Snake[] = [s]
+const animals: Animal[] = snakes // error: Type 'Snake[]' is not assignable to type 'Animal[]'.
+const plain = new Plain()
+console.log(plain === s) // error: Cannot compare 'Plain' with 'Snake'.

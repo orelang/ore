@@ -2,13 +2,23 @@
 // locals: what every layer uses. Ported from compiler/codegen/src/base.ts.
 //
 // The TypeScript emitter is a chain of classes, one per layer (base,
-// functions, expressions, calls, collections, json, emit). Ore has no
-// inheritance: `Emitter` holds the state and the methods of the base layer,
-// and the other layers are functions of the same names in files of the same
-// names, taking the emitter as their first parameter `g`.
+// functions, expressions, calls, collections, json, emit). This port was
+// written before Ore had inheritance: `Emitter` holds the state and the
+// methods of the base layer, and the other layers are functions of the same
+// names in files of the same names, taking the emitter as their first
+// parameter `g`. Now that a class can extend a class, the layers can become
+// classes again.
 
 import { type Func, type Local, type Module } from "../ir/nodes"
-import { unionRepr, type IntType, type StructType, type Type, type UnionType } from "../ir/types"
+import {
+    isSubclass,
+    methodSlot,
+    unionRepr,
+    type IntType,
+    type StructType,
+    type Type,
+    type UnionType,
+} from "../ir/types"
 import { StackPlan, type SlotNode } from "../opt/escape"
 import { EmitOptions, FN, IFACE, STR, Storage, type Breakable, type Disposal } from "./context"
 import { boxed } from "./helpers"
@@ -45,6 +55,9 @@ export class Emitter {
     globals = new Set<Local>()
 
     plan = new StackPlan()
+
+    /** The classes whose instances start with a pointer to their class table, by id; see `classTables`. */
+    tables = new Map<int, bool>()
 
     file = ""
 
@@ -116,11 +129,51 @@ export class Emitter {
         if (!this.defs.has(name)) {
             this.defs.set(name, "")
             const fields: string[] = []
+            // The pointer to the class table comes first.
+            if (this.tables.has(s.id)) fields.push("ptr")
             for (const f of s.fields) fields.push(this.mt(f.type))
             if (fields.length === 0) fields.push("i8")
             this.defs.set(name, `${name} = type { ${fields.join(", ")} }`)
         }
         return name
+    }
+
+    /** The index of a field in the LLVM type of a struct, after the class table's pointer if there is one. */
+    fieldIndex(s: StructType, name: string): int {
+        let index = -1
+        for (let i = 0; i < s.fields.length && index === -1; i++) if (s.fields[i].name === name) index = i
+        return index + (this.tables.has(s.id) ? 1 : 0)
+    }
+
+    /** Points a new instance of a class with a class table to it. */
+    setTable(object: V, s: StructType) {
+        if (this.tables.has(s.id)) this.b.emit(`store ptr @vt.${s.id}, ptr ${object.v}`)
+    }
+
+    /** The function in the class table of an instance, in the slot of a method. */
+    virtualMethod(object: V, func: Func): V {
+        const table = this.b.value("ptr", `load ptr, ptr ${object.v}`)
+        const entry = this.b.value("ptr", `getelementptr ptr, ptr ${table.v}, i64 ${methodSlot(func) + 1}`)
+        return this.b.value("ptr", `load ptr, ptr ${entry.v}`)
+    }
+
+    /** The classes with a class table whose instances are instances of `s`: `s` and its subclasses. */
+    subclasses(s: StructType): StructType[] {
+        const found: StructType[] = []
+        for (const t of this.module.structs) if (this.tables.has(t.id) && isSubclass(t, s)) found.push(t)
+        return found
+    }
+
+    /** Whether an instance of a class with a class table is an instance of `s`: its table is that of `s` or of a subclass. */
+    classIs(object: V, s: StructType): V {
+        const table = this.b.value("ptr", `load ptr, ptr ${object.v}`)
+        let result: V = { ty: "i1", v: "false" }
+        const classes = this.subclasses(s)
+        for (let i = 0; i < classes.length; i++) {
+            const test = this.b.value("i1", `icmp eq ptr ${table.v}, @vt.${classes[i].id}`)
+            result = i === 0 ? test : this.b.value("i1", `or i1 ${result.v}, ${test.v}`)
+        }
+        return result
     }
 
     unionType(u: UnionType): string {

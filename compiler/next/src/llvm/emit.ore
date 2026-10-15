@@ -2,10 +2,11 @@
 // together. Ported from compiler/codegen/src/emit.ts.
 
 import { type Module } from "../ir/nodes"
+import { classTables } from "../ir/types"
 import { inlineCalls } from "../opt/inline"
 import { planStack } from "../opt/escape"
 import { Emitter } from "./base"
-import { itab } from "./collections"
+import { classTable, itab } from "./collections"
 import { ARRAY, EmitOptions, FN, FRAME, IFACE, MAP, STR } from "./context"
 import { declareExtern, emitFunction } from "./functions"
 import { findGlobals } from "./helpers"
@@ -38,6 +39,7 @@ export function emit(g: Emitter): string {
     g.decls.set("@ore_rt_top", "@ore_rt_top = external thread_local global ptr")
     g.decls.set("@llvm.threadlocal.address.p0", "declare ptr @llvm.threadlocal.address.p0(ptr)")
     g.plan = planStack(m)
+    g.tables = classTables(m.structs)
     for (const func of m.functions) {
         const attrs = func.attributes
         if (attrs === null) continue
@@ -62,6 +64,7 @@ export function emit(g: Emitter): string {
         )
     }
     for (const t of m.itabs) g.out.push(itab(g, t))
+    for (const s of m.structs) if (g.tables.has(s.id)) g.out.push(classTable(g, s))
     for (const func of m.functions) {
         if (func.extern) {
             declareExtern(g, func)

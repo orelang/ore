@@ -17,6 +17,7 @@ import {
 import {
     findField,
     isStringLike,
+    isSubclass,
     sameType,
     typeKey,
     typeofName,
@@ -117,6 +118,7 @@ export function expr(g: Emitter, e: Expr): V {
             const receiver = expr(g, e.receiver)
             const args: V[] = [receiver]
             for (const a of e.args) args.push(expr(g, a))
+            if (e.virtual) return callIndirect(g, g.virtualMethod(receiver, e.func).v, g.lt(e.type), args)
             return callDirect(g, e.func.name, g.lt(e.type), args)
         }
         case "builtin":
@@ -194,10 +196,9 @@ export function expr(g: Emitter, e: Expr): V {
             const s = g.structType(e.type)
             const object = slot(g, e) ?? g.alloc(s).v
             for (const f of e.fields) {
-                let index = -1
-                for (let i = 0; i < e.type.fields.length && index === -1; i++)
-                    if (e.type.fields[i].name === f.name) index = i
-                g.store(expr(g, f.value), g.field(object, s, index), e.type.fields[index].type)
+                const field = findField(e.type, f.name)
+                if (field === null) process.panic(`no field ${f.name}`)
+                g.store(expr(g, f.value), g.field(object, s, g.fieldIndex(e.type, f.name)), field.type)
             }
             return { ty: "ptr", v: object }
         }
@@ -205,9 +206,11 @@ export function expr(g: Emitter, e: Expr): V {
             const object = expr(g, e.object)
             return g.load(fieldPtr(g, object.v, structOf(e.object.type), e.name), e.type)
         }
-        case "alloc":
-            if (g.at) return { ty: "ptr", v: "%mem" }
-            return g.alloc(g.structType(e.type))
+        case "alloc": {
+            const object: V = g.at ? { ty: "ptr", v: "%mem" } : g.alloc(g.structType(e.type))
+            g.setTable(object, e.type)
+            return object
+        }
         case "to-iface": {
             const value = expr(g, e.value)
             const itab = e.itab
@@ -271,23 +274,31 @@ export function expr(g: Emitter, e: Expr): V {
         }
         case "is": {
             const v = expr(g, e.value)
-            const id = g.i64(typeId(e.member))
-            if (e.value.type.kind === "interface") return ifaceIs(g, v, id)
+            const member = e.member
+            if (e.value.type.kind === "struct") return g.classIs(v, structOf(member))
+            if (e.value.type.kind === "interface") return ifaceIs(g, v, structOf(member))
             const u = unionOf(e.value.type)
             const via = e.via
-            if (via === null) return slotTest(g, u, v, memberIndex(u, e.member))
-            const i = memberIndex(u, via)
-            return choose(
-                g,
-                slotTest(g, u, v, i),
-                () => ifaceIs(g, payload(g, u, v, i), id),
-                () => ({ ty: "i1", v: "false" }),
-                "i1",
-            )
+            if (via !== null) {
+                const i = memberIndex(u, via)
+                return choose(
+                    g,
+                    slotTest(g, u, v, i),
+                    () => ifaceIs(g, payload(g, u, v, i), structOf(member)),
+                    () => ({ ty: "i1", v: "false" }),
+                    "i1",
+                )
+            }
+            if (member.kind !== "struct") return slotTest(g, u, v, memberIndex(u, member))
+            return unionIs(g, u, v, member)
         }
         case "downcast": {
             const v = expr(g, e.value)
-            check(g, ifaceIs(g, v, g.i64(typeId(e.type))), `value is not a ${e.type.name ?? "undefined"}`)
+            if (e.value.type.kind === "struct") {
+                check(g, g.classIs(v, e.type), `value is not a ${e.type.name ?? "undefined"}`)
+                return v
+            }
+            check(g, ifaceIs(g, v, e.type), `value is not a ${e.type.name ?? "undefined"}`)
             return g.extract(v, 0, "ptr")
         }
         case "map":
@@ -330,9 +341,7 @@ export function expr(g: Emitter, e: Expr): V {
 }
 
 export function fieldPtr(g: Emitter, object: string, s: StructType, name: string): string {
-    let index = -1
-    for (let i = 0; i < s.fields.length && index === -1; i++) if (s.fields[i].name === name) index = i
-    return g.field(object, g.structType(s), index)
+    return g.field(object, g.structType(s), g.fieldIndex(s, name))
 }
 
 /** A pointer to a constant array of `ty` elements. */
@@ -714,17 +723,94 @@ export function ifaceField(g: Emitter, value: V, index: int): string {
     return g.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${offset.v}`).v
 }
 
-/** Whether an interface value refers to an instance of the struct with type id `id`: entry 0 of its table. */
-export function ifaceIs(g: Emitter, value: V, id: V): V {
+/**
+ * Whether an interface value refers to an instance of class `s`: entry 0
+ * of its table is the id of the class it was converted from, which for a
+ * class with a class table may be a base class of the instance's.
+ */
+export function ifaceIs(g: Emitter, value: V, s: StructType): V {
     const table = g.extract(value, 1, "ptr")
     const present = g.b.value("i1", `icmp ne ptr ${table.v}, null`)
+    if (!g.tables.has(s.id)) {
+        return choose(
+            g,
+            present,
+            () => g.b.value("i1", `icmp eq i64 ${g.b.value("i64", `load i64, ptr ${table.v}`).v}, ${typeId(s)}`),
+            () => ({ ty: "i1", v: "false" }),
+            "i1",
+        )
+    }
+    const related: StructType[] = []
+    for (const t of g.module.structs) if (g.tables.has(t.id) && (isSubclass(t, s) || isSubclass(s, t))) related.push(t)
     return choose(
         g,
         present,
-        () => g.b.value("i1", `icmp eq i64 ${g.b.value("i64", `load i64, ptr ${table.v}`).v}, ${id.v}`),
+        () => {
+            const id = g.b.value("i64", `load i64, ptr ${table.v}`)
+            let known: V = { ty: "i1", v: "false" }
+            for (let i = 0; i < related.length; i++) {
+                const test = g.b.value("i1", `icmp eq i64 ${id.v}, ${typeId(related[i])}`)
+                known = i === 0 ? test : g.b.value("i1", `or i1 ${known.v}, ${test.v}`)
+            }
+            return choose(
+                g,
+                known,
+                () => g.classIs(g.extract(value, 0, "ptr"), s),
+                () => ({ ty: "i1", v: "false" }),
+                "i1",
+            )
+        },
         () => ({ ty: "i1", v: "false" }),
         "i1",
     )
+}
+
+/**
+ * Whether a union value holds an instance of class `s`: in the slot of `s`
+ * or of a subclass, or in the slot of a base class with the class table of
+ * `s` or of a subclass.
+ */
+export function unionIs(g: Emitter, u: UnionType, v: V, s: StructType): V {
+    let result: V = { ty: "i1", v: "false" }
+    let first = true
+    for (let i = 0; i < u.members.length; i++) {
+        const m = u.members[i]
+        if (m.kind !== "struct") continue
+        let test: V
+        if (isSubclass(m, s)) test = slotTest(g, u, v, i)
+        else if (isSubclass(s, m))
+            test = choose(
+                g,
+                slotTest(g, u, v, i),
+                () => g.classIs(payload(g, u, v, i), s),
+                () => ({ ty: "i1", v: "false" }),
+                "i1",
+            )
+        else continue
+        result = first ? test : g.b.value("i1", `or i1 ${result.v}, ${test.v}`)
+        first = false
+    }
+    return result
+}
+
+/** A union value holding an instance of a subclass of class `to`, as a `to`; other members panic. */
+export function recastToBase(g: Emitter, v: V, from: UnionType, to: StructType): V {
+    const result = g.b.alloca("ptr")
+    const end = g.b.label("recast")
+    for (let i = 0; i < from.members.length; i++) {
+        const m = from.members[i]
+        if (m.kind !== "struct" || !isSubclass(m, to)) continue
+        const here = g.b.label("rmember")
+        const next = g.b.label("rnext")
+        g.b.condBr(slotTest(g, from, v, i), here, next)
+        g.b.start(here)
+        g.b.emit(`store ptr ${payload(g, from, v, i).v}, ptr ${result}`)
+        g.b.br(end)
+        g.b.start(next)
+    }
+    g.panic(`value is not of type ${typeToString(to)}`)
+    g.b.start(end)
+    return g.b.value("ptr", `load ptr, ptr ${result}`)
 }
 
 /** Converts between a union and its members; narrowing panics on a member the target lacks. */
@@ -769,6 +855,8 @@ export function recaster(g: Emitter, from: UnionType, to: Type): string {
 
 /** Converts a union to a member or to another union, in place; narrowing panics on a member the target lacks. */
 export function recastInline(g: Emitter, v: V, from: UnionType, to: Type): V {
+    // A union of subclasses of a class, as that class.
+    if (to.kind === "struct" && memberIndex(from, to) === -1) return recastToBase(g, v, from, to)
     if (to.kind !== "union") {
         const i = memberIndex(from, to)
         const message =
@@ -976,8 +1064,11 @@ export function sharedField(g: Emitter, u: UnionType, name: string, type: Type):
     let index = -1
     for (let i = 0; i < first.fields.length && index === -1; i++) if (first.fields[i].name === name) index = i
     if (index === -1) return -1
+    // After the pointer to the class table, when the members have one.
+    const offset = g.tables.has(first.id) ? 1 : 0
     for (const m of u.members) {
         if (m.kind !== "struct" || m.fields.length <= index || m.fields[index].name !== name) return -1
+        if ((g.tables.has(m.id) ? 1 : 0) !== offset) return -1
         for (let i = 0; i <= index; i++) if (g.mt(m.fields[i].type) !== g.mt(first.fields[i].type)) return -1
         const t = m.fields[index].type
         const same =
@@ -988,7 +1079,7 @@ export function sharedField(g: Emitter, u: UnionType, name: string, type: Type):
                 memberIndex(type, t) !== -1)
         if (!same || g.mt(t) !== g.mt(type)) return -1
     }
-    return index
+    return index + offset
 }
 
 /** The function reading a field common to the members of a union: `@ore.ufield.<union>.<field>.<type>`. */

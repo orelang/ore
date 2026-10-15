@@ -9,12 +9,13 @@ the compiler in Ore are in [`compiler/next/test`](../compiler/next/test).
 ci/test.sh                    # everything
 ci/test.sh run/basics/ fmt/   # the cases whose names start with these
 ORE_BLESS=1 ci/test.sh run/   # rewrite the .out files from the actual output
+ci/bootstrap.sh /tmp/ore && ORE=/tmp/ore/ore ci/test.sh   # without Bun
 ```
 
-[`ci/test.sh`](../ci/test.sh) needs no Bun once `$ORE` names an Ore compiler:
-it builds the runner, [`runner/main.ore`](runner/main.ore), with
-`$ORE build` (`bun run ore`, the TypeScript compiler, by default; the
-bootstrap compiler later), keeps it in `~/.cache/ore/test` by a hash of its
+[`ci/test.sh`](../ci/test.sh) needs no Bun once `$ORE` names an Ore compiler,
+such as the `ore` that [`ci/bootstrap.sh`](../ci/bootstrap.sh) builds: it
+builds the runner, [`runner/main.ore`](runner/main.ore), with `$ORE build`
+(`bun run ore`, the TypeScript compiler, by default), keeps it in `~/.cache/ore/test` by a hash of its
 sources, and runs it from the root of the repository. The runner holds the
 compiler in Ore (`compiler/next/src`): it compiles the test programs in its
 own process, in one task per CPU, and runs them. Each case runs as a test of
@@ -60,7 +61,8 @@ The other cases of the runner:
   output. `runner --variant NAME FILE` prints a variant. Each file is checked
   in a process of its own (`runner --fmt FILE`): threads that allocate much
   in one process wait for each other's collections.
-- `selfhost/`: the compiler in Ore builds itself, and the result runs.
+- `selfhost/`: the compiler in Ore builds itself, and the `ore` it builds
+  formats a file and builds a program that runs.
 - `watchdog/`: `ORE_WATCHDOG` reports a program blocked on its input.
 - `object/`: an executable from LLVM IR and C sources, and IR that does not
   verify.

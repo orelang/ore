@@ -33,6 +33,7 @@ import {
     intRange,
     isNumeric,
     isStringLike,
+    isSubclass,
     membersOf,
     sameType,
     typeKey,
@@ -63,10 +64,11 @@ import {
 import { type Source } from "../syntax/source"
 import { type Program } from "../project/load"
 import { bigGt, bigLt, bigOf, bigOfU64, bigText, bigToF64, bigToI64 } from "./bigint"
-import { conformance, itab } from "./classes"
+import { conformance, itab, resolveBase } from "./classes"
 import {
     type Accessor,
     type ClassInfo,
+    type Dispatch,
     type Fact,
     type FuncContext,
     type GenericMethod,
@@ -184,6 +186,15 @@ export class Checker {
 
     /** Getters and setters of classes by property name. */
     readonly accessors = new Map<StructType, Map<string, Accessor>>()
+
+    /** Every class and generic class instance, in order of declaration, by the id of its type. */
+    readonly classInfos = new Map<int, ClassInfo>()
+
+    /** Abstract methods, by the class that declares them. */
+    readonly abstractMethods = new Map<Func, StructType>()
+
+    /** Calls and bound values of class methods, marked `virtual` once every class is known if a subclass overrides the method. */
+    readonly dispatches: Dispatch[] = []
 
     /** Generic methods of classes by name, instantiated per call like generic functions. */
     readonly genericMethods = new Map<StructType, Map<string, GenericMethod>>()
@@ -493,6 +504,20 @@ export class Checker {
         let hasString = false
         for (const m of members_) if (m.kind === "string") hasString = true
         if (hasString) members_ = members_.filter((m) => m.kind !== "literal")
+        // A class includes its subclasses: `A | B` is `A` when `B extends A`.
+        if (members_.filter((m) => m.kind === "struct").length > 1) {
+            for (const m of members_) {
+                const info = m.kind === "struct" ? this.classInfos.get(m.id) : null
+                if (info !== null) resolveBase(this, info)
+            }
+            const all = members_
+            const isSub = (m: Type): bool => {
+                if (m.kind !== "struct") return false
+                const s = m
+                return all.some((n) => n !== s && n.kind === "struct" && isSubclass(s, n))
+            }
+            if (all.some(isSub)) members_ = all.filter((m) => !isSub(m))
+        }
         if (members_.length === 0) return types.never
         if (members_.length === 1) return members_[0]
         members_.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0))
@@ -559,6 +584,8 @@ export class Checker {
                 const expr = value.expr
                 const from = typeOf(expr)
                 if (sameType(from, target) || from.kind === "never") return expr
+                // An instance of a subclass is an instance of its base classes, as it is.
+                if (from.kind === "struct" && target.kind === "struct" && isSubclass(from, target)) return expr
                 const targetMembers = membersOf(target)
                 // A string literal expression has the literal type its context asks for.
                 if (expr.k === "string") {
@@ -582,6 +609,15 @@ export class Checker {
                 if (
                     target.kind === "union" &&
                     membersOf(from).every((f) => targetMembers.some((m) => memberOf(f, m)))
+                ) {
+                    return new Recast(target, expr)
+                }
+                // A union of subclasses converts to their base class.
+                const base = target.kind === "struct" ? target : null
+                if (
+                    base !== null &&
+                    from.kind === "union" &&
+                    from.members.every((m) => m.kind === "struct" && isSubclass(m, base))
                 ) {
                     return new Recast(target, expr)
                 }

@@ -127,6 +127,28 @@ export function thunk(g: Emitter, func: Func): string {
     return name
 }
 
+/**
+ * A function with the signature of a method that calls the method in the
+ * class table of its receiver, for interface tables of a class whose
+ * method a subclass overrides.
+ */
+export function virtualThunk(g: Emitter, func: Func): string {
+    const name = globalName(`${func.name}.virtual`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const params: string[] = ["ptr %this"]
+    for (let i = 0; i < func.params.length; i++) params.push(`${g.lt(func.params[i].type)} %a${i}`)
+    const ret = g.lt(func.type.result)
+    helper(g, name, `define internal ${ret} ${name}(${params.join(", ")})`, (e) => {
+        const self: V = { ty: "ptr", v: "%this" }
+        const args: V[] = [self]
+        for (let i = 0; i < func.params.length; i++) args.push({ ty: e.lt(func.params[i].type), v: `%a${i}` })
+        const r = callIndirect(e, e.virtualMethod(self, func).v, ret, args)
+        e.b.terminate(ret === "void" ? "ret void" : `ret ${ret} ${r.v}`)
+    })
+    return name
+}
+
 /** A method bound to its receiver: the environment holds the receiver, a thunk calls the method. */
 export function bound(g: Emitter, e: BoundMethod): V {
     const type = e.type
@@ -136,7 +158,7 @@ export function bound(g: Emitter, e: BoundMethod): V {
     const index = known ?? 0
     const name =
         method !== null
-            ? globalName(`${method.name}.bound`)
+            ? globalName(`${method.name}.${e.virtual ? "vbound" : "bound"}`)
             : globalName(`iface.bound.${typeKey(type)}.${known !== null ? `${known}` : "undefined"}`)
     if (!g.helpers.has(name)) {
         g.helpers.set(name, "")
@@ -148,7 +170,11 @@ export function bound(g: Emitter, e: BoundMethod): V {
             for (let i = 0; i < type.params.length; i++) args.push({ ty: x.lt(type.params[i]), v: `%a${i}` })
             const self = x.b.value(receiverType, `load ${receiverType}, ptr %env`)
             let r: V
-            if (method !== null) {
+            if (method !== null && e.virtual) {
+                const all: V[] = [self]
+                for (const a of args) all.push(a)
+                r = callIndirect(x, x.virtualMethod(self, method).v, ret, all)
+            } else if (method !== null) {
                 const all: V[] = [self]
                 for (const a of args) all.push(a)
                 r = callDirect(x, method.name, ret, all)

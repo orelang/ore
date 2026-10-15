@@ -25,9 +25,17 @@ export function typeId(s: ir.StructType): number {
   return s.id + 1
 }
 
-/** The member of a union that holds values of a type; a string literal also fits `string`. */
+/** The member of a union that holds values of a type; a string literal also fits `string`, and an instance of a class its base class. */
 export function memberIndex(u: UnionType, type: Type): number {
   const exact = u.members.findIndex((m) => ir.sameType(m, type))
-  if (exact !== -1 || type.kind !== "literal") return exact
+  if (exact !== -1) return exact
+  if (type.kind === "struct") {
+    for (let base = type.base; base !== undefined; base = base.base) {
+      const index = u.members.indexOf(base)
+      if (index !== -1) return index
+    }
+    return -1
+  }
+  if (type.kind !== "literal") return exact
   return u.members.findIndex((m) => m.kind === "string")
 }

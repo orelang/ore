@@ -68,6 +68,10 @@ export interface FuncContext {
   fieldInit?: boolean
   /** Checking the top-level code of a module. */
   topLevel?: boolean
+  /** In the constructor of a class with a base class: the `super(...)` call it must make. */
+  superCall?: ts.CallExpression
+  /** What `super(...)` runs after the base class's initialization: the parameter properties and field initializers of the class. */
+  superInits?: ir.Expr[]
   /** Enclosing loops and switches, innermost last. */
   loops: LoopContext[]
   nextLoopId: number
@@ -89,7 +93,38 @@ export interface ClassInfo {
   paramProps: ir.Local[]
   ctorDecl?: ts.ConstructorDeclaration
   ctorThis: ir.Local
+  /** The parameters of the constructor, which its body uses; once `init` exists, the constructor itself has copies. */
+  ctorParams: ir.Local[]
   methods: [ts.MethodDeclaration | ts.AccessorDeclaration, ir.Func][]
+  /** Declared `abstract`: cannot be instantiated. */
+  abstract: boolean
+  /** The `extends` clause: not resolved yet, being resolved, or resolved into `type.base`. */
+  baseState: "none" | "resolving" | "done"
+  /** The members: not declared yet, being declared, or declared. */
+  members: "pending" | "declaring" | "done"
+  /** Subclasses that wait for the members of this class, being declared, to declare theirs. */
+  waiting: ClassInfo[]
+  /** The field initializers are checked, and the types of fields without annotations known. */
+  initsChecked: boolean
+  /**
+   * For a class with subclasses: the initialization of an allocated instance
+   * (parameter properties, field initializers, constructor body), which the
+   * constructor and `super(...)` of the subclasses call.
+   */
+  init?: ir.Func
+  /** Names of the members declared `protected` by this class. */
+  protected: Set<string>
+}
+
+/** The modifiers of a class member. */
+export interface MemberFlags {
+  private: boolean
+  protected: boolean
+  readonly: boolean
+  abstract: boolean
+  override: boolean
+  /** Any modifier: a constructor parameter with one declares a field. */
+  any: boolean
 }
 
 /** A property defined by a getter, a setter, or both. */

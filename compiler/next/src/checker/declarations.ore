@@ -69,18 +69,13 @@ import {
     checkFieldInitializers,
     checkImplements,
     checkMethodBody,
+    classInfo,
     declareClassMembers,
     fillInterface,
     makeMethod,
+    resolveBase,
 } from "./classes"
-import {
-    type ClassInfo as ClassInfoType,
-    type ModuleInfo,
-    ClassInfo,
-    Directive,
-    InterfaceInfo,
-    Signature,
-} from "./context"
+import { type ClassInfo as ClassInfoType, type ModuleInfo, Directive, InterfaceInfo, Signature } from "./context"
 import { checkExpr } from "./expressions"
 import {
     cIdent,
@@ -870,7 +865,8 @@ export function instantiate(c: Checker, generic: Generic, args: Type[], node: No
     c.instanceOf.set(type, new InstanceInfo(generic, args))
     c.module.structs.push(type)
     c.memberDecls.set(type, new Map<string, Node>())
-    const info = new ClassInfo(decl, type, scope, cname, [], [], c.newLocal("this", type, false), [])
+    const info = classInfo(c, decl, type, scope, cname)
+    resolveBase(c, info)
     declareClassMembers(c, info, scope)
     c.pending.push(
         inContext(c, label, () => {

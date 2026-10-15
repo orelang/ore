@@ -511,7 +511,8 @@ export abstract class DeclarationChecker extends CheckerBase {
     this.instanceOf.set(type, { generic, args })
     this.module.structs.push(type)
     this.memberDecls.set(type, new Map())
-    const info: ClassInfo = { decl, type, scope, cname, inits: [], paramProps: [], ctorThis: this.newLocal("this", type, false), methods: [] }
+    const info = this.classInfo(decl, type, scope, cname)
+    this.resolveBase(info)
     this.declareClassMembers(info, scope)
     this.pending.push(
       inContext(() => {
