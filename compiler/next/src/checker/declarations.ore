@@ -66,7 +66,7 @@ import { type Checker, structOrInterface } from "./base"
 import { conformance, checkClassBodies, checkFieldInitializers, checkImplements, checkMethodBody, declareClassMembers, fillInterface, makeMethod } from "./classes"
 import { type ClassInfo as ClassInfoType, type ModuleInfo, ClassInfo, Directive, InterfaceInfo, Signature } from "./context"
 import { checkExpr } from "./expressions"
-import { cIdent, directiveKind, directiveNames, fieldType, isCName, isLiteral, memberOf, mentions, methodType, paramName, terminates, visitLocals, typed } from "./helpers"
+import { cIdent, directiveKind, directiveNames, fieldType, isCName, isLiteral, memberOf, mentions, methodType, paramName, strictReserved, terminates, visitLocals, typed } from "./helpers"
 import { type Operand, Typed } from "./operand"
 import { checkBlock, checkClosure, bindPattern } from "./statements"
 import {
@@ -790,6 +790,10 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
             inferFrom(c, typeArgs[1], type.value, names, bindings, scope)
             return
         }
+        if (name === "Set" && typeArgs.length === 1 && type.kind === "set") {
+            inferFrom(c, typeArgs[0], type.elem, names, bindings, scope)
+            return
+        }
         const symbol = scope.lookupType(name)
         const generic = symbol === null ? null : symbol.generic
         if (typeArgs.length === 0 || generic === null) return
@@ -1128,6 +1132,29 @@ export function checkTopLevelConstants(c: Checker, stmt: Node, scope: Scope): bo
         if (!scope.declareValue(k.name.text, new ConstSymbol(k.value, k.type, k.decl))) c.error(k.name, `Duplicate declaration '${k.name.text}'.`)
     }
     return true
+}
+
+/**
+ * Reports the names that strict mode reserves (`private`, `static`, `let`...)
+ * where they declare a binding, as TypeScript does: Ore modules are always
+ * in strict mode. Property names may be any word, reserved or not.
+ */
+export function checkStrictNames(c: Checker, node: Node, inClass: bool) {
+    const k = node.kind
+    const named =
+        k === "Parameter" ||
+        k === "VariableDeclaration" ||
+        k === "BindingElement" ||
+        k === "FunctionDeclaration" ||
+        k === "FunctionExpression" ||
+        k === "ClassDeclaration"
+    const nested = inClass || k === "ClassDeclaration"
+    const name = named ? node.child("name") : null
+    if (name !== null && name.kind === "Identifier" && strictReserved.includes(name.text)) {
+        const reason = nested ? "Class definitions are automatically in strict mode." : "Modules are automatically in strict mode."
+        c.error(name, `Identifier expected. '${name.text}' is a reserved word in strict mode. ${reason}`)
+    }
+    for (const child of node.children) checkStrictNames(c, child, nested)
 }
 
 export function unsupportedTopLevel(stmt: Node): string {

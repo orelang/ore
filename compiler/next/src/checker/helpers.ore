@@ -13,6 +13,7 @@ import {
     FloatLit,
     IntLit,
     MapOp,
+    SetOp,
     NullLit,
     Recast,
     StringLit,
@@ -26,11 +27,13 @@ import {
     arrayOf,
     findField,
     findMethod,
+    isNumeric,
     isStringLike,
     membersOf,
     sameType,
     types,
     typeToString,
+    unionRepr,
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { isIdentifier, nameNode, typeName } from "../syntax/nodes"
@@ -112,6 +115,8 @@ function buildStringMethods(): Map<string, StringMethodSig> {
     m.set("padStart", new StringMethodSig([types.i64, types.string], 1, types.string))
     m.set("padEnd", new StringMethodSig([types.i64, types.string], 1, types.string))
     m.set("substring", new StringMethodSig([types.i64, types.i64], 1, types.string))
+    // `int | null`: the checker makes the union.
+    m.set("codePointAt", new StringMethodSig([types.i64], 0, types.i64))
     return m
 }
 
@@ -152,6 +157,12 @@ export const nullOperand: Expr = new NullLit(types.null)
 
 /** The member name of `[Symbol.dispose]`. */
 export const disposeName = "[Symbol.dispose]"
+
+/** The words that strict mode reserves, which cannot name bindings in Ore. */
+export const strictReserved = ["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield"]
+
+/** The error of an index signature (`[key: string]: T`) in an interface, an object type or a class. */
+export const indexSignatureMessage = "Index signatures are not supported. Use a 'Map<K, V>'."
 
 export function isSymbolDispose(node: Node): bool {
     if (node.kind !== "PropertyAccessExpression") return false
@@ -343,6 +354,22 @@ export function hasZeroValue(type: Type): bool {
     return type.kind !== "struct" && type.kind !== "interface" && type.kind !== "chan" && type.kind !== "func"
 }
 
+/** Whether values of a type can be Map keys and Set elements: numbers and strings by value, references by identity. */
+export function hashable(type: Type): bool {
+    const k = type.kind
+    return isNumeric(type) || k === "bool" || k === "string" || k === "literal" || k === "struct" || k === "array" || k === "interface" || k === "map" || k === "set"
+}
+
+/**
+ * Whether the zero value of a type is not all zero bits, so that a field
+ * without an initializer is set to it by the constructor: `""`, `[]`, a new
+ * map, or the null of a tagged union.
+ */
+export function zeroNeedsInit(type: Type): bool {
+    if (type.kind === "union") return hasZeroValue(type) && unionRepr(type).k === "tagged"
+    return type.kind === "string" || type.kind === "array" || type.kind === "map" || type.kind === "set"
+}
+
 export function zeroValue(type: Type): Expr {
     switch (type.kind) {
         case "int":
@@ -357,6 +384,8 @@ export function zeroValue(type: Type): Expr {
             return new ArrayLit(type, [])
         case "map":
             return new MapOp("new", type, type)
+        case "set":
+            return new SetOp("new", type, type)
         case "union":
             return new NullLit(type)
         case "ptr":
@@ -647,6 +676,13 @@ export function visitLocalsExpr(e: Expr, visit: (local: Local) => void) {
             if (map !== null) visitLocalsExpr(map, visit)
             const key = e.key
             if (key !== null) visitLocalsExpr(key, visit)
+            const value = e.value
+            if (value !== null) visitLocalsExpr(value, visit)
+            return
+        }
+        case "set": {
+            const set = e.set
+            if (set !== null) visitLocalsExpr(set, visit)
             const value = e.value
             if (value !== null) visitLocalsExpr(value, visit)
             return

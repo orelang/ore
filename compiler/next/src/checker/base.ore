@@ -26,6 +26,7 @@ import {
     FuncType,
     LiteralType,
     MapType,
+    SetType,
     StructType,
     UnionType,
     arrayOf,
@@ -76,7 +77,7 @@ import {
     CheckInfo,
 } from "./context"
 import { instantiate } from "./declarations"
-import { disposeName, floatLit, isSymbolDispose, memberOf, poison, typeOf } from "./helpers"
+import { disposeName, floatLit, hashable, indexSignatureMessage, isSymbolDispose, memberOf, poison, typeOf } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
 import { type Generic, type TypeSymbol, Scope } from "./symbols"
 
@@ -265,6 +266,14 @@ export class Checker {
                 const value = this.resolveValueType(typeArgs[1], scope)
                 return key !== null && value !== null ? this.mapOf(key, value, typeArgs[0]) : null
             }
+            if (isIdentifier(name) && name.text === "Set" && scope.lookupType("Set") === null) {
+                if (typeArgs.length !== 1) {
+                    this.error(node, "'Set' expects exactly 1 type argument.")
+                    return null
+                }
+                const elem = this.resolveValueType(typeArgs[0], scope)
+                return elem !== null ? this.setOf(elem, typeArgs[0]) : null
+            }
             if (isIdentifier(name) && name.text === "Chan" && scope.lookupType("Chan") === null) {
                 if (typeArgs.length !== 1) {
                     this.error(node, "'Chan' expects exactly 1 type argument.")
@@ -367,7 +376,12 @@ export class Checker {
         const fields: Field[] = []
         for (const member of members(node)) {
             if (member.kind !== "PropertySignature") {
-                this.error(member, member.kind === "MethodSignature" ? "Methods in object types are not supported yet. Use an interface." : "Only properties are supported in object types.")
+                this.error(
+                    member,
+                    member.kind === "MethodSignature" ? "Methods in object types are not supported yet. Use an interface."
+                    : member.kind === "IndexSignature" ? indexSignatureMessage
+                    : "Only properties are supported in object types.",
+                )
                 continue
             }
             const name = this.memberName(nameNode(member))
@@ -401,13 +415,19 @@ export class Checker {
     }
 
     mapOf(key: Type, value: Type, node: Node): MapType | null {
-        const k = key.kind
-        const hashable = isNumeric(key) || k === "bool" || k === "string" || k === "literal" || k === "struct" || k === "array" || k === "interface" || k === "map"
-        if (!hashable) {
+        if (!hashable(key)) {
             this.error(node, `Type '${typeToString(key)}' cannot be a Map key.`)
             return null
         }
         return new MapType(key, value)
+    }
+
+    setOf(elem: Type, node: Node): SetType | null {
+        if (!hashable(elem)) {
+            this.error(node, `Type '${typeToString(elem)}' cannot be an element of a Set.`)
+            return null
+        }
+        return new SetType(elem)
     }
 
     literal(value: string): LiteralType {

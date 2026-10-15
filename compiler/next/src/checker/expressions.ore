@@ -34,6 +34,7 @@ import {
     LocalRef,
     Logical,
     MapOp,
+    SetOp,
     MethodCall,
     Not,
     ObjectLit,
@@ -303,7 +304,7 @@ function typedExpr(value: Operand): Expr {
 function isEquatable(type: Type): bool {
     if (isNumeric(type)) return true
     const k = type.kind
-    return k === "bool" || k === "string" || k === "array" || k === "struct" || k === "interface" || k === "union" || k === "map" || k === "literal" || k === "func" || k === "ptr" || k === "chan"
+    return k === "bool" || k === "string" || k === "array" || k === "struct" || k === "interface" || k === "union" || k === "map" || k === "set" || k === "literal" || k === "func" || k === "ptr" || k === "chan"
 }
 
 export function compare(c: Checker, op: CompareOp, l: Operand, r: Operand, opNode: Node, leftNode: Node, rightNode: Node): Operand {
@@ -860,6 +861,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
     if (name === "length" && membersOf(type).every(isStringLike)) return typed(new Len(types.i64, new Recast(types.string, value)))
     if (name === "size" && type.kind === "map") return typed(new MapOp("size", types.i64, type, value))
+    if (name === "size" && type.kind === "set") return typed(new SetOp("size", types.i64, type, value))
     const property = accessor(c, type, name)
     if (property !== null && type.kind === "struct") {
         defineMember(c, nameNode_, type.id, name)

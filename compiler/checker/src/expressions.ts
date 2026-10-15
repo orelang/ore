@@ -244,7 +244,7 @@ export abstract class ExpressionChecker extends StatementChecker {
       return this.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(r))}'.`)
     }
     const ordered = op !== "===" && op !== "!=="
-    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "literal", "func", "ptr", "chan"].includes(type.kind)
+    const equatable = isNumeric(type) || ["bool", "string", "array", "struct", "interface", "union", "map", "set", "literal", "func", "ptr", "chan"].includes(type.kind)
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !equatable) {
       return this.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
@@ -662,6 +662,7 @@ export abstract class ExpressionChecker extends StatementChecker {
       return typed({ k: "len", type: types.i64, value: { k: "recast", type: types.string, value } })
     }
     if (name === "size" && value.type.kind === "map") return typed({ k: "map", op: "size", type: types.i64, mapType: value.type, map: value })
+    if (name === "size" && value.type.kind === "set") return typed({ k: "set", op: "size", type: types.i64, setType: value.type, set: value })
     const property = this.accessor(value.type, name)
     if (property) {
       this.defineMember(nameNode, value.type as StructType, name)

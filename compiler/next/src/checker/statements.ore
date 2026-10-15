@@ -79,7 +79,7 @@ import {
 } from "../syntax/nodes"
 import { type Checker } from "./base"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
-import { directives, exportVariable, paramScope, prepend, checkReturns, threadLocal } from "./declarations"
+import { directives, exportVariable, paramScope, prepend, checkReturns, threadLocal, unsupportedTopLevel } from "./declarations"
 import { assignTarget, checkExpr, compare, interfaceFor, member, narrowTo, settle, writeAccessor } from "./expressions"
 import { disposeName, exits, fieldType, hasZeroValue, isTrue, paramName, poison, terminates, typed, typeOf, zeroValue } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
@@ -377,6 +377,8 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
             fn.pendingLabel = name
         }
         checkStmt(c, inner, scope, out)
+    } else if (stmt.kind === "EnumDeclaration") {
+        c.error(stmt, unsupportedTopLevel(stmt))
     } else {
         c.error(stmt, "This statement is not supported yet.")
     }
@@ -686,6 +688,7 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
         let elem: Type
         if (type.kind === "array") elem = type.elem
         else if (type.kind === "chan") elem = type.elem
+        else if (type.kind === "set") elem = type.elem
         else if (type.kind === "string") elem = types.i32
         else {
             c.error(expression(stmt), `Type '${typeToString(type)}' is not iterable.`)

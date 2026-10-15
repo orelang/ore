@@ -12,6 +12,7 @@ import {
   typeToString,
   type FuncType,
   type MapType,
+  type SetType,
   type ChanType,
   type StructType,
   type Type,
@@ -295,7 +296,7 @@ export abstract class CallChecker extends ExpressionChecker {
     if (typeArg && !explicit) return errorOperand
     const pointer = (arg: ts.Expression) => this.coerce(this.checkExpr(arg, scope, types.ptr), types.ptr, arg)
     const call = (type: Type, values: ir.Expr[], typeArgs: Type[] = []): Operand => typed({ k: "builtin", type, name, args: values, typeArgs })
-    const isReference = (t: Type) => t.kind === "struct" || t.kind === "array" || t.kind === "map" || t.kind === "chan"
+    const isReference = (t: Type) => t.kind === "struct" || t.kind === "array" || t.kind === "map" || t.kind === "set" || t.kind === "chan"
     const isAtomic = (t: Type) => t.kind === "int" || t.kind === "ptr"
 
     // `T` from the type argument, or else from the value argument at `index`.
@@ -421,6 +422,91 @@ export abstract class CallChecker extends ExpressionChecker {
     return typed({ k: "call-value", type: type.result, callee: callee.expr, args: values })
   }
 
+  /**
+   * `new Map<K, V>()`, or `new Map(entries)` from an array literal of
+   * `[key, value]` pairs, which become `set` calls in order; without type
+   * arguments or a context, the types are those of the first pair.
+   */
+  protected newMap(node: ts.NewExpression, scope: Scope, expected?: Type): Operand {
+    const args = node.arguments ?? []
+    if (args.length > 1) return this.fail(args[1]!, "'new Map' takes at most one argument: an array of [key, value] pairs.")
+    const entries = args[0]
+    if (entries && !ts.isArrayLiteralExpression(entries)) return this.fail(entries, "The entries of 'new Map' must be an array literal of [key, value] pairs.")
+    const pairs = entries?.elements ?? []
+    for (const pair of pairs) {
+      if (!ts.isArrayLiteralExpression(pair) || pair.elements.length !== 2 || pair.elements.some(ts.isSpreadElement)) {
+        return this.fail(pair, "An entry of 'new Map' must be a [key, value] pair.")
+      }
+    }
+    const pairOf = (i: number) => (pairs[i] as ts.ArrayLiteralExpression).elements
+    let type: MapType | undefined
+    // The first pair, checked to infer the types.
+    let first: [Operand, Operand] | undefined
+    if (node.typeArguments) {
+      if (node.typeArguments.length !== 2) return this.fail(node, "'Map' expects exactly 2 type arguments.")
+      const key = this.resolveValueType(node.typeArguments[0]!, scope)
+      const value = this.resolveValueType(node.typeArguments[1]!, scope)
+      type = key && value ? this.mapOf(key, value, node.typeArguments[0]!) : undefined
+    } else if (expected?.kind === "map") type = expected
+    else if (pairs.length > 0) {
+      const [k, v] = pairOf(0)
+      first = [this.checkExpr(k!, scope), this.checkExpr(v!, scope)]
+      if (first[0].k === "error" || first[1].k === "error") return errorOperand
+      const key = this.toDefault(first[0], k!)
+      const value = this.toDefault(first[1], v!)
+      type = this.mapOf(key.type, value.type, k!)
+      first = [typed(key), typed(value)]
+    } else return this.fail(node, "Cannot infer the types of the Map. Write 'new Map<K, V>()' or annotate the variable.")
+    if (!type) return errorOperand
+    let map: ir.Expr = { k: "map", op: "new", type, mapType: type }
+    for (let i = 0; i < pairs.length; i++) {
+      const [k, v] = pairOf(i)
+      const key = this.coerce(i === 0 && first ? first[0] : this.checkExpr(k!, scope, type.key), type.key, k!)
+      const value = this.coerce(i === 0 && first ? first[1] : this.checkExpr(v!, scope, type.value), type.value, v!)
+      map = { k: "map", op: "set", type, mapType: type, map, key, value }
+    }
+    return typed(map)
+  }
+
+  /**
+   * `new Set<T>()`, or `new Set(values)` from an array or another set; without
+   * a type argument or a context, the type is that of the elements.
+   */
+  protected newSet(node: ts.NewExpression, scope: Scope, expected?: Type): Operand {
+    const args = node.arguments ?? []
+    if (args.length > 1) return this.fail(args[1]!, "'new Set' takes at most one argument: an array or a set of values.")
+    let type: SetType | undefined
+    if (node.typeArguments) {
+      if (node.typeArguments.length !== 1) return this.fail(node, "'Set' expects exactly 1 type argument.")
+      const elem = this.resolveValueType(node.typeArguments[0]!, scope)
+      type = elem && this.setOf(elem, node.typeArguments[0]!)
+      if (!type) return errorOperand
+    } else if (expected?.kind === "set") type = expected
+    const source = args[0]
+    if (!source) {
+      if (!type) return this.fail(node, "Cannot infer the type of the Set. Write 'new Set<T>()' or annotate the variable.")
+      return typed({ k: "set", op: "new", type, setType: type })
+    }
+    // The values: an array (an array literal takes the element type as its context), or a set's values.
+    const operand = this.checkExpr(source, scope, type ? arrayOf(type.elem) : undefined)
+    if (operand.k === "error") return errorOperand
+    let values: ir.Expr
+    if (operand.k === "typed" && operand.expr.type.kind === "set") {
+      const from = type ? this.coerce(operand, type, source) : operand.expr
+      if (from.type.kind !== "set") return errorOperand
+      values = { k: "set", op: "values", type: arrayOf(from.type.elem), setType: from.type, set: from }
+    } else {
+      values = this.toDefault(operand, source)
+    }
+    if (values.type.kind !== "array") return this.fail(source, `'new Set' takes an array or a set of values, got '${typeToString(values.type)}'.`)
+    if (!type) {
+      type = this.setOf(values.type.elem, source)
+      if (!type) return errorOperand
+    }
+    const elems = this.coerce(typed(values), arrayOf(type.elem), source)
+    return typed({ k: "set", op: "new", type, setType: type, value: elems })
+  }
+
   protected checkNew(node: ts.NewExpression, scope: Scope, expected?: Type): Operand {
     const qualified = ts.isPropertyAccessExpression(node.expression)
     if (!ts.isIdentifier(node.expression) && !qualified) return this.fail(node.expression, "Only named classes can be instantiated.")
@@ -437,14 +523,8 @@ export abstract class CallChecker extends ExpressionChecker {
       const capacity = args[0] ? this.coerce(this.checkExpr(args[0], scope, types.i64), types.i64, args[0]) : ({ k: "int", type: types.i64, value: 0n } as const)
       return type ? typed({ k: "chan", op: "new", type, chanType: type, value: capacity }) : errorOperand
     }
-    if (name === "Map" && !symbol) {
-      if (node.arguments && node.arguments.length > 0) return this.fail(node.arguments[0]!, "'new Map' takes no arguments; add entries with 'set'.")
-      let type: MapType | undefined
-      if (node.typeArguments) type = this.resolveType(ts.factory.createTypeReferenceNode("Map", node.typeArguments), scope) as MapType | undefined
-      else if (expected?.kind === "map") type = expected
-      else return this.fail(node, "Cannot infer the types of the Map. Write 'new Map<K, V>()' or annotate the variable.")
-      return type ? typed({ k: "map", op: "new", type, mapType: type }) : errorOperand
-    }
+    if (name === "Map" && !symbol) return this.newMap(node, scope, expected)
+    if (name === "Set" && !symbol) return this.newSet(node, scope, expected)
     if (symbol && symbol.type === this.errorType) {
       if (ts.isIdentifier(node.expression)) this.info.definitions.set(node.expression, symbol.decl)
       const created = this.callFunc(this.basicErrorClass().ctor!, node.arguments ?? [], node, scope, "'new Error'")
@@ -667,6 +747,16 @@ export abstract class CallChecker extends ExpressionChecker {
         : types.void
       return typed({ k: "map", op, type: result, mapType: type, map: value, key, value: val })
     }
+    if (type.kind === "set") {
+      const arity: Record<string, number> = { add: 1, has: 1, delete: 1, clear: 0, values: 0 }
+      const count = arity[name]
+      if (count === undefined) return this.fail(callee.name, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+      if (args.length !== count) return this.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+      const elem = count > 0 ? this.coerce(this.checkExpr(args[0]!, scope, type.elem), type.elem, args[0]!) : undefined
+      const op = name as ir.SetOp["op"]
+      const result: Type = op === "add" ? type : op === "has" || op === "delete" ? types.bool : op === "values" ? arrayOf(type.elem) : types.void
+      return typed({ k: "set", op, type: result, setType: type, set: value, value: elem })
+    }
     if (type.kind === "array" && arrayMethods.has(name)) return this.arrayMethod(value, type, name, node, callee, scope)
     if ((isNumeric(type) || type.kind === "bool") && name === "toString" && args.length === 0) {
       return typed({ k: "concat", type: types.string, parts: [value] })
@@ -685,7 +775,8 @@ export abstract class CallChecker extends ExpressionChecker {
       }
       const values = args.map((a, i) => this.coerce(this.checkExpr(a, scope, params[i]), params[i]!, a))
       const str = sameType(type, types.string) ? value : ({ k: "recast", type: types.string, value } as ir.Expr)
-      return typed({ k: "string-method", method: name, type: result, value: str, args: values })
+      const resultType = name === "codePointAt" ? this.unionOf([types.i64, types.null]) : result
+      return typed({ k: "string-method", method: name, type: resultType, value: str, args: values })
     }
     if (type.kind === "array" && name === "push") {
       const values: ir.Expr[] = []

@@ -19,6 +19,7 @@ import {
   terminates,
   visitLocals,
   paramName,
+  strictReserved,
 } from "./helpers"
 import { CheckerBase } from "./base"
 
@@ -572,6 +573,7 @@ export abstract class DeclarationChecker extends CheckerBase {
         infer(n.typeArguments[1]!, type.value)
         return
       }
+      if (name === "Set" && n.typeArguments?.length === 1 && type.kind === "set") return infer(n.typeArguments[0]!, type.elem)
       const symbol = scope.lookupType(name)
       const generic = symbol?.generic
       if (!n.typeArguments || !generic) return
@@ -825,6 +827,21 @@ export abstract class DeclarationChecker extends CheckerBase {
       if (!scope.declareValue(name.text, { k: "const", value, type, decl })) this.error(name, `Duplicate declaration '${name.text}'.`)
     }
     return true
+  }
+
+  /**
+   * Reports the names that strict mode reserves (`private`, `static`, `let`...)
+   * where they declare a binding, as TypeScript does: Ore modules are always
+   * in strict mode. Property names may be any word, reserved or not.
+   */
+  protected checkStrictNames(node: ts.Node, inClass: boolean) {
+    const named = ts.isParameter(node) || ts.isVariableDeclaration(node) || ts.isBindingElement(node) || ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isClassDeclaration(node)
+    const nested = inClass || ts.isClassDeclaration(node) || ts.isClassExpression(node)
+    if (named && node.name && ts.isIdentifier(node.name) && strictReserved.includes(node.name.text)) {
+      const reason = nested ? "Class definitions are automatically in strict mode." : "Modules are automatically in strict mode."
+      this.error(node.name, `Identifier expected. '${node.name.text}' is a reserved word in strict mode. ${reason}`)
+    }
+    ts.forEachChild(node, (child) => this.checkStrictNames(child, nested))
   }
 
   protected unsupportedTopLevel(stmt: ts.Statement): string {
