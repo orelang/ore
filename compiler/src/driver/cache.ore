@@ -1,0 +1,116 @@
+// The build cache: the object files LLVM compiled from LLVM IR, kept in
+// <cache>/objects/<sha256>.o by the SHA-256 of the IR and of what else
+// decides the object: the compiler executable (its path, size and time, so
+// that another build of `ore` never reuses an object of this one), LLVM's
+// version, the target, the CPU and the optimization level. A debug build
+// looks up each part of its module (llvm/split.ore): those of the runtime are
+// the same in every program, and editing a file recompiles only its parts.
+// A release build looks up its one module.
+//
+// <cache> is $ORE_CACHE, else $XDG_CACHE_HOME/ore, else ~/.cache/ore;
+// ORE_CACHE=off turns the cache off. Nothing is ever removed but by `ore
+// cache clean`. Builds running at the same time share it: an object is
+// written to a file of its own, then renamed to its name.
+
+import { Sha256 } from "ore:crypto"
+import { basename, join } from "ore:path"
+import { executablePath } from "./self"
+
+/** The directory of the cache, or "" when it is off or there is no home directory. */
+export function cacheRoot(): string {
+    const given = process.getenv("ORE_CACHE")
+    if (given === "off") return ""
+    if (given !== null && given !== "") return given
+    const xdg = process.getenv("XDG_CACHE_HOME")
+    if (xdg !== null && xdg !== "") return join(xdg, "ore")
+    const home = process.getenv("HOME")
+    if (home !== null && home !== "") return join(home, ".cache", "ore")
+    return ""
+}
+
+/** The directory of the object files in a cache directory. */
+export function objectsDir(root: string): string {
+    return join(root, "objects")
+}
+
+/** The running compiler, as the cache tells compilers apart: its path, size and modification time. */
+function compilerIdentity(): string | null {
+    const path = executablePath()
+    if (path instanceof Error) return null
+    const info = fs.stat(path)
+    if (info instanceof Error) return null
+    return `${path} ${info.size} ${info.mtime}`
+}
+
+/** The object files of a build, by the hash of their IR. */
+export class ObjectCache {
+    constructor(
+        /** The directory of the objects. */
+        readonly dir: string,
+        /** What decides an object besides its IR. */
+        readonly signature: string,
+        /** A name unique to this build, for its temporary files. */
+        readonly unique: string,
+    ) {}
+
+    /** The hash an object of this IR is kept by. */
+    key(ir: string): string {
+        return new Sha256().update(this.signature).update(ir).hex()
+    }
+
+    /** The path of the object of a key. */
+    path(key: string): string {
+        return join(this.dir, `${key}.o`)
+    }
+
+    /** The file to write the object of a key to, then renamed to `path(key)`. */
+    temporary(key: string): string {
+        return `${this.path(key)}.${this.unique}.tmp`
+    }
+}
+
+/**
+ * The cache of a build in `root` (`cacheRoot()` by default), for objects of
+ * the target described by `target`; null when it is off, the compiler's
+ * executable is not found, or the directory cannot be made. `buildDir`, the
+ * build's own temporary directory, names its temporary files.
+ */
+export function openCache(root: string, target: string, buildDir: string): ObjectCache | null {
+    if (root === "") return null
+    const identity = compilerIdentity()
+    if (identity === null) return null
+    const dir = objectsDir(root)
+    if (!fs.isDir(dir) && fs.mkdir(dir, true) !== null) return null
+    return new ObjectCache(dir, `ore object cache 1\ncompiler ${identity}\n${target}\n`, basename(buildDir))
+}
+
+/** The files of the cache and their total size in bytes. */
+export class CacheSize {
+    constructor(
+        readonly files: int,
+        readonly bytes: int,
+    ) {}
+}
+
+/** How many object files a cache directory holds, and their size. */
+export function cacheSize(root: string): CacheSize {
+    const dir = objectsDir(root)
+    const names = fs.readDir(dir)
+    if (names instanceof Error) return new CacheSize(0, 0)
+    let files = 0
+    let bytes = 0
+    for (const name of names) {
+        const info = fs.stat(join(dir, name))
+        if (info instanceof Error || !info.isFile) continue
+        files++
+        bytes += info.size
+    }
+    return new CacheSize(files, bytes)
+}
+
+/** Removes the object files of a cache directory. */
+export function cleanCache(root: string): Error | null {
+    const dir = objectsDir(root)
+    if (!fs.exists(dir)) return null
+    return fs.remove(dir, true)
+}

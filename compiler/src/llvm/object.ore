@@ -23,6 +23,7 @@ import {
     LLVMGetHostCPUFeatures,
     LLVMGetHostCPUName,
     LLVMGetTargetFromTriple,
+    LLVMGetVersion,
     LLVMParseIRInContext,
     LLVMRunPasses,
     LLVMSetModuleDataLayout,
@@ -75,6 +76,44 @@ export function defaultTriple(): string {
     return message(LLVMGetDefaultTargetTriple())
 }
 
+/** The CPU to compile for and its features. */
+class Cpu {
+    constructor(
+        readonly name: string,
+        readonly features: string,
+    ) {}
+}
+
+/**
+ * The baseline CPU of the architecture, so that a program (`ore` itself
+ * included) runs on any machine of it; ORE_CPU=native targets this one.
+ */
+function targetCpu(): Cpu {
+    if (process.getenv("ORE_CPU") !== "native") return new Cpu("generic", "")
+    return new Cpu(message(LLVMGetHostCPUName()), message(LLVMGetHostCPUFeatures()))
+}
+
+/** The version of the LLVM library, such as "22.1.0". */
+export function llvmVersion(): string {
+    const parts = unsafe.allocBytes(12)
+    LLVMGetVersion(parts, unsafe.add(parts, 4), unsafe.add(parts, 8))
+    const major = unsafe.load<u32>(parts)
+    const minor = unsafe.load<u32>(unsafe.add(parts, 4))
+    return `${major}.${minor}.${unsafe.load<u32>(unsafe.add(parts, 8))}`
+}
+
+/**
+ * What decides the object file of IR besides the IR and the compiler: LLVM's
+ * version, the target, the CPU and the optimization level, for the build
+ * cache (driver/cache.ore).
+ */
+export function objectTarget(options: ObjectOptions): string {
+    const cpu = targetCpu()
+    const triple = options.triple !== "" ? options.triple : defaultTriple()
+    const level = options.release ? "O2" : "O0"
+    return `llvm ${llvmVersion()}\ntriple ${triple}\ncpu ${cpu.name} ${cpu.features}\nlevel ${level}`
+}
+
 /**
  * Compiles LLVM IR text into an object file. An Error when the IR does not
  * parse or verify (its message has LLVM's `name:line:col`), or when the
@@ -113,14 +152,12 @@ function compile(module: ptr, options: ObjectOptions, started: int): ObjectTimes
         return new Error(`target ${triple}: ${message(unsafe.load<ptr>(error))}`)
     }
     const level = options.release ? codeGenLevelDefault : codeGenLevelNone
-    // The baseline CPU of the architecture, so that a program (`ore` itself
-    // included) runs on any machine of it; ORE_CPU=native targets this one.
-    const native = process.getenv("ORE_CPU") === "native"
+    const cpu = targetCpu()
     const machine = LLVMCreateTargetMachine(
         unsafe.load<ptr>(out),
         triple,
-        native ? message(LLVMGetHostCPUName()) : "generic",
-        native ? message(LLVMGetHostCPUFeatures()) : "",
+        cpu.name,
+        cpu.features,
         level,
         relocPic,
         codeModelDefault,

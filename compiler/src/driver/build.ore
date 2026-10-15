@@ -1,16 +1,17 @@
 // Building programs: a program loaded, checked and translated to LLVM IR
-// (llvm/emit.ore), the IR compiled to an object file through LLVM's C API
-// (llvm/object.ore), C sources of packages through the C compiler, and the
-// objects linked with lld (link.ore),
-// which runs clang for the last steps.
+// (llvm/emit.ore), the IR compiled to object files through LLVM's C API
+// (llvm/object.ore), or taken from the build cache (cache.ore), C sources of
+// packages compiled by the C compiler, and the objects linked with lld
+// (link.ore).
 
 import { basename, join } from "ore:path"
 import { check } from "../checker/checker"
 import { emitModule, EmitOptions } from "../llvm/emit"
-import { emitObject, initializeLLVM, ObjectOptions, ObjectTimes } from "../llvm/object"
+import { emitObject, initializeLLVM, objectTarget, ObjectOptions, ObjectTimes } from "../llvm/object"
 import { splitModule } from "../llvm/split"
 import { loadProgram } from "../project/load"
 import { type Diagnostic } from "../syntax/diagnostic"
+import { cacheRoot, ObjectCache, openCache } from "./cache"
 import { compileC, link, targetTriple } from "./link"
 import { NativeCode, nativeCode } from "./native"
 
@@ -34,10 +35,20 @@ export class BuildOptions {
         readonly emitLlvm: string = "",
         /** Print how long each step takes to stderr. */
         readonly times: bool = false,
+        /**
+         * The directory of the build cache (driver/cache.ore): null for
+         * `cacheRoot()`, from the environment; "" for none.
+         */
+        readonly cache: string | null = null,
     ) {}
 }
 
 export class BuildResult {
+    /** The object files compiled from the program's LLVM IR (one per part in a debug build). */
+    objects = 0
+    /** How many of them came from the build cache. */
+    cached = 0
+
     constructor(
         readonly ok: bool,
         readonly diagnostics: Diagnostic[],
@@ -90,9 +101,10 @@ export function build(entry: string, options: BuildOptions): BuildResult | Error
         if (written !== null) return written
     }
     const name = options.emitLlvm !== "" ? options.emitLlvm : `${basename(entry, ".ore")}.ll`
-    const error = buildIr(ir, name, native, options)
+    const result = new BuildResult(true, compiled.diagnostics)
+    const error = buildCounted(ir, name, native, options, result)
     if (error !== null) return error
-    return new BuildResult(true, compiled.diagnostics)
+    return result
 }
 
 /** Prints a step's time to stderr with `--time`. */
@@ -102,61 +114,95 @@ export function report(options: BuildOptions, step: string, ms: int): void {
 
 /**
  * Builds an executable from LLVM IR and the native code of its packages: the
- * IR into an object file, the C sources into others, all linked. `name`
- * names the IR in LLVM's messages. Intermediate files go to a temporary
- * directory, removed at the end.
+ * IR into object files (or from the build cache), the C sources into others,
+ * all linked. `name` names the IR in LLVM's messages. Intermediate files go
+ * to a temporary directory, removed at the end.
  */
 export function buildIr(ir: string, name: string, native: NativeCode, options: BuildOptions): Error | null {
-    const dir = fs.mkdtemp("ore-build-")
-    if (dir instanceof Error) return dir
-    const result = buildIn(dir, ir, name, native, options)
-    fs.remove(dir, true)
-    return result
+    return buildCounted(ir, name, native, options, new BuildResult(true, []))
 }
 
-function buildIn(dir: string, ir: string, name: string, native: NativeCode, options: BuildOptions): Error | null {
+/** `buildIr`, counting the objects and those from the cache in `result`. */
+function buildCounted(
+    ir: string,
+    name: string,
+    native: NativeCode,
+    options: BuildOptions,
+    result: BuildResult,
+): Error | null {
+    const dir = fs.mkdtemp("ore-build-")
+    if (dir instanceof Error) return dir
+    const error = buildIn(dir, ir, name, native, options, result)
+    fs.remove(dir, true)
+    return error
+}
+
+/** An object file of a part of the IR: compiled, with LLVM's times, or from the cache. */
+class PartObject {
+    constructor(
+        readonly path: string,
+        /** Null when it came from the cache. */
+        readonly times: ObjectTimes | null,
+    ) {}
+}
+
+function buildIn(
+    dir: string,
+    ir: string,
+    name: string,
+    native: NativeCode,
+    options: BuildOptions,
+    counts: BuildResult,
+): Error | null {
     let started = Date.now()
     // A debug build splits the module by source file, so that LLVM compiles
-    // the parts on every CPU; a release build keeps one, for inlining across
-    // functions.
+    // the parts on every CPU and the cache keeps them apart; a release build
+    // keeps one, for inlining across functions.
     const parts = options.release ? [ir] : splitModule(ir)
     if (parts.length > 1) report(options, "split", Date.now() - started)
     started = Date.now()
-    const objects: string[] = []
-    const results: (ObjectTimes | Error | null)[] = []
-    for (let i = 0; i < parts.length; i++) {
-        objects.push(join(dir, parts.length === 1 ? "main.o" : `main-${i}.o`))
-        results.push(null)
-    }
     initializeLLVM()
+    const objectOptions = new ObjectOptions("", options.release, targetTriple(), name)
+    const cache = openCache(options.cache ?? cacheRoot(), objectTarget(objectOptions), dir)
+    const results: (PartObject | Error | null)[] = []
+    for (let i = 0; i < parts.length; i++) results.push(null)
     const done = new Chan<int>(parts.length)
     for (let i = 0; i < parts.length; i++) {
         const index = i
         task.spawn(() => {
-            results[index] = emitObject(
-                parts[index],
-                new ObjectOptions(objects[index], options.release, targetTriple(), name),
-            )
+            const output = join(dir, parts.length === 1 ? "main.o" : `main-${index}.o`)
+            results[index] = partObject(parts[index], output, cache, options, name)
             done.send(index)
         })
     }
     for (let i = 0; i < parts.length; i++) done.receive()
+    const objects: string[] = []
     let parse = 0
     let optimize = 0
     let codegen = 0
+    let cached = 0
     for (const result of results) {
         if (result instanceof Error) return result
-        if (result !== null) {
-            parse = parse > result.parse ? parse : result.parse
-            optimize = optimize > result.optimize ? optimize : result.optimize
-            codegen = codegen > result.codegen ? codegen : result.codegen
+        if (result === null) continue
+        objects.push(result.path)
+        const times = result.times
+        if (times === null) cached++
+        else {
+            parse = parse > times.parse ? parse : times.parse
+            optimize = optimize > times.optimize ? optimize : times.optimize
+            codegen = codegen > times.codegen ? codegen : times.codegen
         }
     }
+    counts.objects = parts.length
+    counts.cached = cached
     // The slowest part's times; with several parts, also the whole.
-    report(options, "llvm parse", parse)
-    report(options, options.release ? "llvm O2" : "llvm O0", optimize)
-    report(options, "codegen", codegen)
+    if (cached < parts.length) {
+        report(options, "llvm parse", parse)
+        report(options, options.release ? "llvm O2" : "llvm O0", optimize)
+        report(options, "codegen", codegen)
+    }
     if (parts.length > 1) report(options, `llvm x${parts.length}`, Date.now() - started)
+    if (options.times && cache !== null) console.error(`${"cached".padEnd(10)} ${cached} of ${parts.length}`)
     started = Date.now()
     for (let i = 0; i < native.sources.length; i++) {
         const source = native.sources[i]
@@ -171,4 +217,38 @@ function buildIn(dir: string, ir: string, name: string, native: NativeCode, opti
     if (error !== null) return error
     report(options, "link", Date.now() - started)
     return null
+}
+
+/**
+ * The object file of a part of the IR: from the cache if it has it, else
+ * compiled by LLVM into the cache (written under a temporary name, then
+ * renamed), or into `output` without a cache.
+ */
+function partObject(
+    ir: string,
+    output: string,
+    cache: ObjectCache | null,
+    options: BuildOptions,
+    name: string,
+): PartObject | Error {
+    if (cache === null) {
+        const times = emitObject(ir, new ObjectOptions(output, options.release, targetTriple(), name))
+        if (times instanceof Error) return times
+        return new PartObject(output, times)
+    }
+    const key = cache.key(ir)
+    const path = cache.path(key)
+    if (fs.isFile(path)) return new PartObject(path, null)
+    const temporary = cache.temporary(key)
+    const times = emitObject(ir, new ObjectOptions(temporary, options.release, targetTriple(), name))
+    if (times instanceof Error) {
+        fs.remove(temporary)
+        return times
+    }
+    const renamed = fs.rename(temporary, path)
+    if (renamed !== null) {
+        fs.remove(temporary)
+        return renamed
+    }
+    return new PartObject(path, times)
 }
