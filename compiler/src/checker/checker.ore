@@ -4,6 +4,7 @@
 import { Block, Func } from "../ir/nodes"
 import { type Type, FuncType, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
+import { hasModifier, members } from "../syntax/nodes"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
 import { builtinScope, namespaceModule, namespaceNames } from "./builtins"
@@ -138,7 +139,7 @@ export function check(program: Program): CheckResult {
             c,
             m,
             (stmt) =>
-                !isDeclaration(stmt) &&
+                (!isDeclaration(stmt) || hasStaticFields(stmt)) &&
                 !constants.has(stmt) &&
                 stmt.kind !== "EnumDeclaration" &&
                 stmt.kind !== "ModuleDeclaration",
@@ -155,6 +156,13 @@ export function check(program: Program): CheckResult {
     let hasErrors = false
     for (const d of c.diagnostics) if (d.severity === "error") hasErrors = true
     return new CheckResult(hasErrors ? null : c.module, c.diagnostics, c.info)
+}
+
+/** Whether a class declaration has static fields, which its top-level code initializes. */
+function hasStaticFields(stmt: Node): bool {
+    if (stmt.kind !== "ClassDeclaration") return false
+    for (const m of members(stmt)) if (m.kind === "PropertyDeclaration" && hasModifier(m, "StaticKeyword")) return true
+    return false
 }
 
 /**

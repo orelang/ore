@@ -159,6 +159,25 @@ export class ClassInfo {
 
     /** Names of the members declared `protected` by this class. */
     readonly protected = new Map<string, bool>()
+
+    /** The static members, by name. */
+    readonly statics = new Map<string, StaticMember>()
+}
+
+/**
+ * A static member of a class: a field, which is a global of the class's
+ * module initialized where the class is declared, or a method, which is a
+ * function. `C.name` reads them, in subclasses too.
+ */
+export class StaticMember {
+    constructor(
+        readonly name: string,
+        readonly decl: Node,
+        readonly owner: ClassInfo,
+        readonly local: Local | null,
+        readonly func: Func | null,
+        readonly isPrivate: bool,
+    ) {}
 }
 
 /** The modifiers of a class member or parameter. */
@@ -168,6 +187,7 @@ export class MemberFlags {
     isReadonly = false
     isAbstract = false
     isOverride = false
+    isStatic = false
     /** Any modifier: a constructor parameter with one declares a field. */
     any = false
 }

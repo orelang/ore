@@ -28,7 +28,13 @@
   [Inheritance](#inheritance)).
 - Members: fields (with a type annotation, an initializer, or both), one
   constructor, and methods. Constructor parameters with `public`, `private`
-  or `readonly` declare fields. Static members are not supported yet.
+  or `readonly` declare fields.
+- Static members belong to the class: `C.count`, `C.make()`, also through a
+  subclass. A static field is a global of the module, initialized where the
+  class is declared, in order; it has a type annotation or an initializer
+  (and then its type). A static method is a function, without `this`.
+  `private` static members are used only inside the class declaration;
+  generic classes cannot have static members yet.
 - Getters and setters (`get celsius(): f64`, `set celsius(v: f64)`) define a
   property read and written like a field, by calling them; a getter needs a
   return type annotation, and both must have the same type. A property with

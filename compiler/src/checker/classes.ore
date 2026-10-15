@@ -75,9 +75,20 @@ import {
     MemberFlags,
     MethodInfo,
     FuncContext,
+    StaticMember,
 } from "./context"
-import { declareGeneric, instantiate, paramScope, prepend, resolveParams, checkReturns } from "./declarations"
-import { checkExpr } from "./expressions"
+import {
+    applyFuncDirectives,
+    checkFunctionBody,
+    declareGeneric,
+    instantiate,
+    makeFunc,
+    paramScope,
+    prepend,
+    resolveParams,
+    checkReturns,
+} from "./declarations"
+import { checkExpr, settle } from "./expressions"
 import { cIdent, findThis, hasZeroValue, indexSignatureMessage, zeroNeedsInit, zeroValue } from "./helpers"
 import { checkBlock } from "./statements"
 import { type Generic, ClassSymbol, Generic as GenericClass, Scope, TypeSymbol } from "./symbols"
@@ -216,6 +227,10 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
     for (const member of members(decl)) {
         if (member.kind === "SemicolonClassElement") continue
         const flags = memberModifiers(c, member)
+        if (flags.isStatic) {
+            declareStatic(c, info, member, flags, scope)
+            continue
+        }
         if (flags.isAbstract && member.kind !== "MethodDeclaration") c.error(member, "Only methods can be abstract.")
         if (member.kind === "PropertyDeclaration") {
             const name = c.memberName(nameNode(member))
@@ -575,6 +590,93 @@ export function dispatch(c: Checker, expr: Expr, name: string) {
     else if (node.k === "bound-method") c.dispatches.push(new Dispatch(node, name))
 }
 
+/**
+ * A static member: a field becomes a global, typed by its annotation or else
+ * by its initializer where the class is declared (see `initStatics`), and a
+ * method a function.
+ */
+function declareStatic(c: Checker, info: ClassInfo, member: Node, flags: MemberFlags, scope: Scope) {
+    const nameAt = member.child("name")
+    const name = nameAt !== null ? c.memberName(nameAt) : null
+    if (nameAt === null || name === null) {
+        c.error(member, "This static member is not supported.")
+        return
+    }
+    if (info.statics.has(name)) {
+        c.error(nameAt, `Duplicate static member '${name}'.`)
+        return
+    }
+    if (flags.isAbstract) c.error(member, "Static members cannot be abstract.")
+    const hidden = flags.isPrivate || flags.isProtected
+    if (flags.isProtected) c.error(member, "Static members cannot be protected; make it private or public.")
+    const className = info.type.name ?? ""
+    if (member.kind === "PropertyDeclaration") {
+        const annotation = typeNode(member)
+        const type = annotation !== null ? c.resolveValueType(annotation, scope) : null
+        if (annotation === null && initializer(member) === null)
+            c.error(nameAt, `Static field '${name}' needs a type annotation or an initializer.`)
+        const local = c.newLocal(`${className}.${name}`, type ?? types.void, !flags.isReadonly)
+        local.global = true
+        c.declNodes.set(local, nameAt)
+        if (type !== null) c.info.types.set(nameAt, type)
+        else if (initializer(member) !== null) c.untyped.add(local)
+        else c.poisoned.add(local)
+        info.statics.set(name, new StaticMember(name, member, info, local, null, hidden))
+        return
+    }
+    if (member.kind !== "MethodDeclaration") {
+        c.error(member, "Only fields and methods can be static.")
+        return
+    }
+    if (typeParameters(member).length > 0) {
+        c.error(nameAt, "Generic static methods are not supported yet.")
+        return
+    }
+    if (body(member) === null) {
+        c.error(nameAt, "A method must have a body.")
+        return
+    }
+    const func = makeFunc(c, member, scope, `${className}.${name}`, `${info.cname}_s_${cIdent(name)}`, false)
+    applyFuncDirectives(c, member, func)
+    info.statics.set(name, new StaticMember(name, member, info, null, func, hidden))
+}
+
+/** The static member `name` of a class or of its base classes. */
+export function staticMember(c: Checker, info: ClassInfo, name: string): StaticMember | null {
+    const own = info.statics.get(name)
+    if (own !== null) return own
+    const base = info.type.base
+    const baseInfo = base === null ? null : c.classInfos.get(base.id)
+    return baseInfo === null ? null : staticMember(c, baseInfo, name)
+}
+
+/** The top-level code of a class declaration: its static fields, initialized in order. */
+export function initStatics(c: Checker, decl: Node, scope: Scope, out: Stmt[]) {
+    let info: ClassInfo | null = null
+    for (const i of c.classes) if (i.decl === decl) info = i
+    if (info === null) return
+    for (const [_, member] of info.statics) {
+        const local = member.local
+        if (local === null) continue
+        const init = initializer(member.decl)
+        let value: Expr | null = null
+        if (init !== null) {
+            const typed_ = !c.untyped.has(local)
+            const operand = checkExpr(c, init, scope, typed_ ? local.type : null)
+            if (!typed_ && !settle(c, local, operand, init)) continue
+            if (operand.k !== "error") value = c.coerce(operand, local.type, init)
+        } else if (hasZeroValue(local.type)) {
+            value = zeroValue(local.type)
+        } else {
+            c.error(
+                member.decl.child("name")!,
+                `Static field '${member.name}' of type '${typeToString(local.type)}' needs an initializer.`,
+            )
+        }
+        if (value !== null) out.push(new LetStmt(local, value))
+    }
+}
+
 export function memberModifiers(c: Checker, node: Node): MemberFlags {
     const flags = new MemberFlags()
     for (const mod of modifiers(node)) {
@@ -598,7 +700,7 @@ export function memberModifiers(c: Checker, node: Node): MemberFlags {
             case "PublicKeyword":
                 break
             case "StaticKeyword":
-                c.error(mod, "Static members are not supported yet. Use top-level functions and constants.")
+                flags.isStatic = true
                 break
             default:
                 c.error(mod, `Modifier '${c.text(mod)}' is not allowed here.`)
@@ -641,6 +743,13 @@ export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope
 }
 
 export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
+    for (const [_, member] of info.statics) {
+        const func = member.func
+        if (func === null) continue
+        c.staticClass = info.type.name
+        checkFunctionBody(c, member.decl, func, outer)
+        c.staticClass = null
+    }
     const type = info.type
     const ctor = type.ctor!
     const self = info.ctorThis

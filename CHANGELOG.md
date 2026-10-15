@@ -14,6 +14,7 @@ before 1.0, a minor version may change the language.
   of values; tuples into any parameters, array literals and tuples.
 - Object spread `{ ...o, x: 1 }`.
 - `**` and `**=`, and `satisfies`.
+- Static members of classes: `C.count`, `C.make()`.
 - Optional properties of object types and interfaces (`name?: T`), default values in
   destructuring (`{ size = 1 }`, `[x = 0]`) and `...rest` in object patterns.
 - `??=`, `||=` and `&&=`; an assigned `?:` narrows to its branches' types.

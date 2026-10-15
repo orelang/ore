@@ -100,7 +100,7 @@ import {
     asteriskToken,
 } from "../syntax/nodes"
 import { type Checker } from "./base"
-import { dispatch } from "./classes"
+import { dispatch, initStatics } from "./classes"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
 import {
     directives,
@@ -465,6 +465,8 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
             fn.pendingLabel = name
         }
         checkStmt(c, inner, scope, out)
+    } else if (stmt.kind === "ClassDeclaration" && scope === c.globals) {
+        initStatics(c, stmt, scope, out)
     } else if (stmt.kind === "EnumDeclaration") {
         c.error(stmt, unsupportedTopLevel(stmt))
     } else {

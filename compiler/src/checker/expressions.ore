@@ -96,7 +96,7 @@ import {
 import { bigIsNeg, bigLt, bigOf, bigText, bigToI64 } from "./bigint"
 import { type Checker, structOrInterface } from "./base"
 import { checkCall, checkNew } from "./calls"
-import { accessor, checkAccess, conformance, declaringClass, dispatch, genericMethod } from "./classes"
+import { accessor, checkAccess, conformance, declaringClass, dispatch, genericMethod, staticMember } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
 import { foldBinary, foldUnary } from "./fold"
 import {
@@ -128,7 +128,7 @@ import {
     narrowed,
     refKey,
 } from "./statements"
-import { type ValueSymbol, ConstSymbol, Scope } from "./symbols"
+import { type ValueSymbol, ConstSymbol, FuncSymbol, LocalSymbol, Scope } from "./symbols"
 
 /**
  * Checks an expression. `expected` is the type required by the context; it
@@ -160,12 +160,15 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
     if (k === "ThisKeyword") {
         const fn = c.fn
         const self = fn !== null ? fn.thisLocal : null
+        const inStatic = c.staticClass
         if (self === null)
             return c.fail(
                 node,
                 fn !== null && fn.fieldInit
                     ? "Field initializers cannot use 'this'."
-                    : "'this' can only be used inside a class.",
+                    : inStatic !== null
+                      ? `A static method has no 'this'; name the class: '${inStatic}.name'.`
+                      : "'this' can only be used inside a class.",
             )
         capture(self, fn!.thisCaptures ?? [])
         return typed(new LocalRef(self.type, self))
@@ -713,6 +716,22 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         return new AssignTargetClass(at.elem, new ElementLValue(array, index))
     }
     if (node.kind === "PropertyAccessExpression") {
+        // A static field of a class.
+        const found = moduleMember(c, node, scope)
+        if (found !== null && found.k === "local") {
+            const local = found.local
+            if (!local.mutable) {
+                c.error(nameNode(node), `Cannot assign to '${local.name}' because it is a read-only property.`)
+                return null
+            }
+            local.assigned = true
+            c.info.types.set(node, local.type)
+            return new AssignTargetClass(local.type, new LocalLValue(local))
+        }
+        if (found !== null) {
+            c.error(nameNode(node), `Cannot assign to '${c.text(node)}' because it is not a variable.`)
+            return null
+        }
         const target = checkExpr(c, expression(node), scope)
         if (target.k !== "typed") return null
         const object = target.expr
@@ -1330,6 +1349,7 @@ export function moduleMember(c: Checker, node: Node, scope: Scope): ValueSymbol 
     const nameId = nameNode(node)
     const module = scope.lookupValue(object.text)
     if (module === null) return null
+    if (module.k === "class") return staticOf(c, module.type, module.decl, object, nameId)
     if (module.k === "namespace") {
         // An export of the module implementing the namespace in Ore, such as `fs.stat`.
         const implementation = module.module
@@ -1357,6 +1377,34 @@ export function moduleMember(c: Checker, node: Node, scope: Scope): ValueSymbol 
     }
     if (isIdentifier(nameId)) c.info.definitions.set(nameId, value.decl)
     return value
+}
+
+/** `C.name`: a static member of class `C` (or of a base class) as a value symbol, or null. */
+function staticOf(c: Checker, type: StructType | null, decl: Node, object: Node, nameId: Node): ValueSymbol | null {
+    const info = type !== null ? c.classInfos.get(type.id) : null
+    const member_ = info !== null ? staticMember(c, info, nameId.text) : null
+    if (member_ === null) {
+        const name = object.text
+        c.error(
+            nameId,
+            type === null
+                ? `Static members of generic classes are not supported yet.`
+                : `Class '${name}' has no static member '${nameId.text}'.`,
+        )
+        return new ConstSymbol(errorOperand, null, nameId)
+    }
+    c.info.definitions.set(object, decl)
+    if (isIdentifier(nameId)) c.info.definitions.set(nameId, member_.decl)
+    // A private static member is used only inside the declaration of its class.
+    const owner = member_.owner.decl
+    const inside = c.sourceOf(nameId) === c.sourceOf(owner) && nameId.start >= owner.start && nameId.end <= owner.end
+    if (member_.isPrivate && !inside) {
+        c.error(nameId, `'${nameId.text}' is private and only accessible inside class '${member_.owner.type.name}'.`)
+        return new ConstSymbol(errorOperand, null, nameId)
+    }
+    const local = member_.local
+    if (local !== null) return new LocalSymbol(local, member_.decl)
+    return new FuncSymbol(member_.func!, member_.decl)
 }
 
 export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {

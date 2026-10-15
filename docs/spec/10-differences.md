@@ -21,7 +21,7 @@ use.
 | `1 / 0` | `Infinity` | compile error for constants, panic for integers, `Infinity` for floats |
 | `2 ** 63` in `int` | float | wraps |
 | `===` on objects | identity | identity |
-| `class B extends A` | inheritance through prototypes | single inheritance of fields and virtual methods; no static members, no overriding of fields or accessors |
+| `class B extends A` | inheritance through prototypes | single inheritance of fields and virtual methods; no overriding of fields or accessors |
 | class compatibility | structural | nominal: a class converts to its base classes and to interfaces, not to other classes with the same members |
 | `A \| B` where `B extends A` | kept as written | normalized to `A` |
 | `JSON.stringify(a)` of an `A` holding a `B` | the fields of `B` | the fields of `A` (the static type) |

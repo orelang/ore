@@ -50,7 +50,7 @@ exports, type assertions (Ore converts: `i32(x)`).
   - narrowing through `||` and by assigning with `?:`;
   - object spread `{ ...o }` (done);
   - methods and accessors in object literals;
-  - `static` members of classes;
+  - `static` members of classes (done; not of generic classes);
   - default values in destructuring, and `...rest` in object destructuring
     (done), optional properties of object types (done);
   - optional, default and rest parameters of closures;
