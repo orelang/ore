@@ -168,7 +168,7 @@ beforeAll(async () => {
   // A debug build: with the checker, a release build of the compiler takes minutes, and runs no faster here.
   const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
   expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 120_000)
+}, 600_000)
 
 describe("selfhost lexer", () => {
   for (const file of files) {

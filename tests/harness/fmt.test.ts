@@ -257,7 +257,7 @@ async function prettierFormat(input: string): Promise<string | undefined> {
 beforeAll(async () => {
   const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary, release: true })
   expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 120_000)
+}, 600_000)
 
 for (const [name, variant] of Object.entries(variants)) {
   describe(`fmt, ${name}`, () => {
