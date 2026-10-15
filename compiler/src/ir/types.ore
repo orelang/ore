@@ -1,0 +1,539 @@
+// The type model of the IR: the same
+// names, kinds and helpers. Each TypeScript interface is a class whose
+// discriminant (`kind`) is a constant field; see "How TypeScript maps to Ore
+// in this port" in compiler/README.md.
+
+import { type Func } from "./nodes"
+
+export type IntName = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+export type FloatName = "f32" | "f64"
+
+export class IntType {
+    readonly kind: "int" = "int"
+    /** 8, 16, 32 or 64. */
+    constructor(
+        readonly name: IntName,
+        readonly bits: int,
+        readonly signed: bool,
+    ) {}
+}
+
+export class FloatType {
+    readonly kind: "float" = "float"
+    /** 32 or 64. */
+    constructor(
+        readonly name: FloatName,
+        readonly bits: int,
+    ) {}
+}
+
+export class BoolType {
+    readonly kind: "bool" = "bool"
+}
+
+export class StringType {
+    readonly kind: "string" = "string"
+}
+
+export class VoidType {
+    readonly kind: "void" = "void"
+}
+
+/** The type of expressions that never complete, such as `panic(...)`. */
+export class NeverType {
+    readonly kind: "never" = "never"
+}
+
+export class FuncType {
+    readonly kind: "func" = "func"
+    constructor(
+        readonly params: Type[],
+        readonly result: Type,
+    ) {}
+}
+
+/** `T[]`: a reference to a growable array. */
+export class ArrayType {
+    readonly kind: "array" = "array"
+    constructor(readonly elem: Type) {}
+}
+
+export class Field {
+    /** Accessible only inside the class that declares it; a parameter cannot be named `private`. */
+    readonly private: bool
+    constructor(
+        readonly name: string,
+        readonly type: Type,
+        readonly readonly: bool,
+        isPrivate: bool = false,
+    ) {
+        this.private = isPrivate
+    }
+}
+
+export class Method {
+    readonly private: bool
+    constructor(
+        readonly name: string,
+        readonly func: Func,
+        isPrivate: bool,
+    ) {
+        this.private = isPrivate
+    }
+}
+
+/**
+ * A heap-allocated record, used through references.
+ *
+ * A class is nominal: each declaration is its own type, with fields in
+ * declaration order. Anonymous object types (`{ x: f64 }`, object literals)
+ * are interned by shape, so two of them are the same type exactly when they
+ * are the same object; their fields are sorted by name.
+ */
+export class StructType {
+    readonly kind: "struct" = "struct"
+    constructor(
+        /** Unique per program; used for names in generated code. */
+        readonly id: int,
+        /** Class name, a type alias name, or null for an anonymous shape. */
+        public name: string | null,
+        /** Whether this is a class. */
+        readonly nominal: bool,
+        public fields: Field[],
+        /** Methods of a class; empty for object types. */
+        public methods: Method[],
+        /** The constructor of a class: returns a new instance. */
+        public ctor?: Func,
+    ) {}
+
+    /**
+     * The base class of a class declared with `extends`: its fields come first
+     * in `fields`, and its methods first in `methods`, in the same order (the
+     * slots of the class table), each replaced by the override if there is one.
+     */
+    public base: StructType | null = null
+}
+
+/** A field member of an interface: `{ k: "field", ... }` in TypeScript. */
+export class InterfaceField {
+    readonly k: "field" = "field"
+    constructor(
+        readonly name: string,
+        readonly type: Type,
+        readonly readonly: bool,
+    ) {}
+}
+
+/** A method member of an interface: `{ k: "method", ... }` in TypeScript. */
+export class InterfaceMethod {
+    readonly k: "method" = "method"
+    constructor(
+        readonly name: string,
+        readonly type: FuncType,
+    ) {}
+}
+
+export type InterfaceMember = InterfaceField | InterfaceMethod
+
+/**
+ * A structural interface. A value is a reference to any struct that has the
+ * members, paired with a table that holds, for each member in `members`
+ * order, the field offset or the method.
+ */
+export class InterfaceType {
+    readonly kind: "interface" = "interface"
+    constructor(
+        readonly id: int,
+        readonly name: string,
+        /** Sorted by name; the layout of the table. */
+        public members: InterfaceMember[],
+    ) {}
+}
+
+/** A string literal type such as `"circle"`; its values are strings. */
+export class LiteralType {
+    readonly kind: "literal" = "literal"
+    constructor(readonly value: string) {}
+}
+
+/** `Chan<T>`: a reference to a channel between tasks. */
+export class ChanType {
+    readonly kind: "chan" = "chan"
+    constructor(readonly elem: Type) {}
+}
+
+/** A case of `task.select`. */
+export class SelectCaseType {
+    readonly kind: "select-case" = "select-case"
+}
+
+/** An opaque C pointer, for handles passed to and from external C functions. */
+export class PtrType {
+    readonly kind: "ptr" = "ptr"
+}
+
+/** The type of `null`; appears in unions such as `Node | null`. */
+export class NullType {
+    readonly kind: "null" = "null"
+}
+
+/**
+ * A union of two or more types. Members are normalized: no nested unions, no
+ * duplicates, and a canonical order, so equal unions have equal members.
+ */
+export class UnionType {
+    readonly kind: "union" = "union"
+    constructor(
+        /** Unique per program; used for names in generated code. */
+        readonly id: int,
+        readonly members: Type[],
+        /** The type alias that first named this union, for messages; not part of its identity. */
+        public name?: string,
+    ) {}
+}
+
+/** `Map<K, V>`: a reference to a hash map that keeps insertion order. */
+export class MapType {
+    readonly kind: "map" = "map"
+    constructor(
+        readonly key: Type,
+        readonly value: Type,
+    ) {}
+}
+
+/** `Set<T>`: a reference to a hash set that keeps insertion order: a map without values. */
+export class SetType {
+    readonly kind: "set" = "set"
+    constructor(readonly elem: Type) {}
+}
+
+export type PrimitiveType =
+    | IntType
+    | FloatType
+    | BoolType
+    | StringType
+    | VoidType
+    | NeverType
+    | NullType
+    | LiteralType
+    | PtrType
+    | SelectCaseType
+export type Type =
+    | IntType
+    | FloatType
+    | BoolType
+    | StringType
+    | VoidType
+    | NeverType
+    | NullType
+    | LiteralType
+    | PtrType
+    | SelectCaseType
+    | FuncType
+    | ArrayType
+    | StructType
+    | InterfaceType
+    | UnionType
+    | MapType
+    | SetType
+    | ChanType
+
+export function findField(t: StructType, name: string): Field | null {
+    for (const f of t.fields) if (f.name === name) return f
+    return null
+}
+
+export function findMethod(t: StructType, name: string): Method | null {
+    for (const m of t.methods) if (m.name === name) return m
+    return null
+}
+
+/** Whether class `s` is `base` or a subclass of it. */
+export function isSubclass(s: StructType, base: StructType): bool {
+    if (s === base) return true
+    const parent = s.base
+    return parent !== null && isSubclass(parent, base)
+}
+
+/**
+ * The classes among `structs` whose instances start with a pointer to their
+ * class table: those with a base class or a subclass, by id.
+ */
+export function classTables(structs: StructType[]): Map<int, bool> {
+    const tables = new Map<int, bool>()
+    for (const s of structs) {
+        const base = s.base
+        if (base === null) continue
+        tables.set(s.id, true)
+        tables.set(base.id, true)
+    }
+    return tables
+}
+
+/** Whether a subclass of `s` among `structs` overrides its method `name`, so that calls of it on an `s` dispatch through the class table. */
+export function overridden(structs: StructType[], s: StructType, name: string): bool {
+    const own = findMethod(s, name)
+    for (const t of structs) {
+        if (t === s || t.base === null || !isSubclass(t, s)) continue
+        const method = findMethod(t, name)
+        const func = method === null ? null : method.func
+        if (func !== (own === null ? null : own.func)) return true
+    }
+    return false
+}
+
+/** The slot of a method in the class table of the class that declares or inherits it: its index in the methods of its receiver's class. */
+export function methodSlot(func: Func): int {
+    const receiver = func.receiver
+    if (receiver === null) return -1
+    const owner = receiver.type
+    if (owner.kind !== "struct") return -1
+    const methods = owner.methods
+    for (let i = 0; i < methods.length; i++) if (methods[i].func === func) return i
+    return -1
+}
+
+export function arrayOf(elem: Type): ArrayType {
+    return new ArrayType(elem)
+}
+
+/** Primitive types are singletons and can be compared by identity. */
+export const types = {
+    i8: new IntType("i8", 8, true),
+    i16: new IntType("i16", 16, true),
+    i32: new IntType("i32", 32, true),
+    i64: new IntType("i64", 64, true),
+    u8: new IntType("u8", 8, false),
+    u16: new IntType("u16", 16, false),
+    u32: new IntType("u32", 32, false),
+    u64: new IntType("u64", 64, false),
+    f32: new FloatType("f32", 32),
+    f64: new FloatType("f64", 64),
+    bool: new BoolType(),
+    string: new StringType(),
+    void: new VoidType(),
+    never: new NeverType(),
+    null: new NullType(),
+    ptr: new PtrType(),
+    SelectCase: new SelectCaseType(),
+}
+
+export function isNumeric(t: Type): bool {
+    return t.kind === "int" || t.kind === "float"
+}
+
+/**
+ * Interface pairs assumed equal while comparing recursive interfaces: `a[i]`
+ * with `b[i]`. One per comparison, not a global, so that threads compare
+ * types at the same time.
+ */
+class Assumed {
+    a: InterfaceType[] = []
+    b: InterfaceType[] = []
+}
+
+/** Whether two interfaces have the same members; recursive interfaces are compared coinductively. */
+function sameInterface(a: InterfaceType, b: InterfaceType, given: Assumed | null): bool {
+    if (a.members.length !== b.members.length) return false
+    const assumed = given ?? new Assumed()
+    for (let i = 0; i < assumed.a.length; i++) {
+        const x = assumed.a[i]
+        const y = assumed.b[i]
+        if ((x === a && y === b) || (x === b && y === a)) return true
+    }
+    assumed.a.push(a)
+    assumed.b.push(b)
+    let same = true
+    for (let i = 0; i < a.members.length && same; i++) {
+        const m = a.members[i]
+        const n = b.members[i]
+        same = m.k === n.k && m.name === n.name && sameIn(m.type, n.type, assumed)
+    }
+    assumed.a.pop()
+    assumed.b.pop()
+    return same
+}
+
+function sameTypes(a: Type[], b: Type[], assumed: Assumed | null): bool {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!sameIn(a[i], b[i], assumed)) return false
+    return true
+}
+
+export function sameType(a: Type, b: Type): bool {
+    return sameIn(a, b, null)
+}
+
+function sameIn(a: Type, b: Type, assumed: Assumed | null): bool {
+    if (a === b) return true
+    if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
+    if (a.kind === "array" && b.kind === "array") return sameIn(a.elem, b.elem, assumed)
+    if (a.kind === "map" && b.kind === "map") return sameIn(a.key, b.key, assumed) && sameIn(a.value, b.value, assumed)
+    if (a.kind === "set" && b.kind === "set") return sameIn(a.elem, b.elem, assumed)
+    if (a.kind === "chan" && b.kind === "chan") return sameIn(a.elem, b.elem, assumed)
+    if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b, assumed)
+    if (a.kind === "union" && b.kind === "union") return sameTypes(a.members, b.members, assumed)
+    if (a.kind !== "func" || b.kind !== "func") return false
+    return sameTypes(a.params, b.params, assumed) && sameIn(a.result, b.result, assumed)
+}
+
+export function typeToString(t: Type): string {
+    switch (t.kind) {
+        case "int":
+            return t.name
+        case "float":
+            return t.name
+        case "func":
+            return `(${t.params.map(typeToString).join(", ")}) => ${typeToString(t.result)}`
+        case "array":
+            return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
+        case "struct": {
+            if (t.name !== null) return t.name
+            const fields: string[] = []
+            for (const f of t.fields) fields.push(`${f.readonly ? "readonly " : ""}${f.name}: ${typeToString(f.type)}`)
+            return `{ ${fields.join("; ")} }`
+        }
+        case "interface":
+            return t.name
+        case "union": {
+            if (t.name !== null && t.name !== "") return t.name
+            const members: string[] = []
+            for (const m of t.members) members.push(m.kind === "func" ? `(${typeToString(m)})` : typeToString(m))
+            return members.join(" | ")
+        }
+        case "literal":
+            return JSON.stringify(t.value)
+        case "map":
+            return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
+        case "set":
+            return `Set<${typeToString(t.elem)}>`
+        case "chan":
+            return `Chan<${typeToString(t.elem)}>`
+        case "select-case":
+            return "SelectCase"
+        default:
+            return t.kind
+    }
+}
+
+/**
+ * Smallest and largest value of an integer type: `[bigint, bigint]` in
+ * TypeScript. `max` is a `u64`, so that it holds the maximum of `u64`.
+ */
+export class IntRange {
+    constructor(
+        readonly min: i64,
+        readonly max: u64,
+    ) {}
+}
+
+/** Smallest and largest value of an integer type. */
+export function intRange(t: IntType): IntRange {
+    const bits = u64(t.bits)
+    if (t.signed) {
+        const half = u64(1) << (bits - u64(1))
+        return new IntRange(-i64(half - u64(1)) - 1, half - u64(1))
+    }
+    return new IntRange(0, bits === u64(64) ? ~u64(0) : (u64(1) << bits) - u64(1))
+}
+
+/** A stable key of a type, for interning and canonical ordering. */
+export function typeKey(type: Type): string {
+    switch (type.kind) {
+        case "array":
+            return `${typeKey(type.elem)}[]`
+        case "struct":
+            return `#${type.id}`
+        case "interface":
+            return `@${type.id}`
+        case "union":
+            return type.members.map(typeKey).join("|")
+        case "literal":
+            return JSON.stringify(type.value)
+        case "map":
+            return `Map<${typeKey(type.key)},${typeKey(type.value)}>`
+        case "set":
+            return `Set<${typeKey(type.elem)}>`
+        case "chan":
+            return `Chan<${typeKey(type.elem)}>`
+        case "func":
+            return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
+        default:
+            return typeToString(type)
+    }
+}
+
+/** Whether values of a type are references that can be null without a tag. */
+export function isReference(type: Type): bool {
+    const k = type.kind
+    return (
+        k === "struct" ||
+        k === "array" ||
+        k === "interface" ||
+        k === "string" ||
+        k === "map" ||
+        k === "set" ||
+        k === "func" ||
+        k === "chan"
+    )
+}
+
+/** Whether values of a type are strings: `string` or a string literal type. */
+export function isStringLike(type: Type): bool {
+    return type.kind === "string" || type.kind === "literal"
+}
+
+/** What JavaScript's `typeof` says of a value of a type. */
+export function typeofName(type: Type): string {
+    if (isNumeric(type)) return "number"
+    if (type.kind === "bool") return "boolean"
+    if (isStringLike(type)) return "string"
+    return "object"
+}
+
+/** `{ k: "strings" }`: only string literal types, as a string; the value tells the member. */
+export class StringsRepr {
+    readonly k: "strings" = "strings"
+}
+
+/** `{ k: "nullable", base }`: one reference type (or only string literals) and `null`, as the reference or null. */
+export class NullableRepr {
+    readonly k: "nullable" = "nullable"
+    constructor(readonly base: Type) {}
+}
+
+/** `{ k: "tagged", slots }`: a tag selecting one of `slots`, with the value of that slot. `null` has a slot without a value. */
+export class TaggedRepr {
+    readonly k: "tagged" = "tagged"
+    constructor(readonly slots: Type[]) {}
+}
+
+/**
+ * How a union is represented at run time:
+ * - `strings`: only string literal types, as a string; the value tells the member;
+ * - `nullable`: one reference type (or only string literals) and `null`, as
+ *   the reference or null;
+ * - `tagged`: a tag selecting one of `slots`, with the value of that slot.
+ *   `null` has a slot without a value.
+ */
+export type UnionRepr = StringsRepr | NullableRepr | TaggedRepr
+
+export function unionRepr(u: UnionType): UnionRepr {
+    const others: Type[] = []
+    for (const m of u.members) if (m.kind !== "null") others.push(m)
+    const hasNull = others.length < u.members.length
+    let literals = true
+    for (const m of others) if (m.kind !== "literal") literals = false
+    if (literals) {
+        if (hasNull) return new NullableRepr(types.string)
+        return new StringsRepr()
+    }
+    if (others.length === 1 && hasNull && isReference(others[0])) return new NullableRepr(others[0])
+    return new TaggedRepr(u.members)
+}
+
+/** The members of a type: those of a union, or the type itself. */
+export function membersOf(type: Type): Type[] {
+    if (type.kind === "union") return type.members
+    return [type]
+}

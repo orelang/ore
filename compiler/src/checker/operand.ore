@@ -1,0 +1,43 @@
+// The result of checking an expression.
+
+import { type Expr } from "../ir/nodes"
+import { type Big } from "./bigint"
+
+/**
+ * Numeric literals and expressions made only of them are untyped constants
+ * with arbitrary precision (as in Go). They get a concrete type when used in
+ * a typed context, or a default type (`int`, `f64`) otherwise.
+ */
+export class UntypedInt {
+    readonly k: "untyped-int" = "untyped-int"
+    constructor(readonly value: Big) {}
+}
+
+export class UntypedFloat {
+    readonly k: "untyped-float" = "untyped-float"
+    constructor(readonly value: f64) {}
+}
+
+export class Typed {
+    readonly k: "typed" = "typed"
+    constructor(readonly expr: Expr) {}
+}
+
+/** An expression with an already reported error. Converts silently to anything. */
+export class ErrorOperand {
+    readonly k: "error" = "error"
+}
+
+export type Operand = UntypedInt | UntypedFloat | Typed | ErrorOperand
+
+/** An untyped constant: `Extract<Operand, { k: "untyped-int" | "untyped-float" }>`. */
+export type Untyped = UntypedInt | UntypedFloat
+
+export const errorOperand: Operand = new ErrorOperand()
+
+/** The untyped constant an operand is, or null. */
+export function untypedOf(value: Operand): Untyped | null {
+    if (value.k === "untyped-int") return value
+    if (value.k === "untyped-float") return value
+    return null
+}

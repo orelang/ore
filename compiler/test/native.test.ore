@@ -1,0 +1,41 @@
+// The native code of a program's packages (driver/native.ore): libraries, C
+// sources and library directories from "ore" in package.json.
+
+import { test, expect, fail } from "ore:test"
+import { join } from "ore:path"
+import { libDir, nativeCode } from "../src/driver/native"
+
+function check(err: Error | null) {
+    if (err !== null) fail(err.message)
+}
+
+function same(what: string, got: string[], want: string[]) {
+    if (got.join("\n") !== want.join("\n")) fail(`${what}: expected [${want.join(", ")}], got [${got.join(", ")}]`)
+}
+
+test("libDirs: paths relative to the package, commands, missing ones skipped", () => {
+    const temp = fs.mkdtemp("ore-native-")
+    if (temp instanceof Error) fail(temp.message)
+    const root = fs.realpath(temp)
+    if (root instanceof Error) fail(root.message)
+    check(fs.mkdir(join(root, "lib")))
+    check(fs.mkdir(join(root, "vendor/lib"), true))
+    const libDirs = [
+        "lib",
+        "missing",
+        `$(echo ${join(root, "vendor/lib")})`,
+        "$(false)",
+        "$(no-such-command-ore)",
+        "lib",
+    ]
+    const ore = { link: ["m", "z", "m"], sources: ["c/a.c"], libDirs }
+    check(fs.writeFile(join(root, "package.json"), JSON.stringify({ name: "native", ore })))
+    check(fs.writeFile(join(root, "main.ore"), ""))
+    const native = nativeCode([join(root, "main.ore")])
+    if (native instanceof Error) fail(native.message)
+    same("link", native.link, ["m", "z"])
+    same("sources", native.sources, [join(root, "c/a.c")])
+    same("libDirs", native.libDirs, [join(root, "lib"), join(root, "vendor/lib")])
+    expect(libDir(root, "/")).toBe("/")
+    expect(libDir(root, "$(true)")).toBe(null)
+})

@@ -1,0 +1,87 @@
+// `ore test [paths...]`: builds and runs the *.test.ore files below the paths
+// (default: "."), and reports which failed.
+//
+// A test file is a program whose `test(...)` calls (ore:test) run each test
+// in its own task and print `✓ name` or `✗ name` and the failure; its
+// runtime prints the counts at the end and exits with status 1 if a test
+// failed (runtime/core/program.ore and io.ore). The files are built and run
+// in parallel, one task per CPU, each building in a child process of this
+// same compiler (the checker keeps state that tasks would share); their
+// outputs are printed in the order of the files.
+
+import { join } from "ore:path"
+import { toolError } from "./commands"
+import { oreFiles } from "./files"
+import { executablePath } from "./self"
+
+/** What building and running a test file printed, and whether it passed. */
+class FileResult {
+    constructor(
+        readonly stdout: string,
+        readonly stderr: string,
+        readonly passed: bool,
+    ) {}
+}
+
+export function testCommand(args: string[]): i32 {
+    const files = oreFiles(args, true)
+    if (files instanceof Error) return toolError(files)
+    if (files.length === 0) {
+        console.error("ore: no *.test.ore files found")
+        return 1
+    }
+    const ore = executablePath()
+    if (ore instanceof Error) return toolError(ore)
+    const dir = fs.mkdtemp("ore-test-")
+    if (dir instanceof Error) return toolError(dir)
+
+    const results: (FileResult | null)[] = []
+    const queue = new Chan<int>(files.length)
+    for (let i = 0; i < files.length; i++) {
+        results.push(null)
+        queue.send(i)
+    }
+    queue.close()
+    const done = new Chan<int>(files.length)
+    const workers = Math.max(1, Math.min(files.length, process.cpus()))
+    for (let w = 0; w < workers; w++) {
+        task.spawn(() => {
+            for (const i of queue) {
+                results[i] = testFile(ore, files[i], join(dir, `test${i}`))
+                done.send(i)
+            }
+        })
+    }
+
+    // Each file's output once it and the files before it are done.
+    let failed = 0
+    let printed = 0
+    for (let n = 0; n < files.length; n++) {
+        done.receive()
+        for (; printed < files.length; printed++) {
+            const result = results[printed]
+            if (result === null) break
+            console.log(files[printed])
+            console.write(result.stdout)
+            if (result.stderr !== "") console.error(result.stderr.trimEnd())
+            if (!result.passed) failed++
+        }
+    }
+    fs.remove(dir, true)
+    console.log(
+        failed === 0
+            ? `\nAll ${files.length} test file(s) passed.`
+            : `\n${failed} of ${files.length} test file(s) failed.`,
+    )
+    return failed === 0 ? 0 : 1
+}
+
+/** Builds a test file into `output` with `ore build`, and runs it. */
+function testFile(ore: string, file: string, output: string): FileResult {
+    const built = process.output(ore, ["build", file, "-o", output])
+    if (built instanceof Error) return new FileResult("", `ore: ${built.message}`, false)
+    if (!built.ok) return new FileResult(built.stdout, built.stderr, false)
+    const ran = process.output(output)
+    if (ran instanceof Error) return new FileResult("", `${built.stderr}ore: ${ran.message}`, false)
+    return new FileResult(ran.stdout, `${built.stderr}${ran.stderr}`, ran.ok)
+}

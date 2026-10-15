@@ -5,6 +5,7 @@
 # $STRESS_TIMEOUT seconds (30 by default) counts as hung and fails; the
 # watchdog (ORE_WATCHDOG) prints the stacks of a run stuck for 20 seconds.
 cd "$(dirname "$0")/.."
+ore=${ORE:-dist/ore}
 runs=${1:-20}
 timeout=${STRESS_TIMEOUT:-30}
 out=$(mktemp -d)
@@ -14,7 +15,7 @@ for test in concurrency/parallel-channels concurrency/parallel-gc concurrency/ta
     src="tests/run/$test.ore"
     expected="tests/run/$test.out"
     name=${test##*/}
-    bun compiler/cli/src/main.ts build --release "$src" -o "$out/$name" >/dev/null || { echo "$name: build failed"; failed=1; continue; }
+    "$ore" build --release "$src" -o "$out/$name" >/dev/null || { echo "$name: build failed"; failed=1; continue; }
     # The header is a number alone on its line: a comment may also start with "threads:".
     threads=$(sed -n 's|^// threads: *\([0-9][0-9]*\) *$|\1|p' "$src" | head -1)
     threads=${threads:-1}

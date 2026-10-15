@@ -1,4 +1,4 @@
-// The formatter (compiler/next/src/fmt), without an external oracle: every
+// The formatter (compiler/src/fmt), without an external oracle: every
 // .ore file of the repository is formatted already, and on unformatted
 // variants of each file the formatter keeps the code and is idempotent.
 //
@@ -13,16 +13,16 @@
 // and be its own formatting.
 
 import { fail } from "ore:test"
-import { format } from "../../compiler/next/src/fmt/print"
-import { type Node } from "../../compiler/next/src/syntax/ast"
-import { type Token, tokenize } from "../../compiler/next/src/syntax/lexer"
-import { parse } from "../../compiler/next/src/syntax/parser"
+import { format } from "../../compiler/src/fmt/print"
+import { type Node } from "../../compiler/src/syntax/ast"
+import { type Token, tokenize } from "../../compiler/src/syntax/lexer"
+import { parse } from "../../compiler/src/syntax/parser"
 import { Case, difference, filesBelow, quote, read } from "./cases"
 
 /** Files that are not formatted on purpose. */
 const unformatted = [
     // More syntax and comments for the formatter, deliberately not formatted.
-    "compiler/next/test/fmt-cases.ore",
+    "compiler/test/fmt-cases.ore",
 ]
 
 // -----------------------------------------------------------------------------
@@ -449,7 +449,7 @@ export function fmtProblems(file: string): string[] {
 }
 
 /**
- * The formatting cases: one per .ore file of tests, runtime and compiler/next,
+ * The formatting cases: one per .ore file of tests, runtime and compiler,
  * the largest first. With the path of the runner itself (`self`), each case
  * checks its file in a process of its own (`runner --fmt FILE`): formatting
  * allocates much, and threads that allocate in one process wait for each
@@ -458,7 +458,7 @@ export function fmtProblems(file: string): string[] {
  */
 export function fmtCases(self: string): Case[] {
     const files: string[] = []
-    for (const dir of ["tests", "runtime", "compiler/next"]) for (const f of filesBelow(dir, ".ore")) files.push(f)
+    for (const dir of ["tests", "runtime", "compiler"]) for (const f of filesBelow(dir, ".ore")) files.push(f)
     const sizes = new Map<string, int>()
     for (const f of files) {
         const info = fs.stat(f)

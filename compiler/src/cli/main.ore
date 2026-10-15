@@ -1,0 +1,63 @@
+// The `ore` command: run, build, check, init, test, fmt, lsp, version, help.
+
+import { serve } from "../lsp/server"
+import { buildCommand, checkCommand, initCommand, runCommand } from "./commands"
+import { fmtCommand } from "./fmt"
+import { testCommand } from "./test"
+
+export const version = "0.1.0-dev"
+
+export const usage = `Ore ${version}
+
+Usage:
+  ore run [file.ore] [args...]   Build and run a program
+  ore build [file.ore]           Build a native binary
+      -o, --output <path>        Output path (default: package name or file name)
+      --release                  Optimize instead of building with debug info
+      --emit-llvm <path>         Also write the generated LLVM IR
+      --time                     Print how long each step takes
+  ore check [file.ore | dirs...] Report errors without building
+  ore test [paths...]            Run the tests in *.test.ore files (default: all below .)
+  ore fmt [--check] [paths...]   Format .ore files in place, or list unformatted ones
+      --stdout                   Print the formatted files instead
+  ore init [directory]           Create a project: package.json and src/main.ore
+  ore lsp                        Start the language server on stdio
+
+Without a file, the program is the 'main' of the nearest package.json.
+  ore version                    Print the version
+  ore help                       Print this help
+`
+
+/** Runs the command of the command line; returns the exit status. */
+export function main(args: string[]): i32 {
+    const command = args.length > 0 ? args[0] : ""
+    const rest = args.slice(1)
+    switch (command) {
+        case "run":
+            return runCommand(rest)
+        case "build":
+            return buildCommand(rest)
+        case "check":
+            return checkCommand(rest)
+        case "init":
+            return initCommand(rest)
+        case "test":
+            return testCommand(rest)
+        case "fmt":
+            return fmtCommand(rest)
+        case "lsp":
+            return i32(serve(version))
+        case "version":
+        case "--version":
+            console.log(version)
+            return 0
+        case "":
+        case "help":
+        case "--help":
+        case "-h":
+            console.write(usage)
+            return 0
+    }
+    console.error(`ore: unknown command '${command}'\n\n${usage.trimEnd()}`)
+    return 2
+}

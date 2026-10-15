@@ -1,0 +1,211 @@
+// Building textual LLVM IR: values, basic blocks and constants.
+
+/**
+ * The attributes of every function but naked ones: a frame pointer, set in each
+ * frame, so that stacks can be walked (the runtime's watchdog prints the
+ * stacks of tasks that way).
+ */
+export const FRAME_POINTER = 'attributes #0 = { "frame-pointer"="all" }'
+
+/** An LLVM value: its type and its operand text (a register, a constant or a global). */
+export type V = { ty: string; v: string }
+
+export const voidValue: V = { ty: "void", v: "" }
+
+/**
+ * The body of one function under construction. Allocations go to the entry
+ * block; code after a terminator starts a fresh, unreachable block, so that
+ * callers never need to track whether a block is still open.
+ */
+export class FnBuilder {
+    allocas: string[] = []
+    code: string[] = []
+    counter = 0
+    /** The label of the block being written, for `phi` operands. */
+    block = "entry"
+    open = true
+
+    temp(): string {
+        return `%t${this.counter++}`
+    }
+
+    label(hint: string): string {
+        return `${hint}.${this.counter++}`
+    }
+
+    isOpen(): bool {
+        return this.open
+    }
+
+    /** Emits an instruction into the current block. */
+    emit(line: string) {
+        if (!this.open) this.start(this.label("dead"))
+        this.code.push(`  ${line}`)
+    }
+
+    /** Emits an instruction producing a value of type `ty`. */
+    value(ty: string, rhs: string): V {
+        const t = this.temp()
+        this.emit(`${t} = ${rhs}`)
+        return { ty, v: t }
+    }
+
+    /** A stack slot of type `ty` in the entry block. */
+    alloca(ty: string): string {
+        const slot = `%s${this.counter++}`
+        this.allocas.push(`  ${slot} = alloca ${ty}, align 16`)
+        return slot
+    }
+
+    /** Starts a block; an open block before it falls through into it. */
+    start(label: string) {
+        if (this.open) this.code.push(`  br label %${label}`)
+        this.code.push(`${label}:`)
+        this.block = label
+        this.open = true
+    }
+
+    br(label: string) {
+        if (!this.open) return
+        this.code.push(`  br label %${label}`)
+        this.open = false
+    }
+
+    condBr(cond: V, then: string, otherwise: string) {
+        this.emit(`br i1 ${cond.v}, label %${then}, label %${otherwise}`)
+        this.open = false
+    }
+
+    terminate(line: string) {
+        this.emit(line)
+        this.open = false
+    }
+
+    /**
+     * The function definition with its body, closing an open last block with
+     * `close`. It keeps a frame pointer (attribute group #0, `FRAME_POINTER`),
+     * unless naked.
+     */
+    finish(header: string, close: string, naked: bool = false): string {
+        if (this.open) this.code.push(`  ${close}`)
+        const lines: string[] = [`${header}${naked ? "" : " #0"} {`, "entry:"]
+        for (const a of this.allocas) lines.push(a)
+        for (const c of this.code) lines.push(c)
+        lines.push("}")
+        return lines.join("\n")
+    }
+}
+
+const upperHex = "0123456789ABCDEF"
+const lowerHex = "0123456789abcdef"
+
+/** A byte as two uppercase hexadecimal digits. */
+function hexByte(b: int): string {
+    return `${upperHex.slice(b >> 4, (b >> 4) + 1)}${upperHex.slice(b & 15, (b & 15) + 1)}`
+}
+
+/** A number in lowercase hexadecimal, without leading zeros, as JavaScript's `toString(16)`. */
+export function hex(n: int): string {
+    if (n === 0) return "0"
+    let out = ""
+    let v = n
+    while (v > 0) {
+        out = `${lowerHex.slice(v & 15, (v & 15) + 1)}${out}`
+        v = v >> 4
+    }
+    return out
+}
+
+/**
+ * An LLVM string constant body, `c"..."`, for the bytes of a string: Ore
+ * strings are UTF-8 bytes already (`utf8(s)` in TypeScript).
+ */
+export function cString(bytes: string): string {
+    let out = 'c"'
+    let start = 0
+    for (let i = 0; i < bytes.length; i++) {
+        const b = bytes[i]
+        if (b >= 0x20 && b < 0x7f && b !== 0x22 && b !== 0x5c) continue
+        out += `${bytes.slice(start, i)}\\${hexByte(i64(b))}`
+        start = i + 1
+    }
+    return `${out}${bytes.slice(start)}"`
+}
+
+/** An LLVM float constant: the exact IEEE double bits in hexadecimal, as LLVM requires. */
+export function floatConstant(value: f64, bits: int): string {
+    const v = bits === 32 ? f64(f32(value)) : value
+    // JavaScript writes every NaN as the canonical quiet NaN.
+    if (v !== v) return "0x7FF8000000000000"
+    const raw = unsafe.bitcast<u64>(v)
+    let out = ""
+    for (let shift: u64 = 56; ; shift -= 8) {
+        out += hexByte(i64((raw >> shift) & 255))
+        if (shift === 0) break
+    }
+    return `0x${out}`
+}
+
+/** An integer of `bits` bits as LLVM writes it: signed, two's complement. */
+export function intConstant(value: i64, bits: int): string {
+    if (bits === 1) return value === 0 ? "false" : "true"
+    if (bits >= 64) return `${value}`
+    const shift = 64 - bits
+    return `${(value << shift) >> shift}`
+}
+
+/** `sizeof(ty)` as a constant expression. */
+export function sizeOf(ty: string): string {
+    return `ptrtoint (ptr getelementptr (${ty}, ptr null, i32 1) to i64)`
+}
+
+function plain(c: u8): bool {
+    return (
+        (c >= 0x41 && c <= 0x5a) ||
+        (c >= 0x61 && c <= 0x7a) ||
+        (c >= 0x30 && c <= 0x39) ||
+        c === 0x5f ||
+        c === 0x2e ||
+        c === 0x24
+    )
+}
+
+/**
+ * A global name, with characters outside LLVM's plain identifiers spelled as
+ * `_xHH_`: the UTF-16 code units of the character, as the TypeScript regular
+ * expression sees them.
+ */
+export function globalName(name: string): string {
+    let out = "@"
+    let start = 0
+    let i = 0
+    while (i < name.length) {
+        const c = name[i]
+        if (plain(c)) {
+            i++
+            continue
+        }
+        out += name.slice(start, i)
+        // Decode one UTF-8 character.
+        let cp = i64(c)
+        let n = 1
+        if (c >= 0xf0) {
+            cp = i64(c & 0x07)
+            n = 4
+        } else if (c >= 0xe0) {
+            cp = i64(c & 0x0f)
+            n = 3
+        } else if (c >= 0xc0) {
+            cp = i64(c & 0x1f)
+            n = 2
+        }
+        for (let j = 1; j < n && i + j < name.length; j++) cp = (cp << 6) | i64(name[i + j] & 0x3f)
+        if (cp > 0xffff) {
+            const u = cp - 0x10000
+            out += `_x${hex(0xd800 + (u >> 10))}__x${hex(0xdc00 + (u & 0x3ff))}_`
+        } else out += `_x${hex(cp)}_`
+        i += n
+        start = i
+    }
+    return out + name.slice(start)
+}

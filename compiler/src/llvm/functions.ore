@@ -1,0 +1,429 @@
+// Functions and statements.
+
+import {
+    Call,
+    Closure,
+    ObjectLit,
+    type Func,
+    type ForOfStmt,
+    type LoopStmt,
+    type Stmt,
+    type SwitchStmt,
+} from "../ir/nodes"
+import { type Type } from "../ir/types"
+import { type SlotNode } from "../opt/escape"
+import { ARRAY, FRAME, MAP, type Breakable, type Disposal } from "./context"
+import { Emitter } from "./base"
+import { helper } from "./calls"
+import { expr } from "./expressions"
+import { boxed } from "./helpers"
+import { FnBuilder, globalName, sizeOf } from "./ll"
+
+export function declareExtern(g: Emitter, func: Func) {
+    const params: string[] = []
+    for (const p of func.params) params.push(externType(g, p.type, true))
+    if (func.variadic !== null) params.push("...")
+    const result = externType(g, func.type.result, false)
+    g.decls.set(`@${func.name}`, `declare ${result} @${func.name}(${params.join(", ")})`)
+}
+
+/** The C type of a value crossing into C, with the extension attributes clang uses. */
+export function externType(g: Emitter, type: Type, param: bool): string {
+    if (type.kind === "string") return "ptr"
+    // Integers narrower than 32 bits are widened to the register by whoever
+    // produces them on x86-64 and on Apple's arm64, which LLVM is told with
+    // zeroext and signext. AAPCS64 on Linux leaves the upper bits undefined, so
+    // there the attributes would let LLVM skip the masking it needs.
+    const widened = !(target.os === "linux" && target.arch === "arm64")
+    const small = type.kind === "bool" || (type.kind === "int" && type.bits < 32)
+    let ext = ""
+    if (widened && small) ext = type.kind === "int" && type.signed ? "signext" : "zeroext"
+    // LLVM writes parameter attributes after the type and result attributes before it.
+    if (ext !== "") return param ? `${g.lt(type)} ${ext}` : `${ext} ${g.lt(type)}`
+    return param || type.kind !== "void" ? g.lt(type) : "void"
+}
+
+export function signature(g: Emitter, func: Func, at: bool): string {
+    const params: string[] = []
+    if (at) params.push("ptr %mem")
+    if (func.captures !== null) params.push("ptr %env")
+    if (func.receiver !== null) params.push("ptr %self")
+    const attrs = func.attributes
+    const exportName = attrs !== null ? attrs.exportName : null
+    const exported = exportName !== null && !at
+    // An exported function follows C: small integers and booleans are extended.
+    for (let i = 0; i < func.params.length; i++) {
+        const p = func.params[i]
+        params.push(`${exported ? externType(g, p.type, true) : g.lt(p.type)} %p${i}`)
+    }
+    const result = exported ? externType(g, func.type.result, false) : g.lt(func.type.result)
+    const flags: string[] = []
+    if (attrs !== null) {
+        if (attrs.noinline) flags.push("noinline")
+        if (attrs.inline) flags.push("alwaysinline")
+        if (attrs.cold) flags.push("cold")
+        if (attrs.naked) flags.push("naked")
+    }
+    const flagText = flags.length > 0 ? ` ${flags.join(" ")}` : ""
+    return `define ${exported ? "" : "internal "}${result} ${globalName(func.name + (at ? "_at" : ""))}(${params.join(", ")})${flagText}`
+}
+
+/** The definition of a function: `function` of the TypeScript emitter, a reserved word in Ore. */
+export function emitFunction(g: Emitter, func: Func, at: bool): string {
+    g.b = new FnBuilder()
+    g.func = func
+    g.at = at
+    g.storage = new Map()
+    g.breakables = []
+    g.disposals = []
+    g.frame = null
+    g.slots = new Map<SlotNode, string>()
+    const attrs = func.attributes
+    if (attrs !== null && attrs.naked) {
+        // Nothing but the assembly: no frame, no parameters in memory.
+        for (const s of func.body.body) stmt(g, s)
+        return g.b.finish(signature(g, func, at), "unreachable", true)
+    }
+    for (const node of g.plan.slots.get(func) ?? []) g.slots.set(node, g.b.alloca(slotType(g, node)))
+    // The runtime keeps no frames, as when it was C: stack traces show the program's code.
+    const file = func.file
+    if (g.options.debug && (file === null || !file.startsWith("ore:runtime/"))) {
+        const frame = g.b.alloca(FRAME)
+        const prev = g.b.value("ptr", `load ptr, ptr ${top(g)}`)
+        g.b.emit(`store ptr ${prev.v}, ptr ${g.field(frame, FRAME, 0)}`)
+        g.b.emit(`store ptr ${g.cstr(func.sourceName).v}, ptr ${g.field(frame, FRAME, 1)}`)
+        g.b.emit(`store ptr ${g.cstr(file ?? g.file).v}, ptr ${g.field(frame, FRAME, 2)}`)
+        g.b.emit(`store i32 ${func.line}, ptr ${g.field(frame, FRAME, 3)}`)
+        g.b.emit(`store ptr ${frame}, ptr ${top(g)}`)
+        g.frame = frame
+    }
+    const receiver = func.receiver
+    if (receiver !== null) g.declare(receiver, { ty: "ptr", v: "%self" })
+    for (let i = 0; i < func.params.length; i++) {
+        const p = func.params[i]
+        g.declare(p, { ty: g.lt(p.type), v: `%p${i}` })
+    }
+    for (const s of func.body.body) stmt(g, s)
+    const result = g.lt(func.type.result)
+    if (result === "void") {
+        popFrame(g)
+        return g.b.finish(signature(g, func, at), "ret void")
+    }
+    return g.b.finish(signature(g, func, at), "unreachable")
+}
+
+export function popFrame(g: Emitter) {
+    const frame = g.frame
+    if (frame === null) return
+    const prev = g.b.value("ptr", `load ptr, ptr ${g.field(frame, FRAME, 0)}`)
+    g.b.emit(`store ptr ${prev.v}, ptr ${top(g)}`)
+}
+
+/**
+ * The address of this thread's `ore_rt_top`, computed anew: a task may have
+ * moved to another OS thread since the function started. LLVM takes
+ * `llvm.threadlocal.address` as constant within a function and may reuse it
+ * after a call that parked the task, so the address comes from `@ore.top`,
+ * which it cannot take as constant: never inlined, and with an empty
+ * assembly statement that has side effects.
+ */
+export function top(g: Emitter): string {
+    const name = "@ore.top"
+    if (!g.helpers.has(name)) {
+        g.helpers.set(name, "")
+        helper(g, name, `define internal ptr ${name}() noinline`, (e) => {
+            e.b.emit('call void asm sideeffect "", ""()')
+            const address = e.b.value("ptr", "call ptr @llvm.threadlocal.address.p0(ptr @ore_rt_top)")
+            e.b.terminate(`ret ptr ${address.v}`)
+        })
+    }
+    return g.b.value("ptr", `call ptr ${name}()`).v
+}
+
+export function slotType(g: Emitter, node: SlotNode): string {
+    if (node instanceof Closure) return g.envType(node.func)
+    if (node instanceof ObjectLit) return g.structType(node.type)
+    if (node instanceof Call) {
+        const t = node.type
+        if (t.kind === "struct") return g.structType(t)
+        return g.mt(t)
+    }
+    return g.mt(node.type)
+}
+
+/** A zeroed stack slot for an allocation, or null when it goes to the heap. */
+export function slot(g: Emitter, node: SlotNode): string | null {
+    const s = g.slots.get(node)
+    if (s !== null) g.b.emit(`store ${slotType(g, node)} zeroinitializer, ptr ${s}`)
+    return s
+}
+
+export function body(g: Emitter, s: Stmt) {
+    if (s.k === "block") for (const x of s.body) stmt(g, x)
+    else stmt(g, s)
+}
+
+export function line(g: Emitter, s: Stmt) {
+    const frame = g.frame
+    const n = s.line
+    if (frame !== null && n !== null && g.b.isOpen()) g.b.emit(`store i32 ${n}, ptr ${g.field(frame, FRAME, 3)}`)
+}
+
+/** Runs `run` with a breakable open: `within` of the TypeScript, which returns the value of `body`. */
+export function within(g: Emitter, breakable: Breakable, run: () => void) {
+    g.breakables.push(breakable)
+    run()
+    g.breakables.pop()
+}
+
+/** Disposes the `using` resources declared inside breakable `index` (all of them for -1), innermost first. */
+export function disposeFrom(g: Emitter, index: int) {
+    const pending: Disposal[] = []
+    for (const d of g.disposals) if (d.depth > index) pending.push(d)
+    pending.reverse()
+    // Disposing runs code that may itself leave; it must not dispose itself again.
+    const saved = g.disposals
+    for (const d of pending) {
+        const at = saved.indexOf(d)
+        const rest: Disposal[] = []
+        for (let i = 0; i < saved.length; i++) if (saved[i].depth <= index || i < at) rest.push(saved[i])
+        g.disposals = rest
+        stmt(g, d.stmt)
+    }
+    g.disposals = saved
+}
+
+export function stmt(g: Emitter, s: Stmt) {
+    line(g, s)
+    switch (s.k) {
+        case "block":
+            for (const x of s.body) stmt(g, x)
+            return
+        case "let": {
+            const init = s.init
+            g.declare(s.local, init !== null ? expr(g, init) : null)
+            return
+        }
+        case "expr": {
+            expr(g, s.expr)
+            if (s.expr.type.kind === "never") g.b.terminate("unreachable")
+            return
+        }
+        case "if": {
+            const otherwise = s.else
+            // A condition known at compile time, such as one on `target.arch`, compiles only the branch taken.
+            const known = s.cond
+            if (known.k === "bool") {
+                const taken = known.value ? s.then : otherwise
+                if (taken !== null) body(g, taken)
+                return
+            }
+            const cond = expr(g, s.cond)
+            const then = g.b.label("then")
+            const elseLabel = g.b.label("else")
+            const end = g.b.label("endif")
+            g.b.condBr(cond, then, otherwise !== null ? elseLabel : end)
+            g.b.start(then)
+            body(g, s.then)
+            g.b.br(end)
+            if (otherwise !== null) {
+                g.b.start(elseLabel)
+                body(g, otherwise)
+                g.b.br(end)
+            }
+            g.b.start(end)
+            return
+        }
+        case "loop":
+            loop(g, s)
+            return
+        case "for-of":
+            forOf(g, s)
+            return
+        case "switch":
+            switchStmt(g, s)
+            return
+        case "break": {
+            const target = s.target
+            let index = g.breakables.length - 1
+            if (target !== null) index = findBreakable(g, target)
+            const b = g.breakables[index]
+            disposeFrom(g, index)
+            g.b.br(b.breakLabel)
+            return
+        }
+        case "continue": {
+            const target = s.target
+            let index = -1
+            if (target !== null) index = findBreakable(g, target)
+            else
+                for (let i = g.breakables.length - 1; i >= 0 && index === -1; i--)
+                    if (!g.breakables[i].isSwitch) index = i
+            const b = g.breakables[index]
+            disposeFrom(g, index)
+            g.b.br(b.continueLabel)
+            return
+        }
+        case "return": {
+            // The value is computed before resources are disposed and the frame is popped.
+            const value = s.value
+            const v = value !== null ? expr(g, value) : null
+            disposeFrom(g, -1)
+            popFrame(g)
+            const func = g.func
+            const result = func !== null ? g.lt(func.type.result) : "void"
+            if (v === null || v.ty === "void" || result === "void") g.b.terminate("ret void")
+            else g.b.terminate(`ret ${v.ty} ${v.v}`)
+            return
+        }
+        case "using": {
+            g.declare(s.local, expr(g, s.init))
+            g.disposals.push({ stmt: s.dispose, depth: g.breakables.length })
+            for (const x of s.body) stmt(g, x)
+            g.disposals.pop()
+            stmt(g, s.dispose)
+            return
+        }
+    }
+}
+
+function findBreakable(g: Emitter, id: int): int {
+    for (let i = 0; i < g.breakables.length; i++) if (g.breakables[i].id === id) return i
+    return -1
+}
+
+export function loop(g: Emitter, s: LoopStmt) {
+    const head = g.b.label("loop")
+    const bodyLabel = g.b.label("body")
+    const next = g.b.label("next")
+    const end = g.b.label("endloop")
+    const breakable: Breakable = { id: s.id, isSwitch: false, breakLabel: end, continueLabel: next }
+    if (s.condAfter) {
+        g.b.start(bodyLabel)
+        within(g, breakable, () => body(g, s.body))
+        g.b.start(next)
+        const cond = s.cond
+        if (cond !== null) g.b.condBr(expr(g, cond), bodyLabel, end)
+        g.b.start(end)
+        return
+    }
+    g.b.start(head)
+    const cond = s.cond
+    if (cond !== null) g.b.condBr(expr(g, cond), bodyLabel, end)
+    g.b.start(bodyLabel)
+    within(g, breakable, () => body(g, s.body))
+    g.b.start(next)
+    // Captured `for (let ...)` variables get a fresh copy for each iteration,
+    // before the update; a box on the stack is shared, no closure of an earlier
+    // iteration being alive.
+    for (const l of s.perIteration ?? []) {
+        if (!boxed(l) || g.slots.has(l)) continue
+        const holder = g.storage.get(l)
+        if (holder === null) continue
+        const box = g.b.value("ptr", `load ptr, ptr ${holder.ptr}`)
+        const copy = g.rt("ore_rt_box_copy", [box, { ty: "i64", v: sizeOf(g.mt(l.type)) }])
+        g.b.emit(`store ptr ${copy.v}, ptr ${holder.ptr}`)
+    }
+    const update = s.update
+    if (update !== null) expr(g, update)
+    g.b.br(head)
+    g.b.start(end)
+}
+
+export function forOf(g: Emitter, s: ForOfStmt) {
+    const iterable = expr(g, s.iterable)
+    const kind = s.iterable.type.kind
+    const head = g.b.label("each")
+    const bodyLabel = g.b.label("eachbody")
+    const next = g.b.label("eachnext")
+    const end = g.b.label("endeach")
+    const i = g.b.alloca("i64")
+    g.b.emit(`store i64 0, ptr ${i}`)
+    const breakable: Breakable = { id: s.id, isSwitch: false, breakLabel: end, continueLabel: next }
+    g.b.start(head)
+    if (kind === "string") {
+        const len = g.extract(iterable, 1, "i64")
+        const at = g.b.value("i64", `load i64, ptr ${i}`)
+        g.b.condBr(g.b.value("i1", `icmp slt i64 ${at.v}, ${len.v}`), bodyLabel, end)
+        g.b.start(bodyLabel)
+        const rune = g.rt("ore_rt_str_decode", [iterable, { ty: "ptr", v: i }])
+        g.declare(s.local, g.fromI64(rune, "i32"))
+    } else if (kind === "chan") {
+        const slotPtr = g.b.alloca(g.mt(s.local.type))
+        g.b.condBr(g.rtBool("ore_rt_chan_recv", [iterable, { ty: "ptr", v: slotPtr }]), bodyLabel, end)
+        g.b.start(bodyLabel)
+        g.declare(s.local, g.load(slotPtr, s.local.type))
+    } else if (kind === "map" || kind === "set") {
+        const count = g.b.value("i64", `load i64, ptr ${g.field(iterable.v, MAP, 6)}`)
+        const at = g.b.value("i64", `load i64, ptr ${i}`)
+        g.b.condBr(g.b.value("i1", `icmp slt i64 ${at.v}, ${count.v}`), bodyLabel, end)
+        g.b.start(bodyLabel)
+        // Entries in insertion order, skipping deleted ones.
+        const live = g.rtBool("ore_rt_map_live", [iterable, at])
+        const use = g.b.label("live")
+        g.b.condBr(live, use, next)
+        g.b.start(use)
+        // The elements of a set have no value.
+        const key = g.rt("ore_rt_map_key", [iterable, at])
+        const valueLocal = s.value
+        const value = valueLocal !== null ? g.rt("ore_rt_map_value", [iterable, at]) : null
+        g.declare(s.local, g.load(key.v, s.local.type))
+        if (valueLocal !== null && value !== null) g.declare(valueLocal, g.load(value.v, valueLocal.type))
+    } else {
+        // The array length is read again on every iteration.
+        const len = g.b.value("i64", `load i64, ptr ${g.field(iterable.v, ARRAY, 1)}`)
+        const at = g.b.value("i64", `load i64, ptr ${i}`)
+        g.b.condBr(g.b.value("i1", `icmp slt i64 ${at.v}, ${len.v}`), bodyLabel, end)
+        g.b.start(bodyLabel)
+        const data = g.b.value("ptr", `load ptr, ptr ${g.field(iterable.v, ARRAY, 0)}`)
+        const ptr = g.b.value("ptr", `getelementptr ${g.mt(s.local.type)}, ptr ${data.v}, i64 ${at.v}`)
+        g.declare(s.local, g.load(ptr.v, s.local.type))
+    }
+    within(g, breakable, () => body(g, s.body))
+    g.b.start(next)
+    if (kind !== "string" && kind !== "chan") {
+        const at = g.b.value("i64", `load i64, ptr ${i}`)
+        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${at.v}, 1`).v}, ptr ${i}`)
+    }
+    g.b.br(head)
+    g.b.start(end)
+}
+
+export function switchStmt(g: Emitter, s: SwitchStmt) {
+    // The tests run in order until one is true; execution enters its clause
+    // and falls through the following ones, as in C.
+    g.declare(s.local, expr(g, s.value))
+    const index = g.b.alloca("i32")
+    const dispatch = g.b.label("dispatch")
+    const end = g.b.label("endswitch")
+    let defaultIndex = -1
+    for (let i = 0; i < s.clauses.length; i++) {
+        const test = s.clauses[i].test
+        if (test === null) {
+            if (defaultIndex === -1) defaultIndex = i
+            continue
+        }
+        const hit = g.b.label("case")
+        const miss = g.b.label("nextcase")
+        g.b.condBr(expr(g, test), hit, miss)
+        g.b.start(hit)
+        g.b.emit(`store i32 ${i}, ptr ${index}`)
+        g.b.br(dispatch)
+        g.b.start(miss)
+    }
+    g.b.emit(`store i32 ${defaultIndex}, ptr ${index}`)
+    g.b.start(dispatch)
+    const labels: string[] = []
+    for (const _ of s.clauses) labels.push(g.b.label("clause"))
+    const chosen = g.b.value("i32", `load i32, ptr ${index}`)
+    const cases: string[] = []
+    for (let i = 0; i < labels.length; i++) cases.push(`i32 ${i}, label %${labels[i]}`)
+    g.b.terminate(`switch i32 ${chosen.v}, label %${end} [ ${cases.join(" ")} ]`)
+    within(g, { id: s.id, isSwitch: true, breakLabel: end, continueLabel: "" }, () => {
+        for (let i = 0; i < s.clauses.length; i++) {
+            g.b.start(labels[i])
+            for (const x of s.clauses[i].body) stmt(g, x)
+        }
+    })
+    g.b.start(end)
+}

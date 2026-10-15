@@ -1,0 +1,236 @@
+// Symbols and scopes. Each member of
+// the `ValueSymbol` union is a class with a `k` discriminant.
+
+import { type Func, type Local } from "../ir/nodes"
+import { type StructType, type Type } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { type Operand } from "./operand"
+
+/** A built-in function by its qualified name, such as `Math.sqrt`. */
+export type BuiltinFunc = string
+
+/** A declaration with type parameters, and its instances by type arguments. */
+export class Generic {
+    constructor(
+        readonly name: string,
+        /** A function, class, interface, type alias or method declaration. */
+        readonly decl: Node,
+        /** Its `TypeParameter` nodes. */
+        readonly params: Node[],
+        /** The scope of the declaration. */
+        readonly scope: Scope,
+        readonly instances: Map<string, Instance>,
+    ) {}
+}
+
+/** An instance of a generic: a function, or a class, interface or other type. */
+export type Instance = Func | Type
+
+export class LocalSymbol {
+    readonly k: "local" = "local"
+    constructor(
+        readonly local: Local,
+        readonly decl: Node,
+    ) {}
+}
+
+export class ConstSymbol {
+    readonly k: "const" = "const"
+    constructor(
+        readonly value: Operand,
+        readonly type: Type | null,
+        readonly decl: Node,
+    ) {}
+}
+
+export class FuncSymbol {
+    readonly k: "func" = "func"
+    constructor(
+        readonly func: Func,
+        readonly decl: Node,
+    ) {}
+}
+
+export class ConversionSymbol {
+    readonly k: "conversion" = "conversion"
+    constructor(
+        readonly type: Type,
+        readonly decl: Node,
+    ) {}
+}
+
+export class BuiltinSymbol {
+    readonly k: "builtin" = "builtin"
+    constructor(
+        readonly name: BuiltinFunc,
+        readonly decl: Node,
+    ) {}
+}
+
+export class ClassSymbol {
+    readonly k: "class" = "class"
+    constructor(
+        readonly type: StructType | null,
+        readonly decl: Node,
+    ) {}
+}
+
+export class GenericFuncSymbol {
+    readonly k: "generic-func" = "generic-func"
+    constructor(
+        readonly generic: Generic,
+        readonly decl: Node,
+    ) {}
+}
+
+/**
+ * A built-in namespace such as `console`, whose members are called as
+ * `console.log(...)`. The exports of the runtime module that implements it
+ * in Ore, if any, are members too (`fs.stat`, `fs.FileInfo`), before those
+ * of builtin.d.ore.
+ */
+export class NamespaceSymbol {
+    readonly k: "namespace" = "namespace"
+    constructor(
+        readonly name: string,
+        readonly members: Map<string, ValueSymbol>,
+        readonly decl: Node,
+        public module: ((name: string) => Exported | null) | null = null,
+    ) {}
+}
+
+/** A module imported with `import * as m`, whose exports are used as `m.name`. */
+export class ModuleSymbol {
+    readonly k: "module" = "module"
+    constructor(
+        readonly name: string,
+        readonly exports: (name: string) => Exported | null,
+        readonly decl: Node,
+    ) {}
+}
+
+export type ValueSymbol =
+    | LocalSymbol
+    | ConstSymbol
+    | FuncSymbol
+    | ConversionSymbol
+    | BuiltinSymbol
+    | ClassSymbol
+    | GenericFuncSymbol
+    | NamespaceSymbol
+    | ModuleSymbol
+
+/** What a module exports under a name: a value, a type, or both (a class). */
+export class Exported {
+    constructor(
+        readonly value: ValueSymbol | null,
+        readonly type: TypeSymbol | null,
+    ) {}
+}
+
+export class TypeSymbol {
+    constructor(
+        readonly type: Type,
+        readonly decl: Node,
+        /** Set for a generic declaration, whose `type` is a placeholder. */
+        readonly generic: Generic | null = null,
+    ) {}
+}
+
+/** A value and the closures between the scope it was looked up in and its declaration, innermost first. */
+export class Captured {
+    constructor(
+        readonly symbol: ValueSymbol,
+        readonly closures: Func[],
+    ) {}
+}
+
+/** A lexical scope with separate value and type namespaces, as in TypeScript. */
+export class Scope {
+    private readonly values = new Map<string, ValueSymbol>()
+    private readonly types = new Map<string, TypeSymbol>()
+    /** Imported names, resolved when looked up so that modules can import each other in cycles. */
+    private readonly aliases = new Map<string, () => Exported | null>()
+
+    /**
+     * `closure` is set on the outermost scope of a closure body: names found
+     * beyond it are captured by that closure.
+     */
+    constructor(
+        readonly parent: Scope | null = null,
+        readonly closure: Func | null = null,
+    ) {}
+
+    private aliasValue(name: string): ValueSymbol | null {
+        const resolve = this.aliases.get(name)
+        if (resolve === null) return null
+        const exported = resolve()
+        return exported === null ? null : exported.value
+    }
+
+    private aliasType(name: string): TypeSymbol | null {
+        const resolve = this.aliases.get(name)
+        if (resolve === null) return null
+        const exported = resolve()
+        return exported === null ? null : exported.type
+    }
+
+    lookupValue(name: string): ValueSymbol | null {
+        const own = this.ownValue(name)
+        if (own !== null) return own
+        return this.parent === null ? null : this.parent.lookupValue(name)
+    }
+
+    /** A value declared in this scope itself, not in a parent. */
+    ownValue(name: string): ValueSymbol | null {
+        const value = this.values.get(name)
+        if (value !== null) return value
+        return this.aliasValue(name)
+    }
+
+    ownType(name: string): TypeSymbol | null {
+        const type = this.types.get(name)
+        if (type !== null) return type
+        return this.aliasType(name)
+    }
+
+    /** Declares an imported name; returns false if the name is already declared in this scope. */
+    declareAlias(name: string, resolve: () => Exported | null): bool {
+        if (this.values.has(name) || this.types.has(name) || this.aliases.has(name)) return false
+        this.aliases.set(name, resolve)
+        return true
+    }
+
+    /** Looks up a value and the closures between this scope and its declaration, innermost first. */
+    lookupCapturing(name: string): Captured | null {
+        const closures: Func[] = []
+        let scope: Scope | null = this
+        while (scope !== null) {
+            const symbol = scope.ownValue(name)
+            if (symbol !== null) return new Captured(symbol, closures)
+            const closure = scope.closure
+            if (closure !== null) closures.push(closure)
+            scope = scope.parent
+        }
+        return null
+    }
+
+    lookupType(name: string): TypeSymbol | null {
+        const own = this.ownType(name)
+        if (own !== null) return own
+        return this.parent === null ? null : this.parent.lookupType(name)
+    }
+
+    /** Declares a value; returns false if the name is already declared in this scope. */
+    declareValue(name: string, symbol: ValueSymbol): bool {
+        if (this.values.has(name) || this.aliases.has(name)) return false
+        this.values.set(name, symbol)
+        return true
+    }
+
+    declareType(name: string, symbol: TypeSymbol): bool {
+        if (this.types.has(name) || this.aliases.has(name)) return false
+        this.types.set(name, symbol)
+        return true
+    }
+}

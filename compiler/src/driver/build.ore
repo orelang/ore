@@ -1,0 +1,173 @@
+// Building programs: a program loaded, checked and translated to LLVM IR
+// (llvm/emit.ore), the IR compiled to an object file through LLVM's C API
+// (llvm/object.ore), C sources of packages through the C compiler, and the
+// objects linked with lld (link.ore),
+// which runs clang for the last steps.
+
+import { basename, join } from "ore:path"
+import { check } from "../checker/checker"
+import { emitModule, EmitOptions } from "../llvm/emit"
+import { emitObject, initializeLLVM, ObjectOptions, ObjectTimes } from "../llvm/object"
+import { splitModule } from "../llvm/split"
+import { loadProgram } from "../project/load"
+import { type Diagnostic } from "../syntax/diagnostic"
+import { compileC, link, targetTriple } from "./link"
+import { NativeCode, nativeCode } from "./native"
+
+export class CompileResult {
+    constructor(
+        /** The LLVM IR, present only when there are no errors. */
+        readonly ir: string | null,
+        readonly diagnostics: Diagnostic[],
+        /** The native code of the program's packages, with the IR. */
+        readonly native: NativeCode | null = null,
+    ) {}
+}
+
+export class BuildOptions {
+    constructor(
+        /** The executable to write. */
+        readonly output: string,
+        /** Optimize (`default<O2>`, inlining) instead of building fast with stack traces (`default<O0>`). */
+        readonly release: bool = false,
+        /** Also write the generated LLVM IR to this path; "" for none. */
+        readonly emitLlvm: string = "",
+        /** Print how long each step takes to stderr. */
+        readonly times: bool = false,
+    ) {}
+}
+
+export class BuildResult {
+    constructor(
+        readonly ok: bool,
+        readonly diagnostics: Diagnostic[],
+    ) {}
+}
+
+/**
+ * Loads, checks and translates a program, given by its entry file, to LLVM
+ * IR: with frames for stack traces when `debug`, else with calls inlined. An
+ * Error when a file cannot be read; errors in the program are diagnostics.
+ */
+export function compileToIr(entry: string, debug: bool, options: BuildOptions | null = null): CompileResult | Error {
+    const timed = options ?? new BuildOptions("")
+    let started = Date.now()
+    const program = loadProgram(entry)
+    if (program instanceof Error) return program
+    report(timed, "load", Date.now() - started)
+    if (program.syntaxErrors) return new CompileResult(null, program.diagnostics)
+    started = Date.now()
+    const checked = check(program)
+    report(timed, "check", Date.now() - started)
+    const diagnostics = program.diagnostics.slice()
+    for (const d of checked.diagnostics) diagnostics.push(d)
+    const module = checked.module
+    if (module === null || program.diagnostics.length > 0) return new CompileResult(null, diagnostics)
+    const paths: string[] = []
+    for (const source of program.modules) paths.push(source.path)
+    const native = nativeCode(paths)
+    if (native instanceof Error) return native
+    started = Date.now()
+    const ir = emitModule(module, new EmitOptions(debug))
+    report(timed, "emit", Date.now() - started)
+    return new CompileResult(ir, diagnostics, native)
+}
+
+/**
+ * Builds a program into an executable: debug (`default<O0>`, stack traces)
+ * or release (`default<O2>`, inlining). `ok` is false when the program has
+ * errors, given as diagnostics; an Error when a file cannot be read or
+ * written, or a tool fails.
+ */
+export function build(entry: string, options: BuildOptions): BuildResult | Error {
+    const compiled = compileToIr(entry, !options.release, options)
+    if (compiled instanceof Error) return compiled
+    const ir = compiled.ir
+    const native = compiled.native
+    if (ir === null || native === null) return new BuildResult(false, compiled.diagnostics)
+    if (options.emitLlvm !== "") {
+        const written = fs.writeFile(options.emitLlvm, ir)
+        if (written !== null) return written
+    }
+    const name = options.emitLlvm !== "" ? options.emitLlvm : `${basename(entry, ".ore")}.ll`
+    const error = buildIr(ir, name, native, options)
+    if (error !== null) return error
+    return new BuildResult(true, compiled.diagnostics)
+}
+
+/** Prints a step's time to stderr with `--time`. */
+export function report(options: BuildOptions, step: string, ms: int): void {
+    if (options.times) console.error(`${step.padEnd(10)} ${ms} ms`)
+}
+
+/**
+ * Builds an executable from LLVM IR and the native code of its packages: the
+ * IR into an object file, the C sources into others, all linked. `name`
+ * names the IR in LLVM's messages. Intermediate files go to a temporary
+ * directory, removed at the end.
+ */
+export function buildIr(ir: string, name: string, native: NativeCode, options: BuildOptions): Error | null {
+    const dir = fs.mkdtemp("ore-build-")
+    if (dir instanceof Error) return dir
+    const result = buildIn(dir, ir, name, native, options)
+    fs.remove(dir, true)
+    return result
+}
+
+function buildIn(dir: string, ir: string, name: string, native: NativeCode, options: BuildOptions): Error | null {
+    let started = Date.now()
+    // A debug build splits the module, so that LLVM compiles the parts on
+    // every CPU; a release build keeps one, for inlining across functions.
+    const parts = options.release ? [ir] : splitModule(ir, process.cpus())
+    if (parts.length > 1) report(options, "split", Date.now() - started)
+    started = Date.now()
+    const objects: string[] = []
+    const results: (ObjectTimes | Error | null)[] = []
+    for (let i = 0; i < parts.length; i++) {
+        objects.push(join(dir, parts.length === 1 ? "main.o" : `main-${i}.o`))
+        results.push(null)
+    }
+    initializeLLVM()
+    const done = new Chan<int>(parts.length)
+    for (let i = 0; i < parts.length; i++) {
+        const index = i
+        task.spawn(() => {
+            results[index] = emitObject(
+                parts[index],
+                new ObjectOptions(objects[index], options.release, targetTriple(), name),
+            )
+            done.send(index)
+        })
+    }
+    for (let i = 0; i < parts.length; i++) done.receive()
+    let parse = 0
+    let optimize = 0
+    let codegen = 0
+    for (const result of results) {
+        if (result instanceof Error) return result
+        if (result !== null) {
+            parse = parse > result.parse ? parse : result.parse
+            optimize = optimize > result.optimize ? optimize : result.optimize
+            codegen = codegen > result.codegen ? codegen : result.codegen
+        }
+    }
+    // The slowest part's times; with several parts, also the whole.
+    report(options, "llvm parse", parse)
+    report(options, options.release ? "llvm O2" : "llvm O0", optimize)
+    report(options, "codegen", codegen)
+    if (parts.length > 1) report(options, `llvm x${parts.length}`, Date.now() - started)
+    started = Date.now()
+    for (let i = 0; i < native.sources.length; i++) {
+        const source = native.sources[i]
+        const out = join(dir, `${i}-${basename(source, ".c")}.o`)
+        const error = compileC(source, out, options.release)
+        if (error !== null) return error
+        objects.push(out)
+    }
+    if (native.sources.length > 0) report(options, "cc", Date.now() - started)
+    started = Date.now()
+    const error = link(objects, native, options.output)
+    if (error !== null) return error
+    report(options, "link", Date.now() - started)
+    return null
+}

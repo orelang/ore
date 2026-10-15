@@ -1,0 +1,25 @@
+// The dump of an IR module built by hand, with every node and type kind and
+// every field: it must equal ir-dump.txt.
+
+import { test, expect } from "ore:test"
+import expected from "./ir-dump.txt" with { type: "text" }
+import { dump, quote } from "../src/ir/dump"
+import { sample } from "./ir-sample"
+
+test("the dump of a module equals ir-dump.txt", () => {
+    const text = dump(sample())
+    if (text !== expected) {
+        const got = text.split("\n")
+        const want = expected.split("\n")
+        for (let i = 0; i < got.length || i < want.length; i++) {
+            const a = i < got.length ? got[i] : "<end>"
+            const b = i < want.length ? want[i] : "<end>"
+            if (a !== b) process.panic(`line ${i + 1}: expected ${quote(b)}, got ${quote(a)}`)
+        }
+    }
+    expect(text).toBe(expected)
+})
+
+test("quote escapes quotes, backslashes and control characters", () => {
+    expect(quote('a"b\\c\n\r\t\u0001é')).toBe('"a\\"b\\\\c\\n\\r\\t\\u0001é"')
+})

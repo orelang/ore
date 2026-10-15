@@ -1,0 +1,1208 @@
+// Expressions: names, operators, assignments, literals, members and
+// conversions between them.
+
+import {
+    type Expr,
+    type LValue,
+    ArrayLit,
+    Assign,
+    Arith,
+    Bind,
+    BindLocal,
+    BoolLit,
+    BoundMethod,
+    Coalesce,
+    Compare,
+    Concat,
+    Conditional,
+    ElementLValue,
+    FieldGet,
+    FieldInit,
+    FieldLValue,
+    FloatLit,
+    FuncRef,
+    IfaceField,
+    IfaceFieldLValue,
+    UnionFieldLValue,
+    IncDec,
+    Index,
+    IntLit,
+    Is,
+    IsNull,
+    Len,
+    Local,
+    LocalLValue,
+    LocalRef,
+    Logical,
+    MapOp,
+    SetOp,
+    MethodCall,
+    Not,
+    ObjectLit,
+    Optional,
+    Recast,
+    Seq,
+    StringLit,
+    TypeOf,
+    Unary,
+    UnionField,
+    type ArithOp,
+    type CompareOp,
+} from "../ir/nodes"
+import {
+    type ArrayType,
+    type InterfaceType,
+    type StructType,
+    type Type,
+    type UnionType,
+    Field,
+    arrayOf,
+    findField,
+    findMethod,
+    isNumeric,
+    isSubclass,
+    isStringLike,
+    membersOf,
+    sameType,
+    types,
+    typeToString,
+} from "../ir/types"
+import { type Node } from "../syntax/ast"
+import {
+    argumentExpression,
+    elements,
+    expression,
+    initializer,
+    isIdentifier,
+    isStringLiteralNode,
+    left,
+    literal,
+    nameNode,
+    operand,
+    operatorToken,
+    postfixOperator,
+    prefixOperator,
+    properties,
+    questionDotToken,
+    right,
+    stringText,
+    templateHead,
+    templateSpans,
+    templateText,
+    whenFalse,
+    whenTrue,
+} from "../syntax/nodes"
+import { bigIsNeg, bigText } from "./bigint"
+import { type Checker, structOrInterface } from "./base"
+import { checkCall, checkNew } from "./calls"
+import { accessor, checkAccess, conformance, declaringClass, dispatch, genericMethod } from "./classes"
+import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
+import { foldBinary, foldUnary } from "./fold"
+import {
+    arithOps,
+    numericType,
+    poison,
+    canBeNull,
+    compareOps,
+    compoundOps,
+    fieldType,
+    isNull,
+    memberField,
+    isString,
+    nullOperand,
+    numericLiteral,
+    typed,
+    typeOf,
+    unknownName,
+} from "./helpers"
+import { type Operand, errorOperand, Typed, untypedOf } from "./operand"
+import {
+    addFacts,
+    capture,
+    checkClosure,
+    checkCondition,
+    checkDestructuringAssign,
+    condition,
+    invalidate,
+    narrowed,
+    refKey,
+} from "./statements"
+import { type ValueSymbol, ConstSymbol, Scope } from "./symbols"
+
+/**
+ * Checks an expression. `expected` is the type required by the context; it
+ * only guides literals whose type cannot be inferred alone, like `[]`.
+ */
+export function checkExpr(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
+    const result = checkExprInner(c, node, scope, expected)
+    if (result.k === "typed") c.info.types.set(node, typeOf(result.expr))
+    else if (result.k !== "error") c.info.types.set(node, c.defaultType(result))
+    return result
+}
+
+/** The text of a string literal or template literal without substitutions: `node.text`. */
+export function literalText(node: Node): string {
+    return node.kind === "NoSubstitutionTemplateLiteral" ? templateText(node) : stringText(node)
+}
+
+function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const k = node.kind
+    if (k === "ParenthesizedExpression") return checkExpr(c, expression(node), scope, expected)
+    if (k === "ArrayLiteralExpression") return checkArrayLiteral(c, node, scope, expected)
+    if (k === "ObjectLiteralExpression") return checkObjectLiteral(c, node, scope, expected)
+    // The source spelling decides int vs float.
+    if (k === "NumericLiteral") return numericLiteral(c.text(node))
+    if (k === "StringLiteral" || k === "NoSubstitutionTemplateLiteral")
+        return typed(new StringLit(types.string, literalText(node)))
+    if (k === "TrueKeyword" || k === "FalseKeyword") return typed(new BoolLit(types.bool, k === "TrueKeyword"))
+    if (isIdentifier(node)) return checkIdentifier(c, node, scope)
+    if (k === "ThisKeyword") {
+        const fn = c.fn
+        const self = fn !== null ? fn.thisLocal : null
+        if (self === null)
+            return c.fail(
+                node,
+                fn !== null && fn.fieldInit
+                    ? "Field initializers cannot use 'this'."
+                    : "'this' can only be used inside a class.",
+            )
+        capture(self, fn!.thisCaptures ?? [])
+        return typed(new LocalRef(self.type, self))
+    }
+    if (k === "SuperKeyword")
+        return c.fail(
+            node,
+            "'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'.",
+        )
+    if (k === "NewExpression") return checkNew(c, node, scope, expected)
+    if (k === "BinaryExpression") {
+        const op = operatorToken(node).kind
+        if (op === "AmpersandAmpersandToken" || op === "BarBarToken") return typed(condition(c, node, scope).expr)
+        return checkBinary(c, node, scope)
+    }
+    if (k === "PrefixUnaryExpression") return checkPrefixUnary(c, node, scope)
+    if (k === "PostfixUnaryExpression")
+        return checkIncDec(c, operand(node), postfixOperator(node, c.sourceOf(node).text), false, scope)
+    if (k === "CallExpression") return checkCall(c, node, scope)
+    if (k === "ConditionalExpression") return checkConditional(c, node, scope, expected)
+    if (k === "AsExpression")
+        return c.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
+    if (k === "TemplateExpression") return checkTemplate(c, node, scope)
+    if (k === "PropertyAccessExpression") return checkProperty(c, node, scope)
+    if (k === "ElementAccessExpression") return checkElement(c, node, scope)
+    if (k === "NullKeyword") return typed(nullOperand)
+    if (k === "NonNullExpression") return checkNonNull(c, node, scope)
+    if (k === "ArrowFunction" || k === "FunctionExpression") return checkClosure(c, node, scope, expected)
+    if (k === "TypeOfExpression") {
+        const value = checkExpr(c, expression(node), scope)
+        if (value.k === "error") return value
+        return typed(new TypeOf(types.string, c.toDefault(value, expression(node))))
+    }
+    if (k === "AwaitExpression") return c.fail(node, "'await' is not supported in Ore.")
+    if (k === "DeleteExpression") return c.fail(node, "'delete' is not supported in Ore.")
+    return c.fail(node, "This expression is not supported yet.")
+}
+
+export function checkIdentifier(c: Checker, node: Node, scope: Scope): Operand {
+    const found = scope.lookupCapturing(node.text)
+    if (found === null) {
+        if (node.text === "undefined") return c.fail(node, "'undefined' is not supported in Ore. Use 'null'.")
+        return c.fail(node, unknownName(node.text))
+    }
+    const symbol = found.symbol
+    if (symbol.k === "local") capture(symbol.local, found.closures)
+    c.info.definitions.set(node, symbol.decl)
+    return symbolValue(c, symbol, node)
+}
+
+/** The value of a symbol named by `node`, or an error for names that are not values. */
+export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operand {
+    switch (symbol.k) {
+        case "local": {
+            const local = symbol.local
+            if (c.poisoned.has(local)) return errorOperand
+            if (c.untyped.has(local)) {
+                // Its type comes from its first assignment, which has not been seen yet.
+                c.readEarly.add(local)
+                return c.fail(node, `Variable '${local.name}' is used before being assigned.`)
+            }
+            const ref = new LocalRef(local.type, local)
+            if (c.unassigned.has(local)) c.refNodes.set(ref, node)
+            return typed(narrowed(c, `L${local.id}`, ref))
+        }
+        case "const":
+            return symbol.value
+        case "class":
+            return c.fail(node, `'${node.text}' is a class. Create an instance with 'new ${node.text}(...)'.`)
+        case "generic-func":
+            return c.fail(node, `'${node.text}' is a generic function and cannot be used as a value.`)
+        case "namespace": {
+            let first = ""
+            for (const [name, _] of symbol.members) {
+                first = name
+                break
+            }
+            return c.fail(node, `'${node.text}' is a namespace; call its functions, e.g. '${node.text}.${first}(...)'.`)
+        }
+        case "module":
+            return c.fail(node, `'${node.text}' is a module; use its exports, e.g. '${node.text}.name'.`)
+        case "func":
+            if (symbol.func.extern)
+                return c.fail(node, `External function '${symbol.func.name}' cannot be used as a value.`)
+            return typed(new FuncRef(symbol.func.type, symbol.func))
+        default:
+            return c.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)
+    }
+}
+
+export function checkBinary(c: Checker, node: Node, scope: Scope): Operand {
+    const opNode = operatorToken(node)
+    const op = opNode.kind
+    if (op === "EqualsToken") return checkAssign(c, node, null, scope)
+    const compound = compoundOps.get(op)
+    if (compound !== null) return checkAssign(c, node, compound, scope)
+
+    if (op === "EqualsEqualsToken" || op === "ExclamationEqualsToken") {
+        const strict = op === "EqualsEqualsToken" ? "===" : "!=="
+        return c.fail(opNode, `'${c.text(opNode)}' is not supported in Ore. Use '${strict}'.`)
+    }
+    if (op === "GreaterThanGreaterThanGreaterThanToken")
+        return c.fail(opNode, "'>>>' is not supported in Ore. Use '>>' on an unsigned type.")
+    if (op === "AmpersandAmpersandToken" || op === "BarBarToken") {
+        const l = checkCondition(c, left(node), scope)
+        const r = checkCondition(c, right(node), scope)
+        return typed(new Logical(types.bool, op === "AmpersandAmpersandToken" ? "&&" : "||", l, r))
+    }
+    const arithOp = arithOps.get(op)
+    if (arithOp !== null)
+        return arith(c, arithOp, checkExpr(c, left(node), scope), checkExpr(c, right(node), scope), node)
+    const compareOp = compareOps.get(op)
+    if (compareOp !== null)
+        return compare(
+            c,
+            compareOp,
+            checkExpr(c, left(node), scope),
+            checkExpr(c, right(node), scope),
+            opNode,
+            left(node),
+            right(node),
+        )
+    if (op === "CommaToken") return c.fail(opNode, "The comma operator is not supported in Ore.")
+    if (op === "QuestionQuestionToken") return checkCoalesce(c, node, scope)
+    if (op === "AsteriskAsteriskToken") return c.fail(opNode, "'**' is not supported yet.")
+    if (op === "InstanceOfKeyword") return checkInstanceOf(c, node, scope)
+    if (op === "InKeyword") return c.fail(opNode, "'in' is not supported in Ore.")
+    return c.fail(opNode, `Operator '${c.text(opNode)}' is not supported.`)
+}
+
+export function arith(c: Checker, op: ArithOp, l: Operand, r: Operand, node: Node): Operand {
+    if (l.k === "error" || r.k === "error") return errorOperand
+    const opNode = operatorToken(node)
+    const shift = op === "<<" || op === ">>"
+
+    const ul = untypedOf(l)
+    const ur = untypedOf(r)
+    if (ul !== null && ur !== null) {
+        const folded = foldBinary(op, ul, ur)
+        if (typeof folded === "string") return c.fail(opNode, folded)
+        return folded
+    }
+
+    if (shift) {
+        const le = l.k === "typed" ? l.expr : c.toDefault(l, left(node))
+        const re = r.k === "typed" ? r.expr : c.coerce(r, types.u64, right(node))
+        const lt = typeOf(le)
+        const rt = typeOf(re)
+        if (lt.kind !== "int" || rt.kind !== "int") {
+            return c.fail(
+                opNode,
+                `Operator '${op}' requires integer operands, got '${typeToString(lt)}' and '${typeToString(rt)}'.`,
+            )
+        }
+        return typed(new Arith(lt, op, le, re))
+    }
+
+    if (op === "+" && (isString(l) || isString(r))) {
+        if (!isString(l) || !isString(r))
+            return c.fail(opNode, "Only strings can be concatenated with '+'. Use a template literal: `${a}${b}`.")
+        return typed(new Concat(types.string, [typedExpr(l), typedExpr(r)]))
+    }
+    const unified = c.unify(l, r, left(node), right(node))
+    const le = unified.left
+    const re = unified.right
+    if (le === null || re === null) return errorOperand
+    const type = typeOf(le)
+    if (!sameType(type, typeOf(re))) {
+        return c.fail(
+            opNode,
+            `Operator '${op}' cannot be applied to types '${typeToString(type)}' and '${typeToString(typeOf(re))}'. Convert one side explicitly, e.g. '${typeToString(type)}(x)'.`,
+        )
+    }
+    if (type.kind === "string" && op === "+") return typed(new Concat(types.string, [le, re]))
+    if (type.kind === "int") return typed(new Arith(type, op, le, re))
+    if (type.kind === "float") {
+        if (op === "&" || op === "|" || op === "^")
+            return c.fail(opNode, `Operator '${op}' requires integer operands, got '${type.name}'.`)
+        return typed(new Arith(type, op, le, re))
+    }
+    return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
+}
+
+/** The expression of a typed operand. */
+function typedExpr(value: Operand): Expr {
+    if (value.k !== "typed") process.panic("typedExpr: not typed")
+    return value.expr
+}
+
+function isEquatable(type: Type): bool {
+    if (isNumeric(type)) return true
+    const k = type.kind
+    return (
+        k === "bool" ||
+        k === "string" ||
+        k === "array" ||
+        k === "struct" ||
+        k === "interface" ||
+        k === "union" ||
+        k === "map" ||
+        k === "set" ||
+        k === "literal" ||
+        k === "func" ||
+        k === "ptr" ||
+        k === "chan"
+    )
+}
+
+export function compare(
+    c: Checker,
+    op: CompareOp,
+    l: Operand,
+    r: Operand,
+    opNode: Node,
+    leftNode: Node,
+    rightNode: Node,
+): Operand {
+    if (l.k === "error" || r.k === "error") return errorOperand
+    const ul = untypedOf(l)
+    const ur = untypedOf(r)
+    if (ul !== null && ur !== null) {
+        const folded = foldBinary(op, ul, ur)
+        if (typeof folded === "string") return c.fail(opNode, folded)
+        return folded
+    }
+    // Comparing with null tests a nullable value.
+    if ((op === "===" || op === "!==") && (isNull(l) || isNull(r))) {
+        const other = isNull(l) ? r : l
+        if (other.k !== "typed") return c.fail(opNode, "A constant cannot be null.")
+        // A narrowed reference is tested through its declared type.
+        const oe = other.expr
+        const value = oe.k === "recast" && canBeNull(oe.value.type) ? oe.value : oe
+        if (!canBeNull(value.type)) {
+            return c.fail(
+                opNode,
+                `Type '${typeToString(value.type)}' cannot be null, so this comparison is always ${op === "!=="}.`,
+            )
+        }
+        const test: Expr = new IsNull(types.bool, value)
+        return typed(op === "===" ? test : new Not(types.bool, test))
+    }
+    const unified = c.unify(l, r, leftNode, rightNode)
+    const ul2 = unified.left
+    const ur2 = unified.right
+    if (ul2 === null || ur2 === null) return errorOperand
+    let le: Expr = ul2
+    let re: Expr = ur2
+    // Two string constants, such as `target.os === "darwin"`, compare at compile time.
+    if ((op === "===" || op === "!==") && le.k === "string" && re.k === "string") {
+        return typed(new BoolLit(types.bool, (le.value === re.value) === (op === "===")))
+    }
+    // A member compares with a union containing it.
+    if (!sameType(le.type, re.type) && re.type.kind === "union") le = c.coerce(typed(le), re.type, leftNode)
+    else if (!sameType(le.type, re.type) && le.type.kind === "union") re = c.coerce(typed(re), le.type, rightNode)
+    const type = typeOf(le)
+    // Instances of a class and of a subclass compare by identity.
+    const lt = le.type
+    const rt = re.type
+    const related = lt.kind === "struct" && rt.kind === "struct" && (isSubclass(lt, rt) || isSubclass(rt, lt))
+    if (!sameType(type, typeOf(re)) && !related)
+        return c.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(re))}'.`)
+    const ordered = op !== "===" && op !== "!=="
+    if (ordered ? !(isNumeric(type) || type.kind === "string") : !isEquatable(type)) {
+        return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
+    }
+    return typed(new Compare(types.bool, op, le, re))
+}
+
+export function checkAssign(c: Checker, node: Node, op: ArithOp | null, scope: Scope): Operand {
+    const result = checkAssignInner(c, node, op, scope)
+    const key = refKey(c, left(node), scope)
+    if (key !== null) {
+        invalidate(c, key)
+        // After `x = value`, x has the type of the value until it changes again.
+        const assigned = c.info.types.get(right(node))
+        if (op === null && result.k === "typed" && assigned !== null) narrowTo(c, key, result.expr.type, assigned)
+    }
+    return result
+}
+
+/** The locals of a `Bind` built while writing an accessor. */
+class Holder {
+    readonly locals: BindLocal[] = []
+
+    hold(c: Checker, value: Expr): Expr {
+        const local = c.newLocal("tmp", value.type, false)
+        this.locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+}
+
+/**
+ * Writes an accessor property: evaluates the object once, computes the new
+ * value from the old one (read by the getter, when `usesOld`), calls the
+ * setter, and evaluates to the new value, or the old one for `x++`.
+ */
+export function writeAccessor(
+    c: Checker,
+    target: AssignTarget,
+    node: Node,
+    next: (old: () => Expr) => Expr | null,
+    yieldOld: bool,
+    usesOld: bool,
+): Operand {
+    const access = target.accessor!
+    const property = access.property
+    const type = property.type
+    const holder = new Holder()
+    const self = holder.hold(c, access.object)
+    let old: Expr | null = null
+    const getOld = (): Expr => {
+        if (old === null) old = holder.hold(c, new MethodCall(type, property.get!, self, []))
+        return old
+    }
+    if ((yieldOld || usesOld) && property.get === null)
+        return c.fail(node, `Property '${access.name}' has a setter but no getter.`)
+    if (yieldOld) getOld()
+    const value = next(getOld)
+    if (value === null) return errorOperand
+    const result = holder.hold(c, value)
+    const set: Expr = new MethodCall(types.void, property.set!, self, [result])
+    return typed(new Bind(type, holder.locals, new Seq(type, [set, yieldOld ? old! : result])))
+}
+
+/** Gives a variable declared without a type the type of its first assigned value. */
+export function settle(c: Checker, local: Local, value: Operand, node: Node): bool {
+    if (value.k === "error") return false
+    const type = typeOf(c.toDefault(value, node))
+    if (type.kind === "void" || type.kind === "never" || type.kind === "null") {
+        c.error(
+            node,
+            `Cannot infer the type of '${local.name}' from this value. Add a type annotation, e.g. 'let ${local.name}: T'.`,
+        )
+        c.readEarly.add(local)
+        return false
+    }
+    local.type = type
+    c.untyped.delete(local)
+    c.info.types.set(c.declNodes.get(local)!, type)
+    return true
+}
+
+/** Adds a fact that a reference of a union type holds a value of a narrower type. */
+export function narrowTo(c: Checker, key: string, declared: Type, actual: Type) {
+    if (declared.kind !== "union") return
+    if (sameType(declared, actual) || actual.kind === "null") return
+    const members_ = declared.members
+    if (membersOf(actual).every((a) => members_.some((m) => sameType(m, a)))) addFacts(c, [new Fact(key, actual)])
+}
+
+function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Scope): Operand {
+    const target_ = left(node)
+    if (op === null && (target_.kind === "ArrayLiteralExpression" || target_.kind === "ObjectLiteralExpression"))
+        return checkDestructuringAssign(c, node, scope)
+    const target = assignTarget(c, target_, scope)
+    // The first assignment of a variable declared without a type gives its type.
+    const place = target !== null ? target.lvalue : null
+    const untyped = place !== null && place.k === "local" && c.untyped.has(place.local) ? place.local : null
+    if (untyped !== null && op !== null) {
+        c.readEarly.add(untyped)
+        return c.fail(target_, `Variable '${untyped.name}' is used before being assigned.`)
+    }
+    const value = checkExpr(
+        c,
+        right(node),
+        scope,
+        op !== null || untyped !== null || target === null ? null : target.type,
+    )
+    if (target === null) return errorOperand
+    if (untyped !== null) {
+        if (!settle(c, untyped, value, right(node))) return errorOperand
+        target.type = untyped.type
+    }
+    if (target.accessor !== null) {
+        if (value.k === "error") return value
+        if (op === null)
+            return writeAccessor(c, target, node, (old) => c.coerce(value, target.type, right(node)), false, false)
+        const compoundOp = op
+        return writeAccessor(
+            c,
+            target,
+            node,
+            (old) => {
+                const combined = arith(c, compoundOp, typed(old()), value, node)
+                return combined.k === "typed" ? c.coerce(combined, target.type, node) : null
+            },
+            false,
+            true,
+        )
+    }
+    const lvalue = target.lvalue!
+    const type = target.type
+    if (op === null) return typed(new Assign(type, lvalue, c.coerce(value, type, right(node))))
+
+    if (lvalue.k === "local") {
+        // Reading a local has no side effects: expand `x op= v` to `x = x op v`.
+        const combined = arith(c, op, typed(new LocalRef(type, lvalue.local)), value, node)
+        if (combined.k !== "typed") return errorOperand
+        return typed(new Assign(type, lvalue, combined.expr))
+    }
+    // Type-check `element op v` with a placeholder for the element, which must be evaluated once.
+    const placeholder: Expr = new LocalRef(type, new Local(-1, "element", type, true))
+    const combined = arith(c, op, typed(placeholder), value, node)
+    if (combined.k !== "typed") return errorOperand
+    const ce = combined.expr
+    let rightExpr: Expr | null = null
+    if (ce.k === "arith") rightExpr = ce.right
+    else if (ce.k === "concat") rightExpr = ce.parts[1]
+    if (rightExpr === null) return errorOperand
+    return typed(new Assign(type, lvalue, rightExpr, op))
+}
+
+export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bool, scope: Scope): Operand {
+    const target = assignTarget(c, node, scope)
+    if (target === null) return errorOperand
+    const place = target.lvalue
+    if (place !== null && place.k === "local" && c.untyped.has(place.local)) {
+        c.readEarly.add(place.local)
+        return c.fail(node, `Variable '${place.local.name}' is used before being assigned.`)
+    }
+    const op: "++" | "--" = operator === "++" ? "++" : "--"
+    const type = numericType(target.type)
+    if (type === null) return c.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(target.type)}'.`)
+    if (target.accessor !== null) {
+        const one: Expr = type.kind === "int" ? new IntLit(type, 1) : new FloatLit(type, 1.0)
+        return writeAccessor(
+            c,
+            target,
+            node,
+            (old) => new Arith(type, op === "++" ? "+" : "-", old(), one),
+            !prefix,
+            true,
+        )
+    }
+    return typed(new IncDec(type, place!, op, prefix))
+}
+
+export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget | null {
+    if (node.kind === "ParenthesizedExpression") return assignTarget(c, expression(node), scope)
+    if (node.kind === "ElementAccessExpression") {
+        const target = checkExpr(c, expression(node), scope)
+        if (target.k !== "typed") return null
+        const array = target.expr
+        const at = array.type
+        if (at.kind === "string") {
+            c.error(node, "Strings are immutable.")
+            return null
+        }
+        if (at.kind !== "array") {
+            c.error(expression(node), `Type '${typeToString(at)}' cannot be indexed.`)
+            return null
+        }
+        const index = checkIndex(c, argumentExpression(node), scope)
+        if (index === null) return null
+        c.info.types.set(node, at.elem)
+        return new AssignTargetClass(at.elem, new ElementLValue(array, index))
+    }
+    if (node.kind === "PropertyAccessExpression") {
+        const target = checkExpr(c, expression(node), scope)
+        if (target.k !== "typed") return null
+        const object = target.expr
+        const nameId = nameNode(node)
+        const name = nameId.text
+        const ot = object.type
+        if (ot.kind === "interface") {
+            let index = -1
+            for (let i = 0; i < ot.members.length; i++) if (index === -1 && ot.members[i].name === name) index = i
+            const m = index === -1 ? null : ot.members[index]
+            if (m === null || m.k !== "field") {
+                c.error(nameId, `Property '${name}' does not exist on type '${ot.name}'.`)
+                return null
+            }
+            defineMember(c, nameId, ot, name)
+            if (m.readonly) {
+                c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
+                return null
+            }
+            c.info.types.set(node, m.type)
+            return new AssignTargetClass(m.type, new IfaceFieldLValue(object, index))
+        }
+        const property = accessor(c, ot, name)
+        if (property !== null && ot.kind === "struct") {
+            defineMember(c, nameId, ot, name)
+            if (!checkAccess(c, ot, property.private, name, nameId)) return null
+            if (property.set === null) {
+                c.error(nameId, `Cannot assign to '${name}' because it has a getter but no setter.`)
+                return null
+            }
+            c.info.types.set(node, property.type)
+            return new AssignTargetClass(property.type, null, new AccessorTarget(object, property, name))
+        }
+        if (ot.kind === "union") return unionFieldTarget(c, node, object, ot, name)
+        const struct = ot.kind === "struct" ? ot : null
+        const field = struct !== null ? findField(struct, name) : null
+        if (struct === null || field === null) {
+            c.error(nameId, `Property '${name}' does not exist on type '${typeToString(ot)}'.`)
+            return null
+        }
+        defineMember(c, nameId, struct, name)
+        if (!checkAccess(c, struct, field.private, name, nameId)) return null
+        // A constructor may initialize the read-only fields of its own instance.
+        const fn = c.fn
+        const initializing =
+            fn !== null &&
+            fn.ctor &&
+            fn.cls === struct &&
+            declaringClass(c, struct, name) === struct &&
+            object.k === "local" &&
+            object.local === fn.thisLocal
+        if (field.readonly && !initializing) {
+            c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
+            return null
+        }
+        c.info.types.set(node, field.type)
+        return new AssignTargetClass(field.type, new FieldLValue(object, name))
+    }
+    if (!isIdentifier(node)) {
+        c.error(node, "Only variables, fields and array elements can be assigned to.")
+        return null
+    }
+    const found = scope.lookupCapturing(node.text)
+    if (found === null) {
+        c.error(node, `Cannot find name '${node.text}'.`)
+        return null
+    }
+    const symbol = found.symbol
+    c.info.definitions.set(node, symbol.decl)
+    if (symbol.k === "const") {
+        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
+        return null
+    }
+    if (symbol.k !== "local") {
+        c.error(node, `Cannot assign to '${node.text}' because it is not a variable.`)
+        return null
+    }
+    if (!symbol.local.mutable) {
+        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
+        return null
+    }
+    capture(symbol.local, found.closures)
+    symbol.local.assigned = true
+    c.info.types.set(node, symbol.local.type)
+    return new AssignTargetClass(symbol.local.type, new LocalLValue(symbol.local))
+}
+
+/** A field that every member of a union has, writable and of the same type in each: `stmt.line = 3`. */
+function unionFieldTarget(c: Checker, node: Node, object: Expr, union: UnionType, name: string): AssignTarget | null {
+    const nameId = nameNode(node)
+    const fields: (Field | null)[] = []
+    if (!canBeNull(union)) for (const m of union.members) fields.push(memberField(m, name))
+    if (fields.length === 0 || fields.some((f) => f === null)) {
+        c.error(nameId, noProperty(union, name))
+        return null
+    }
+    if (fields.some((f) => f!.readonly)) {
+        c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
+        return null
+    }
+    const type = fields[0]!.type
+    if (fields.some((f) => !sameType(f!.type, type))) {
+        c.error(nameId, `Cannot assign to '${name}': its type differs between the members of '${typeToString(union)}'.`)
+        return null
+    }
+    c.info.types.set(node, type)
+    return new AssignTargetClass(type, new UnionFieldLValue(object, name))
+}
+
+export function checkPrefixUnary(c: Checker, node: Node, scope: Scope): Operand {
+    const operator = prefixOperator(node, c.sourceOf(node).text)
+    if (operator === "++" || operator === "--") return checkIncDec(c, operand(node), operator, true, scope)
+    if (operator === "!") return typed(new Not(types.bool, checkCondition(c, operand(node), scope)))
+    const value = checkExpr(c, operand(node), scope)
+    if (value.k === "error") return value
+    const op = operator === "-" ? "-" : operator === "~" ? "~" : "+"
+    const untyped = untypedOf(value)
+    if (untyped !== null) {
+        const folded = foldUnary(op, untyped)
+        if (typeof folded === "string") return c.fail(node, folded)
+        return folded
+    }
+    const expr = typedExpr(value)
+    const type = typeOf(expr)
+    const numeric = numericType(type)
+    if (numeric !== null && (numeric.kind === "int" || op !== "~")) {
+        if (op === "+") return value
+        return typed(new Unary(numeric, op === "-" ? "-" : "~", expr))
+    }
+    return c.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
+}
+
+export function checkConditional(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const cond = condition(c, node.child("condition")!, scope)
+    // Both branches are checked against the expected type, so that `c ? "a" : "b"` can be a literal type.
+    c.pushFacts(cond.whenTrue)
+    const yes = checkExpr(c, whenTrue(node), scope, expected)
+    c.popFacts()
+    c.pushFacts(cond.whenFalse)
+    const no = checkExpr(c, whenFalse(node), scope, expected)
+    c.popFacts()
+    // Branches that both fit the expected type take it, such as literals of a literal union.
+    if (expected !== null && yes.k !== "error" && no.k !== "error") {
+        const before = c.diagnostics.length
+        const then = c.coerce(yes, expected, whenTrue(node))
+        const otherwise = c.coerce(no, expected, whenFalse(node))
+        if (c.diagnostics.length === before) return typed(new Conditional(expected, cond.expr, then, otherwise))
+        c.truncateDiagnostics(before)
+    }
+    const unified = c.unify(yes, no, whenTrue(node), whenFalse(node))
+    const then = unified.left
+    const otherwise = unified.right
+    if (then === null || otherwise === null) return errorOperand
+    const type = typeOf(then)
+    if (sameType(type, typeOf(otherwise))) return typed(new Conditional(type, cond.expr, then, otherwise))
+    // Branches of different types give their union, as in TypeScript.
+    if (type.kind === "void" || otherwise.type.kind === "void")
+        return c.fail(node, "Branches of '?:' cannot be 'void'.")
+    const union = c.unionOf([type, otherwise.type])
+    return typed(
+        new Conditional(
+            union,
+            cond.expr,
+            c.coerce(typed(then), union, whenTrue(node)),
+            c.coerce(typed(otherwise), union, whenFalse(node)),
+        ),
+    )
+}
+
+export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const elems = elements(node)
+    for (const e of elems) {
+        if (e.kind === "SpreadElement") return c.fail(e, "Spread elements are not supported yet.")
+        if (e.kind === "OmittedExpression") return c.fail(node, "Array holes are not supported.")
+    }
+    // The context gives the element type: an array type, or a union with exactly one array type (`T[] | null`).
+    const arrays: ArrayType[] = []
+    if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "array") arrays.push(m)
+    if (arrays.length === 1) {
+        const type = arrays[0]
+        const values: Expr[] = []
+        for (const e of elems) values.push(c.coerce(checkExpr(c, e, scope, type.elem), type.elem, e))
+        return typed(new ArrayLit(type, values))
+    }
+    const values: Operand[] = []
+    for (const e of elems) values.push(checkExpr(c, e, scope))
+    if (values.some((v) => v.k === "error")) return errorOperand
+    // The element type is the type of the first typed element, else the default type of the constants.
+    let elem: Type | null = null
+    for (const v of values) if (elem === null && v.k === "typed") elem = v.expr.type
+    if (elem === null) {
+        if (values.length === 0)
+            return c.fail(
+                node,
+                "Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'.",
+            )
+        elem = values.some((v) => v.k === "untyped-float") ? types.f64 : types.i64
+    }
+    const elemType = elem!
+    if (elemType.kind === "void" || elemType.kind === "never")
+        return c.fail(node, `An array cannot contain values of type '${elemType.kind}'.`)
+    const exprs: Expr[] = []
+    for (let i = 0; i < values.length; i++) exprs.push(c.coerce(values[i], elemType, elems[i]))
+    return typed(new ArrayLit(arrayOf(elemType), exprs))
+}
+
+/** A property of an object literal: its name, the node to report at, and its value. */
+class Prop {
+    constructor(
+        readonly name: string,
+        readonly node: Node,
+        readonly value: Node,
+    ) {}
+}
+
+export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const props: Prop[] = []
+    for (const prop of properties(node)) {
+        if (prop.kind === "PropertyAssignment") {
+            const name = c.memberName(nameNode(prop))
+            if (name !== null) props.push(new Prop(name, nameNode(prop), initializer(prop)!))
+        } else if (prop.kind === "ShorthandPropertyAssignment") {
+            props.push(new Prop(nameNode(prop).text, nameNode(prop), nameNode(prop)))
+        } else if (prop.kind === "SpreadAssignment") {
+            return c.fail(prop, "Object spread is not supported yet.")
+        } else {
+            return c.fail(prop, "Methods and accessors in object literals are not supported yet.")
+        }
+    }
+    for (let i = 0; i < props.length; i++) {
+        let first = -1
+        for (let j = 0; j < props.length && first === -1; j++) if (props[j].name === props[i].name) first = j
+        if (first !== i) return c.fail(props[i].node, `Duplicate property '${props[i].name}'.`)
+    }
+
+    if (expected !== null && expected.kind === "union") {
+        // Pick the object member whose literal-typed fields match the literal, as in a tagged union.
+        const candidates = expected.members.filter((m) => m.kind === "struct" || m.kind === "interface")
+        const matching = candidates.filter((m) =>
+            props.every((p) => {
+                const type = fieldType(m, p.name)
+                if (type === null) return false
+                if (!isStringLiteralNode(p.value)) return true
+                const lit = literalText(p.value)
+                return membersOf(type).some((t) => t.kind === "string" || (t.kind === "literal" && t.value === lit))
+            }),
+        )
+        if (matching.length === 1) return checkObjectLiteral(c, node, scope, matching[0])
+        // Otherwise the member with these property names, to report what does not match.
+        const byNames = candidates.filter((m) => props.every((p) => fieldType(m, p.name) !== null))
+        if (byNames.length === 1 && matching.length === 0) return checkObjectLiteral(c, node, scope, byNames[0])
+        if (candidates.length === 1) return checkObjectLiteral(c, node, scope, candidates[0])
+        if (candidates.length > 1) {
+            return c.fail(
+                node,
+                matching.length > 1
+                    ? `Cannot tell which member of '${typeToString(expected)}' this object literal is. Give its discriminant field a literal value.`
+                    : `No member of '${typeToString(expected)}' matches this object literal.`,
+            )
+        }
+    }
+    if (expected !== null && expected.kind === "struct") {
+        // A literal for a known object type must have exactly its fields.
+        let ok = true
+        for (const p of props) {
+            if (findField(expected, p.name) === null) {
+                c.error(p.node, `Property '${p.name}' does not exist in type '${typeToString(expected)}'.`)
+                ok = false
+            }
+        }
+        const missing: string[] = []
+        for (const f of expected.fields) if (!props.some((p) => p.name === f.name)) missing.push(`'${f.name}'`)
+        if (missing.length > 0) {
+            c.error(
+                node,
+                `Missing ${missing.length === 1 ? "property" : "properties"} ${missing.join(", ")} of type '${typeToString(expected)}'.`,
+            )
+            ok = false
+        }
+        const fields: FieldInit[] = []
+        for (const p of props) {
+            const field = findField(expected, p.name)
+            const type = field !== null ? field.type : types.i64
+            fields.push(new FieldInit(p.name, c.coerce(checkExpr(c, p.value, scope, type), type, p.value)))
+        }
+        return ok ? typed(new ObjectLit(expected, fields)) : errorOperand
+    }
+
+    // For an interface, its field types guide the literal, which is then converted by the caller.
+    const hints = expected !== null && expected.kind === "interface" ? expected : null
+    if (hints !== null) {
+        for (const p of props) {
+            if (!hints.members.some((m) => m.k === "field" && m.name === p.name)) {
+                return c.fail(
+                    p.node,
+                    `Object literal may only specify known properties, and '${p.name}' does not exist in type '${hints.name}'.`,
+                )
+            }
+        }
+    }
+    const fields: FieldInit[] = []
+    for (const p of props) {
+        let hint: Type | null = null
+        if (hints !== null)
+            for (const m of hints.members) if (hint === null && m.k === "field" && m.name === p.name) hint = m.type
+        const value = checkExpr(c, p.value, scope, hint)
+        if (value.k === "error") return errorOperand
+        const expr = hint !== null ? c.coerce(value, hint, p.value) : c.toDefault(value, p.value)
+        if (expr.type.kind === "void" || expr.type.kind === "never")
+            return c.fail(p.value, `A property cannot have type '${expr.type.kind}'.`)
+        fields.push(new FieldInit(p.name, expr))
+    }
+    const type = c.shape(fields.map((f) => new Field(f.name, f.value.type, false)))
+    return typed(new ObjectLit(type, fields))
+}
+
+export function checkTemplate(c: Checker, node: Node, scope: Scope): Operand {
+    const parts: Expr[] = []
+    const head = templateText(templateHead(node))
+    if (head !== "") parts.push(new StringLit(types.string, head))
+    for (const span of templateSpans(node)) {
+        const e = expression(span)
+        const value = checkExpr(c, e, scope)
+        if (value.k !== "error") {
+            const expr = c.toDefault(value, e)
+            if (printable(c, expr, e)) parts.push(expr)
+        }
+        const text = templateText(literal(span))
+        if (text !== "") parts.push(new StringLit(types.string, text))
+    }
+    return typed(new Concat(types.string, parts))
+}
+
+/** Whether a value can be printed or interpolated; reports an error if not. */
+export function printable(c: Checker, expr: Expr, node: Node): bool {
+    const type = expr.type
+    if (membersOf(type).every((t) => isNumeric(t) || t.kind === "bool" || isStringLike(t) || t.kind === "null"))
+        return true
+    c.error(node, `Cannot format a value of type '${typeToString(type)}'.`)
+    return false
+}
+
+/**
+ * The exported value `m.name` of a module imported as `* as m`, or null if
+ * the expression is not such an access. Reports missing exports.
+ */
+export function moduleMember(c: Checker, node: Node, scope: Scope): ValueSymbol | null {
+    if (node.kind !== "PropertyAccessExpression" || !isIdentifier(expression(node))) return null
+    const object = expression(node)
+    const nameId = nameNode(node)
+    const module = scope.lookupValue(object.text)
+    if (module === null) return null
+    if (module.k === "namespace") {
+        // An export of the module implementing the namespace in Ore, such as `fs.stat`.
+        const implementation = module.module
+        const exported = implementation !== null ? implementation(nameId.text) : null
+        const value = exported !== null ? exported.value : null
+        if (value !== null) {
+            c.info.definitions.set(object, module.decl)
+            if (isIdentifier(nameId)) c.info.definitions.set(nameId, value.decl)
+            return value
+        }
+        // A constant of a built-in namespace, such as `Math.PI`.
+        const member_ = module.members.get(nameId.text)
+        if (member_ === null || member_.k !== "const") return null
+        c.info.definitions.set(object, module.decl)
+        if (isIdentifier(nameId)) c.info.definitions.set(nameId, member_.decl)
+        return member_
+    }
+    if (module.k !== "module") return null
+    c.info.definitions.set(object, module.decl)
+    const exported = module.exports(nameId.text)
+    const value = exported === null ? null : exported.value
+    if (value === null) {
+        c.error(nameId, `Module '${module.name}' has no exported value '${nameId.text}'.`)
+        return new ConstSymbol(errorOperand, null, node)
+    }
+    if (isIdentifier(nameId)) c.info.definitions.set(nameId, value.decl)
+    return value
+}
+
+export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
+    const nameId = nameNode(node)
+    const found = moduleMember(c, node, scope)
+    if (found !== null) return symbolValue(c, found, nameId)
+    const target = checkExpr(c, expression(node), scope)
+    if (target.k === "error") return target
+    const value = c.toDefault(target, expression(node))
+    if (questionDotToken(node) !== null) return optional(c, value, node, (v) => member(c, v, nameId, nameId.text))
+    const result = member(c, value, nameId, nameId.text)
+    const key = refKey(c, node, scope)
+    return result.k === "typed" && key !== null ? typed(narrowed(c, key, result.expr)) : result
+}
+
+/** Reads the field or length named by a property access from a value. */
+export function member(c: Checker, value: Expr, nameNode_: Node, name: string): Operand {
+    const type = value.type
+    if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
+    if (name === "length" && membersOf(type).every(isStringLike))
+        return typed(new Len(types.i64, new Recast(types.string, value)))
+    if (name === "size" && type.kind === "map") return typed(new MapOp("size", types.i64, type, value))
+    if (name === "size" && type.kind === "set") return typed(new SetOp("size", types.i64, type, value))
+    const property = accessor(c, type, name)
+    if (property !== null && type.kind === "struct") {
+        defineMember(c, nameNode_, type, name)
+        if (!checkAccess(c, type, property.private, name, nameNode_)) return errorOperand
+        const get = property.get
+        if (get === null) return c.fail(nameNode_, `Property '${name}' has a setter but no getter.`)
+        return typed(new MethodCall(property.type, get, value, []))
+    }
+    if (type.kind === "struct") {
+        const field = findField(type, name)
+        defineMember(c, nameNode_, type, name)
+        if (field !== null) {
+            if (!checkAccess(c, type, field.private, name, nameNode_)) return errorOperand
+            return typed(new FieldGet(field.type, value, name))
+        }
+        const method = findMethod(type, name)
+        if (method !== null) {
+            if (!checkAccess(c, type, method.private, name, nameNode_)) return errorOperand
+            const bound: Expr = new BoundMethod(method.func.type, value, method.func)
+            dispatch(c, bound, name)
+            return typed(bound)
+        }
+        if (genericMethod(c, type, name) !== null)
+            return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
+    }
+    if (type.kind === "interface") {
+        defineMember(c, nameNode_, type, name)
+        for (let index = 0; index < type.members.length; index++) {
+            const m = type.members[index]
+            if (m.name !== name) continue
+            if (m.k === "field") return typed(new IfaceField(m.type, value, index))
+            return typed(new BoundMethod(m.type, value, null, index))
+        }
+    }
+    if (type.kind === "union" && !canBeNull(type)) {
+        // A field that every member has, such as the discriminant of a tagged union.
+        const fieldTypes: Type[] = []
+        let all = true
+        for (const m of type.members) {
+            const t = fieldType(m, name)
+            if (t === null) all = false
+            else fieldTypes.push(t)
+        }
+        if (all) return typed(new UnionField(c.unionOf(fieldTypes), value, name))
+    }
+    return c.fail(nameNode_, noProperty(type, name))
+}
+
+export function noProperty(type: Type, name: string): string {
+    const message = `Property '${name}' does not exist on type '${typeToString(type)}'.`
+    if (type.kind === "union" && type.members.some((m) => m.kind === "null")) {
+        return `${message} The value may be null: check it with '!== null' first, or use '?.'.`
+    }
+    return message
+}
+
+/**
+ * Optional chaining: `access` applied to the non-null value, or `null`.
+ * Values that cannot be null are accessed directly.
+ */
+export function optional(c: Checker, value: Expr, node: Node, access: (value: Expr) => Operand): Operand {
+    if (!canBeNull(value.type)) return access(value)
+    const binding = c.newLocal("opt", c.withoutNull(value.type), false)
+    const result = access(new LocalRef(binding.type, binding))
+    if (result.k !== "typed") return result
+    const resultType = result.expr.type
+    if (resultType.kind === "void") return typed(new Optional(types.void, value, binding, result.expr))
+    const union = c.unionOf([resultType, types.null])
+    if (union.kind !== "union") process.panic("optional: not a union")
+    return typed(new Optional(union, value, binding, c.coerce(result, union, node)))
+}
+
+export function checkInstanceOf(c: Checker, node: Node, scope: Scope): Operand {
+    const value_ = checkExpr(c, left(node), scope)
+    if (value_.k !== "typed") return value_.k === "error" ? value_ : c.fail(left(node), "A constant is not an object.")
+    const value = value_.expr
+    const target = instanceOfTarget(c, right(node), scope)
+    if (target === null) return errorOperand
+    const test = instanceTest(c, value, target)
+    if (test !== null) return typed(test)
+    return c.fail(
+        node,
+        `A value of type '${typeToString(value.type)}' is never an instance of '${typeToString(target)}'.`,
+    )
+}
+
+/** The `is` test of `value instanceof target`, or null if it can never be true. */
+export function instanceTest(c: Checker, value: Expr, target: StructType | InterfaceType): Expr | null {
+    const type = value.type
+    if (sameType(type, target)) return new BoolLit(types.bool, true)
+    // An instance of a class is an instance of its base classes; one of a base class may be of a subclass.
+    const related = (m: Type): bool =>
+        m.kind === "struct" && target.kind === "struct" && (isSubclass(m, target) || isSubclass(target, m))
+    if (type.kind === "struct" && target.kind === "struct" && isSubclass(type, target))
+        return new BoolLit(types.bool, true)
+    if (type.kind === "struct" && related(type)) return new Is(types.bool, value, target)
+    if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m)))
+        return new Is(types.bool, value, target)
+    if (target.kind !== "struct") return null
+    if (type.kind === "interface" && conformance(c, target, type).reason === null)
+        return new Is(types.bool, value, target)
+    const via = interfaceFor(c, type, target)
+    return via !== null ? new Is(types.bool, value, target, via) : null
+}
+
+/** The interface member of a union that a class implements, if exactly one. */
+export function interfaceFor(c: Checker, type: Type, cls: StructType): InterfaceType | null {
+    if (type.kind !== "union") return null
+    const ifaces: InterfaceType[] = []
+    for (const m of type.members) if (m.kind === "interface" && conformance(c, cls, m).reason === null) ifaces.push(m)
+    return ifaces.length === 1 ? ifaces[0] : null
+}
+
+export function instanceOfTarget(c: Checker, node: Node, scope: Scope): StructType | InterfaceType | null {
+    const symbol = isIdentifier(node) ? scope.lookupType(node.text) : null
+    if (symbol !== null) c.info.definitions.set(node, symbol.decl)
+    const type = symbol !== null ? symbol.type : null
+    if (type !== null && type.kind === "struct" && type.nominal) return type
+    if (type !== null && type.kind === "interface") return type
+    c.error(node, "The right side of 'instanceof' must be a class or an interface.")
+    return null
+}
+
+export function checkNonNull(c: Checker, node: Node, scope: Scope): Operand {
+    const value_ = checkExpr(c, expression(node), scope)
+    if (value_.k !== "typed") return value_
+    const value = value_.expr
+    if (!canBeNull(value.type))
+        return c.fail(node, `Type '${typeToString(value.type)}' cannot be null; '!' is not needed.`)
+    return typed(new Recast(c.withoutNull(value.type), value))
+}
+
+export function checkCoalesce(c: Checker, node: Node, scope: Scope): Operand {
+    const value_ = checkExpr(c, left(node), scope)
+    if (value_.k !== "typed")
+        return value_.k === "error" ? value_ : c.fail(left(node), "The left side of '??' cannot be null.")
+    const value = value_.expr
+    if (!canBeNull(value.type))
+        return c.fail(left(node), `Type '${typeToString(value.type)}' cannot be null; '??' is not needed.`)
+    const type = c.withoutNull(value.type)
+    const fallback = c.coerce(checkExpr(c, right(node), scope, type), type, right(node))
+    return typed(new Coalesce(type, value, fallback))
+}
+
+export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
+    const target = checkExpr(c, expression(node), scope)
+    if (target.k === "error") return target
+    const value = c.toDefault(target, expression(node))
+    const element = (v: Expr): Operand => {
+        const index = checkIndex(c, argumentExpression(node), scope)
+        if (index === null) return errorOperand
+        const vt = v.type
+        if (vt.kind === "string") return typed(new Index(types.u8, v, index))
+        if (vt.kind === "array") return typed(new Index(vt.elem, v, index))
+        return c.fail(expression(node), `Type '${typeToString(vt)}' cannot be indexed.`)
+    }
+    return questionDotToken(node) !== null ? optional(c, value, node, element) : element(value)
+}
+
+/** Checks an index or offset: any integer type, and untyped constants must not be negative. */
+export function checkIndex(c: Checker, node: Node, scope: Scope, allowNegative: bool = false): Expr | null {
+    const value = checkExpr(c, node, scope)
+    if (value.k === "error") return null
+    if (value.k === "untyped-int" && bigIsNeg(value.value) && !allowNegative) {
+        c.error(node, `Index ${bigText(value.value)} must not be negative.`)
+        return null
+    }
+    const expr = value.k === "typed" ? value.expr : c.coerce(value, types.i64, node)
+    if (expr.type.kind !== "int") {
+        c.error(node, `An index must be an integer, got '${typeToString(expr.type)}'.`)
+        return null
+    }
+    return expr
+}
+
+/** Records the declaration of a field or method for go to definition. */
+export function defineMember(c: Checker, node: Node, type: StructType | InterfaceType, name: string) {
+    const decls = c.memberDecls.get(type)
+    const decl = decls === null ? null : decls.get(name)
+    if (decl !== null && isIdentifier(node)) c.info.definitions.set(node, decl)
+}

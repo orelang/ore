@@ -1,0 +1,1337 @@
+// Calls: functions, methods, closures, constructors, built-ins (including
+// `unsafe` and `JSON`), array and string methods.
+
+import {
+    type Expr,
+    type MapOpName,
+    type SetOpName,
+    type ChanOpName,
+    ArrayLit,
+    ArrayMethod,
+    Assign,
+    Alloc,
+    Bind,
+    BindLocal,
+    Block,
+    BuiltinCall,
+    BuiltinError,
+    Call,
+    CallValue,
+    ChanOp,
+    Concat,
+    Convert,
+    ExprStmt,
+    FieldLValue,
+    Func,
+    FuncRef,
+    IfaceCall,
+    IntLit,
+    LetStmt,
+    LocalRef,
+    MapOp,
+    SetOp,
+    MethodCall,
+    NullLit,
+    Pop,
+    Push,
+    Recast,
+    ReturnStmt,
+    Seq,
+    Slice,
+    StringLit,
+    StringMethod,
+} from "../ir/nodes"
+import {
+    type ArrayType,
+    type FuncType,
+    type StructType,
+    type Type,
+    ChanType,
+    Field,
+    FuncType as FuncTypeClass,
+    MapType,
+    SetType,
+    StructType as StructTypeClass,
+    arrayOf,
+    findField,
+    findMethod,
+    isNumeric,
+    isStringLike,
+    membersOf,
+    sameType,
+    types,
+    typeToString,
+} from "../ir/types"
+import { type Node } from "../syntax/ast"
+import {
+    argumentExpression,
+    args as argsOf,
+    elements,
+    expression,
+    initializer,
+    isIdentifier,
+    isStringLiteralNode,
+    members,
+    nameNode,
+    parameters,
+    questionDotToken,
+    questionToken,
+    typeArguments,
+    typeNode,
+    typeParameters,
+} from "../syntax/nodes"
+import { bigFromF64 } from "./bigint"
+import { type Checker } from "./base"
+import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
+import { genericCall, isInternal } from "./declarations"
+import {
+    checkExpr,
+    checkIndex,
+    defineMember,
+    literalText,
+    member,
+    moduleMember,
+    noProperty,
+    optional,
+    printable,
+} from "./expressions"
+import {
+    arrayMethods,
+    numericType,
+    isSymbolDispose,
+    jsonProblem,
+    stringMethods,
+    typed,
+    typeOf,
+    unknownName,
+} from "./helpers"
+import { type Operand, errorOperand, UntypedInt } from "./operand"
+import { capture, checkClosure, disposeCall } from "./statements"
+import { type ValueSymbol, LocalSymbol, Scope } from "./symbols"
+
+export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
+    const callee = expression(node)
+    if (callee.kind === "SuperKeyword") return checkSuperCall(c, node, scope)
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    const symbolOfCallee = isIdentifier(callee) ? scope.lookupValue(callee.text) : moduleMember(c, callee, scope)
+    if (symbolOfCallee !== null && symbolOfCallee.k === "generic-func") {
+        if (isIdentifier(callee)) c.info.definitions.set(callee, symbolOfCallee.decl)
+        const generic = symbolOfCallee.generic
+        const call = genericCall(c, generic, parameters(generic.decl), typeArgs, args, node, scope)
+        if (call === null) return errorOperand
+        const func = call.instance
+        if (!(func instanceof Func)) return errorOperand
+        return callFunc(
+            c,
+            func,
+            args,
+            node,
+            scope,
+            `Function '${generic.name}'`,
+            null,
+            call.operands.length > 0 ? call.operands : null,
+        )
+    }
+    // Type arguments of a method call are checked with the method.
+    if (typeArgs.length > 0 && callee.kind !== "PropertyAccessExpression")
+        return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions.")
+    if (questionDotToken(node) !== null && callee.kind !== "PropertyAccessExpression") {
+        // `f?.(...)` calls a function value unless it is null.
+        const value = checkExpr(c, callee, scope)
+        if (value.k !== "typed") return value
+        return optional(c, value.expr, node, (f) => callValue(c, typed(f), node, scope))
+    }
+    let symbol: ValueSymbol | null = null
+    let name: string
+    let nameAt: Node
+    if (callee.kind === "ElementAccessExpression" && isSymbolDispose(argumentExpression(callee))) {
+        if (args.length > 0) return c.fail(node, "'[Symbol.dispose]' takes no arguments.")
+        const target = checkExpr(c, expression(callee), scope)
+        if (target.k !== "typed")
+            return target.k === "error" ? target : c.fail(expression(callee), "A constant is not disposable.")
+        const call = disposeCall(c, target.expr)
+        return call !== null
+            ? typed(call)
+            : c.fail(callee, `Type '${typeToString(target.expr.type)}' has no '[Symbol.dispose]' method.`)
+    }
+    if (callee.kind === "PropertyAccessExpression" && symbolOfCallee !== null) {
+        // `m.f(...)`: an export of a module imported as `* as m`.
+        name = c.text(callee)
+        nameAt = nameNode(callee)
+        symbol = symbolOfCallee
+        if (symbol.k === "local" || symbol.k === "const") return callValue(c, checkExpr(c, callee, scope), node, scope)
+    } else if (callee.kind === "PropertyAccessExpression") {
+        // `console.log(...)`: a member of a namespace, or else a method call.
+        const object = expression(callee)
+        const ns = isIdentifier(object) ? scope.lookupValue(object.text) : null
+        if (ns === null || ns.k !== "namespace") return checkMethodCall(c, node, callee, scope)
+        if (ns.name === "internal" && !isInternal(c, c.sourceOf(node))) {
+            return c.fail(
+                object,
+                "'internal' is only for the standard library. Add '//ore:internal' at the top of the file to use it here.",
+            )
+        }
+        c.info.definitions.set(object, ns.decl)
+        const memberName = nameNode(callee)
+        name = `${ns.name}.${memberName.text}`
+        nameAt = memberName
+        symbol = ns.members.get(memberName.text)
+        if (symbol === null) return c.fail(memberName, `'${ns.name}' has no member '${memberName.text}'.`)
+        if (isIdentifier(memberName)) c.info.definitions.set(memberName, symbol.decl)
+    } else {
+        // Anything but a name is a function value, such as `make()(1)` or `handlers[i](e)`.
+        if (!isIdentifier(callee)) return callValue(c, checkExpr(c, callee, scope), node, scope)
+        name = callee.text
+        nameAt = callee
+        symbol = scope.lookupValue(callee.text)
+        if (symbol === null) return c.fail(callee, unknownName(callee.text))
+        if (symbol.k === "local") return callValue(c, checkExpr(c, callee, scope), node, scope)
+        c.info.definitions.set(callee, symbol.decl)
+    }
+    const found = symbol
+    // Functions check spread arguments themselves, for rest parameters.
+    if (found.k !== "func")
+        for (const arg of args)
+            if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
+
+    switch (found.k) {
+        case "conversion": {
+            if (args.length !== 1)
+                return c.fail(node, `Conversion '${name}' expects exactly 1 argument, got ${args.length}.`)
+            const target = found.type
+            let value = checkExpr(c, args[0], scope)
+            if (value.k === "untyped-float" && target.kind === "int") {
+                // Converting a float constant to an integer truncates toward zero, then range-checks.
+                const x = value.value
+                if (x - x !== 0.0) return c.fail(args[0], `Cannot convert ${x} to '${target.name}'.`)
+                value = new UntypedInt(bigFromF64(x))
+            }
+            if (value.k !== "typed") return typed(c.coerce(value, target, args[0]))
+            const from = typeOf(value.expr)
+            const numeric = numericType(target)
+            if (!isNumeric(from) || numeric === null) {
+                return c.fail(args[0], `Cannot convert '${typeToString(from)}' to '${typeToString(target)}'.`)
+            }
+            if (sameType(from, target)) return value
+            return typed(new Convert(numeric, value.expr))
+        }
+        case "builtin": {
+            if (!found.name.startsWith("console.")) return builtinCall(c, found.name, found.decl, node, scope)
+            const values: Expr[] = []
+            for (const arg of args) {
+                const value = checkExpr(c, arg, scope)
+                if (value.k === "error") continue
+                const expr = c.toDefault(value, arg)
+                if (printable(c, expr, arg)) values.push(expr)
+            }
+            return typed(new BuiltinCall(types.void, found.name, values))
+        }
+        case "func":
+            return callFunc(c, found.func, args, node, scope, `Function '${found.func.sourceName}'`)
+        case "class":
+            return c.fail(nameAt, `Class '${name}' must be instantiated with 'new ${name}(...)'.`)
+        default:
+            return c.fail(nameAt, `'${name}' is not a function.`)
+    }
+}
+
+/** A checked callback: the function value, how many arguments it takes, and its result. */
+export class Callback {
+    constructor(
+        readonly expr: Expr,
+        readonly arity: int,
+        readonly result: Type,
+    ) {}
+}
+
+/** Checks a call of an array method that takes a callback or a value. */
+export function arrayMethod(
+    c: Checker,
+    array: Expr,
+    type: ArrayType,
+    name: string,
+    node: Node,
+    callee: Node,
+    scope: Scope,
+): Operand {
+    const T = type.elem
+    const args = argsOf(node)
+    const arity = arrayMethods.get(name)!
+    if (args.length < arity.min || args.length > arity.max) {
+        return c.fail(
+            node,
+            `'${name}' expects ${arity.min === arity.max ? `${arity.min}` : `${arity.min} to ${arity.max}`} argument(s), got ${args.length}.`,
+        )
+    }
+    switch (name) {
+        case "forEach": {
+            const cb = callback(c, args[0], scope, [T, types.i64], types.void, true)
+            return cb !== null ? typed(new ArrayMethod(name, types.void, array, [cb.expr], cb.arity)) : errorOperand
+        }
+        case "map": {
+            const cb = callback(c, args[0], scope, [T, types.i64], null)
+            if (cb === null) return errorOperand
+            if (cb.result.kind === "void" || cb.result.kind === "never")
+                return c.fail(args[0], "The callback of 'map' must return a value.")
+            return typed(new ArrayMethod(name, arrayOf(cb.result), array, [cb.expr], cb.arity))
+        }
+        case "filter":
+        case "find":
+        case "findIndex":
+        case "some":
+        case "every": {
+            const cb = callback(c, args[0], scope, [T, types.i64], types.bool)
+            if (cb === null) return errorOperand
+            const result: Type =
+                name === "filter"
+                    ? type
+                    : name === "find"
+                      ? c.unionOf([T, types.null])
+                      : name === "findIndex"
+                        ? types.i64
+                        : types.bool
+            return typed(new ArrayMethod(name, result, array, [cb.expr], cb.arity))
+        }
+        case "reduce": {
+            // The accumulator has the type of the initial value.
+            const initial = checkExpr(c, args[1], scope)
+            if (initial.k === "error") return errorOperand
+            const init = c.toDefault(initial, args[1])
+            const cb = callback(c, args[0], scope, [init.type, T, types.i64], init.type)
+            return cb !== null
+                ? typed(new ArrayMethod(name, init.type, array, [cb.expr, init], cb.arity))
+                : errorOperand
+        }
+        case "includes":
+        case "indexOf": {
+            const x = c.coerce(checkExpr(c, args[0], scope, T), T, args[0])
+            return typed(new ArrayMethod(name, name === "includes" ? types.bool : types.i64, array, [x]))
+        }
+        case "join": {
+            if (!membersOf(T).every((m) => isNumeric(m) || m.kind === "bool" || isStringLike(m) || m.kind === "null")) {
+                return c.fail(nameNode(callee), `Cannot join elements of type '${typeToString(T)}'.`)
+            }
+            const values: Expr[] = []
+            if (args.length > 0)
+                values.push(c.coerce(checkExpr(c, args[0], scope, types.string), types.string, args[0]))
+            return typed(new ArrayMethod(name, types.string, array, values))
+        }
+        case "reverse":
+            return typed(new ArrayMethod(name, type, array, []))
+        default: {
+            // sort: by a comparator returning a number, or in natural order for numbers and strings.
+            if (args.length === 0) {
+                if (!(isNumeric(T) || isStringLike(T)))
+                    return c.fail(
+                        nameNode(callee),
+                        `Sorting '${typeToString(T)}' needs a comparator: 'sort((a, b) => ...)'.`,
+                    )
+                return typed(new ArrayMethod(name, type, array, []))
+            }
+            const cb = callback(c, args[0], scope, [T, T], null)
+            if (cb === null) return errorOperand
+            if (!isNumeric(cb.result)) return c.fail(args[0], "The comparator of 'sort' must return a number.")
+            return typed(new ArrayMethod(name, type, array, [cb.expr], cb.arity))
+        }
+    }
+}
+
+/**
+ * Checks a callback: a function literal gets the parameter types, and its
+ * result is inferred when `result` is null; a function value may take
+ * fewer parameters than given. With `ignoreResult`, any result is accepted.
+ */
+export function callback(
+    c: Checker,
+    node: Node,
+    scope: Scope,
+    params: Type[],
+    result: Type | null,
+    ignoreResult: bool = false,
+): Callback | null {
+    const expected = new FuncTypeClass(params, result ?? types.void)
+    const literal = node.kind === "ArrowFunction" || node.kind === "FunctionExpression"
+    const value = literal ? checkClosure(c, node, scope, expected, result === null) : checkExpr(c, node, scope)
+    const describe = `(${params.map(typeToString).join(", ")}) => ${result !== null ? typeToString(result) : "..."}`
+    if (value.k === "error") return null
+    if (value.k !== "typed") {
+        c.error(node, `Expected a function of type '${describe}', got '${typeToString(c.defaultType(value))}'.`)
+        return null
+    }
+    const type = value.expr.type
+    if (
+        type.kind !== "func" ||
+        type.params.length > params.length ||
+        !type.params.every((p, i) => sameType(p, params[i]))
+    ) {
+        c.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`)
+        return null
+    }
+    if (!ignoreResult && result !== null && !sameType(type.result, result)) {
+        c.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`)
+        return null
+    }
+    return new Callback(value.expr, type.params.length, type.result)
+}
+
+/**
+ * Checks a call of a built-in function by its declaration in builtin.d.ore;
+ * `Math.abs`, `min` and `max` take and return any one numeric type.
+ */
+export function builtinCall(c: Checker, name: string, decl: Node, node: Node, scope: Scope): Operand {
+    if (name === "JSON.stringify" || name === "JSON.parse") return jsonCall(c, name, node, scope)
+    const generic = typeParameters(decl).length > 0
+    if (name.startsWith("unsafe.") && generic) return unsafeCall(c, name, node, scope)
+    const args = argsOf(node)
+    const params = parameters(decl)
+    let required = 0
+    for (const p of params) if (questionToken(p) === null) required++
+    if (args.length < required || args.length > params.length) {
+        const count = required === params.length ? `${required}` : `${required} to ${params.length}`
+        return c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+    }
+    if (generic) {
+        const operands: Operand[] = []
+        for (const a of args) operands.push(checkExpr(c, a, scope))
+        if (operands.some((o) => o.k === "error")) return errorOperand
+        // The type of the first typed argument, or the default type of the constants.
+        let type: Type | null = null
+        for (const o of operands) if (type === null && o.k === "typed") type = o.expr.type
+        if (type === null) {
+            let pick = operands[0]
+            for (const o of operands)
+                if (o.k === "untyped-float") {
+                    pick = o
+                    break
+                }
+            type = c.defaultType(pick)
+        }
+        const t = type
+        if (!isNumeric(t)) return c.fail(args[0], `'${name}' needs numbers, got '${typeToString(t)}'.`)
+        const values: Expr[] = []
+        for (let i = 0; i < operands.length; i++) values.push(c.coerce(operands[i], t, args[i]))
+        return typed(new BuiltinCall(t, name, values))
+    }
+    const builtins = c.builtins!
+    const paramTypes: Type[] = []
+    for (const p of params) paramTypes.push(c.resolveType(typeNode(p)!, builtins)!)
+    const values: Expr[] = []
+    for (let i = 0; i < args.length; i++)
+        values.push(c.coerce(checkExpr(c, args[i], scope, paramTypes[i]), paramTypes[i], args[i]))
+    const result = c.resolveType(typeNode(decl)!, builtins)!
+    // A built-in that fails with an Error creates the basic one.
+    const errorType = c.errorType
+    const error = errorType !== null && membersOf(result).some((m) => m === errorType) ? basicErrorOf(c) : null
+    return typed(new BuiltinCall(result, name, values, error))
+}
+
+/** How a built-in creates the basic `Error`. */
+function basicErrorOf(c: Checker): BuiltinError {
+    const basic = basicErrorClass(c)
+    return new BuiltinError(basic.ctor!, itab(c, basic, c.errorType!))
+}
+
+/** `JSON.stringify(value, indent?)` and `JSON.parse<T>(text)`, whose code is generated per type. */
+export function jsonCall(c: Checker, name: string, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    if (name === "JSON.stringify") {
+        if (args.length < 1 || args.length > 2)
+            return c.fail(node, `'${name}' expects 1 to 2 argument(s), got ${args.length}.`)
+        const operand_ = checkExpr(c, args[0], scope)
+        if (operand_.k === "error") return operand_
+        const value = c.toDefault(operand_, args[0])
+        const problem = jsonProblem(value.type)
+        if (problem !== null) return c.fail(args[0], problem)
+        const values: Expr[] = [value]
+        if (args.length > 1) values.push(c.coerce(checkExpr(c, args[1], scope, types.i64), types.i64, args[1]))
+        return typed(new BuiltinCall(types.string, name, values))
+    }
+    const typeArgs = typeArguments(node)
+    if (typeArgs.length !== 1)
+        return c.fail(node, "'JSON.parse' needs the type to read, e.g. 'JSON.parse<Config>(text)'.")
+    const typeArg = typeArgs[0]
+    const target = c.resolveValueType(typeArg, scope)
+    if (target === null) return errorOperand
+    const problem = jsonProblem(target)
+    if (problem !== null) return c.fail(typeArg, problem)
+    if (args.length !== 1) return c.fail(node, `'${name}' expects 1 argument(s), got ${args.length}.`)
+    const text = c.coerce(checkExpr(c, args[0], scope, types.string), types.string, args[0])
+    const result = c.unionOf([target, c.errorType!])
+    const error = basicErrorOf(c)
+    return typed(new BuiltinCall(result, name, [text], error, [target]))
+}
+
+/** A value argument of `unsafe` and the type it gives `T`. */
+class TypedArg {
+    constructor(
+        readonly type: Type,
+        readonly value: Expr,
+    ) {}
+}
+
+function isReferenceType(t: Type): bool {
+    return t.kind === "struct" || t.kind === "array" || t.kind === "map" || t.kind === "set" || t.kind === "chan"
+}
+
+function isAtomic(t: Type): bool {
+    return t.kind === "int" || t.kind === "ptr"
+}
+
+function bitsOf(t: Type): int {
+    if (t.kind === "int") return t.bits
+    if (t.kind === "float") return t.bits
+    return 0
+}
+
+/** The generic functions of `unsafe`, whose type argument is given or comes from a value. */
+export function unsafeCall(c: Checker, name: string, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    const short = name.slice(7)
+    const expect = (count: int): bool => {
+        if (args.length === count) return true
+        c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+        return false
+    }
+    const typeArgs = typeArguments(node)
+    const typeArg = typeArgs.length === 1 ? typeArgs[0] : null
+    if (typeArgs.length > 0 && typeArg === null) return c.fail(node, `'${name}' takes one type argument.`)
+    const explicit = typeArg !== null ? c.resolveValueType(typeArg, scope) : null
+    if (typeArg !== null && explicit === null) return errorOperand
+    const pointer = (arg: Node): Expr => c.coerce(checkExpr(c, arg, scope, types.ptr), types.ptr, arg)
+    const call = (type: Type, values: Expr[], targs: Type[]): Operand =>
+        typed(new BuiltinCall(type, name, values, null, targs))
+
+    // `T` from the type argument, or else from the value argument at `index`.
+    const typeFrom = (index: int): TypedArg | null => {
+        const operand_ = checkExpr(c, args[index], scope, explicit)
+        if (operand_.k === "error") return null
+        const value = explicit !== null ? c.coerce(operand_, explicit, args[index]) : c.toDefault(operand_, args[index])
+        return new TypedArg(explicit ?? value.type, value)
+    }
+    const needType = (example: string): Type | null => {
+        if (explicit === null) c.fail(node, `'${name}' needs a type argument, e.g. '${example}'.`)
+        return explicit
+    }
+    const storable = (t: Type, at: Node): bool => {
+        if (t.kind === "void" || t.kind === "never" || t.kind === "null") {
+            c.error(at, `'${name}' cannot work on '${typeToString(t)}'.`)
+            return false
+        }
+        return true
+    }
+
+    switch (short) {
+        case "sizeOf":
+        case "alignOf": {
+            const t = needType(`unsafe.${short}<i64>()`)
+            if (t === null || !expect(0) || !storable(t, node)) return errorOperand
+            return call(types.i64, [], [t])
+        }
+        case "load":
+        case "atomicLoad":
+        case "fromAddress": {
+            const t = needType(`unsafe.${short}<i64>(p)`)
+            if (t === null || !expect(1)) return errorOperand
+            if (short === "fromAddress" && !isReferenceType(t))
+                return c.fail(typeArg!, `'${name}' needs an object, array or map type, got '${typeToString(t)}'.`)
+            if (short === "atomicLoad" && !isAtomic(t))
+                return c.fail(typeArg!, `Atomic operations need an integer or 'ptr', got '${typeToString(t)}'.`)
+            if (!storable(t, typeArg!)) return errorOperand
+            return call(t, [pointer(args[0])], [t])
+        }
+        case "bitcast": {
+            const t = needType("unsafe.bitcast<u64>(x)")
+            if (t === null || !expect(1)) return errorOperand
+            const operand_ = checkExpr(c, args[0], scope)
+            if (operand_.k === "error") return errorOperand
+            const value = c.toDefault(operand_, args[0])
+            if (bitsOf(t) === 0 || bitsOf(value.type) === 0)
+                return c.fail(
+                    node,
+                    `'${name}' converts between numeric types, not '${typeToString(value.type)}' and '${typeToString(t)}'.`,
+                )
+            if (bitsOf(t) !== bitsOf(value.type))
+                return c.fail(
+                    node,
+                    `'${name}' needs types of the same size: '${typeToString(value.type)}' has ${bitsOf(value.type)} bits, '${typeToString(t)}' ${bitsOf(t)}.`,
+                )
+            return call(t, [value], [t])
+        }
+        case "functionAddress": {
+            if (!expect(1)) return errorOperand
+            // A declared C function, which is not a value otherwise.
+            const arg = args[0]
+            const named = isIdentifier(arg) ? scope.lookupValue(arg.text) : null
+            if (named !== null && named.k === "func" && named.func.extern)
+                return call(types.ptr, [new FuncRef(named.func.type, named.func)], [])
+            const operand_ = checkExpr(c, arg, scope)
+            if (operand_.k === "error") return errorOperand
+            if (operand_.k !== "typed" || operand_.expr.k !== "func-ref")
+                return c.fail(arg, `'${name}' needs the name of a top-level function.`)
+            return call(types.ptr, [operand_.expr], [])
+        }
+        case "addressOf": {
+            if (!expect(1)) return errorOperand
+            const v = typeFrom(0)
+            if (v === null) return errorOperand
+            if (!isReferenceType(v.type))
+                return c.fail(args[0], `'${name}' needs an object, array or map, got '${typeToString(v.type)}'.`)
+            return call(types.ptr, [v.value], [v.type])
+        }
+        case "store":
+        case "atomicStore":
+        case "atomicAdd":
+        case "atomicSub":
+        case "atomicAnd":
+        case "atomicOr":
+        case "atomicXor":
+        case "atomicExchange": {
+            if (!expect(2)) return errorOperand
+            const p = pointer(args[0])
+            const v = typeFrom(1)
+            if (v === null || !storable(v.type, args[1])) return errorOperand
+            if (short !== "store" && !isAtomic(v.type))
+                return c.fail(args[1], `Atomic operations need an integer or 'ptr', got '${typeToString(v.type)}'.`)
+            const arithmetic = short !== "store" && short !== "atomicStore" && short !== "atomicExchange"
+            if (arithmetic && v.type.kind !== "int")
+                return c.fail(args[1], `'${name}' needs an integer, got '${typeToString(v.type)}'.`)
+            const result = short === "store" || short === "atomicStore" ? types.void : v.type
+            return call(result, [p, v.value], [v.type])
+        }
+        case "atomicCompareExchange": {
+            if (!expect(3)) return errorOperand
+            const p = pointer(args[0])
+            const expected = typeFrom(1)
+            if (expected === null) return errorOperand
+            if (!isAtomic(expected.type))
+                return c.fail(
+                    args[1],
+                    `Atomic operations need an integer or 'ptr', got '${typeToString(expected.type)}'.`,
+                )
+            const desired = c.coerce(checkExpr(c, args[2], scope, expected.type), expected.type, args[2])
+            return call(types.bool, [p, expected.value, desired], [expected.type])
+        }
+        case "asm": {
+            const result = explicit ?? types.void
+            if (args.length < 2)
+                return c.fail(node, `'${name}' expects a template and constraints, got ${args.length} argument(s).`)
+            const values: Expr[] = []
+            for (let i = 0; i < 2; i++) {
+                const arg = args[i]
+                if (!isStringLiteralNode(arg))
+                    return c.fail(arg, "The template and the constraints of 'unsafe.asm' must be string literals.")
+                values.push(new StringLit(types.string, literalText(arg)))
+            }
+            for (let i = 2; i < args.length; i++) {
+                const arg = args[i]
+                const operand_ = checkExpr(c, arg, scope)
+                if (operand_.k === "error") return errorOperand
+                const value = c.toDefault(operand_, arg)
+                if (!isNumeric(value.type) && value.type.kind !== "ptr")
+                    return c.fail(
+                        arg,
+                        `An operand of 'unsafe.asm' must be a number or 'ptr', got '${typeToString(value.type)}'.`,
+                    )
+                values.push(value)
+            }
+            if (result.kind !== "void" && !isNumeric(result) && result.kind !== "ptr")
+                return c.fail(typeArg!, `'unsafe.asm' can return a number or 'ptr', got '${typeToString(result)}'.`)
+            return call(result, values, [result])
+        }
+    }
+    return c.fail(node, `Unknown function '${name}'.`)
+}
+
+/** Calls a function value with arguments converted to its parameters. */
+export function callValue(c: Checker, callee: Operand, node: Node, scope: Scope): Operand {
+    if (callee.k !== "typed")
+        return callee.k === "error" ? callee : c.fail(expression(node), "A constant is not a function.")
+    const type = callee.expr.type
+    if (type.kind !== "func")
+        return c.fail(expression(node), `A value of type '${typeToString(type)}' is not a function.`)
+    const args = argsOf(node)
+    for (const arg of args)
+        if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
+    if (args.length !== type.params.length)
+        return c.fail(node, `This function expects ${type.params.length} argument(s), got ${args.length}.`)
+    const values: Expr[] = []
+    for (let i = 0; i < args.length; i++)
+        values.push(c.coerce(checkExpr(c, args[i], scope, type.params[i]), type.params[i], args[i]))
+    return typed(new CallValue(type.result, callee.expr, values))
+}
+
+/** `Chan<T>` or `Map<K, V>` from the type arguments of `new`, as the type reference would resolve them. */
+function builtinGeneric(c: Checker, name: string, typeArgs: Node[], node: Node, scope: Scope): Type | null {
+    if (name === "Chan") {
+        if (typeArgs.length !== 1) {
+            c.error(node, "'Chan' expects exactly 1 type argument.")
+            return null
+        }
+        const elem = c.resolveValueType(typeArgs[0], scope)
+        return elem === null ? null : new ChanType(elem)
+    }
+    if (typeArgs.length !== 2) {
+        c.error(node, "'Map' expects exactly 2 type arguments.")
+        return null
+    }
+    const key = c.resolveValueType(typeArgs[0], scope)
+    const value = c.resolveValueType(typeArgs[1], scope)
+    return key !== null && value !== null ? c.mapOf(key, value, typeArgs[0]) : null
+}
+
+/**
+ * `new Map<K, V>()`, or `new Map(entries)` from an array literal of
+ * `[key, value]` pairs, which become `set` calls in order; without type
+ * arguments or a context, the types are those of the first pair.
+ */
+function newMap(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    if (args.length > 1) return c.fail(args[1], "'new Map' takes at most one argument: an array of [key, value] pairs.")
+    const entries = args.length > 0 ? args[0] : null
+    if (entries !== null && entries.kind !== "ArrayLiteralExpression")
+        return c.fail(entries, "The entries of 'new Map' must be an array literal of [key, value] pairs.")
+    const pairs: Node[] = entries !== null ? elements(entries) : []
+    for (const pair of pairs) {
+        const kv: Node[] = pair.kind === "ArrayLiteralExpression" ? elements(pair) : []
+        if (
+            pair.kind !== "ArrayLiteralExpression" ||
+            kv.length !== 2 ||
+            kv[0].kind === "SpreadElement" ||
+            kv[1].kind === "SpreadElement"
+        ) {
+            return c.fail(pair, "An entry of 'new Map' must be a [key, value] pair.")
+        }
+    }
+    let type: MapType | null = null
+    // The first pair, checked to infer the types.
+    let firstKey: Operand | null = null
+    let firstValue: Operand | null = null
+    if (typeArgs.length > 0) {
+        const resolved = builtinGeneric(c, "Map", typeArgs, node, scope)
+        if (resolved !== null && resolved.kind === "map") type = resolved
+    } else if (expected !== null && expected.kind === "map") {
+        type = expected
+    } else if (pairs.length > 0) {
+        const kv = elements(pairs[0])
+        const k = checkExpr(c, kv[0], scope)
+        const v = checkExpr(c, kv[1], scope)
+        if (k.k === "error" || v.k === "error") return errorOperand
+        const key = c.toDefault(k, kv[0])
+        const value = c.toDefault(v, kv[1])
+        type = c.mapOf(key.type, value.type, kv[0])
+        firstKey = typed(key)
+        firstValue = typed(value)
+    } else {
+        return c.fail(node, "Cannot infer the types of the Map. Write 'new Map<K, V>()' or annotate the variable.")
+    }
+    if (type === null) return errorOperand
+    let map: Expr = new MapOp("new", type, type)
+    for (let i = 0; i < pairs.length; i++) {
+        const kv = elements(pairs[i])
+        const k = i === 0 && firstKey !== null ? firstKey : checkExpr(c, kv[0], scope, type.key)
+        const key = c.coerce(k, type.key, kv[0])
+        const v = i === 0 && firstValue !== null ? firstValue : checkExpr(c, kv[1], scope, type.value)
+        const value = c.coerce(v, type.value, kv[1])
+        map = new MapOp("set", type, type, map, key, value)
+    }
+    return typed(map)
+}
+
+/**
+ * `new Set<T>()`, or `new Set(values)` from an array or another set; without
+ * a type argument or a context, the type is that of the elements.
+ */
+function newSet(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    if (args.length > 1) return c.fail(args[1], "'new Set' takes at most one argument: an array or a set of values.")
+    let type: SetType | null = null
+    if (typeArgs.length > 0) {
+        if (typeArgs.length !== 1) return c.fail(node, "'Set' expects exactly 1 type argument.")
+        const elem = c.resolveValueType(typeArgs[0], scope)
+        type = elem !== null ? c.setOf(elem, typeArgs[0]) : null
+        if (type === null) return errorOperand
+    } else if (expected !== null && expected.kind === "set") {
+        type = expected
+    }
+    if (args.length === 0) {
+        if (type === null)
+            return c.fail(node, "Cannot infer the type of the Set. Write 'new Set<T>()' or annotate the variable.")
+        return typed(new SetOp("new", type, type))
+    }
+    const source = args[0]
+    // The values: an array (an array literal takes the element type as its context), or a set's values.
+    const operand = checkExpr(c, source, scope, type !== null ? arrayOf(type.elem) : null)
+    if (operand.k === "error") return errorOperand
+    let values: Expr
+    if (operand.k === "typed" && operand.expr.type.kind === "set") {
+        const from = type !== null ? c.coerce(operand, type, source) : operand.expr
+        const fromType = from.type
+        if (fromType.kind !== "set") return errorOperand
+        values = new SetOp("values", arrayOf(fromType.elem), fromType, from)
+    } else {
+        values = c.toDefault(operand, source)
+    }
+    const valuesType = values.type
+    if (valuesType.kind !== "array")
+        return c.fail(source, `'new Set' takes an array or a set of values, got '${typeToString(valuesType)}'.`)
+    const setType = type !== null ? type : c.setOf(valuesType.elem, source)
+    if (setType === null) return errorOperand
+    const elems = c.coerce(typed(values), arrayOf(setType.elem), source)
+    return typed(new SetOp("new", setType, setType, null, elems))
+}
+
+export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
+    const target = expression(node)
+    const qualified = target.kind === "PropertyAccessExpression"
+    if (!isIdentifier(target) && !qualified) return c.fail(target, "Only named classes can be instantiated.")
+    const name = c.text(target)
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    const symbol = qualified ? c.typeSymbol(target, scope) : scope.lookupType(name)
+    if (qualified && symbol === null) return errorOperand
+    if (name === "Chan" && symbol === null) {
+        let type: Type | null = null
+        if (typeArgs.length > 0) type = builtinGeneric(c, "Chan", typeArgs, node, scope)
+        else if (expected !== null && expected.kind === "chan") type = expected
+        else
+            return c.fail(node, "Cannot infer the type of the channel. Write 'new Chan<T>()' or annotate the variable.")
+        if (args.length > 1) return c.fail(args[1], "'new Chan' takes at most a capacity.")
+        const capacity: Expr =
+            args.length > 0
+                ? c.coerce(checkExpr(c, args[0], scope, types.i64), types.i64, args[0])
+                : new IntLit(types.i64, 0)
+        if (type === null || type.kind !== "chan") return errorOperand
+        return typed(new ChanOp("new", type, type, null, capacity))
+    }
+    if (name === "Map" && symbol === null) return newMap(c, node, scope, expected)
+    if (name === "Set" && symbol === null) return newSet(c, node, scope, expected)
+    const errorType = c.errorType
+    if (symbol !== null && errorType !== null && symbol.type === errorType) {
+        if (isIdentifier(target)) c.info.definitions.set(target, symbol.decl)
+        const created = callFunc(c, basicErrorClass(c).ctor!, args, node, scope, "'new Error'")
+        return created.k === "typed" ? typed(c.coerce(created, errorType, node)) : created
+    }
+    const generic = symbol !== null ? symbol.generic : null
+    if (generic !== null && generic.decl.kind === "ClassDeclaration") {
+        if (isIdentifier(target)) c.info.definitions.set(target, symbol!.decl)
+        let ctorParams: Node[] = []
+        for (const m of members(generic.decl))
+            if (m.kind === "Constructor") {
+                ctorParams = parameters(m)
+                break
+            }
+        const call = genericCall(c, generic, ctorParams, typeArgs, args, node, scope)
+        if (call === null) return errorOperand
+        const instance = call.instance
+        if (instance instanceof Func || instance.kind !== "struct") return errorOperand
+        const ctor = instance.ctor
+        if (ctor === null) return constructEarly(c, instance)
+        const instanceInfo = c.classInfos.get(instance.id)
+        if (instanceInfo !== null && instanceInfo.abstract)
+            return c.fail(node, `Cannot create an instance of an abstract class '${instance.name}'.`)
+        return callFunc(
+            c,
+            ctor,
+            args,
+            node,
+            scope,
+            `Constructor of '${instance.name}'`,
+            null,
+            call.operands.length > 0 ? call.operands : null,
+        )
+    }
+    const type = symbol !== null ? symbol.type : null
+    if (type === null || type.kind !== "struct" || !type.nominal) return c.fail(target, `'${name}' is not a class.`)
+    if (typeArgs.length > 0) return c.fail(typeArgs[0], `Class '${name}' is not generic.`)
+    if (isIdentifier(target)) c.info.definitions.set(target, symbol!.decl)
+    const ctor = type.ctor
+    if (ctor === null) return constructEarly(c, type)
+    const info = c.classInfos.get(type.id)
+    if (info !== null && info.abstract) return c.fail(node, `Cannot create an instance of an abstract class '${name}'.`)
+    return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`)
+}
+
+/**
+ * `super(...)` in the constructor of a class with a base class: the
+ * initialization of the base class on `this`, then the parameter
+ * properties and field initializers of the class.
+ */
+function checkSuperCall(c: Checker, node: Node, scope: Scope): Operand {
+    const fn = c.fn
+    const cls = fn === null ? null : fn.cls
+    const base = fn !== null && fn.ctor && cls !== null ? cls.base : null
+    const self = fn === null ? null : fn.thisLocal
+    if (fn === null || cls === null || base === null || self === null)
+        return c.fail(node, "A 'super' call is only allowed in the constructor of a class that extends another class.")
+    if (fn.superCall !== node)
+        return c.fail(node, "A 'super' call must be a statement at the top level of the constructor, and the only one.")
+    const receiver: Expr = new LocalRef(cls, self)
+    const call = callFunc(
+        c,
+        initOf(c, c.classInfos.get(base.id)!),
+        argsOf(node),
+        node,
+        scope,
+        `Constructor of '${base.name}'`,
+        receiver,
+    )
+    const inits = fn.superInits ?? []
+    if (call.k !== "typed" || inits.length === 0) return call
+    const exprs: Expr[] = [call.expr]
+    for (const e of inits) exprs.push(e)
+    return typed(new Seq(inits[inits.length - 1].type, exprs))
+}
+
+/** `super.m(...)`: the method of the base class, called directly on `this`. */
+function superMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Operand {
+    const fn = c.fn
+    const self = fn === null ? null : fn.thisLocal
+    const cls = fn === null ? null : fn.cls
+    const base = cls === null ? null : cls.base
+    if (fn === null || self === null || cls === null || base === null)
+        return c.fail(
+            expression(callee),
+            "'super' can only be used in the methods and constructor of a class that extends another class.",
+        )
+    capture(self, fn.thisCaptures ?? [])
+    const nameId = nameNode(callee)
+    const name = nameId.text
+    const typeArgs = typeArguments(node)
+    if (typeArgs.length > 0)
+        return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
+    const method = findMethod(base, name)
+    if (method === null) {
+        return c.fail(
+            nameId,
+            genericMethod(c, base, name) !== null
+                ? `Generic method '${name}' cannot be called through 'super' yet.`
+                : `Method '${name}' does not exist on base class '${base.name}'.`,
+        )
+    }
+    defineMember(c, nameId, base, name)
+    if (!checkAccess(c, base, method.private, name, nameId)) return errorOperand
+    const owner = c.abstractMethods.get(method.func)
+    if (owner !== null)
+        return c.fail(
+            nameId,
+            `Abstract method '${name}' in class '${owner.name}' cannot be accessed via super expression.`,
+        )
+    return callFunc(c, method.func, argsOf(node), node, scope, `Method '${base.name}.${name}'`, new LocalRef(cls, self))
+}
+
+/**
+ * A class constructed while declarations are resolved, before its
+ * constructor is known: in the default value of a parameter without a type,
+ * which takes the class's type and is checked again later.
+ */
+function constructEarly(c: Checker, type: StructType): Operand {
+    c.constructedEarly = true
+    return typed(new Alloc(type))
+}
+
+/** The class created by `new Error(message)`. */
+export function basicErrorClass(c: Checker): StructType {
+    if (c.basicError !== null) return c.basicError
+    const type = new StructTypeClass(
+        c.nextStructId++,
+        "BasicError",
+        true,
+        [new Field("message", types.string, true)],
+        [],
+    )
+    const message = c.newLocal("message", types.string, false)
+    const self = c.newLocal("this", type, false)
+    const thisRef = new LocalRef(type, self)
+    const ctor = new Func(
+        "ore_new_BasicError",
+        "Error.constructor",
+        1,
+        new FuncTypeClass([types.string], type),
+        [message],
+        new Block([
+            new LetStmt(self, new Alloc(type)),
+            new ExprStmt(
+                new Assign(types.string, new FieldLValue(thisRef, "message"), new LocalRef(types.string, message)),
+            ),
+            new ReturnStmt(thisRef),
+        ]),
+        false,
+    )
+    type.ctor = ctor
+    c.module.structs.push(type)
+    c.module.functions.push(ctor)
+    c.basicError = type
+    return type
+}
+
+/** A checked call of a function or method with arguments converted to its parameters. */
+export function callFunc(
+    c: Checker,
+    func: Func,
+    args: Node[],
+    node: Node,
+    scope: Scope,
+    what: string,
+    receiver: Expr | null = null,
+    operands: Operand[] | null = null,
+): Operand {
+    const params = func.type.params
+    const variadic = func.variadic
+    if (variadic !== null) {
+        // A variadic C function: the fixed arguments, then any number of the promoted type.
+        if (args.length < params.length)
+            return c.fail(node, `${what} expects at least ${params.length} argument(s), got ${args.length}.`)
+        const values: Expr[] = []
+        for (let i = 0; i < args.length; i++) {
+            const type = i < params.length ? params[i] : variadic
+            values.push(c.coerce(checkExpr(c, args[i], scope, type), type, args[i]))
+        }
+        return typed(new Call(func.type.result, func, values))
+    }
+    const signature = c.signatures.get(func.params)
+    const rest = signature !== null && signature.rest
+    const fixed = rest ? params.length - 1 : params.length
+    const required = signature !== null ? signature.required : params.length
+    const given = args.slice(0, fixed)
+    for (const arg of given)
+        if (arg.kind === "SpreadElement")
+            return c.fail(arg, "Spread arguments are only supported for a rest parameter.")
+    if (args.length < required || (!rest && args.length > fixed)) {
+        const count = rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
+        return c.fail(node, `${what} expects ${count} argument(s), got ${args.length}.`)
+    }
+    const values: Expr[] = []
+    for (let i = 0; i < given.length; i++) {
+        const operand_ =
+            operands !== null && i < operands.length ? operands[i] : checkExpr(c, given[i], scope, params[i])
+        values.push(c.coerce(operand_, params[i], given[i]))
+    }
+
+    // Extra arguments form the rest array, unless a single `...array` is passed on.
+    if (rest) {
+        const array = params[fixed]
+        if (array.kind !== "array") process.panic("callFunc: rest parameter is not an array")
+        const extra = args.slice(fixed)
+        if (extra.length === 1 && extra[0].kind === "SpreadElement") {
+            const spread = expression(extra[0])
+            values.push(c.coerce(checkExpr(c, spread, scope, array), array, spread))
+        } else {
+            const elems: Expr[] = []
+            for (const arg of extra) {
+                if (arg.kind === "SpreadElement")
+                    return c.fail(arg, "Pass a single '...array' as all the rest arguments.")
+                elems.push(c.coerce(checkExpr(c, arg, scope, array.elem), array.elem, arg))
+            }
+            // Before default values, which come only when there are no extra arguments.
+            if (values.length === fixed) values.push(new ArrayLit(array, elems))
+        }
+    }
+
+    if (values.length >= params.length) {
+        if (receiver !== null) return typed(new MethodCall(func.type.result, func, receiver, values))
+        return typed(new Call(func.type.result, func, values))
+    }
+    // Missing arguments take their default values, computed after the given
+    // ones, which their expressions can use by the parameter names.
+    const sig = signature!
+    const locals: BindLocal[] = []
+    const hold = (value: Expr): LocalRef => {
+        const local = c.newLocal("arg", value.type, false)
+        locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    const self: Expr | null = receiver !== null ? hold(receiver) : null
+    const held: Expr[] = []
+    for (const v of values) held.push(hold(v))
+    const inner = new Scope(sig.scope)
+    for (let i = 0; i < held.length; i++) {
+        const p = sig.parameters[i]
+        const v = held[i]
+        if (isIdentifier(nameNode(p)) && v.k === "local")
+            inner.declareValue(nameNode(p).text, new LocalSymbol(v.local, p))
+    }
+    // Errors in default values were reported at the declaration.
+    const errors = c.diagnostics.length
+    for (let i = held.length; i < fixed; i++) {
+        const p = sig.parameters[i]
+        const type = params[i]
+        const init = initializer(p)
+        if (init !== null) held.push(c.coerce(checkExpr(c, init, inner, type), type, init))
+        else if (type.kind === "union") held.push(new NullLit(type))
+        else held.push(new NullLit(types.null))
+    }
+    c.truncateDiagnostics(errors)
+    if (rest) {
+        const array = params[fixed]
+        if (array.kind === "array") held.push(new ArrayLit(array, []))
+    }
+    const call: Expr =
+        self !== null ? new MethodCall(func.type.result, func, self, held) : new Call(func.type.result, func, held)
+    return typed(new Bind(func.type.result, locals, call))
+}
+
+export function checkMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Operand {
+    if (expression(callee).kind === "SuperKeyword") return superMethodCall(c, node, callee, scope)
+    const target = checkExpr(c, expression(callee), scope)
+    if (target.k === "error") return target
+    const value = c.toDefault(target, expression(callee))
+    if (questionDotToken(callee) !== null) return optional(c, value, node, (v) => methodCall(c, v, node, callee, scope))
+    return methodCall(c, value, node, callee, scope)
+}
+
+function chanArity(name: string): int {
+    switch (name) {
+        case "send":
+            return 1
+        case "receive":
+            return 0
+        case "close":
+            return 0
+        case "onReceive":
+            return 1
+        case "onSend":
+            return 2
+    }
+    return -1
+}
+
+function mapArity(name: string): int {
+    switch (name) {
+        case "get":
+            return 1
+        case "set":
+            return 2
+        case "has":
+            return 1
+        case "delete":
+            return 1
+        case "clear":
+            return 0
+        case "keys":
+            return 0
+        case "values":
+            return 0
+    }
+    return -1
+}
+
+function mapOpName(name: string): MapOpName {
+    switch (name) {
+        case "get":
+            return "get"
+        case "set":
+            return "set"
+        case "has":
+            return "has"
+        case "delete":
+            return "delete"
+        case "clear":
+            return "clear"
+        case "keys":
+            return "keys"
+        default:
+            return "values"
+    }
+}
+
+/** The operation of a Set method, or null for none. */
+function setOpName(name: string): SetOpName | null {
+    switch (name) {
+        case "add":
+            return "add"
+        case "has":
+            return "has"
+        case "delete":
+            return "delete"
+        case "clear":
+            return "clear"
+        case "values":
+            return "values"
+    }
+    return null
+}
+
+function chanOpName(name: string): ChanOpName {
+    switch (name) {
+        case "send":
+            return "send"
+        case "receive":
+            return "receive"
+        default:
+            return "close"
+    }
+}
+
+export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, scope: Scope): Operand {
+    const nameId = nameNode(callee)
+    const name = nameId.text
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    const type = value.type
+
+    const generic = type.kind === "struct" ? genericMethod(c, type, name) : null
+    if (typeArgs.length > 0 && generic === null)
+        return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
+    if (type.kind === "struct" && generic !== null) {
+        defineMember(c, nameId, type, name)
+        if (!checkAccess(c, type, generic.private, name, nameId)) return errorOperand
+        const call = genericCall(c, generic.generic, parameters(generic.generic.decl), typeArgs, args, node, scope)
+        if (call === null) return errorOperand
+        const instance = call.instance
+        if (!(instance instanceof Func)) return errorOperand
+        return callFunc(
+            c,
+            instance,
+            args,
+            node,
+            scope,
+            `Method '${type.name}.${name}'`,
+            value,
+            call.operands.length > 0 ? call.operands : null,
+        )
+    }
+    if (type.kind === "struct") {
+        const method = findMethod(type, name)
+        if (method !== null) {
+            defineMember(c, nameId, type, name)
+            if (!checkAccess(c, type, method.private, name, nameId)) return errorOperand
+            const call = callFunc(c, method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
+            if (call.k === "typed") dispatch(c, call.expr, name)
+            return call
+        }
+        const field = findField(type, name)
+        if (field !== null && field.type.kind === "func")
+            return callValue(c, member(c, value, nameId, name), node, scope)
+        if (field !== null) return c.fail(nameId, `Field '${name}' is not a method.`)
+    }
+    if (type.kind === "interface") {
+        for (let index = 0; index < type.members.length; index++) {
+            const m = type.members[index]
+            if (m.name !== name) continue
+            if (m.k === "method") {
+                defineMember(c, nameId, type, name)
+                for (const arg of args)
+                    if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
+                const params = m.type.params
+                if (args.length !== params.length)
+                    return c.fail(
+                        node,
+                        `Method '${type.name}.${name}' expects ${params.length} argument(s), got ${args.length}.`,
+                    )
+                const values: Expr[] = []
+                for (let i = 0; i < args.length; i++)
+                    values.push(c.coerce(checkExpr(c, args[i], scope, params[i]), params[i], args[i]))
+                return typed(new IfaceCall(m.type.result, value, index, m.type, values))
+            }
+            if (m.type.kind === "func") return callValue(c, member(c, value, nameId, name), node, scope)
+            return c.fail(nameId, `Field '${name}' is not a method.`)
+        }
+    }
+    if (type.kind === "chan") {
+        const count = chanArity(name)
+        if (count === -1) return c.fail(nameId, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+        if (args.length !== count) return c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+        if (name === "onReceive") {
+            const cb = callback(c, args[0], scope, [c.unionOf([type.elem, types.null])], types.void, true)
+            if (cb === null) return errorOperand
+            return typed(new ChanOp("on-receive", types.SelectCase, type, value, null, cb.expr, cb.arity))
+        }
+        if (name === "onSend") {
+            const sent = c.coerce(checkExpr(c, args[0], scope, type.elem), type.elem, args[0])
+            const cb = callback(c, args[1], scope, [], types.void, true)
+            if (cb === null) return errorOperand
+            return typed(new ChanOp("on-send", types.SelectCase, type, value, sent, cb.expr, 0))
+        }
+        const op = chanOpName(name)
+        const sent = op === "send" ? c.coerce(checkExpr(c, args[0], scope, type.elem), type.elem, args[0]) : null
+        const result = op === "receive" ? c.unionOf([type.elem, types.null]) : types.void
+        return typed(new ChanOp(op, result, type, value, sent))
+    }
+    if (type.kind === "map") {
+        const count = mapArity(name)
+        if (count === -1) return c.fail(nameId, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+        if (args.length !== count) return c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+        const key = count > 0 ? c.coerce(checkExpr(c, args[0], scope, type.key), type.key, args[0]) : null
+        const val = count > 1 ? c.coerce(checkExpr(c, args[1], scope, type.value), type.value, args[1]) : null
+        const op = mapOpName(name)
+        let result: Type
+        if (op === "get") result = c.unionOf([type.value, types.null])
+        else if (op === "set") result = type
+        else if (op === "has" || op === "delete") result = types.bool
+        else if (op === "keys") result = arrayOf(type.key)
+        else if (op === "values") result = arrayOf(type.value)
+        else result = types.void
+        return typed(new MapOp(op, result, type, value, key, val))
+    }
+    if (type.kind === "set") {
+        const op = setOpName(name)
+        if (op === null) return c.fail(nameId, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+        const count = op === "add" || op === "has" || op === "delete" ? 1 : 0
+        if (args.length !== count) return c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+        const elem = count > 0 ? c.coerce(checkExpr(c, args[0], scope, type.elem), type.elem, args[0]) : null
+        let result: Type
+        if (op === "add") result = type
+        else if (op === "has" || op === "delete") result = types.bool
+        else if (op === "values") result = arrayOf(type.elem)
+        else result = types.void
+        return typed(new SetOp(op, result, type, value, elem))
+    }
+    if (type.kind === "array" && arrayMethods.has(name)) return arrayMethod(c, value, type, name, node, callee, scope)
+    if ((isNumeric(type) || type.kind === "bool") && name === "toString" && args.length === 0) {
+        return typed(new Concat(types.string, [value]))
+    }
+    if (isNumeric(type) && name === "toFixed") {
+        if (args.length !== 1) return c.fail(node, `'toFixed' expects 1 argument(s), got ${args.length}.`)
+        const digits = c.coerce(checkExpr(c, args[0], scope, types.i64), types.i64, args[0])
+        const number: Expr = type.kind === "float" && type.bits === 64 ? value : new Convert(types.f64, value)
+        return typed(new BuiltinCall(types.string, "Number.toFixed", [number, digits]))
+    }
+    const stringLike = isStringLike(type) || (type.kind === "union" && type.members.every(isStringLike))
+    const stringMethod = stringLike ? stringMethods.get(name) : null
+    if (stringMethod !== null) {
+        const params = stringMethod.params
+        const opt = stringMethod.optional
+        if (args.length < params.length - opt || args.length > params.length) {
+            return c.fail(
+                node,
+                `'${name}' expects ${opt > 0 ? `${params.length - opt} to ${params.length}` : `${params.length}`} argument(s), got ${args.length}.`,
+            )
+        }
+        const values: Expr[] = []
+        for (let i = 0; i < args.length; i++)
+            values.push(c.coerce(checkExpr(c, args[i], scope, params[i]), params[i], args[i]))
+        const str: Expr = sameType(type, types.string) ? value : new Recast(types.string, value)
+        const result = name === "codePointAt" ? c.unionOf([types.i64, types.null]) : stringMethod.result
+        return typed(new StringMethod(name, result, str, values))
+    }
+    if (type.kind === "array" && name === "push") {
+        const values: Expr[] = []
+        for (const arg of args) {
+            if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
+            values.push(c.coerce(checkExpr(c, arg, scope, type.elem), type.elem, arg))
+        }
+        return typed(new Push(types.i64, value, values))
+    }
+    if (type.kind === "array" && name === "pop") {
+        if (args.length > 0) return c.fail(node, `'pop' expects no arguments, got ${args.length}.`)
+        return typed(new Pop(type.elem, value))
+    }
+    if (name === "slice" && (type.kind === "string" || type.kind === "array")) {
+        if (args.length > 2) return c.fail(node, `'slice' expects at most 2 arguments, got ${args.length}.`)
+        const offsets: Expr[] = []
+        let failed = false
+        for (const a of args) {
+            const o = checkIndex(c, a, scope, true)
+            if (o === null) failed = true
+            else offsets.push(o)
+        }
+        if (failed) return errorOperand
+        return typed(
+            new Slice(type, value, offsets.length > 0 ? offsets[0] : null, offsets.length > 1 ? offsets[1] : null),
+        )
+    }
+    return c.fail(nameId, noProperty(type, name).replace("Property", "Method"))
+}

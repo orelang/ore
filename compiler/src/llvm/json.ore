@@ -1,0 +1,602 @@
+// JSON: an encoder and a decoder generated per type.
+
+import { type BuiltinCall } from "../ir/nodes"
+import { intRange, typeKey, typeToString, unionRepr, type Type, type UnionType } from "../ir/types"
+import { error, helper } from "./calls"
+import { keyFunctions } from "./collections"
+import {
+    ARRAY,
+    JSON_ARRAY,
+    JSON_BOOL,
+    JSON_CTX,
+    JSON_NULL,
+    JSON_NUMBER,
+    JSON_OBJECT,
+    JSON_STRING,
+    JSON_VALUE,
+    MAP,
+    SB,
+    STR,
+} from "./context"
+import { Emitter } from "./base"
+import { choose, expr, fieldPtr, inject, payload, recast, slotTest, unionOf } from "./expressions"
+import { globalName, sizeOf, type V } from "./ll"
+
+export function json(g: Emitter, e: BuiltinCall): V {
+    g.defs.set(SB, `${SB} = type { ptr, i64, i64 }`)
+    g.defs.set(JSON_VALUE, `${JSON_VALUE} = type { i32, i8, double, ${STR}, i64, ptr, ptr }`)
+    g.defs.set(JSON_CTX, `${JSON_CTX} = type { i8, ${STR}, ${STR} }`)
+    if (e.name === "JSON.stringify") {
+        const value = expr(g, e.args[0])
+        const indent = e.args.length > 1 ? expr(g, e.args[1]) : g.i64(0)
+        const b = g.b.alloca(SB)
+        g.b.emit(`store ${SB} zeroinitializer, ptr ${b}`)
+        g.b.emit(
+            `call void ${jsonEncoder(g, e.args[0].type)}(ptr ${b}, ${value.ty} ${value.v}, i64 ${indent.v}, i64 0)`,
+        )
+        return g.rt("ore_sb_string", [{ ty: "ptr", v: b }])
+    }
+    // JSON.parse<T>(text): parses, then reads a T, or makes an Error from the first problem.
+    const u = unionOf(e.type)
+    const typeArgs = e.typeArgs
+    if (typeArgs === null || typeArgs.length === 0) process.panic("JSON.parse without a type")
+    const target = typeArgs[0]
+    const text = expr(g, e.args[0])
+    const message = g.b.alloca(STR)
+    const parsed = g.rt("ore_rt_json_parse", [text, { ty: "ptr", v: message }])
+    let errorIndex = -1
+    for (let i = 0; i < u.members.length && errorIndex === -1; i++)
+        if (u.members[i].kind === "interface") errorIndex = i
+    const fail = (m: V): V => inject(g, u, errorIndex, error(g, e, m))
+    return choose(
+        g,
+        g.b.value("i1", `icmp eq ptr ${parsed.v}, null`),
+        () => fail(g.b.value(STR, `load ${STR}, ptr ${message}`)),
+        () => {
+            const c = g.b.alloca(JSON_CTX)
+            g.b.emit(`store ${JSON_CTX} zeroinitializer, ptr ${c}`)
+            const ty = g.lt(target)
+            const r = g.b.value(ty, `call ${ty} ${jsonDecoder(g, target)}(ptr ${parsed.v}, ptr ${c})`)
+            return choose(
+                g,
+                jsonFailed(g, c),
+                () => fail(g.rt("ore_rt_json_error", [{ ty: "ptr", v: c }])),
+                () => recast(g, r, target, u),
+                g.lt(u),
+            )
+        },
+        g.lt(u),
+    )
+}
+
+export function jsonFailed(g: Emitter, c: string): V {
+    return g.b.value("i1", `trunc i8 ${g.b.value("i8", `load i8, ptr ${g.field(c, JSON_CTX, 0)}`).v} to i1`)
+}
+
+/** Puts literal bytes into the string builder `b`. */
+export function put(g: Emitter, b: V, text: string) {
+    g.rt("ore_sb_put", [b, g.cstr(text), g.i64(text.length)])
+}
+
+export function putc(g: Emitter, b: V, c: string) {
+    g.rt("ore_sb_putc", [b, g.i64(i64(c[0]))])
+}
+
+/** A helper writing a value of a type as JSON: `(ptr b, T v, i64 indent, i64 depth)`. */
+export function jsonEncoder(g: Emitter, type: Type): string {
+    const name = globalName(`json.enc.${typeKey(type)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const ty = g.lt(type)
+    helper(g, name, `define internal void ${name}(ptr %b, ${ty} %v, i64 %indent, i64 %depth)`, (e) => {
+        encodeJson(e, type, { ty: "ptr", v: "%b" }, { ty, v: "%v" })
+        e.b.terminate("ret void")
+    })
+    return name
+}
+
+export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
+    const indent: V = { ty: "i64", v: "%indent" }
+    const depth: V = { ty: "i64", v: "%depth" }
+    const deeper = g.b.value("i64", `add i64 %depth, 1`)
+    const encode = (t: Type, x: V) => {
+        g.b.emit(`call void ${jsonEncoder(g, t)}(ptr ${b.v}, ${x.ty} ${x.v}, i64 %indent, i64 ${deeper.v})`)
+    }
+    const newline = (d: V) => {
+        g.rt("ore_rt_json_newline", [b, indent, d])
+    }
+    const spaceIfIndented = () => {
+        const yes = g.b.label("space")
+        const no = g.b.label("nospace")
+        g.b.condBr(g.b.value("i1", `icmp sgt i64 %indent, 0`), yes, no)
+        g.b.start(yes)
+        putc(g, b, " ")
+        g.b.start(no)
+    }
+    switch (type.kind) {
+        case "int":
+            if (type.signed) g.rt("ore_rt_json_i64", [b, g.toI64(v)])
+            else g.rt("ore_rt_json_u64", [b, g.toI64(v, false)])
+            return
+        case "float": {
+            // JSON has no NaN or infinities: they are written as null, as in JavaScript.
+            const ty = g.lt(type)
+            const finite = g.b.value("i1", `fcmp oeq ${ty} ${g.b.value(ty, `fsub ${ty} ${v.v}, ${v.v}`).v}, 0.0`)
+            const number = g.b.label("number")
+            const nonFinite = g.b.label("nonfinite")
+            const end = g.b.label("written")
+            g.b.condBr(finite, number, nonFinite)
+            g.b.start(number)
+            const text = g.rt(`ore_rt_str_from_${type.name}`, [v])
+            const data = g.extract(text, 0, "ptr")
+            const len = g.extract(text, 1, "i64")
+            g.rt("ore_sb_put", [b, data, len])
+            g.b.br(end)
+            g.b.start(nonFinite)
+            put(g, b, "null")
+            g.b.br(end)
+            g.b.start(end)
+            return
+        }
+        case "bool": {
+            const t = g.b.label("true")
+            const f = g.b.label("false")
+            const end = g.b.label("bool")
+            g.b.condBr(v, t, f)
+            g.b.start(t)
+            put(g, b, "true")
+            g.b.br(end)
+            g.b.start(f)
+            put(g, b, "false")
+            g.b.start(end)
+            return
+        }
+        case "string":
+            g.rt("ore_rt_json_str", [b, v])
+            return
+        case "literal":
+            g.rt("ore_rt_json_str", [b, v])
+            return
+        case "union": {
+            if (unionRepr(type).k === "strings") {
+                g.rt("ore_rt_json_str", [b, v])
+                return
+            }
+            const end = g.b.label("encoded")
+            for (let i = 0; i < type.members.length; i++) {
+                const m = type.members[i]
+                const here = g.b.label("jmember")
+                const next = g.b.label("jnext")
+                g.b.condBr(slotTest(g, type, v, i), here, next)
+                g.b.start(here)
+                if (m.kind === "null") put(g, b, "null")
+                else {
+                    const encoder = jsonEncoder(g, m)
+                    const mt = g.lt(m)
+                    const p = payload(g, type, v, i)
+                    g.b.emit(`call void ${encoder}(ptr ${b.v}, ${mt} ${p.v}, i64 %indent, i64 %depth)`)
+                }
+                g.b.br(end)
+                g.b.start(next)
+            }
+            g.b.start(end)
+            return
+        }
+        case "array": {
+            const elemType = type.elem
+            const elem = g.mt(elemType)
+            putc(g, b, "[")
+            const len = g.b.value("i64", `load i64, ptr ${g.field(v.v, ARRAY, 1)}`)
+            counted(g, len, (i) => {
+                commaAfterFirst(g, b, i)
+                newline(deeper)
+                const data = g.b.value("ptr", `load ptr, ptr ${g.field(v.v, ARRAY, 0)}`)
+                encode(
+                    elemType,
+                    g.load(g.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${i.v}`).v, elemType),
+                )
+            })
+            ifNonZero(g, len, () => newline(depth))
+            putc(g, b, "]")
+            return
+        }
+        case "map": {
+            const keyType = type.key
+            const valueType = type.value
+            putc(g, b, "{")
+            const n = g.b.alloca("i64")
+            g.b.emit(`store i64 0, ptr ${n}`)
+            const count = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 6)}`)
+            counted(g, count, (i) => {
+                const live = g.b.label("live")
+                const dead = g.b.label("dead")
+                g.b.condBr(g.rtBool("ore_rt_map_live", [v, i]), live, dead)
+                g.b.start(live)
+                const written = g.b.value("i64", `load i64, ptr ${n}`)
+                commaAfterFirst(g, b, written)
+                g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${written.v}, 1`).v}, ptr ${n}`)
+                newline(deeper)
+                const key = g.load(g.rt("ore_rt_map_key", [v, i]).v, keyType)
+                g.rt("ore_rt_json_str", [b, key])
+                putc(g, b, ":")
+                spaceIfIndented()
+                encode(valueType, g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType))
+                g.b.start(dead)
+            })
+            ifNonZero(g, g.b.value("i64", `load i64, ptr ${n}`), () => newline(depth))
+            putc(g, b, "}")
+            return
+        }
+        case "struct": {
+            putc(g, b, "{")
+            for (let i = 0; i < type.fields.length; i++) {
+                const f = type.fields[i]
+                if (i > 0) putc(g, b, ",")
+                newline(deeper)
+                put(g, b, `${JSON.stringify(f.name)}:`)
+                spaceIfIndented()
+                encode(f.type, g.load(fieldPtr(g, v.v, type, f.name), f.type))
+            }
+            if (type.fields.length > 0) newline(depth)
+            putc(g, b, "}")
+            return
+        }
+        default:
+            put(g, b, "null")
+    }
+}
+
+/** Runs `body` for i from 0 to n - 1. */
+export function counted(g: Emitter, n: V, body: (i: V) => void) {
+    const i = g.b.alloca("i64")
+    g.b.emit(`store i64 0, ptr ${i}`)
+    const head = g.b.label("chead")
+    const loop = g.b.label("cbody")
+    const end = g.b.label("cend")
+    g.b.start(head)
+    const at = g.b.value("i64", `load i64, ptr ${i}`)
+    g.b.condBr(g.b.value("i1", `icmp slt i64 ${at.v}, ${n.v}`), loop, end)
+    g.b.start(loop)
+    body(at)
+    g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${at.v}, 1`).v}, ptr ${i}`)
+    g.b.br(head)
+    g.b.start(end)
+}
+
+export function ifNonZero(g: Emitter, n: V, body: () => void) {
+    const yes = g.b.label("nonzero")
+    const end = g.b.label("zero")
+    g.b.condBr(g.b.value("i1", `icmp ne i64 ${n.v}, 0`), yes, end)
+    g.b.start(yes)
+    body()
+    g.b.start(end)
+}
+
+export function commaAfterFirst(g: Emitter, b: V, i: V) {
+    ifNonZero(g, i, () => putc(g, b, ","))
+}
+
+/** A helper reading a value of a type from a parsed JSON value: `T (ptr v, ptr c)`. */
+export function jsonDecoder(g: Emitter, type: Type): string {
+    const name = globalName(`json.dec.${typeKey(type)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const ty = g.lt(type)
+    helper(g, name, `define internal ${ty} ${name}(ptr %v, ptr %c)`, (e) => decodeJson(e, type))
+    return name
+}
+
+/** The state of `decodeJson`: the closures of the TypeScript, as methods. */
+class Decoder {
+    ty: string
+    v: V = { ty: "ptr", v: "%v" }
+    c: V = { ty: "ptr", v: "%c" }
+
+    constructor(
+        public g: Emitter,
+        public type: Type,
+    ) {
+        this.ty = g.lt(type)
+    }
+
+    fail() {
+        const g = this.g
+        g.b.terminate(this.ty === "void" ? "ret void" : `ret ${this.ty} ${g.zero(this.type).v}`)
+    }
+
+    kind(): V {
+        const g = this.g
+        return g.b.value("i32", `load i32, ptr ${g.field("%v", JSON_VALUE, 0)}`)
+    }
+
+    /** Fails unless the JSON value has a kind, with "expected <what>". */
+    expect(k: int, what: string) {
+        const g = this.g
+        const ok = g.b.label("kind")
+        const bad = g.b.label("badkind")
+        g.b.condBr(g.b.value("i1", `icmp eq i32 ${this.kind().v}, ${k}`), ok, bad)
+        g.b.start(bad)
+        g.rt("ore_rt_json_expected", [this.c, g.cstr(what), this.v])
+        this.fail()
+        g.b.start(ok)
+    }
+
+    failedHere(onFail: () => void) {
+        const g = this.g
+        const bad = g.b.label("failed")
+        const ok = g.b.label("fine")
+        g.b.condBr(jsonFailed(g, "%c"), bad, ok)
+        g.b.start(bad)
+        onFail()
+        this.fail()
+        g.b.start(ok)
+    }
+
+    ret(x: V) {
+        this.g.b.terminate(`ret ${this.ty} ${x.v}`)
+    }
+}
+
+export function decodeJson(g: Emitter, type: Type) {
+    const d = new Decoder(g, type)
+    const ty = d.ty
+    const v = d.v
+    const c = d.c
+    switch (type.kind) {
+        case "int": {
+            const out = g.b.alloca("i64")
+            const range = intRange(type)
+            const max = g.i64(i64(range.max))
+            const ok = type.signed
+                ? g.rtBool("ore_rt_json_int", [c, v, g.i64(range.min), max, { ty: "ptr", v: out }])
+                : g.rtBool("ore_rt_json_uint", [c, v, max, { ty: "ptr", v: out }])
+            const good = g.b.label("int")
+            const bad = g.b.label("badint")
+            g.b.condBr(ok, good, bad)
+            g.b.start(bad)
+            d.fail()
+            g.b.start(good)
+            d.ret(g.fromI64(g.b.value("i64", `load i64, ptr ${out}`), ty))
+            return
+        }
+        case "float": {
+            d.expect(JSON_NUMBER, "a number")
+            const num = g.b.value("double", `load double, ptr ${g.field("%v", JSON_VALUE, 2)}`)
+            d.ret(type.bits === 32 ? g.b.value("float", `fptrunc double ${num.v} to float`) : num)
+            return
+        }
+        case "bool":
+            d.expect(JSON_BOOL, "a boolean")
+            d.ret(
+                g.b.value("i1", `trunc i8 ${g.b.value("i8", `load i8, ptr ${g.field("%v", JSON_VALUE, 1)}`).v} to i1`),
+            )
+            return
+        case "string":
+            d.expect(JSON_STRING, "a string")
+            d.ret(g.b.value(STR, `load ${STR}, ptr ${g.field("%v", JSON_VALUE, 3)}`))
+            return
+        case "literal": {
+            const what = JSON.stringify(type.value)
+            d.expect(JSON_STRING, what)
+            const s = g.b.value(STR, `load ${STR}, ptr ${g.field("%v", JSON_VALUE, 3)}`)
+            checkOr(
+                g,
+                g.rtBool("ore_rt_str_eq", [s, g.str(type.value)]),
+                () => {
+                    g.rt("ore_rt_json_expected", [c, g.cstr(what), v])
+                },
+                () => d.fail(),
+            )
+            d.ret(s)
+            return
+        }
+        case "union": {
+            if (unionRepr(type).k === "strings") {
+                let hasString = false
+                for (const m of type.members) if (m.kind === "string") hasString = true
+                if (hasString) {
+                    d.expect(JSON_STRING, "a string")
+                    d.ret(g.b.value(STR, `load ${STR}, ptr ${g.field("%v", JSON_VALUE, 3)}`))
+                    return
+                }
+                const literals: string[] = []
+                const quoted: string[] = []
+                for (const m of type.members) {
+                    const l = m.kind === "literal" ? m.value : ""
+                    literals.push(l)
+                    quoted.push(JSON.stringify(l))
+                }
+                const what = quoted.join(" or ")
+                const isString = g.b.value("i1", `icmp eq i32 ${d.kind().v}, ${JSON_STRING}`)
+                checkOr(
+                    g,
+                    isString,
+                    () => {
+                        g.rt("ore_rt_json_expected", [c, g.cstr(what), v])
+                    },
+                    () => d.fail(),
+                )
+                const s = g.b.value(STR, `load ${STR}, ptr ${g.field("%v", JSON_VALUE, 3)}`)
+                let any: V = { ty: "i1", v: "false" }
+                for (const l of literals) {
+                    const eq = g.rtBool("ore_rt_str_eq", [s, g.str(l)])
+                    any = g.b.value("i1", `or i1 ${any.v}, ${eq.v}`)
+                }
+                checkOr(
+                    g,
+                    any,
+                    () => {
+                        g.rt("ore_rt_json_expected", [c, g.cstr(what), v])
+                    },
+                    () => d.fail(),
+                )
+                d.ret(s)
+                return
+            }
+            let nullIndex = -1
+            const others: int[] = []
+            for (let i = 0; i < type.members.length; i++) {
+                if (type.members[i].kind === "null") {
+                    if (nullIndex === -1) nullIndex = i
+                } else others.push(i)
+            }
+            if (nullIndex >= 0) {
+                const isNull = g.b.label("jnull")
+                const notNull = g.b.label("jnotnull")
+                g.b.condBr(g.b.value("i1", `icmp eq i32 ${d.kind().v}, ${JSON_NULL}`), isNull, notNull)
+                g.b.start(isNull)
+                d.ret(inject(g, type, nullIndex, null))
+                g.b.start(notNull)
+            }
+            // One possibility reports its own error; several are tried in order.
+            if (others.length === 1) {
+                const i = others[0]
+                const mt = g.lt(type.members[i])
+                const x = g.b.value(mt, `call ${mt} ${jsonDecoder(g, type.members[i])}(ptr %v, ptr %c)`)
+                d.failedHere(() => {})
+                d.ret(inject(g, type, i, x))
+                return
+            }
+            for (const i of others) {
+                const t = g.b.alloca(JSON_CTX)
+                g.b.emit(`store ${JSON_CTX} zeroinitializer, ptr ${t}`)
+                const mt = g.lt(type.members[i])
+                const x = g.b.value(mt, `call ${mt} ${jsonDecoder(g, type.members[i])}(ptr %v, ptr ${t})`)
+                const ok = g.b.label("tried")
+                const next = g.b.label("trynext")
+                g.b.condBr(jsonFailed(g, t), next, ok)
+                g.b.start(ok)
+                d.ret(inject(g, type, i, x))
+                g.b.start(next)
+            }
+            g.rt("ore_rt_json_expected", [c, g.cstr(typeToString(type)), v])
+            d.fail()
+            return
+        }
+        case "array": {
+            d.expect(JSON_ARRAY, "an array")
+            const elemType = type.elem
+            const elem = g.mt(elemType)
+            const len = g.b.value("i64", `load i64, ptr ${g.field("%v", JSON_VALUE, 4)}`)
+            const a = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, len])
+            const items = g.b.value("ptr", `load ptr, ptr ${g.field("%v", JSON_VALUE, 5)}`)
+            counted(g, len, (i) => {
+                const item = g.b.value(
+                    "ptr",
+                    `load ptr, ptr ${g.b.value("ptr", `getelementptr ptr, ptr ${items.v}, i64 ${i.v}`).v}`,
+                )
+                const et = g.lt(elemType)
+                const x = g.b.value(et, `call ${et} ${jsonDecoder(g, elemType)}(ptr ${item.v}, ptr %c)`)
+                d.failedHere(() => {
+                    g.rt("ore_rt_json_at_index", [c, i])
+                })
+                const data = g.b.value("ptr", `load ptr, ptr ${g.field(a.v, ARRAY, 0)}`)
+                g.store(x, g.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${i.v}`).v, elemType)
+            })
+            d.ret(a)
+            return
+        }
+        case "map": {
+            d.expect(JSON_OBJECT, "an object")
+            const keyType = type.key
+            const valueType = type.value
+            const keys = keyFunctions(g, keyType)
+            const kt = g.mt(keyType)
+            const vt = g.mt(valueType)
+            const m = g.rt("ore_rt_map_new", [
+                { ty: "i64", v: sizeOf(kt) },
+                { ty: "i64", v: sizeOf(vt) },
+                { ty: "ptr", v: keys.hash },
+                { ty: "ptr", v: keys.eq },
+            ])
+            const len = g.b.value("i64", `load i64, ptr ${g.field("%v", JSON_VALUE, 4)}`)
+            const items = g.b.value("ptr", `load ptr, ptr ${g.field("%v", JSON_VALUE, 5)}`)
+            const names = g.b.value("ptr", `load ptr, ptr ${g.field("%v", JSON_VALUE, 6)}`)
+            counted(g, len, (i) => {
+                // Keys are read as JSON strings, so that literal key types are checked.
+                const keyText = g.b.value(
+                    STR,
+                    `load ${STR}, ptr ${g.b.value("ptr", `getelementptr ${STR}, ptr ${names.v}, i64 ${i.v}`).v}`,
+                )
+                const keyJson = g.b.alloca(JSON_VALUE)
+                g.b.emit(`store ${JSON_VALUE} zeroinitializer, ptr ${keyJson}`)
+                g.b.emit(`store i32 ${JSON_STRING}, ptr ${g.field(keyJson, JSON_VALUE, 0)}`)
+                g.b.emit(`store ${STR} ${keyText.v}, ptr ${g.field(keyJson, JSON_VALUE, 3)}`)
+                const kl = g.lt(keyType)
+                const k = g.b.value(kl, `call ${kl} ${jsonDecoder(g, keyType)}(ptr ${keyJson}, ptr %c)`)
+                d.failedHere(() => {
+                    g.rt("ore_rt_json_at_field", [c, g.rt("ore_rt_cstring", [keyText])])
+                })
+                const item = g.b.value(
+                    "ptr",
+                    `load ptr, ptr ${g.b.value("ptr", `getelementptr ptr, ptr ${items.v}, i64 ${i.v}`).v}`,
+                )
+                const vl = g.lt(valueType)
+                const x = g.b.value(vl, `call ${vl} ${jsonDecoder(g, valueType)}(ptr ${item.v}, ptr %c)`)
+                d.failedHere(() => {
+                    g.rt("ore_rt_json_at_field", [c, g.rt("ore_rt_cstring", [keyText])])
+                })
+                const kp = g.b.alloca(kt)
+                g.store(k, kp, keyType)
+                const xp = g.b.alloca(vt)
+                g.store(x, xp, valueType)
+                g.rt("ore_rt_map_set", [m, { ty: "ptr", v: kp }, { ty: "ptr", v: xp }])
+            })
+            d.ret(m)
+            return
+        }
+        case "struct": {
+            d.expect(JSON_OBJECT, "an object")
+            const s = g.structType(type)
+            const o = g.alloc(s)
+            g.setTable(o, type)
+            for (const f of type.fields) {
+                const name = g.cstr(f.name)
+                const found = g.rt("ore_rt_json_field", [v, name, g.i64(f.name.length)])
+                const target = fieldPtr(g, o.v, type, f.name)
+                const present = g.b.label("present")
+                const missing = g.b.label("missing")
+                const next = g.b.label("nextfield")
+                g.b.condBr(g.b.value("i1", `icmp ne ptr ${found.v}, null`), present, missing)
+                g.b.start(missing)
+                const ft = f.type
+                let nullIndex = -1
+                if (ft.kind === "union") {
+                    for (let i = 0; i < ft.members.length && nullIndex === -1; i++)
+                        if (ft.members[i].kind === "null") nullIndex = i
+                }
+                if (ft.kind === "union" && nullIndex >= 0) {
+                    g.store(inject(g, ft, nullIndex, null), target, f.type)
+                    g.b.br(next)
+                } else {
+                    g.rt("ore_rt_json_missing", [c, name])
+                    d.fail()
+                }
+                g.b.start(present)
+                const fl = g.lt(f.type)
+                const x = g.b.value(fl, `call ${fl} ${jsonDecoder(g, f.type)}(ptr ${found.v}, ptr %c)`)
+                d.failedHere(() => {
+                    g.rt("ore_rt_json_at_field", [c, name])
+                })
+                g.store(x, target, f.type)
+                g.b.start(next)
+            }
+            d.ret(o)
+            return
+        }
+        default:
+            g.rt("ore_rt_json_expected", [c, g.cstr("a value"), v])
+            d.fail()
+    }
+}
+
+/** Continues when `ok` holds; otherwise runs `report` and `fail`. */
+export function checkOr(g: Emitter, ok: V, report: () => void, fail: () => void) {
+    const good = g.b.label("good")
+    const bad = g.b.label("bad")
+    g.b.condBr(ok, good, bad)
+    g.b.start(bad)
+    report()
+    fail()
+    g.b.start(good)
+}

@@ -1,28 +1,23 @@
 # Tests on Linux. ci/test-linux.sh runs the same in Docker locally.
 
 default:
-  image: oven/bun:1.3.14-debian
+  image: debian:13
   before_script:
-    # clang for the TypeScript compiler and C sources; LLVM's library and lld
-    # for the compiler in Ore (LLVM 19 or newer; 22 is Debian 13's newest).
-    - apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends clang llvm-22-dev lld-22 git ca-certificates
+    # LLVM's library and lld for the compiler in Ore (LLVM 19 or newer; 22 is
+    # Debian 13's newest), clang for C sources of packages, and Bun, with which
+    # ci/bootstrap.sh builds its seed until a release of ore exists.
+    - apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends clang llvm-22-dev lld-22 git ca-certificates curl unzip
+    - curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s bun-v1.3.14 >/dev/null
     - export PATH=/usr/lib/llvm-22/bin:$PATH
-    - bun install --frozen-lockfile --ignore-scripts
 
+# The compiler in Ore builds itself until it reproduces itself (stages 2 and 3
+# emit the same LLVM IR), then runs the test suite and the concurrent programs.
 test:
   script:
-    - bun run typecheck
-    - bun run test
-    # The concurrent programs, many times on several threads.
-    - ci/stress.sh 5
-
-# The compiler in Ore builds itself until it reproduces itself: the LLVM IR of
-# stages 2 and 3 must be identical.
-bootstrap:
-  script:
     - ci/bootstrap.sh dist
+    - ORE=dist/ore ci/test.sh
+    - ORE=dist/ore ci/stress.sh 5
   artifacts:
     paths:
       - dist/ore
     expire_in: 1 week
-

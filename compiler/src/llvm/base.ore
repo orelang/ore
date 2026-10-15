@@ -1,0 +1,477 @@
+// The state of the emitter, LLVM types, constants, runtime calls, memory and
+// locals: what every layer uses.
+//
+// The TypeScript emitter is a chain of classes, one per layer (base,
+// functions, expressions, calls, collections, json, emit). This port was
+// written before Ore had inheritance: `Emitter` holds the state and the
+// methods of the base layer, and the other layers are functions of the same
+// names in files of the same names, taking the emitter as their first
+// parameter `g`. Now that a class can extend a class, the layers can become
+// classes again.
+
+import { type Func, type Local, type Module } from "../ir/nodes"
+import {
+    isSubclass,
+    methodSlot,
+    unionRepr,
+    type IntType,
+    type StructType,
+    type Type,
+    type UnionType,
+} from "../ir/types"
+import { StackPlan, type SlotNode } from "../opt/escape"
+import { EmitOptions, FN, IFACE, STR, Storage, type Breakable, type Disposal } from "./context"
+import { boxed } from "./helpers"
+import { cString, FnBuilder, globalName, intConstant, sizeOf, voidValue, type V } from "./ll"
+
+/** The saved state of the function being emitted, while a helper is emitted. */
+export class Saved {
+    constructor(
+        public b: FnBuilder,
+        public func: Func | null,
+        public at: bool,
+        public storage: Map<Local, Storage>,
+        public slots: Map<SlotNode, string>,
+        public breakables: Breakable[],
+        public disposals: Disposal[],
+        public frame: string | null,
+    ) {}
+}
+
+export class Emitter {
+    out: string[] = []
+
+    defs = new Map<string, string>()
+
+    decls = new Map<string, string>()
+
+    /** String constants by their bytes (with the NUL of C strings): their names, and their definitions in `strings`. */
+    stringNames = new Map<string, string>()
+
+    strings = new Map<string, string>()
+
+    helpers = new Map<string, string>()
+
+    globals = new Set<Local>()
+
+    plan = new StackPlan()
+
+    /** The classes whose instances start with a pointer to their class table, by id; see `classTables`. */
+    tables = new Map<int, bool>()
+
+    file = ""
+
+    /** Runtime functions written in Ore, by the name of the C function they replace. */
+    runtime = new Map<string, Func>()
+
+    // The function being emitted.
+    b = new FnBuilder()
+
+    func: Func | null = null
+
+    at = false
+
+    storage = new Map<Local, Storage>()
+
+    /** Stack slots of the function being emitted, by allocation or boxed local. */
+    slots = new Map<SlotNode, string>()
+
+    breakables: Breakable[] = []
+
+    disposals: Disposal[] = []
+
+    frame: string | null = null
+
+    constructor(
+        public module: Module,
+        public options: EmitOptions,
+    ) {}
+
+    /** The LLVM type of values of an Ore type in registers. */
+    lt(type: Type): string {
+        switch (type.kind) {
+            case "int":
+                return `i${type.bits}`
+            case "float":
+                return type.bits === 32 ? "float" : "double"
+            case "bool":
+                return "i1"
+            case "string":
+                return STR
+            case "literal":
+                return STR
+            case "void":
+                return "void"
+            case "never":
+                return "void"
+            case "interface":
+                return IFACE
+            case "func":
+                return FN
+            case "union": {
+                const repr = unionRepr(type)
+                if (repr.k === "strings") return STR
+                if (repr.k === "nullable") return this.lt(repr.base)
+                return this.unionType(type)
+            }
+            default:
+                return "ptr"
+        }
+    }
+
+    /** The LLVM type of values of an Ore type in memory: booleans take a byte. */
+    mt(type: Type): string {
+        return type.kind === "bool" ? "i8" : this.lt(type)
+    }
+
+    structType(s: StructType): string {
+        const name = `%S.${s.id}`
+        if (!this.defs.has(name)) {
+            this.defs.set(name, "")
+            const fields: string[] = []
+            // The pointer to the class table comes first.
+            if (this.tables.has(s.id)) fields.push("ptr")
+            for (const f of s.fields) fields.push(this.mt(f.type))
+            if (fields.length === 0) fields.push("i8")
+            this.defs.set(name, `${name} = type { ${fields.join(", ")} }`)
+        }
+        return name
+    }
+
+    /** The index of a field in the LLVM type of a struct, after the class table's pointer if there is one. */
+    fieldIndex(s: StructType, name: string): int {
+        let index = -1
+        for (let i = 0; i < s.fields.length && index === -1; i++) if (s.fields[i].name === name) index = i
+        return index + (this.tables.has(s.id) ? 1 : 0)
+    }
+
+    /** Points a new instance of a class with a class table to it. */
+    setTable(object: V, s: StructType) {
+        if (this.tables.has(s.id)) this.b.emit(`store ptr @vt.${s.id}, ptr ${object.v}`)
+    }
+
+    /** The function in the class table of an instance, in the slot of a method. */
+    virtualMethod(object: V, func: Func): V {
+        const table = this.b.value("ptr", `load ptr, ptr ${object.v}`)
+        const entry = this.b.value("ptr", `getelementptr ptr, ptr ${table.v}, i64 ${methodSlot(func) + 1}`)
+        return this.b.value("ptr", `load ptr, ptr ${entry.v}`)
+    }
+
+    /** The classes with a class table whose instances are instances of `s`: `s` and its subclasses. */
+    subclasses(s: StructType): StructType[] {
+        const found: StructType[] = []
+        for (const t of this.module.structs) if (this.tables.has(t.id) && isSubclass(t, s)) found.push(t)
+        return found
+    }
+
+    /** Whether an instance of a class with a class table is an instance of `s`: its table is that of `s` or of a subclass. */
+    classIs(object: V, s: StructType): V {
+        const table = this.b.value("ptr", `load ptr, ptr ${object.v}`)
+        let result: V = { ty: "i1", v: "false" }
+        const classes = this.subclasses(s)
+        for (let i = 0; i < classes.length; i++) {
+            const test = this.b.value("i1", `icmp eq ptr ${table.v}, @vt.${classes[i].id}`)
+            result = i === 0 ? test : this.b.value("i1", `or i1 ${result.v}, ${test.v}`)
+        }
+        return result
+    }
+
+    unionType(u: UnionType): string {
+        const name = `%U.${u.id}`
+        if (!this.defs.has(name)) this.defs.set(name, `${name} = type { i32, [${this.unionWords(u)} x i64] }`)
+        return name
+    }
+
+    /** The number of 64-bit words of the payload of a tagged union: two for strings, functions and interfaces. */
+    unionWords(u: UnionType): int {
+        let words = 1
+        for (const m of u.members) {
+            const ty = this.lt(m)
+            if (ty === STR || ty === FN || ty === IFACE) words = 2
+        }
+        return words
+    }
+
+    envType(func: Func): string {
+        const name = `%E.${func.name}`
+        if (!this.defs.has(name)) {
+            const fields: string[] = []
+            for (const c of func.captures ?? []) fields.push(boxed(c) ? "ptr" : this.mt(c.type))
+            this.defs.set(name, `${name} = type { ${fields.length > 0 ? fields.join(", ") : "i8"} }`)
+        }
+        return name
+    }
+
+    /** A string value constant. */
+    str(value: string): V {
+        return { ty: STR, v: `{ ptr ${this.bytes(value)}, i64 ${value.length} }` }
+    }
+
+    /** A NUL-terminated C string constant. */
+    cstr(value: string): V {
+        return { ty: "ptr", v: this.bytes(`${value}\u0000`) }
+    }
+
+    bytes(bytes: string): string {
+        const known = this.stringNames.get(bytes)
+        if (known !== null) return known
+        const id = `@str.${this.strings.size}`
+        this.strings.set(bytes, `${id} = private unnamed_addr constant [${bytes.length} x i8] ${cString(bytes)}`)
+        this.stringNames.set(bytes, id)
+        return id
+    }
+
+    int(type: IntType, value: i64): V {
+        return { ty: `i${type.bits}`, v: intConstant(value, type.bits) }
+    }
+
+    i64(value: i64): V {
+        return { ty: "i64", v: intConstant(value, 64) }
+    }
+
+    /**
+     * Calls runtime function `name`, written in Ore (`//ore:runtime name` in
+     * runtime/core). Integers and booleans come back as i64.
+     */
+    rt(name: string, args: V[]): V {
+        const own = this.runtime.get(name)
+        if (own === null) process.panic(`no runtime function ${name}`)
+        return this.rtOre(own, args)
+    }
+
+    /**
+     * Calls a runtime function written in Ore, with the conventions of `rt`
+     * for its callers: integers and booleans come back as i64.
+     */
+    rtOre(func: Func, args: V[]): V {
+        const operands: string[] = []
+        for (let i = 0; i < func.params.length; i++) {
+            const p = func.params[i]
+            const arg = args[i]
+            const ty = this.lt(p.type)
+            const pt = p.type
+            if (arg.ty === ty) operands.push(`${ty} ${arg.v}`)
+            else if (ty === "i1") operands.push(`i1 ${this.b.value("i1", `icmp ne ${arg.ty} ${arg.v}, 0`).v}`)
+            else if (pt.kind === "int") {
+                const from = Number.parseInt(arg.ty.slice(1)) ?? 0
+                const op = from > pt.bits ? "trunc" : arg.ty === "i1" || !pt.signed ? "zext" : "sext"
+                operands.push(`${ty} ${this.b.value(ty, `${op} ${arg.ty} ${arg.v} to ${ty}`).v}`)
+            } else operands.push(`${ty} ${arg.v}`)
+        }
+        const result = func.type.result
+        const ty = this.lt(result)
+        const call = `call ${ty} ${globalName(func.name)}(${operands.join(", ")})`
+        if (ty === "void") {
+            this.b.emit(call)
+            return voidValue
+        }
+        const r = this.b.value(ty, call)
+        if (result.kind === "bool") return this.b.value("i64", `zext i1 ${r.v} to i64`)
+        if (result.kind === "int" && result.bits < 64)
+            return this.b.value("i64", `${result.signed ? "sext" : "zext"} ${ty} ${r.v} to i64`)
+        return r
+    }
+
+    /** A runtime call returning a C bool, as i1. */
+    rtBool(name: string, args: V[]): V {
+        return this.b.value("i1", `icmp ne i64 ${this.rt(name, args).v}, 0`)
+    }
+
+    panic(message: string) {
+        this.rt("ore_rt_panic_cstr", [this.cstr(message)])
+        this.b.terminate("unreachable")
+    }
+
+    alloc(ty: string): V {
+        return this.rt("ore_rt_alloc", [{ ty: "i64", v: sizeOf(ty) }])
+    }
+
+    /** Stores a value in a new stack slot and returns the slot. */
+    spill(v: V): string {
+        const slot = this.b.alloca(v.ty)
+        this.b.emit(`store ${v.ty} ${v.v}, ptr ${slot}`)
+        return slot
+    }
+
+    toI64(v: V, signed: bool = true): V {
+        if (v.ty === "i64") return v
+        if (v.ty === "i1") return this.b.value("i64", `zext i1 ${v.v} to i64`)
+        return this.b.value("i64", `${signed ? "sext" : "zext"} ${v.ty} ${v.v} to i64`)
+    }
+
+    /** Converts an integer of a type to i64 by its signedness. */
+    intToI64(v: V, type: Type): V {
+        return this.toI64(v, type.kind !== "int" || type.signed)
+    }
+
+    fromI64(v: V, ty: string): V {
+        if (ty === "i64") return v
+        if (ty === "i1") return this.b.value("i1", `icmp ne i64 ${v.v}, 0`)
+        return this.b.value(ty, `trunc i64 ${v.v} to ${ty}`)
+    }
+
+    load(ptr: string, type: Type): V {
+        const mt = this.mt(type)
+        const v = this.b.value(mt, `load ${mt}, ptr ${ptr}`)
+        return type.kind === "bool" ? this.b.value("i1", `trunc i8 ${v.v} to i1`) : v
+    }
+
+    store(v: V, ptr: string, type: Type) {
+        if (type.kind === "bool") {
+            const byte = this.b.value("i8", `zext i1 ${v.v} to i8`)
+            this.b.emit(`store i8 ${byte.v}, ptr ${ptr}`)
+        } else {
+            this.b.emit(`store ${this.mt(type)} ${v.v}, ptr ${ptr}`)
+        }
+    }
+
+    field(ptr: string, structTy: string, index: int): string {
+        return this.b.value("ptr", `getelementptr ${structTy}, ptr ${ptr}, i32 0, i32 ${index}`).v
+    }
+
+    extract(v: V, index: int, ty: string): V {
+        return this.b.value(ty, `extractvalue ${v.ty} ${v.v}, ${index}`)
+    }
+
+    aggregate(ty: string, fields: V[]): V {
+        let acc: V = { ty, v: "undef" }
+        for (let i = 0; i < fields.length; i++) {
+            const f = fields[i]
+            acc = this.b.value(ty, `insertvalue ${ty} ${acc.v}, ${f.ty} ${f.v}, ${i}`)
+        }
+        return acc
+    }
+
+    zero(type: Type): V {
+        const ty = this.lt(type)
+        if (ty === "i1") return { ty, v: "false" }
+        if (ty.startsWith("i")) return { ty, v: "0" }
+        if (ty === "double" || ty === "float") return { ty, v: "0.0" }
+        if (ty === "ptr") return { ty, v: "null" }
+        return { ty, v: "zeroinitializer" }
+    }
+
+    globalOf(local: Local): string {
+        const exportName = local.exportName
+        return exportName !== null && exportName !== "" ? `@${exportName}` : globalName(`G.${local.name}.${local.id}`)
+    }
+
+    /**
+     * The address of a global; a thread-local one is looked up on each access,
+     * since tasks move between threads. LLVM may still reuse the address within
+     * a function, across calls: the runtime reads its thread-locals only in
+     * small functions that never park, and `top()` goes through a helper.
+     */
+    globalPlace(local: Local): string {
+        if (!local.threadLocal) return this.globalOf(local)
+        return this.b.value("ptr", `call ptr @llvm.threadlocal.address.p0(ptr ${this.globalOf(local)})`).v
+    }
+
+    /** The index of a local in the environment of the function being emitted, or -1. */
+    captureIndex(local: Local): int {
+        const func = this.func
+        if (func === null) return -1
+        const captures = func.captures
+        if (captures === null) return -1
+        return captures.indexOf(local)
+    }
+
+    /** A pointer to where a local's value is, from the function being emitted. */
+    place(local: Local): string {
+        if (local.global && this.globals.has(local)) return this.globalPlace(local)
+        const index = this.captureIndex(local)
+        const func = this.func
+        if (index !== -1 && func !== null) {
+            const env = this.envType(func)
+            const ptr = this.field("%env", env, index)
+            return boxed(local) ? this.b.value("ptr", `load ptr, ptr ${ptr}`).v : ptr
+        }
+        const s = this.storage.get(local)
+        if (s === null)
+            process.panic(
+                `local ${local.name}#${local.id} has no storage in ${func !== null ? func.name : "undefined"}`,
+            )
+        if (!s.boxed) return s.ptr
+        return this.b.value("ptr", `load ptr, ptr ${s.ptr}`).v
+    }
+
+    /** The box of a captured, assigned local, from the function being emitted. */
+    boxOf(local: Local): V {
+        const index = this.captureIndex(local)
+        const func = this.func
+        if (index !== -1 && func !== null)
+            return this.b.value("ptr", `load ptr, ptr ${this.field("%env", this.envType(func), index)}`)
+        const s = this.storage.get(local)
+        if (s === null) process.panic(`local ${local.name}#${local.id} has no box`)
+        return this.b.value("ptr", `load ptr, ptr ${s.ptr}`)
+    }
+
+    read(local: Local): V {
+        return this.load(this.place(local), local.type)
+    }
+
+    /** Declares a local with a value (zero without one): a slot, or a box when closures capture and assign it. */
+    declare(local: Local, init: V | null) {
+        if (local.global && this.globals.has(local)) {
+            // A global without a value is zero from the start, and may already have been set by functions.
+            if (init !== null) this.store(init, this.globalPlace(local), local.type)
+            return
+        }
+        const mt = this.mt(local.type)
+        if (boxed(local)) {
+            const known = this.storage.get(local)
+            const holder = known ?? new Storage(true, this.b.alloca("ptr"))
+            if (known === null) this.storage.set(local, holder)
+            // The box exists before the value is computed, so a closure in it can capture itself.
+            const slot = this.slots.get(local)
+            let box: string
+            if (slot !== null) {
+                this.b.emit(`store ${mt} zeroinitializer, ptr ${slot}`)
+                box = slot
+            } else {
+                box = this.alloc(mt).v
+            }
+            this.b.emit(`store ptr ${box}, ptr ${holder.ptr}`)
+            if (init !== null) this.store(init, box, local.type)
+            return
+        }
+        const known = this.storage.get(local)
+        const s = known ?? new Storage(false, this.b.alloca(mt))
+        if (known === null) this.storage.set(local, s)
+        this.store(init ?? this.zero(local.type), s.ptr, local.type)
+    }
+
+    /** Saves the state of the function being emitted and starts an empty one, for a helper. */
+    save(): Saved {
+        const saved = new Saved(
+            this.b,
+            this.func,
+            this.at,
+            this.storage,
+            this.slots,
+            this.breakables,
+            this.disposals,
+            this.frame,
+        )
+        this.b = new FnBuilder()
+        this.func = null
+        this.at = false
+        this.storage = new Map<Local, Storage>()
+        this.slots = new Map<SlotNode, string>()
+        this.breakables = []
+        this.disposals = []
+        this.frame = null
+        return saved
+    }
+
+    restore(saved: Saved) {
+        this.b = saved.b
+        this.func = saved.func
+        this.at = saved.at
+        this.storage = saved.storage
+        this.slots = saved.slots
+        this.breakables = saved.breakables
+        this.disposals = saved.disposals
+        this.frame = saved.frame
+    }
+}

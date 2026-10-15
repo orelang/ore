@@ -1,0 +1,287 @@
+// Types shared by the layers of the checker.
+
+import {
+    type BoundMethod,
+    type Expr,
+    type Func,
+    type Local,
+    type LValue,
+    type MethodCall,
+    type Module,
+} from "../ir/nodes"
+import { type InterfaceType, type StructType, type Type } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { type Diagnostic } from "../syntax/diagnostic"
+import { type Source } from "../syntax/source"
+import { type Generic, type Scope } from "./symbols"
+
+export class CheckResult {
+    constructor(
+        /** Present only when there are no errors. */
+        readonly module: Module | null,
+        readonly diagnostics: Diagnostic[],
+        readonly info: CheckInfo,
+    ) {}
+}
+
+/** Facts about the source collected for tooling (hover, go to definition). */
+export class CheckInfo {
+    /** Type of each checked expression; untyped constants get their default type. */
+    readonly types = new Map<Node, Type>()
+    /** Declaration node of each resolved identifier. */
+    readonly definitions = new Map<Node, Node>()
+}
+
+/** An exported name of a module: the local name it refers to, and the module it is re-exported from. */
+export class ExportEntry {
+    constructor(
+        readonly local: string,
+        readonly from: ModuleInfo | null = null,
+    ) {}
+}
+
+/** A module being checked. */
+export class ModuleInfo {
+    constructor(
+        readonly source: Source,
+        readonly scope: Scope,
+        /** Prefix of C names of its functions, which must not clash with other modules. */
+        readonly prefix: string,
+        /** Exported names and the local names they refer to; `from` for re-exports. */
+        readonly exports: Map<string, ExportEntry>,
+    ) {}
+}
+
+/** How a function with optional or rest parameters may be called. */
+export class Signature {
+    constructor(
+        /** The `Parameter` nodes. */
+        readonly parameters: Node[],
+        /** The scope of the declaration, in which default values are checked. */
+        readonly scope: Scope,
+        /** Parameters before the first optional or rest one. */
+        readonly required: int,
+        /** The last parameter is a rest parameter, an array of the extra arguments. */
+        readonly rest: bool,
+    ) {}
+}
+
+export class FuncContext {
+    constructor(
+        /** The return type; null while it is inferred from return statements of a closure. */
+        public result: Type | null,
+        /** Enclosing loops and switches, innermost last. */
+        public loops: LoopContext[],
+        public nextLoopId: int,
+        /** The closure being checked, if any. */
+        public closure: Func | null = null,
+        /** Closures between here and the method that owns `this`, which capture it. */
+        public thisCaptures: Func[] | null = null,
+        /** `this` inside a method or constructor. */
+        public thisLocal: Local | null = null,
+        /** The class whose method or constructor is being checked. */
+        public cls: StructType | null = null,
+        public ctor: bool = false,
+        /** Checking field initializers, which cannot use `this`. */
+        public fieldInit: bool = false,
+        /** Checking the top-level code of a module. */
+        public topLevel: bool = false,
+        /** Label of a labeled statement whose loop has not been entered yet. */
+        public pendingLabel: string | null = null,
+    ) {}
+
+    /** In the constructor of a class with a base class: the `super(...)` call it must make. */
+    superCall: Node | null = null
+
+    /** What `super(...)` runs after the base class's initialization: the parameter properties and field initializers of the class. */
+    superInits: Expr[] | null = null
+}
+
+/** A field initializer, checked before constructor bodies. */
+export class FieldInitInfo {
+    constructor(
+        readonly name: string,
+        readonly node: Node,
+        public value: Expr | null = null,
+    ) {}
+}
+
+/** A method or accessor declaration and its function. */
+export class MethodInfo {
+    constructor(
+        readonly decl: Node,
+        readonly func: Func,
+    ) {}
+}
+
+/** A class declaration between the passes of checking. */
+export class ClassInfo {
+    constructor(
+        readonly decl: Node,
+        readonly type: StructType,
+        /** The scope of the class's module. */
+        readonly scope: Scope,
+        /** Base of C names for the class's functions. */
+        readonly cname: string,
+        /** Field initializers by field name, checked before constructor bodies. */
+        readonly inits: FieldInitInfo[],
+        /** Constructor parameters that declare fields. */
+        readonly paramProps: Local[],
+        readonly ctorThis: Local,
+        readonly methods: MethodInfo[],
+        public ctorDecl: Node | null = null,
+    ) {}
+
+    /** The parameters of the constructor, which its body uses; once `init` exists, the constructor itself has copies. */
+    ctorParams: Local[] = []
+
+    /** Declared `abstract`: cannot be instantiated. */
+    abstract = false
+
+    /** The `extends` clause: not resolved yet, being resolved, or resolved into `type.base`. */
+    baseState: "none" | "resolving" | "done" = "none"
+
+    /** The members: not declared yet, being declared, or declared. */
+    members: "pending" | "declaring" | "done" = "pending"
+
+    /** Subclasses that wait for the members of this class, being declared, to declare theirs. */
+    waiting: ClassInfo[] = []
+
+    /** The field initializers are checked, and the types of fields without annotations known. */
+    initsChecked = false
+
+    /**
+     * For a class with subclasses: the initialization of an allocated instance
+     * (parameter properties, field initializers, constructor body), which the
+     * constructor and `super(...)` of the subclasses call.
+     */
+    init: Func | null = null
+
+    /** Names of the members declared `protected` by this class. */
+    readonly protected = new Map<string, bool>()
+}
+
+/** The modifiers of a class member or parameter. */
+export class MemberFlags {
+    isPrivate = false
+    isProtected = false
+    isReadonly = false
+    isAbstract = false
+    isOverride = false
+    /** Any modifier: a constructor parameter with one declares a field. */
+    any = false
+}
+
+/** A call or bound value of a class method, marked `virtual` once every class is known if a subclass overrides the method. */
+export class Dispatch {
+    constructor(
+        readonly node: MethodCall | BoundMethod,
+        readonly name: string,
+    ) {}
+}
+
+/** A property defined by a getter, a setter, or both. */
+export class Accessor {
+    readonly private: bool
+    constructor(
+        readonly type: Type,
+        isPrivate: bool,
+        public get: Func | null = null,
+        public set: Func | null = null,
+    ) {
+        this.private = isPrivate
+    }
+}
+
+/** The setter of an accessor property written by an assignment. */
+export class AccessorTarget {
+    constructor(
+        readonly object: Expr,
+        readonly property: Accessor,
+        readonly name: string,
+    ) {}
+}
+
+/** Where an assignment stores: a place, or the setter of an accessor property. */
+export class AssignTarget {
+    constructor(
+        public type: Type,
+        readonly lvalue: LValue | null = null,
+        readonly accessor: AccessorTarget | null = null,
+    ) {}
+}
+
+/** A narrowed type of a variable or a field path, keyed by `refKey`. */
+export class Fact {
+    constructor(
+        readonly key: string,
+        readonly type: Type,
+    ) {}
+}
+
+/** A checked condition with the facts that hold when it is true or false. */
+export class Condition {
+    constructor(
+        readonly expr: Expr,
+        readonly whenTrue: Fact[],
+        readonly whenFalse: Fact[],
+    ) {}
+}
+
+/** The facts when a subject equals one of some values (`yes`), and when it does not (`no`). */
+export class FactPair {
+    constructor(
+        readonly yes: Fact[],
+        readonly no: Fact[],
+    ) {}
+}
+
+export class InterfaceInfo {
+    constructor(
+        readonly decl: Node,
+        readonly type: InterfaceType,
+        readonly scope: Scope,
+        public state: "declared" | "filling" | "filled",
+    ) {}
+}
+
+export class LoopContext {
+    constructor(
+        readonly id: int,
+        readonly label: string | null = null,
+        /** A switch can be exited with `break` but not continued. */
+        readonly isSwitch: bool = false,
+        /** Set when a labeled jump targets the loop; copied to the IR loop. */
+        public labeled: bool = false,
+    ) {}
+}
+
+/** An `//ore:` comment before a top-level declaration. */
+export class Directive {
+    constructor(
+        readonly name: string,
+        readonly arg: string,
+        readonly pos: int,
+        readonly end: int,
+    ) {}
+}
+
+/** A generic method of a class, instantiated per call like a generic function. */
+export class GenericMethod {
+    readonly private: bool
+    constructor(
+        readonly generic: Generic,
+        readonly info: ClassInfo,
+        isPrivate: bool,
+    ) {
+        this.private = isPrivate
+    }
+}
+
+/** The generic and type arguments of an instance type. */
+export class InstanceInfo {
+    constructor(
+        readonly generic: Generic,
+        readonly args: Type[],
+    ) {}
+}

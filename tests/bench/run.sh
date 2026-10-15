@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 out=$(mktemp -d)
 for src in *.ore; do
     name=${src%.ore}
-    bun ../../compiler/cli/src/main.ts build --release "$src" -o "$out/$name" >/dev/null
+    "${ORE:-ore}" build --release "$src" -o "$out/$name" >/dev/null
     best=
     for _ in 1 2 3; do
         start=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')

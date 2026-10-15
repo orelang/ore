@@ -6,11 +6,11 @@
 
 import { basename, join } from "ore:path"
 import { fail } from "ore:test"
-import { check } from "../../compiler/next/src/checker/checker"
-import { build, BuildOptions, buildIr, compileToIr } from "../../compiler/next/src/driver/build"
-import { NativeCode } from "../../compiler/next/src/driver/native"
-import { loadProgram } from "../../compiler/next/src/project/load"
-import { formatDiagnostic } from "../../compiler/next/src/syntax/diagnostic"
+import { check } from "../../compiler/src/checker/checker"
+import { build, BuildOptions, buildIr, compileToIr } from "../../compiler/src/driver/build"
+import { NativeCode } from "../../compiler/src/driver/native"
+import { loadProgram } from "../../compiler/src/project/load"
+import { formatDiagnostic } from "../../compiler/src/syntax/diagnostic"
 import { Case, difference, entries, expectRun, filesBelow, header, quote, read, runProgram } from "./cases"
 
 /** Whether Ore implements async yet; until then the async programs are skipped. */
@@ -67,9 +67,9 @@ export function runCases(settings: Settings): Case[] {
 }
 
 /**
- * tests/async: programs whose expected output is Bun's (tests/async/bun-shim.ts
- * provided Ore's `time` and `task.microtask`): the order of microtasks and
- * timers must be JavaScript's. Skipped until Ore has async.
+ * tests/async: programs whose expected output was recorded from Bun: the
+ * order of microtasks and timers must be JavaScript's. Skipped until Ore has
+ * async.
  */
 export function asyncCases(settings: Settings): Case[] {
     const cases: Case[] = []
@@ -151,8 +151,8 @@ export function diagCases(): Case[] {
 /** The tests of the compiler in Ore (`*.test.ore` with "ore:test"), built and run as `ore test` runs them. */
 export function unitCases(settings: Settings): Case[] {
     const cases: Case[] = []
-    for (const path of filesBelow("compiler/next/test", ".test.ore")) {
-        const name = path.slice("compiler/next/test/".length)
+    for (const path of filesBelow("compiler/test", ".test.ore")) {
+        const name = path.slice("compiler/test/".length)
         cases.push(
             new Case(`unit/${name}`, () => {
                 const output = executable(settings, "unit", name)
@@ -276,15 +276,15 @@ function succeed(program: string, args: string[]): string {
 }
 
 /**
- * The compiler in Ore built by itself, from compiler/next/src/main.ore, and
+ * The compiler in Ore built by itself, from compiler/src/main.ore, and
  * run as `ore`: it formats a file as the formatter in this process does, and
  * builds a program that runs.
  */
 export function selfhostCases(settings: Settings): Case[] {
-    const selfhost = new Case("selfhost/compiler/next/src/main.ore builds and runs", () => {
+    const selfhost = new Case("selfhost/compiler/src/main.ore builds and runs", () => {
         const ore = join(settings.work, "ore")
-        buildProgram("compiler/next/src/main.ore", ore)
-        const file = "compiler/next/src/driver/build.ore"
+        buildProgram("compiler/src/main.ore", ore)
+        const file = "compiler/src/driver/build.ore"
         const formatted = succeed(ore, ["fmt", "--stdout", file])
         if (formatted !== read(file)) fail(difference("the output of ore fmt --stdout", read(file), formatted))
         const hello = join(settings.work, "selfhost-hello")

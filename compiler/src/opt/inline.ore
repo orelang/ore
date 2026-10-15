@@ -1,0 +1,1023 @@
+// Inlining. The TypeScript walks the
+// keys of the nodes; here each node kind lists its own subtrees, in the order
+// of its fields, keeping the rules: types, functions, itabs and the other
+// shared things are not copied, and locals are mapped, not walked.
+
+import {
+    Alloc,
+    ArrayLit,
+    ArrayMethod,
+    Arith,
+    Assign,
+    Bind,
+    BindLocal,
+    BoolLit,
+    BoundMethod,
+    BuiltinCall,
+    Call,
+    CallValue,
+    ChanOp,
+    Closure,
+    Coalesce,
+    Compare,
+    Concat,
+    Conditional,
+    Convert,
+    Downcast,
+    ElementLValue,
+    FieldGet,
+    FieldInit,
+    FieldLValue,
+    FloatLit,
+    FuncRef,
+    IfaceCall,
+    IfaceField,
+    IfaceFieldLValue,
+    UnionFieldLValue,
+    IncDec,
+    Index,
+    IntLit,
+    Is,
+    IsNull,
+    Len,
+    Local,
+    LocalLValue,
+    LocalRef,
+    Logical,
+    MapOp,
+    SetOp,
+    MethodCall,
+    Not,
+    NullLit,
+    ObjectLit,
+    Optional,
+    Pop,
+    Push,
+    Recast,
+    Seq,
+    Slice,
+    StringLit,
+    StringMethod,
+    ToIface,
+    TypeOf,
+    Unary,
+    UnionField,
+    type Expr,
+    type Func,
+    type LValue,
+    type Module,
+    type Stmt,
+} from "../ir/nodes"
+import { isCtor } from "./escape"
+
+/**
+ * Inlining: replaces calls of small functions whose body is a single
+ * `return value` (or a single expression, for `void`) with that value, the
+ * parameters bound to the arguments. Besides saving the call, this lets
+ * escape analysis keep objects created by the callee, such as the result of
+ * `a.plus(b)`, in the caller's frame.
+ *
+ * Arguments that are constants or locals never assigned are substituted
+ * directly; others are evaluated once, in order, into fresh locals.
+ */
+export function inlineCalls(module: Module) {
+    const funcs: Func[] = []
+    for (const f of module.functions) if (!f.extern) funcs.push(f)
+    const ids = new Ids()
+    for (const func of funcs) {
+        for (const p of func.params) ids.see(p)
+        const receiver = func.receiver
+        if (receiver !== null) ids.see(receiver)
+        walkStmt(func.body, ids)
+    }
+    const inliner = new Inliner(ids)
+    for (const func of funcs) inliner.stmt(func.body, 0)
+}
+
+/** Callees larger than this, in IR nodes, are not inlined. */
+const maxSize = 40
+/** How many inlined calls may nest in one call site. */
+const maxDepth = 3
+
+/** The next id of a local: one more than every id seen. */
+class Ids {
+    next = 0
+
+    see(local: Local) {
+        this.next = Math.max(this.next, local.id + 1)
+    }
+
+    fresh(): int {
+        return this.next++
+    }
+}
+
+/** The value of an inlinable function, computed once: `ir.Expr | undefined` of the map in TypeScript. */
+class Body {
+    constructor(public value: Expr | null) {}
+}
+
+/** What a local of the callee becomes: an argument substituted for a parameter, or a fresh local. */
+class Value {
+    constructor(
+        public expr: Expr | null,
+        public local: Local | null,
+    ) {}
+}
+
+/** The value of a function that consists of one `return value` or one expression, if inlinable. */
+function inlinable(func: Func): Expr | null {
+    const attributes = func.attributes
+    if (
+        func.extern ||
+        func.captures !== null ||
+        (attributes !== null && attributes.noinline) ||
+        isCtor(func) ||
+        func.body.body.length !== 1
+    )
+        return null
+    const stmt = func.body.body[0]
+    let value: Expr | null = null
+    if (stmt.k === "return") value = stmt.value
+    else if (stmt.k === "expr" && func.type.result.kind === "void") value = stmt.expr
+    if (value === null) return null
+    const count = new Count(func)
+    count.expr(value)
+    return count.ok && count.size <= maxSize ? value : null
+}
+
+/** The size of a subtree in nodes (expressions and places), and whether it may be inlined. */
+class Count {
+    size = 0
+    ok = true
+
+    constructor(public func: Func) {}
+
+    expr(e: Expr) {
+        this.size++
+        // A closure refers to the callee's locals through its captures; a call of itself would never end.
+        if (
+            e.k === "closure" ||
+            (e.k === "call" && e.func === this.func) ||
+            (e.k === "method-call" && e.func === this.func)
+        )
+            this.ok = false
+        eachChild(
+            e,
+            (x) => this.expr(x),
+            (t) => this.lvalue(t),
+        )
+    }
+
+    lvalue(t: LValue) {
+        this.size++
+        eachLValueChild(t, (x) => this.expr(x))
+    }
+}
+
+/** Calls `expr` for each subexpression of an expression, in the order of its fields, and `lvalue` for its place. */
+function eachChild(e: Expr, expr: (x: Expr) => void, lvalue: (t: LValue) => void) {
+    switch (e.k) {
+        case "assign":
+            lvalue(e.target)
+            expr(e.value)
+            return
+        case "incdec":
+            lvalue(e.target)
+            return
+        case "arith":
+            expr(e.left)
+            expr(e.right)
+            return
+        case "compare":
+            expr(e.left)
+            expr(e.right)
+            return
+        case "logical":
+            expr(e.left)
+            expr(e.right)
+            return
+        case "unary":
+            expr(e.operand)
+            return
+        case "not":
+            expr(e.operand)
+            return
+        case "convert":
+            expr(e.value)
+            return
+        case "call":
+            for (const a of e.args) expr(a)
+            return
+        case "builtin":
+            for (const a of e.args) expr(a)
+            return
+        case "cond":
+            expr(e.cond)
+            expr(e.then)
+            expr(e.else)
+            return
+        case "concat":
+            for (const p of e.parts) expr(p)
+            return
+        case "index":
+            expr(e.target)
+            expr(e.index)
+            return
+        case "len":
+            expr(e.value)
+            return
+        case "slice": {
+            expr(e.value)
+            const start = e.start
+            if (start !== null) expr(start)
+            const end = e.end
+            if (end !== null) expr(end)
+            return
+        }
+        case "array":
+            for (const x of e.elems) expr(x)
+            return
+        case "push":
+            expr(e.array)
+            for (const v of e.values) expr(v)
+            return
+        case "pop":
+            expr(e.array)
+            return
+        case "object":
+            for (const f of e.fields) expr(f.value)
+            return
+        case "field":
+            expr(e.object)
+            return
+        case "method-call":
+            expr(e.receiver)
+            for (const a of e.args) expr(a)
+            return
+        case "to-iface":
+            expr(e.value)
+            return
+        case "iface-field":
+            expr(e.value)
+            return
+        case "iface-call":
+            expr(e.value)
+            for (const a of e.args) expr(a)
+            return
+        case "recast":
+            expr(e.value)
+            return
+        case "is-null":
+            expr(e.value)
+            return
+        case "optional":
+            expr(e.value)
+            expr(e.body)
+            return
+        case "coalesce":
+            expr(e.value)
+            expr(e.fallback)
+            return
+        case "union-field":
+            expr(e.value)
+            return
+        case "typeof":
+            expr(e.value)
+            return
+        case "is":
+            expr(e.value)
+            return
+        case "downcast":
+            expr(e.value)
+            return
+        case "map": {
+            const map = e.map
+            if (map !== null) expr(map)
+            const key = e.key
+            if (key !== null) expr(key)
+            const value = e.value
+            if (value !== null) expr(value)
+            return
+        }
+        case "set": {
+            const set = e.set
+            if (set !== null) expr(set)
+            const value = e.value
+            if (value !== null) expr(value)
+            return
+        }
+        case "call-value":
+            expr(e.callee)
+            for (const a of e.args) expr(a)
+            return
+        case "bound-method":
+            expr(e.receiver)
+            return
+        case "array-method":
+            expr(e.array)
+            for (const a of e.args) expr(a)
+            return
+        case "string-method":
+            expr(e.value)
+            for (const a of e.args) expr(a)
+            return
+        case "chan": {
+            const chan = e.chan
+            if (chan !== null) expr(chan)
+            const value = e.value
+            if (value !== null) expr(value)
+            const handler = e.handler
+            if (handler !== null) expr(handler)
+            return
+        }
+        case "bind":
+            for (const b of e.locals) expr(b.init)
+            expr(e.body)
+            return
+        case "seq":
+            for (const x of e.exprs) expr(x)
+            return
+        default:
+            return
+    }
+}
+
+function eachLValueChild(t: LValue, expr: (x: Expr) => void) {
+    switch (t.k) {
+        case "local":
+            return
+        case "element":
+            expr(t.array)
+            expr(t.index)
+            return
+        case "field":
+            expr(t.object)
+            return
+        case "iface-field":
+        case "union-field":
+            expr(t.value)
+            return
+    }
+}
+
+/** Sees every local declared or used in a statement, without entering other functions. */
+function walkStmt(s: Stmt, ids: Ids) {
+    switch (s.k) {
+        case "block":
+            for (const b of s.body) walkStmt(b, ids)
+            return
+        case "let": {
+            ids.see(s.local)
+            const init = s.init
+            if (init !== null) walkExpr(init, ids)
+            return
+        }
+        case "expr":
+            walkExpr(s.expr, ids)
+            return
+        case "if": {
+            walkExpr(s.cond, ids)
+            walkStmt(s.then, ids)
+            const otherwise = s.else
+            if (otherwise !== null) walkStmt(otherwise, ids)
+            return
+        }
+        case "loop": {
+            const cond = s.cond
+            if (cond !== null) walkExpr(cond, ids)
+            const update = s.update
+            if (update !== null) walkExpr(update, ids)
+            walkStmt(s.body, ids)
+            return
+        }
+        case "for-of": {
+            ids.see(s.local)
+            const value = s.value
+            if (value !== null) ids.see(value)
+            walkExpr(s.iterable, ids)
+            walkStmt(s.body, ids)
+            return
+        }
+        case "switch":
+            ids.see(s.local)
+            walkExpr(s.value, ids)
+            for (const c of s.clauses) {
+                const test = c.test
+                if (test !== null) walkExpr(test, ids)
+                for (const b of c.body) walkStmt(b, ids)
+            }
+            return
+        case "using":
+            ids.see(s.local)
+            walkExpr(s.init, ids)
+            walkStmt(s.dispose, ids)
+            for (const b of s.body) walkStmt(b, ids)
+            return
+        case "return": {
+            const value = s.value
+            if (value !== null) walkExpr(value, ids)
+            return
+        }
+        default:
+            return
+    }
+}
+
+function walkExpr(e: Expr, ids: Ids) {
+    if (e.k === "local") ids.see(e.local)
+    else if (e.k === "optional") ids.see(e.binding)
+    else if (e.k === "bind") for (const b of e.locals) ids.see(b.local)
+    eachChild(
+        e,
+        (x) => walkExpr(x, ids),
+        (t) => {
+            if (t.k === "local") ids.see(t.local)
+            eachLValueChild(t, (x) => walkExpr(x, ids))
+        },
+    )
+}
+
+/** Whether an expression may be evaluated any number of times, at any point, with the same result. */
+function pure(e: Expr): bool {
+    switch (e.k) {
+        case "int":
+            return true
+        case "float":
+            return true
+        case "bool":
+            return true
+        case "string":
+            return true
+        case "null":
+            return true
+        case "local":
+            // A global changes from zero to its value when the top-level code runs.
+            return !e.local.assigned && !e.local.global
+        default:
+            return false
+    }
+}
+
+class Inliner {
+    bodies = new Map<Func, Body>()
+
+    constructor(public ids: Ids) {}
+
+    /** Inlines the calls inside a statement, replacing them in their parents. */
+    stmt(s: Stmt, depth: int) {
+        switch (s.k) {
+            case "block":
+                for (const b of s.body) this.stmt(b, depth)
+                return
+            case "let": {
+                const init = s.init
+                if (init !== null) s.init = this.sub(init, depth)
+                return
+            }
+            case "expr":
+                s.expr = this.sub(s.expr, depth)
+                return
+            case "if": {
+                s.cond = this.sub(s.cond, depth)
+                this.stmt(s.then, depth)
+                const otherwise = s.else
+                if (otherwise !== null) this.stmt(otherwise, depth)
+                return
+            }
+            case "loop": {
+                const cond = s.cond
+                if (cond !== null) s.cond = this.sub(cond, depth)
+                const update = s.update
+                if (update !== null) s.update = this.sub(update, depth)
+                this.stmt(s.body, depth)
+                return
+            }
+            case "for-of":
+                s.iterable = this.sub(s.iterable, depth)
+                this.stmt(s.body, depth)
+                return
+            case "switch":
+                s.value = this.sub(s.value, depth)
+                for (const c of s.clauses) {
+                    const test = c.test
+                    if (test !== null) c.test = this.sub(test, depth)
+                    for (const b of c.body) this.stmt(b, depth)
+                }
+                return
+            case "using":
+                s.init = this.sub(s.init, depth)
+                this.stmt(s.dispose, depth)
+                for (const b of s.body) this.stmt(b, depth)
+                return
+            case "return": {
+                const value = s.value
+                if (value !== null) s.value = this.sub(value, depth)
+                return
+            }
+            default:
+                return
+        }
+    }
+
+    /** An expression with its calls inlined: its inlined form if it is a call, else itself, rewritten in place. */
+    sub(e: Expr, depth: int): Expr {
+        const replaced = this.replace(e, depth)
+        if (replaced !== null) return replaced
+        this.rewrite(e, depth)
+        return e
+    }
+
+    subs(es: Expr[], depth: int) {
+        for (let i = 0; i < es.length; i++) es[i] = this.sub(es[i], depth)
+    }
+
+    /** Inlines the calls inside an expression, replacing them in their parents. */
+    rewrite(e: Expr, depth: int) {
+        switch (e.k) {
+            case "assign":
+                this.lvalue(e.target, depth)
+                e.value = this.sub(e.value, depth)
+                return
+            case "incdec":
+                this.lvalue(e.target, depth)
+                return
+            case "arith":
+                e.left = this.sub(e.left, depth)
+                e.right = this.sub(e.right, depth)
+                return
+            case "compare":
+                e.left = this.sub(e.left, depth)
+                e.right = this.sub(e.right, depth)
+                return
+            case "logical":
+                e.left = this.sub(e.left, depth)
+                e.right = this.sub(e.right, depth)
+                return
+            case "unary":
+                e.operand = this.sub(e.operand, depth)
+                return
+            case "not":
+                e.operand = this.sub(e.operand, depth)
+                return
+            case "convert":
+                e.value = this.sub(e.value, depth)
+                return
+            case "call":
+                this.subs(e.args, depth)
+                return
+            case "builtin":
+                this.subs(e.args, depth)
+                return
+            case "cond":
+                e.cond = this.sub(e.cond, depth)
+                e.then = this.sub(e.then, depth)
+                e.else = this.sub(e.else, depth)
+                return
+            case "concat":
+                this.subs(e.parts, depth)
+                return
+            case "index":
+                e.target = this.sub(e.target, depth)
+                e.index = this.sub(e.index, depth)
+                return
+            case "len":
+                e.value = this.sub(e.value, depth)
+                return
+            case "slice": {
+                e.value = this.sub(e.value, depth)
+                const start = e.start
+                if (start !== null) e.start = this.sub(start, depth)
+                const end = e.end
+                if (end !== null) e.end = this.sub(end, depth)
+                return
+            }
+            case "array":
+                this.subs(e.elems, depth)
+                return
+            case "push":
+                e.array = this.sub(e.array, depth)
+                this.subs(e.values, depth)
+                return
+            case "pop":
+                e.array = this.sub(e.array, depth)
+                return
+            case "object":
+                for (const f of e.fields) f.value = this.sub(f.value, depth)
+                return
+            case "field":
+                e.object = this.sub(e.object, depth)
+                return
+            case "method-call":
+                e.receiver = this.sub(e.receiver, depth)
+                this.subs(e.args, depth)
+                return
+            case "to-iface":
+                e.value = this.sub(e.value, depth)
+                return
+            case "iface-field":
+                e.value = this.sub(e.value, depth)
+                return
+            case "iface-call":
+                e.value = this.sub(e.value, depth)
+                this.subs(e.args, depth)
+                return
+            case "recast":
+                e.value = this.sub(e.value, depth)
+                return
+            case "is-null":
+                e.value = this.sub(e.value, depth)
+                return
+            case "optional":
+                e.value = this.sub(e.value, depth)
+                e.body = this.sub(e.body, depth)
+                return
+            case "coalesce":
+                e.value = this.sub(e.value, depth)
+                e.fallback = this.sub(e.fallback, depth)
+                return
+            case "union-field":
+                e.value = this.sub(e.value, depth)
+                return
+            case "typeof":
+                e.value = this.sub(e.value, depth)
+                return
+            case "is":
+                e.value = this.sub(e.value, depth)
+                return
+            case "downcast":
+                e.value = this.sub(e.value, depth)
+                return
+            case "map": {
+                const map = e.map
+                if (map !== null) e.map = this.sub(map, depth)
+                const key = e.key
+                if (key !== null) e.key = this.sub(key, depth)
+                const value = e.value
+                if (value !== null) e.value = this.sub(value, depth)
+                return
+            }
+            case "set": {
+                const set = e.set
+                if (set !== null) e.set = this.sub(set, depth)
+                const value = e.value
+                if (value !== null) e.value = this.sub(value, depth)
+                return
+            }
+            case "call-value":
+                e.callee = this.sub(e.callee, depth)
+                this.subs(e.args, depth)
+                return
+            case "bound-method":
+                e.receiver = this.sub(e.receiver, depth)
+                return
+            case "array-method":
+                e.array = this.sub(e.array, depth)
+                this.subs(e.args, depth)
+                return
+            case "string-method":
+                e.value = this.sub(e.value, depth)
+                this.subs(e.args, depth)
+                return
+            case "chan": {
+                const chan = e.chan
+                if (chan !== null) e.chan = this.sub(chan, depth)
+                const value = e.value
+                if (value !== null) e.value = this.sub(value, depth)
+                const handler = e.handler
+                if (handler !== null) e.handler = this.sub(handler, depth)
+                return
+            }
+            case "bind":
+                for (const b of e.locals) b.init = this.sub(b.init, depth)
+                e.body = this.sub(e.body, depth)
+                return
+            case "seq":
+                this.subs(e.exprs, depth)
+                return
+            default:
+                return
+        }
+    }
+
+    lvalue(t: LValue, depth: int) {
+        switch (t.k) {
+            case "local":
+                return
+            case "element":
+                t.array = this.sub(t.array, depth)
+                t.index = this.sub(t.index, depth)
+                return
+            case "field":
+                t.object = this.sub(t.object, depth)
+                return
+            case "iface-field":
+                t.value = this.sub(t.value, depth)
+                return
+            case "union-field":
+                t.value = this.sub(t.value, depth)
+                return
+        }
+    }
+
+    bodyOf(func: Func): Expr | null {
+        const known = this.bodies.get(func)
+        if (known !== null) return known.value
+        const value = inlinable(func)
+        this.bodies.set(func, new Body(value))
+        return value
+    }
+
+    /** The inlined form of a call, with calls inside it inlined too, or null. */
+    replace(e: Expr, depth: int): Expr | null {
+        if (depth >= maxDepth) return null
+        let func: Func
+        const params: Local[] = []
+        const args: Expr[] = []
+        if (e.k === "call") {
+            func = e.func
+            if (this.bodyOf(func) === null) return null
+            for (const p of func.params) params.push(p)
+            for (const a of e.args) args.push(a)
+        } else if (e.k === "method-call") {
+            // A call through a class table may run an override.
+            if (e.virtual) return null
+            func = e.func
+            if (this.bodyOf(func) === null) return null
+            const receiver = func.receiver
+            if (receiver === null) return null
+            params.push(receiver)
+            for (const p of func.params) params.push(p)
+            args.push(e.receiver)
+            for (const a of e.args) args.push(a)
+        } else return null
+        const body = this.bodyOf(func)
+        if (body === null) return null
+        // Arguments are inlined at the current depth; the body one level deeper.
+        const values = new Map<Local, Value>()
+        const locals: BindLocal[] = []
+        for (let i = 0; i < params.length; i++) {
+            const param = params[i]
+            const arg = this.sub(args[i], depth)
+            if (!param.assigned && pure(arg)) {
+                values.set(param, new Value(arg, null))
+            } else {
+                const local = this.fresh(param)
+                values.set(param, new Value(null, local))
+                locals.push(new BindLocal(local, arg))
+            }
+        }
+        const inlined = this.clone(body, values)
+        const result = locals.length === 0 ? inlined : new Bind(e.type, locals, inlined)
+        return this.sub(result, depth + 1)
+    }
+
+    fresh(local: Local): Local {
+        return new Local(
+            this.ids.fresh(),
+            local.name,
+            local.type,
+            local.mutable,
+            false,
+            local.assigned,
+            local.global,
+            local.threadLocal,
+            local.exportName,
+        )
+    }
+
+    /** A local of the body: its substitute, itself for a global, or a fresh copy for one the body declares. */
+    local(local: Local, values: Map<Local, Value>): Local {
+        const value = values.get(local)
+        if (value !== null) {
+            const renamed = value.local
+            if (renamed !== null) return renamed
+        }
+        // A global is the same variable wherever the body is inlined.
+        if (local.global) return local
+        // Declared inside the inlined body, such as the binding of `?.`.
+        const renamed = this.fresh(local)
+        values.set(local, new Value(null, renamed))
+        return renamed
+    }
+
+    clones(es: Expr[], values: Map<Local, Value>): Expr[] {
+        const out: Expr[] = []
+        for (const e of es) out.push(this.clone(e, values))
+        return out
+    }
+
+    cloneOrNull(e: Expr | null, values: Map<Local, Value>): Expr | null {
+        return e === null ? null : this.clone(e, values)
+    }
+
+    cloneLValue(t: LValue, values: Map<Local, Value>): LValue {
+        switch (t.k) {
+            case "local":
+                return new LocalLValue(this.local(t.local, values))
+            case "element":
+                return new ElementLValue(this.clone(t.array, values), this.clone(t.index, values))
+            case "field":
+                return new FieldLValue(this.clone(t.object, values), t.name)
+            case "iface-field":
+                return new IfaceFieldLValue(this.clone(t.value, values), t.index)
+            case "union-field":
+                return new UnionFieldLValue(this.clone(t.value, values), t.name)
+        }
+    }
+
+    /** A copy of a subtree, with locals replaced by `values` and locals it declares renamed. */
+    clone(e: Expr, values: Map<Local, Value>): Expr {
+        switch (e.k) {
+            case "int":
+                return new IntLit(e.type, e.value)
+            case "float":
+                return new FloatLit(e.type, e.value)
+            case "bool":
+                return new BoolLit(e.type, e.value)
+            case "string":
+                return new StringLit(e.type, e.value)
+            case "null":
+                return new NullLit(e.type)
+            case "local": {
+                // A reference to a parameter substituted by its argument.
+                const value = values.get(e.local)
+                if (value !== null) {
+                    const expr = value.expr
+                    // Substituted arguments are constants and locals: copies of single nodes.
+                    if (expr !== null) return copy(expr)
+                }
+                return new LocalRef(e.type, this.local(e.local, values))
+            }
+            case "assign":
+                return new Assign(e.type, this.cloneLValue(e.target, values), this.clone(e.value, values), e.op)
+            case "incdec":
+                return new IncDec(e.type, this.cloneLValue(e.target, values), e.op, e.prefix)
+            case "arith":
+                return new Arith(e.type, e.op, this.clone(e.left, values), this.clone(e.right, values))
+            case "compare":
+                return new Compare(e.type, e.op, this.clone(e.left, values), this.clone(e.right, values))
+            case "logical":
+                return new Logical(e.type, e.op, this.clone(e.left, values), this.clone(e.right, values))
+            case "unary":
+                return new Unary(e.type, e.op, this.clone(e.operand, values))
+            case "not":
+                return new Not(e.type, this.clone(e.operand, values))
+            case "convert":
+                return new Convert(e.type, this.clone(e.value, values))
+            case "call":
+                return new Call(e.type, e.func, this.clones(e.args, values))
+            case "builtin":
+                return new BuiltinCall(e.type, e.name, this.clones(e.args, values), e.error, e.typeArgs)
+            case "cond":
+                return new Conditional(
+                    e.type,
+                    this.clone(e.cond, values),
+                    this.clone(e.then, values),
+                    this.clone(e.else, values),
+                )
+            case "concat":
+                return new Concat(e.type, this.clones(e.parts, values))
+            case "index":
+                return new Index(e.type, this.clone(e.target, values), this.clone(e.index, values))
+            case "len":
+                return new Len(e.type, this.clone(e.value, values))
+            case "slice":
+                return new Slice(
+                    e.type,
+                    this.clone(e.value, values),
+                    this.cloneOrNull(e.start, values),
+                    this.cloneOrNull(e.end, values),
+                )
+            case "array":
+                return new ArrayLit(e.type, this.clones(e.elems, values))
+            case "push":
+                return new Push(e.type, this.clone(e.array, values), this.clones(e.values, values))
+            case "pop":
+                return new Pop(e.type, this.clone(e.array, values))
+            case "object": {
+                const fields: FieldInit[] = []
+                for (const f of e.fields) fields.push(new FieldInit(f.name, this.clone(f.value, values)))
+                return new ObjectLit(e.type, fields)
+            }
+            case "field":
+                return new FieldGet(e.type, this.clone(e.object, values), e.name)
+            case "alloc":
+                return new Alloc(e.type)
+            case "method-call": {
+                const call = new MethodCall(e.type, e.func, this.clone(e.receiver, values), this.clones(e.args, values))
+                call.virtual = e.virtual
+                return call
+            }
+            case "to-iface":
+                return new ToIface(e.type, this.clone(e.value, values), e.itab, e.indices)
+            case "iface-field":
+                return new IfaceField(e.type, this.clone(e.value, values), e.index)
+            case "iface-call":
+                return new IfaceCall(
+                    e.type,
+                    this.clone(e.value, values),
+                    e.index,
+                    e.method,
+                    this.clones(e.args, values),
+                )
+            case "recast":
+                return new Recast(e.type, this.clone(e.value, values))
+            case "is-null":
+                return new IsNull(e.type, this.clone(e.value, values))
+            case "optional": {
+                const value = this.clone(e.value, values)
+                const binding = this.local(e.binding, values)
+                return new Optional(e.type, value, binding, this.clone(e.body, values))
+            }
+            case "coalesce":
+                return new Coalesce(e.type, this.clone(e.value, values), this.clone(e.fallback, values))
+            case "union-field":
+                return new UnionField(e.type, this.clone(e.value, values), e.name)
+            case "typeof":
+                return new TypeOf(e.type, this.clone(e.value, values))
+            case "is":
+                return new Is(e.type, this.clone(e.value, values), e.member, e.via)
+            case "downcast":
+                return new Downcast(e.type, this.clone(e.value, values))
+            case "map":
+                return new MapOp(
+                    e.op,
+                    e.type,
+                    e.mapType,
+                    this.cloneOrNull(e.map, values),
+                    this.cloneOrNull(e.key, values),
+                    this.cloneOrNull(e.value, values),
+                )
+            case "set":
+                return new SetOp(
+                    e.op,
+                    e.type,
+                    e.setType,
+                    this.cloneOrNull(e.set, values),
+                    this.cloneOrNull(e.value, values),
+                )
+            case "func-ref":
+                return new FuncRef(e.type, e.func)
+            case "closure":
+                return new Closure(e.type, e.func)
+            case "call-value":
+                return new CallValue(e.type, this.clone(e.callee, values), this.clones(e.args, values))
+            case "bound-method": {
+                const bound = new BoundMethod(e.type, this.clone(e.receiver, values), e.func, e.index)
+                bound.virtual = e.virtual
+                return bound
+            }
+            case "array-method":
+                return new ArrayMethod(
+                    e.method,
+                    e.type,
+                    this.clone(e.array, values),
+                    this.clones(e.args, values),
+                    e.arity,
+                )
+            case "string-method":
+                return new StringMethod(e.method, e.type, this.clone(e.value, values), this.clones(e.args, values))
+            case "chan":
+                return new ChanOp(
+                    e.op,
+                    e.type,
+                    e.chanType,
+                    this.cloneOrNull(e.chan, values),
+                    this.cloneOrNull(e.value, values),
+                    this.cloneOrNull(e.handler, values),
+                    e.arity,
+                )
+            case "bind": {
+                const locals: BindLocal[] = []
+                for (const b of e.locals) {
+                    const local = this.local(b.local, values)
+                    locals.push(new BindLocal(local, this.clone(b.init, values)))
+                }
+                return new Bind(e.type, locals, this.clone(e.body, values))
+            }
+            case "seq":
+                return new Seq(e.type, this.clones(e.exprs, values))
+        }
+    }
+}
+
+/** A copy of a single node: `{ ...value }` of an argument substituted for a parameter. */
+function copy(e: Expr): Expr {
+    switch (e.k) {
+        case "int":
+            return new IntLit(e.type, e.value)
+        case "float":
+            return new FloatLit(e.type, e.value)
+        case "bool":
+            return new BoolLit(e.type, e.value)
+        case "string":
+            return new StringLit(e.type, e.value)
+        case "null":
+            return new NullLit(e.type)
+        case "local":
+            return new LocalRef(e.type, e.local)
+        default:
+            return e
+    }
+}

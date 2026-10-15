@@ -1,0 +1,141 @@
+// Constant folding of untyped constants.
+
+import { BoolLit, type ArithOp, type CompareOp } from "../ir/nodes"
+import { types } from "../ir/types"
+import {
+    type Big,
+    bigAdd,
+    bigAnd,
+    bigCmp,
+    bigDiv,
+    bigEq,
+    bigIsNeg,
+    bigIsZero,
+    bigMul,
+    bigNeg,
+    bigNot,
+    bigOf,
+    bigOr,
+    bigRem,
+    bigShl,
+    bigShr,
+    bigSub,
+    bigText,
+    bigToF64,
+    bigToI64,
+    bigXor,
+    bigGt,
+} from "./bigint"
+import { type Operand, type Untyped, Typed, UntypedFloat, UntypedInt } from "./operand"
+
+/** Folds a binary operation on two untyped constants. Returns an error message on failure. */
+export function foldBinary(op: string, a: Untyped, b: Untyped): Operand | string {
+    if (a.k === "untyped-int" && b.k === "untyped-int") return foldInt(op, a.value, b.value)
+    if (op === "&" || op === "|" || op === "^" || op === "<<" || op === ">>") {
+        return `Operator '${op}' requires integer operands.`
+    }
+    const x = a.k === "untyped-int" ? bigToF64(a.value) : a.value
+    const y = b.k === "untyped-int" ? bigToF64(b.value) : b.value
+    return foldFloat(op, x, y)
+}
+
+export function foldUnary(op: string, a: Untyped): Operand | string {
+    if (op === "+") return a
+    if (a.k === "untyped-float")
+        return op === "-" ? new UntypedFloat(-a.value) : "Operator '~' requires an integer operand."
+    return new UntypedInt(op === "-" ? bigNeg(a.value) : bigNot(a.value))
+}
+
+const maxShift = bigOf(1024)
+
+function foldInt(op: string, a: Big, b: Big): Operand | string {
+    switch (op) {
+        case "+":
+            return new UntypedInt(bigAdd(a, b))
+        case "-":
+            return new UntypedInt(bigSub(a, b))
+        case "*":
+            return new UntypedInt(bigMul(a, b))
+        case "/":
+            return bigIsZero(b) ? "Division by zero." : new UntypedInt(bigDiv(a, b))
+        case "%":
+            return bigIsZero(b) ? "Division by zero." : new UntypedInt(bigRem(a, b))
+        case "&":
+            return new UntypedInt(bigAnd(a, b))
+        case "|":
+            return new UntypedInt(bigOr(a, b))
+        case "^":
+            return new UntypedInt(bigXor(a, b))
+        case "<<":
+        case ">>": {
+            if (bigIsNeg(b)) return "Shift count must not be negative."
+            if (bigGt(b, maxShift)) return `Shift count ${bigText(b)} is too large.`
+            const n = bigToI64(b)
+            return new UntypedInt(op === "<<" ? bigShl(a, n) : bigShr(a, n))
+        }
+        default:
+            return bool(compareInt(op, a, b))
+    }
+}
+
+function foldFloat(op: string, a: f64, b: f64): Operand | string {
+    switch (op) {
+        case "+":
+            return new UntypedFloat(a + b)
+        case "-":
+            return new UntypedFloat(a - b)
+        case "*":
+            return new UntypedFloat(a * b)
+        case "/":
+            return b === 0.0 ? "Division by zero." : new UntypedFloat(a / b)
+        case "%":
+            return b === 0.0 ? "Division by zero." : new UntypedFloat(a % b)
+        case "&":
+        case "|":
+        case "^":
+        case "<<":
+        case ">>":
+            return `Operator '${op}' requires integer operands.`
+        default:
+            return bool(compareFloat(op, a, b))
+    }
+}
+
+function compareInt(op: string, a: Big, b: Big): bool {
+    const c = bigCmp(a, b)
+    switch (op) {
+        case "===":
+            return bigEq(a, b)
+        case "!==":
+            return !bigEq(a, b)
+        case "<":
+            return c < 0
+        case "<=":
+            return c <= 0
+        case ">":
+            return c > 0
+        default:
+            return c >= 0
+    }
+}
+
+function compareFloat(op: string, a: f64, b: f64): bool {
+    switch (op) {
+        case "===":
+            return a === b
+        case "!==":
+            return a !== b
+        case "<":
+            return a < b
+        case "<=":
+            return a <= b
+        case ">":
+            return a > b
+        default:
+            return a >= b
+    }
+}
+
+function bool(value: bool): Operand {
+    return new Typed(new BoolLit(types.bool, value))
+}

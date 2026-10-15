@@ -1,0 +1,53 @@
+// `ore fmt [--check] [--stdout] [paths...]`: formats .ore files in place in
+// the one Ore style (fmt/print.ore). With --check it writes nothing and lists the files that are not
+// formatted; with --stdout it prints the formatted files instead.
+
+import { format } from "../fmt/print"
+import { oreFiles } from "./files"
+import { toolError, usageError } from "./commands"
+
+export function fmtCommand(args: string[]): i32 {
+    let check = false
+    let stdout = false
+    const paths: string[] = []
+    for (const arg of args) {
+        if (arg === "--check") check = true
+        else if (arg === "--stdout") stdout = true
+        else if (arg.startsWith("-")) return usageError(`unknown option '${arg}'`)
+        else paths.push(arg)
+    }
+    const files = oreFiles(paths)
+    if (files instanceof Error) return toolError(files)
+    let unformatted = 0
+    let failed = 0
+    for (const file of files) {
+        const text = fs.readFile(file)
+        if (text instanceof Error) {
+            console.error(`${file}: ${text.message}`)
+            failed++
+            continue
+        }
+        const formatted = format(text)
+        if (formatted instanceof Error) {
+            console.error(`${file}: ${formatted.message.split("\n")[0]}`)
+            failed++
+            continue
+        }
+        if (stdout) {
+            console.write(formatted)
+            continue
+        }
+        if (formatted === text) continue
+        unformatted++
+        if (check) console.log(file)
+        else {
+            const error = fs.writeFile(file, formatted)
+            if (error !== null) {
+                console.error(`${file}: ${error.message}`)
+                failed++
+            }
+        }
+    }
+    if (failed > 0) return 1
+    return check && unformatted > 0 ? 1 : 0
+}
