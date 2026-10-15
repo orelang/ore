@@ -870,15 +870,36 @@ export function checkPrefixUnary(c: Checker, node: Node, scope: Scope): Operand 
     return c.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
 }
 
+/** Whether an expression needs a context for its type: an empty array literal. */
+function needsContext(node: Node): bool {
+    if (node.kind === "ParenthesizedExpression") return needsContext(expression(node))
+    return node.kind === "ArrayLiteralExpression" && elements(node).length === 0
+}
+
 export function checkConditional(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
     const cond = condition(c, node.child("condition")!, scope)
     // Both branches are checked against the expected type, so that `c ? "a" : "b"` can be a literal type.
+    // Without one, a branch that needs a context, such as `[]`, takes the other branch's type.
+    const yesNode = whenTrue(node)
+    const noNode = whenFalse(node)
+    const noFirst = expected === null && needsContext(yesNode) && !needsContext(noNode)
+    let yes: Operand = errorOperand
+    let no: Operand = errorOperand
+    if (noFirst) {
+        c.pushFacts(cond.whenFalse)
+        no = checkExpr(c, noNode, scope, expected)
+        c.popFacts()
+    }
+    const yesContext = noFirst && no.k === "typed" ? no.expr.type : expected
     c.pushFacts(cond.whenTrue)
-    const yes = checkExpr(c, whenTrue(node), scope, expected)
+    yes = checkExpr(c, yesNode, scope, yesContext)
     c.popFacts()
-    c.pushFacts(cond.whenFalse)
-    const no = checkExpr(c, whenFalse(node), scope, expected)
-    c.popFacts()
+    if (!noFirst) {
+        const noContext = expected === null && needsContext(noNode) && yes.k === "typed" ? yes.expr.type : expected
+        c.pushFacts(cond.whenFalse)
+        no = checkExpr(c, noNode, scope, noContext)
+        c.popFacts()
+    }
     // Typed branches whose types are members of an expected union keep their
     // own types, which are narrower: after `u = t !== null ? t : "d"`, u is a string.
     if (expected !== null && expected.kind === "union" && yes.k === "typed" && no.k === "typed") {
