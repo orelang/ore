@@ -1,0 +1,721 @@
+// The garbage collector: a non-moving mark-sweep collector in the shape of
+// Go's. The heap is one reserved range of addresses, used in pages of 8 KB
+// grouped into spans; a span holds objects of one size class (or one large
+// object), with a bitmap of the allocated and of the marked ones. A page table
+// maps any address in the heap to its span, so a pointer into the middle of
+// an object keeps it alive. Each thread allocates from its own spans without
+// locking; the slow path, which takes a span from the shared lists or new
+// pages, is under `heapLock`.
+//
+// A collection stops the world: it sends a signal to every registered thread,
+// whose handler records the stack pointer and waits; the kernel's signal frame
+// holds the registers, so scanning the stack from there finds every pointer.
+// A thread inside an allocation finishes it first (its span would change under
+// it otherwise), then stops where the allocation ends. Stacks are scanned
+// conservatively; objects word by word, except those allocated as bytes.
+// Roots: the stacks of the threads, the stacks of parked tasks (through a
+// hook set by the scheduler), and the program's globals, in a table that the
+// compiler emits.
+//
+// The collector's state lives in globals that are numbers or pointers, which a
+// declaration without a value does not reset, since `init` runs before the
+// top-level code of the runtime.
+
+import {
+    getenv,
+    isNil,
+    lock,
+    mmap,
+    nanosleep,
+    nil,
+    nowNs,
+    permanent,
+    permanentMutex,
+    permanentRwlock,
+    pthread_attr_destroy,
+    pthread_attr_getstack,
+    pthread_get_stackaddr_np,
+    pthread_getattr_np,
+    pthread_kill,
+    pthread_rwlock_unlock,
+    pthread_rwlock_wrlock,
+    pthread_self,
+    sigaction,
+    unlock,
+} from "ore:runtime/os"
+
+/** The table of the program's globals, {address, size} pairs, emitted by the compiler. */
+declare function ore_globals_table(): ptr
+declare function ore_globals_count(): i64
+declare function dprintf(fd: i32, format: string, ...args: i64[]): i32
+
+const pageShift = 13
+const pageSize = 8192
+/** The reserved heap: 16 GB of addresses, touched only as they are used. */
+const heapPages = 1 << 21
+/** Objects up to this size share spans by size class; larger ones get their own. */
+const maxSmall = 8192
+/** A bitmap of 512 bits: the most objects in a span (8 KB of 16-byte objects). */
+const bitmapSize = 64
+const maxClasses = 48
+/** A thread tells the collector what it allocated every this many bytes. */
+const flushEvery = 128 << 10
+const minHeap = 4 << 20
+
+// A span record, in permanent memory.
+const spanStart = 0
+const spanPages = 8
+const spanElemSize = 16
+const spanElems = 24
+const spanNoscan = 32
+const spanFreeIndex = 40
+const spanAllocBits = 48
+const spanMarkBits = 56
+const spanNext = 64
+const spanClass = 72
+const spanRecordSize = 80
+
+// A thread record, in permanent memory, pointed to by the thread-local `thread`.
+const threadId = 0
+/** The base of the stack the thread runs on: its own, or the task's. */
+const threadBase = 8
+/** The stack pointer recorded when the thread stopped for a collection. */
+const threadSp = 16
+/** Nonzero while the thread allocates: the collector then waits for the allocation to end. */
+const threadInAlloc = 24
+/** Set by the signal handler when it found the thread allocating. */
+const threadStopRequested = 32
+const threadNext = 40
+/** Bytes allocated since the thread last told the collector. */
+const threadAllocated = 48
+const threadOwnBase = 56
+/** The span the thread allocates from, per size class, scanned and noscan apart. */
+const threadCache = 64
+const threadRecordSize = threadCache + maxClasses * 2 * 8
+
+let heapBase: ptr
+let pageTable: ptr
+let nextPage: int
+/** Runs of free pages: span records whose pages are free, linked by `spanNext`. */
+let freeRuns: ptr
+/** Span records ready for reuse. */
+let freeRecords: ptr
+let metaNext: ptr
+let metaEnd: ptr
+
+/** The size of each class (a table of ints), and the class of each size in units of 16 bytes. */
+let classSizes: ptr
+let classCount: int
+let classOfSize: ptr
+/** Spans with free objects, per class and noscan, linked by `spanNext`. */
+let partial: ptr
+/** Every span in use, for the sweep. */
+let spans: ptr
+let spanCount: int
+let spanCap: int
+
+/** Allocation since the last collection, as the threads reported it, and the amount that triggers the next. */
+let allocatedCell: ptr
+let nextCollection: int
+let liveBytes: int
+let collections: int
+
+let markStack: ptr
+let markTop: int
+let markCap: int
+
+/** The registered threads, under `heapLock`. */
+let threads: ptr
+let threadCount: int
+/** Serializes collections, and the slow path of allocation. */
+let gcLock: ptr
+let heapLock: ptr
+/** 1 while the world is stopped; the threads wait on it. */
+let stoppingCell: ptr
+/** How many threads have stopped for the current collection. */
+let stoppedCell: ptr
+/** The pause between checks of a waiting thread: a timespec. */
+let pause: ptr
+/** The scheduler's hook that scans the stacks of parked tasks: a closure cell, or null. */
+let stackRootsHook: ptr
+/** 1 when ORE_GCTRACE is set: each collection prints a line to stderr. */
+let trace: int
+let clock: ptr
+
+/**
+ * Taken for reading by a worker while it switches stacks, and for writing by
+ * the collector before it stops the world, so that every stopped thread is on
+ * the stack its record says. No code allocates while it holds the read side.
+ */
+let switchLock: ptr
+
+/** The lock that a worker holds for reading while it switches stacks. */
+export function stackSwitchLock(): ptr {
+    return switchLock
+}
+
+//ore:threadlocal
+let thread: ptr
+
+//ore:noinline
+function threadRecord(): ptr {
+    return thread
+}
+
+//ore:noinline
+function setThreadRecord(t: ptr): void {
+    thread = t
+}
+
+function field(p: ptr, offset: int): int {
+    return unsafe.load<int>(unsafe.add(p, offset))
+}
+
+function setField(p: ptr, offset: int, value: int): void {
+    unsafe.store<int>(unsafe.add(p, offset), value)
+}
+
+function pointerAt(p: ptr, offset: int): ptr {
+    return unsafe.load<ptr>(unsafe.add(p, offset))
+}
+
+function setPointer(p: ptr, offset: int, value: ptr): void {
+    unsafe.store<ptr>(unsafe.add(p, offset), value)
+}
+
+// ---------------------------------------------------------------------------
+// Memory from the system
+
+function mapMemory(size: int): ptr {
+    const anonymous = target.os === "darwin" ? 0x1000 : 0x20
+    const noReserve = target.os === "darwin" ? 0 : 0x4000
+    const p = mmap(nil(), u64(size), 3, i32(2 | anonymous | noReserve), -1, 0)
+    if (unsafe.toInt(p) === ~u64(0)) process.panic("gc: out of address space")
+    return p
+}
+
+/** Metadata memory, never freed; the caller holds `heapLock`. */
+function meta(size: int): ptr {
+    if (unsafe.toInt(metaNext) + u64(size) > unsafe.toInt(metaEnd)) {
+        metaNext = mapMemory(1 << 20)
+        metaEnd = unsafe.add(metaNext, 1 << 20)
+    }
+    const p = metaNext
+    metaNext = unsafe.add(metaNext, ((size + 15) / 16) * 16)
+    return p
+}
+
+/** Sets up the heap and the stop signal; called once, before anything is allocated. */
+export function init(): void {
+    gcLock = permanentMutex()
+    heapLock = permanentMutex()
+    switchLock = permanentRwlock()
+    allocatedCell = permanent(8)
+    stoppingCell = permanent(8)
+    stoppedCell = permanent(8)
+    pause = permanent(16)
+    unsafe.store<i64>(unsafe.add(pause, 8), 20000)
+    heapBase = mapMemory(heapPages * pageSize)
+    pageTable = mapMemory(heapPages * 8)
+
+    // Size classes: every 16 bytes up to 128, then steps of a quarter, then of an eighth.
+    classSizes = meta(maxClasses * 8)
+    let size = 16
+    while (size < maxSmall) {
+        setField(classSizes, classCount * 8, size)
+        classCount++
+        size += size < 128 ? 16 : size < 1024 ? size / 4 : size / 8
+        size = ((size + 15) / 16) * 16
+    }
+    setField(classSizes, classCount * 8, maxSmall)
+    classCount++
+    classOfSize = meta((maxSmall / 16 + 1) * 8)
+    let c = 0
+    for (let units = 0; units <= maxSmall / 16; units++) {
+        while (field(classSizes, c * 8) < units * 16) c++
+        setField(classOfSize, units * 8, c)
+    }
+    partial = meta(classCount * 16)
+    spanCap = 1024
+    spans = mapMemory(spanCap * 8)
+    markCap = 1 << 16
+    markStack = mapMemory(markCap * 8)
+    nextCollection = minHeap
+    clock = permanent(16)
+    installStopHandler()
+}
+
+/** The scheduler's function that scans the stacks of parked tasks (a C function). */
+export function setStackRootsHook(hook: ptr): void {
+    stackRootsHook = permanent(16)
+    unsafe.store<ptr>(stackRootsHook, hook)
+}
+
+// ---------------------------------------------------------------------------
+// Threads
+
+/** The base of the current thread's stack: the highest address. */
+function stackBase(): ptr {
+    if (target.os === "darwin") return pthread_get_stackaddr_np(pthread_self())
+    const attributes = permanent(128)
+    const address = permanent(16)
+    pthread_getattr_np(pthread_self(), attributes)
+    pthread_attr_getstack(attributes, address, unsafe.add(address, 8))
+    pthread_attr_destroy(attributes)
+    return unsafe.add(unsafe.load<ptr>(address), unsafe.load<int>(unsafe.add(address, 8)))
+}
+
+/** Registers the calling thread: it may allocate from now on, and its stack is scanned. */
+export function registerThread(): void {
+    const t = permanent(threadRecordSize)
+    setPointer(t, threadId, pthread_self())
+    const base = stackBase()
+    setPointer(t, threadOwnBase, base)
+    setPointer(t, threadBase, base)
+    setThreadRecord(t)
+    // Not during a collection: the collector stops only the threads it knew when it started.
+    lock(gcLock)
+    setPointer(t, threadNext, threads)
+    threads = t
+    threadCount++
+    unlock(gcLock)
+    // The first thread reads the settings; getenv's argument is a copy, so the thread must be registered.
+    if (threadCount === 1) trace = isNil(getenv("ORE_GCTRACE")) ? 0 : 1
+}
+
+/**
+ * Keeps any collection from starting until `allowCollections`: around a
+ * call that a signal must not interrupt while other threads are stopped, such
+ * as posix_spawn under Rosetta. The code in between must not allocate.
+ */
+export function holdCollections(): void {
+    lock(gcLock)
+}
+
+export function allowCollections(): void {
+    unlock(gcLock)
+}
+
+/**
+ * Brackets code that the collector must not stop in the middle of, such as
+ * changes of the lists it reads; the code must not wait for other threads.
+ */
+export function enterNoStop(): void {
+    const t = threadRecord()
+    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    lock(heapLock)
+}
+
+export function exitNoStop(): void {
+    const t = threadRecord()
+    unlock(heapLock)
+    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
+    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+}
+
+/** Tells the collector which stack the thread runs on from now: `base` is its highest address. */
+//ore:noinline
+export function setStackBase(base: ptr): void {
+    setPointer(thread, threadBase, base)
+}
+
+/** The thread's own stack: what it runs on outside any task. */
+//ore:noinline
+export function ownStackBase(): ptr {
+    return pointerAt(thread, threadOwnBase)
+}
+
+// ---------------------------------------------------------------------------
+// Spans
+
+function newRecord(): ptr {
+    if (!isNil(freeRecords)) {
+        const r = freeRecords
+        freeRecords = pointerAt(r, spanNext)
+        return r
+    }
+    const r = meta(spanRecordSize)
+    setPointer(r, spanAllocBits, meta(bitmapSize))
+    setPointer(r, spanMarkBits, meta(bitmapSize))
+    return r
+}
+
+/** A run of `pages` pages, reused or new, with a span record for it; the caller holds `heapLock`. */
+function newSpan(pages: int): ptr {
+    let prev = nil()
+    let run = freeRuns
+    while (!isNil(run)) {
+        const have = field(run, spanPages)
+        if (have >= pages) {
+            const next = pointerAt(run, spanNext)
+            if (have === pages) {
+                if (isNil(prev)) freeRuns = next
+                else setPointer(prev, spanNext, next)
+                return run
+            }
+            // Split: the rest stays free.
+            const span = newRecord()
+            setPointer(span, spanStart, pointerAt(run, spanStart))
+            setField(span, spanPages, pages)
+            setPointer(run, spanStart, unsafe.add(pointerAt(run, spanStart), pages * pageSize))
+            setField(run, spanPages, have - pages)
+            return span
+        }
+        prev = run
+        run = pointerAt(run, spanNext)
+    }
+    if (nextPage + pages > heapPages) outOfMemory()
+    const span = newRecord()
+    setPointer(span, spanStart, unsafe.add(heapBase, nextPage * pageSize))
+    setField(span, spanPages, pages)
+    nextPage += pages
+    return span
+}
+
+//ore:cold
+//ore:noinline
+function outOfMemory(): void {
+    process.panic("out of memory")
+}
+
+/** Sets up `span` for `elems` objects of `size` bytes, in the page table and the span list. */
+function useSpan(span: ptr, size: int, elems: int, noscan: bool, cls: int): void {
+    setField(span, spanElemSize, size)
+    setField(span, spanElems, elems)
+    setField(span, spanNoscan, noscan ? 1 : 0)
+    setField(span, spanFreeIndex, 0)
+    setField(span, spanClass, cls)
+    unsafe.fill(pointerAt(span, spanAllocBits), 0, bitmapSize)
+    unsafe.fill(pointerAt(span, spanMarkBits), 0, bitmapSize)
+    const first = unsafe.diff(pointerAt(span, spanStart), heapBase) >> pageShift
+    for (let i = 0; i < field(span, spanPages); i++) setPointer(pageTable, (first + i) * 8, span)
+    if (spanCount === spanCap) {
+        const grown = mapMemory(spanCap * 16)
+        unsafe.copy(grown, spans, spanCount * 8)
+        spans = grown
+        spanCap *= 2
+    }
+    setPointer(spans, spanCount * 8, span)
+    spanCount++
+}
+
+/** Frees the pages of a span: out of the page table, into the free runs. */
+function releaseSpan(span: ptr): void {
+    const first = unsafe.diff(pointerAt(span, spanStart), heapBase) >> pageShift
+    for (let i = 0; i < field(span, spanPages); i++) setPointer(pageTable, (first + i) * 8, nil())
+    setPointer(span, spanNext, freeRuns)
+    freeRuns = span
+}
+
+function bit(bits: ptr, i: int): bool {
+    return (unsafe.load<u8>(unsafe.add(bits, i >> 3)) & u8(1 << (i & 7))) !== 0
+}
+
+function setBit(bits: ptr, i: int): void {
+    const at = unsafe.add(bits, i >> 3)
+    unsafe.store<u8>(at, unsafe.load<u8>(at) | u8(1 << (i & 7)))
+}
+
+// ---------------------------------------------------------------------------
+// Allocation
+
+/** The first object of a span with free room for class `cls`: from the shared lists, or a new span. */
+//ore:noinline
+function refill(t: ptr, cls: int, noscan: bool): ptr {
+    lock(heapLock)
+    const list = unsafe.add(partial, (cls * 2 + (noscan ? 1 : 0)) * 8)
+    let span = unsafe.load<ptr>(list)
+    if (!isNil(span)) {
+        unsafe.store<ptr>(list, pointerAt(span, spanNext))
+    } else {
+        const elemSize = field(classSizes, cls * 8)
+        const pages = elemSize * 8 > pageSize ? (elemSize * 8 + pageSize - 1) / pageSize : 1
+        span = newSpan(pages)
+        const elems = (pages * pageSize) / elemSize
+        useSpan(span, elemSize, elems < 512 ? elems : 512, noscan, cls)
+    }
+    unlock(heapLock)
+    setPointer(t, threadCache + (cls * 2 + (noscan ? 1 : 0)) * 8, span)
+    return span
+}
+
+/** One large object in a span of its own. */
+//ore:noinline
+function allocLarge(size: int, noscan: bool): ptr {
+    const pages = (size + pageSize - 1) / pageSize
+    lock(heapLock)
+    const span = newSpan(pages)
+    useSpan(span, pages * pageSize, 1, noscan, -1)
+    setBit(pointerAt(span, spanAllocBits), 0)
+    unlock(heapLock)
+    const p = pointerAt(span, spanStart)
+    unsafe.fill(p, 0, size)
+    return p
+}
+
+/** Reports the thread's allocation to the collector, and collects when it is time. */
+//ore:noinline
+function flush(t: ptr): void {
+    const allocated = field(t, threadAllocated)
+    setField(t, threadAllocated, 0)
+    if (unsafe.atomicAdd<i64>(allocatedCell, allocated) + allocated >= nextCollection) collect()
+}
+
+/** `size` zeroed bytes; `noscan` memory is never scanned for pointers. */
+export function alloc(size: int, noscan: bool): ptr {
+    if (size <= 0) size = 1
+    const t = threadRecord()
+    if (isNil(t)) process.panic("gc: allocation on an unregistered thread")
+    setField(t, threadAllocated, field(t, threadAllocated) + size)
+    if (field(t, threadAllocated) >= flushEvery) flush(t)
+    // From here to the end, a collection waits for this thread (see `onStop`).
+    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    let p: ptr
+    if (size > maxSmall) {
+        p = allocLarge(size, noscan)
+    } else {
+        const cls = field(classOfSize, ((size + 15) >> 4) * 8)
+        const slot = unsafe.add(t, threadCache + (cls * 2 + (noscan ? 1 : 0)) * 8)
+        let span = unsafe.load<ptr>(slot)
+        let i = 0
+        while (true) {
+            if (!isNil(span)) {
+                const bits = pointerAt(span, spanAllocBits)
+                const elems = field(span, spanElems)
+                i = field(span, spanFreeIndex)
+                while (i < elems && bit(bits, i)) i++
+                if (i < elems) {
+                    setBit(bits, i)
+                    setField(span, spanFreeIndex, i + 1)
+                    break
+                }
+            }
+            span = refill(t, cls, noscan)
+        }
+        const elemSize = field(span, spanElemSize)
+        p = unsafe.add(pointerAt(span, spanStart), i * elemSize)
+        unsafe.fill(p, 0, elemSize)
+    }
+    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
+    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+    return p
+}
+
+// ---------------------------------------------------------------------------
+// Stopping the world
+
+/** SIGUSR1: a function, since a constant chosen by the target would be a global, unset before the top-level code runs. */
+function stopSignal(): i32 {
+    return target.os === "darwin" ? 30 : 10
+}
+
+/** Installs `onStop` for the stop signal, restarting the system calls it interrupts. */
+function installStopHandler(): void {
+    const action = permanent(256)
+    unsafe.store<ptr>(action, unsafe.functionAddress(onStop))
+    if (target.os === "darwin") {
+        // struct sigaction: handler, mask (4 bytes), flags; SA_RESTART is 2.
+        unsafe.store<i32>(unsafe.add(action, 12), 2)
+    } else {
+        // struct sigaction: handler, mask (128 bytes), flags, restorer; SA_RESTART is 0x10000000.
+        unsafe.store<i32>(unsafe.add(action, 136), 0x10000000)
+    }
+    if (sigaction(stopSignal(), action, nil()) !== 0) process.panic("gc: cannot install the stop signal")
+}
+
+/** The stop signal's handler: the thread stops here, unless it is allocating, in which case it stops after. */
+function onStop(signal: i32): void {
+    const t = threadRecord()
+    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadInAlloc)) !== 0) {
+        unsafe.atomicStore<i64>(unsafe.add(t, threadStopRequested), 1)
+        return
+    }
+    stopHere(t)
+}
+
+/**
+ * Records the stack pointer and waits for the collection to end. The clobbers
+ * make the function save every callee-saved register in its frame, above the
+ * recorded stack pointer, so that pointers the thread held in registers are
+ * scanned (in the signal handler, the kernel's frame holds them as well).
+ */
+//ore:noinline
+function stopHere(t: ptr): void {
+    if (target.arch === "arm64") unsafe.asm("", "~{x19},~{x20},~{x21},~{x22},~{x23},~{x24},~{x25},~{x26},~{x27},~{x28}")
+    else unsafe.asm("", "~{rbx},~{r12},~{r13},~{r14},~{r15}")
+    unsafe.atomicStore<i64>(unsafe.add(t, threadStopRequested), 0)
+    unsafe.atomicStore<ptr>(unsafe.add(t, threadSp), currentSp())
+    unsafe.atomicAdd<i64>(stoppedCell, 1)
+    while (unsafe.atomicLoad<i64>(stoppingCell) !== 0) nanosleep(pause, nil())
+}
+
+function currentSp(): ptr {
+    if (target.arch === "arm64") return unsafe.asm<ptr>("mov $0, sp", "=r")
+    return unsafe.asm<ptr>("movq %rsp, $0", "=r")
+}
+
+// ---------------------------------------------------------------------------
+// Marking
+
+/** Marks the object that `p` points into, if it is an allocated object of the heap. */
+function mark(p: u64): void {
+    const offset = p - unsafe.toInt(heapBase)
+    if (offset >= u64(nextPage * pageSize)) return
+    const span = pointerAt(pageTable, i64(offset >> 13) * 8)
+    if (isNil(span)) return
+    const elemSize = field(span, spanElemSize)
+    const index = unsafe.diff(unsafe.fromInt(p), pointerAt(span, spanStart)) / elemSize
+    if (index >= field(span, spanElems)) return
+    if (!bit(pointerAt(span, spanAllocBits), index)) return
+    const marks = pointerAt(span, spanMarkBits)
+    if (bit(marks, index)) return
+    setBit(marks, index)
+    if (field(span, spanNoscan) !== 0) return
+    if (markTop === markCap) {
+        const grown = mapMemory(markCap * 16)
+        unsafe.copy(grown, markStack, markTop * 8)
+        markStack = grown
+        markCap *= 2
+    }
+    setPointer(markStack, markTop * 8, unsafe.add(pointerAt(span, spanStart), index * elemSize))
+    markTop++
+}
+
+/** Marks what the words in [from, from + size) point to. */
+export function scan(from: ptr, size: int): void {
+    for (let i = 0; i + 8 <= size; i += 8) mark(unsafe.load<u64>(unsafe.add(from, i)))
+}
+
+/** Marks what the words in [lo, hi) point to, for the stack of a parked task. */
+export function scanRange(lo: ptr, hi: ptr): void {
+    const from = unsafe.fromInt(unsafe.toInt(lo) & ~u64(7))
+    scan(from, unsafe.diff(hi, from))
+}
+
+function drain(): void {
+    while (markTop > 0) {
+        markTop--
+        const object = pointerAt(markStack, markTop * 8)
+        const span = pointerAt(pageTable, (unsafe.diff(object, heapBase) >> pageShift) * 8)
+        scan(object, field(span, spanElemSize))
+    }
+}
+
+/** Collects garbage: stops the world, marks from the roots, sweeps. */
+//ore:noinline
+export function collect(): void {
+    lock(gcLock)
+    if (unsafe.atomicLoad<i64>(allocatedCell) < nextCollection) {
+        // Another thread collected meanwhile.
+        unlock(gcLock)
+        return
+    }
+    const self = threadRecord()
+    const start = nowNs(clock)
+    // No worker is between two stacks while the collector holds the write side.
+    pthread_rwlock_wrlock(switchLock)
+    unsafe.atomicStore<i64>(stoppedCell, 0)
+    unsafe.atomicStore<i64>(stoppingCell, 1)
+    let others = 0
+    for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
+        if (t === self) continue
+        pthread_kill(pointerAt(t, threadId), stopSignal())
+        others++
+    }
+    while (unsafe.atomicLoad<i64>(stoppedCell) < others) nanosleep(pause, nil())
+    const stopped = nowNs(clock)
+    collections++
+
+    // The roots: this stack, the other threads' stacks, the parked tasks' stacks, the globals.
+    if (target.arch === "arm64") unsafe.asm("", "~{x19},~{x20},~{x21},~{x22},~{x23},~{x24},~{x25},~{x26},~{x27},~{x28}")
+    else unsafe.asm("", "~{rbx},~{r12},~{r13},~{r14},~{r15}")
+    scanRange(currentSp(), pointerAt(self, threadBase))
+    for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
+        if (t !== self) scanRange(pointerAt(t, threadSp), pointerAt(t, threadBase))
+    }
+    if (!isNil(stackRootsHook)) {
+        const hook = unsafe.load<() => void>(stackRootsHook)
+        hook()
+    }
+    const globals = ore_globals_table()
+    const count = ore_globals_count()
+    for (let i = 0; i < count; i++) scan(pointerAt(globals, i * 16), field(globals, i * 16 + 8))
+    drain()
+    sweep()
+
+    unsafe.atomicStore<i64>(stoppingCell, 0)
+    pthread_rwlock_unlock(switchLock)
+    const end = nowNs(clock)
+    const number = collections
+    unlock(gcLock)
+    if (trace !== 0) {
+        dprintf(
+            2,
+            "gc %ld: %ld KB live, %ld KB heap, %ld threads, pause %ld us (stop %ld us)\n",
+            number,
+            liveBytes >> 10,
+            heapSize() >> 10,
+            others + 1,
+            (end - start) / 1000,
+            (stopped - start) / 1000,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sweeping
+
+/** Frees every unmarked object: the marks become the allocation bits. The world is stopped. */
+function sweep(): void {
+    for (let c = 0; c < classCount * 2; c++) setPointer(partial, c * 8, nil())
+    for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
+        unsafe.fill(unsafe.add(t, threadCache), 0, maxClasses * 16)
+    }
+    liveBytes = 0
+    let kept = 0
+    for (let s = 0; s < spanCount; s++) {
+        const span = pointerAt(spans, s * 8)
+        const marks = pointerAt(span, spanMarkBits)
+        const elems = field(span, spanElems)
+        let live = 0
+        for (let i = 0; i < elems; i++) if (bit(marks, i)) live++
+        if (live === 0) {
+            releaseSpan(span)
+            continue
+        }
+        liveBytes += live * field(span, spanElemSize)
+        const bits = pointerAt(span, spanAllocBits)
+        setPointer(span, spanAllocBits, marks)
+        setPointer(span, spanMarkBits, bits)
+        unsafe.fill(bits, 0, bitmapSize)
+        setField(span, spanFreeIndex, 0)
+        const cls = field(span, spanClass)
+        if (live < elems && cls >= 0) {
+            const list = unsafe.add(partial, (cls * 2 + field(span, spanNoscan)) * 8)
+            setPointer(span, spanNext, unsafe.load<ptr>(list))
+            unsafe.store<ptr>(list, span)
+        }
+        setPointer(spans, kept * 8, span)
+        kept++
+    }
+    spanCount = kept
+    unsafe.atomicStore<i64>(allocatedCell, 0)
+    nextCollection = liveBytes > minHeap / 2 ? liveBytes * 2 : minHeap
+}
+
+// ---------------------------------------------------------------------------
+// Statistics
+
+/** Bytes of the heap that were live after the last collection. */
+export function live(): int {
+    return liveBytes
+}
+
+/** Bytes of address space the heap has used. */
+export function heapSize(): int {
+    return nextPage * pageSize
+}
+
+export function collectionCount(): int {
+    return collections
+}

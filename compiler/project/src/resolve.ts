@@ -5,6 +5,7 @@ import runtimeChan from "../../../runtime/core/chan.ore" with { type: "text" }
 import runtimeFloat from "../../../runtime/core/float.ore" with { type: "text" }
 import runtimeFloatTables from "../../../runtime/core/float-tables.ore" with { type: "text" }
 import runtimeFormat from "../../../runtime/core/format.ore" with { type: "text" }
+import runtimeGc from "../../../runtime/core/gc.ore" with { type: "text" }
 import runtimeFrames from "../../../runtime/core/frames.ore" with { type: "text" }
 import runtimeIo from "../../../runtime/core/io.ore" with { type: "text" }
 import runtimeJson from "../../../runtime/core/json.ore" with { type: "text" }
@@ -40,6 +41,7 @@ export const stdModules: Record<string, string> = {
   "ore:runtime/number": runtimeNumber,
   "ore:runtime/frames": runtimeFrames,
   "ore:runtime/os": runtimeOs,
+  "ore:runtime/gc": runtimeGc,
   "ore:runtime/task": runtimeTask,
   "ore:runtime/sys": runtimeSys,
   "ore:runtime/chan": runtimeChan,
@@ -50,7 +52,7 @@ export const stdModules: Record<string, string> = {
 }
 
 /** The modules of the runtime written in Ore (runtime/core), part of every program, in load order. */
-export const runtimeModules = ["ore:runtime/frames", "ore:runtime/string", "ore:runtime/array", "ore:runtime/map", "ore:runtime/format", "ore:runtime/float-tables", "ore:runtime/float", "ore:runtime/json", "ore:runtime/number", "ore:runtime/os", "ore:runtime/io", "ore:runtime/task", "ore:runtime/sys", "ore:runtime/chan", "ore:runtime/poll", "ore:runtime/net", "ore:runtime/program"]
+export const runtimeModules = ["ore:runtime/frames", "ore:runtime/string", "ore:runtime/array", "ore:runtime/map", "ore:runtime/format", "ore:runtime/float-tables", "ore:runtime/float", "ore:runtime/json", "ore:runtime/number", "ore:runtime/os", "ore:runtime/gc", "ore:runtime/io", "ore:runtime/task", "ore:runtime/sys", "ore:runtime/chan", "ore:runtime/poll", "ore:runtime/net", "ore:runtime/program"]
 
 export interface PackageJson {
   name?: string

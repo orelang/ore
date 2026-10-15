@@ -1,6 +1,6 @@
 // The operating system under the scheduler: threads, locks, memory mappings,
-// clocks, the network poller and the garbage collector's hooks, from libc and
-// the Boehm GC. Struct sizes and constants differ between platforms; they
+// clocks, the network poller and the signals of the garbage collector, from
+// libc. Struct sizes and constants differ between platforms; they
 // were read from the system headers of macOS (arm64) and Linux (arm64 and
 // x86-64).
 
@@ -47,26 +47,17 @@ export declare function epoll_ctl(poller: i32, op: i32, fd: i32, event: ptr): i3
 export declare function epoll_wait(poller: i32, events: ptr, count: i32, timeout: i32): i32
 
 // ---------------------------------------------------------------------------
-// The Boehm GC
+// Threads and signals, for the collector
 
-/** Collected memory, zeroed and scanned for pointers; null when there is no memory. */
-export declare function GC_malloc(size: u64): ptr
-/** Collected memory that is never scanned for pointers, not zeroed. */
-export declare function GC_malloc_atomic(size: u64): ptr
-export declare function GC_get_my_stackbottom(base: ptr): ptr
-export declare function GC_set_stackbottom(thread: ptr, base: ptr): void
-export declare function GC_get_stack_base(base: ptr): i32
-export declare function GC_allow_register_threads(): void
-export declare function GC_register_my_thread(base: ptr): i32
-export declare function GC_push_all_eager(bottom: ptr, top: ptr): void
-export declare function GC_set_push_other_roots(proc: ptr): void
-export declare function GC_get_push_other_roots(): ptr
-export declare function GC_set_on_collection_event(proc: ptr): void
-export declare function GC_call_with_alloc_lock(fn: ptr, data: ptr): ptr
-
-/** Collection events of GC_set_on_collection_event. */
-export const gcEventPreStopWorld = 6
-export const gcEventPostStartWorld = 9
+export declare function pthread_self(): ptr
+export declare function pthread_kill(thread: ptr, signal: i32): i32
+export declare function sigaction(signal: i32, action: ptr, previous: ptr): i32
+export declare function nanosleep(duration: ptr, remaining: ptr): i32
+/** macOS: the base (highest address) of a thread's stack. */
+export declare function pthread_get_stackaddr_np(thread: ptr): ptr
+/** Linux: a thread's attributes, which hold its stack. */
+export declare function pthread_getattr_np(thread: ptr, attributes: ptr): i32
+export declare function pthread_attr_getstack(attributes: ptr, address: ptr, size: ptr): i32
 
 // ---------------------------------------------------------------------------
 // Memory outside the collector, for state that C and assembly reach by address
@@ -160,6 +151,12 @@ function clockMonotonic(): i32 {
 export function nowMs(time: ptr): int {
     clock_gettime(clockMonotonic(), time)
     return unsafe.load<i64>(time) * 1000 + unsafe.load<i64>(unsafe.add(time, 8)) / 1000000
+}
+
+/** Nanoseconds on a clock that only goes forward. */
+export function nowNs(time: ptr): int {
+    clock_gettime(clockMonotonic(), time)
+    return unsafe.load<i64>(time) * 1000000000 + unsafe.load<i64>(unsafe.add(time, 8))
 }
 
 /** Milliseconds since the Unix epoch, on the wall clock. */

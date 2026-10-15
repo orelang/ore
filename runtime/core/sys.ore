@@ -6,7 +6,7 @@
 // the collector and a test; the panic is out of line.
 
 import { flushOutput } from "ore:runtime/io"
-import { GC_malloc, GC_malloc_atomic } from "ore:runtime/os"
+import { alloc as gcAlloc } from "ore:runtime/gc"
 import { blockingEnter, blockingExit, randomState, wallClockMs } from "ore:runtime/task"
 
 declare function open(path: string, flags: i32): i32
@@ -26,33 +26,21 @@ declare function __errno_location(): ptr
 // ---------------------------------------------------------------------------
 // Memory
 
-//ore:cold
-//ore:noinline
-function outOfMemory(): void {
-    process.panic("out of memory")
-}
-
 /** Zeroed collected memory, scanned for pointers. */
 //ore:runtime ore_rt_alloc
 function alloc(size: int): ptr {
-    const p = GC_malloc(u64(size > 0 ? size : 1))
-    if (unsafe.toInt(p) === 0) outOfMemory()
-    return p
+    return gcAlloc(size, false)
 }
 
-/** Collected memory that holds no pointers, so the collector never scans it; not zeroed. */
+/** Collected memory that holds no pointers, so the collector never scans it. */
 function bytes(size: int): ptr {
-    const p = GC_malloc_atomic(u64(size > 0 ? size : 1))
-    if (unsafe.toInt(p) === 0) outOfMemory()
-    return p
+    return gcAlloc(size, true)
 }
 
 /** Zeroed collected memory that is never scanned for pointers. */
 //ore:runtime ore_rt_alloc_bytes
 function allocBytes(size: int): ptr {
-    const p = bytes(size)
-    unsafe.fill(p, 0, size > 0 ? size : 1)
-    return p
+    return gcAlloc(size, true)
 }
 
 // ---------------------------------------------------------------------------

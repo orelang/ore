@@ -26,7 +26,7 @@ always underneath; they are in the [specification](spec).
 ```
 .ore ─ syntax ─ project ─ checker ─ IR ─ opt ─ codegen ─ LLVM IR ─ clang ─ binary
                                                               │
-                         runtime: core (Ore) + std (Ore) + c (C) + Boehm GC
+                         runtime: core (Ore, with the GC) + std (Ore)
 ```
 
 - **syntax** parses each file with `ts.createSourceFile`.
@@ -51,21 +51,25 @@ binary with `bun build --compile`. It is being rewritten in Ore
 
 Everything a program needs at run time is in [`runtime/`](../runtime):
 
-- **Memory**: the Boehm GC (conservative, built with threads and parallel
-  marking). Strings are immutable UTF-8 `{ptr, len}`; arrays are references
+- **Memory**: a non-moving mark-sweep collector in Ore
+  ([`gc.ore`](../runtime/core/gc.ore)), in the shape of Go's: pages of 8 KB
+  in spans of one size class, a page table for pointers into objects, each
+  thread allocating from its own spans without locks. A collection stops the
+  world with a signal, scans stacks conservatively and globals from a table
+  the compiler emits, and objects allocated as bytes not at all. Strings are immutable UTF-8 `{ptr, len}`; arrays are references
   to `{data, len, cap}`; maps are insertion-ordered hash tables.
 - **Tasks**: an M:N scheduler of green threads (stackful, with an assembly
   context switch on arm64 and x86-64) on `ORE_THREADS` OS threads, a shared
   run queue, channels with a lock each, `select` claimed by compare-and-swap,
   a handoff for blocking file operations, and a netpoller (kqueue / epoll)
-  for sockets. The GC scans the stacks of suspended tasks.
+  for sockets. The collector scans the stacks of suspended tasks.
 - **Panics** print a message and, in debug builds, a stack trace from a
   shadow stack of frames kept by generated code.
 
 The runtime is written in Ore: a function in `runtime/core` marked
 `//ore:runtime ore_rt_name` is what generated code calls for `ore_rt_name`.
 Being in the same LLVM module as the program, it inlines into it. Only libc
-and the Boehm GC are outside Ore. The tools for writing the runtime in Ore
+is outside Ore. The tools for writing the runtime in Ore
 are the `unsafe` namespace, `//ore:` directives, variadic C declarations and
 `target.os` / `target.arch` ([spec](spec/09-unsafe.md)).
 
