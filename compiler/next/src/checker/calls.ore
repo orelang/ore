@@ -611,7 +611,7 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         const instance = call.instance
         if (instance instanceof Func || instance.kind !== "struct") return errorOperand
         const ctor = instance.ctor
-        if (ctor === null) return c.fail(node, earlyConstruction(instance.name ?? name))
+        if (ctor === null) return constructEarly(c, instance)
         return callFunc(c, ctor, args, node, scope, `Constructor of '${instance.name}'`, null, call.operands.length > 0 ? call.operands : null)
     }
     const type = symbol !== null ? symbol.type : null
@@ -619,16 +619,18 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
     if (typeArgs.length > 0) return c.fail(typeArgs[0], `Class '${name}' is not generic.`)
     if (isIdentifier(target)) c.info.definitions.set(target, symbol!.decl)
     const ctor = type.ctor
-    if (ctor === null) return c.fail(node, earlyConstruction(name))
+    if (ctor === null) return constructEarly(c, type)
     return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`)
 }
 
 /**
- * The error for a class constructed while declarations are resolved, before
- * its constructor is known: the default value of a parameter without a type.
+ * A class constructed while declarations are resolved, before its
+ * constructor is known: in the default value of a parameter without a type,
+ * which takes the class's type and is checked again later.
  */
-function earlyConstruction(name: string): string {
-    return `Class '${name}' cannot be constructed in the default value of a parameter without a type. Annotate the parameter: 'x: ${name} = new ${name}(...)'.`
+function constructEarly(c: Checker, type: StructType): Operand {
+    c.constructedEarly = true
+    return typed(new Alloc(type))
 }
 
 /** The class created by `new Error(message)`. */

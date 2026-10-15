@@ -975,16 +975,25 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope): Local[
     for (let i = 0; i < params_.length; i++) {
         const p = params_[i]
         let type: Type | null = null
+        let early = false
         const annotation = typeNode(p)
         const init = initializer(p)
         if (annotation !== null) type = c.resolveValueType(annotation, scope)
         else if (init !== null) {
+            const saved = c.constructedEarly
+            const before = c.diagnostics.length
+            c.constructedEarly = false
             const value = checkDefault(c, init, defaults, null)
             if (value !== null) type = value.type
+            // A value that constructs a class declared further down has the class's
+            // type; its diagnostics come from checking it again with that type.
+            early = c.constructedEarly && value !== null
+            if (early) while (c.diagnostics.length > before) c.diagnostics.pop()
+            c.constructedEarly = saved
         } else c.error(nameNode(p), `Parameter '${c.text(nameNode(p))}' must have a type annotation.`)
         // A value with a declared type is checked once every declaration is known,
         // since it may construct a class or use a constant declared further down.
-        if (type !== null && annotation !== null && init !== null) {
+        if (type !== null && (annotation !== null || early) && init !== null) {
             const before = defaults
             const declared = type
             c.pending.push(() => {
