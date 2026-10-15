@@ -259,6 +259,9 @@ export function checkBinary(c: Checker, node: Node, scope: Scope): Operand {
     const opNode = operatorToken(node)
     const op = opNode.kind
     if (op === "EqualsToken") return checkAssign(c, node, null, scope)
+    if (op === "QuestionQuestionEqualsToken") return checkLogicalAssign(c, node, "??", scope)
+    if (op === "BarBarEqualsToken") return checkLogicalAssign(c, node, "||", scope)
+    if (op === "AmpersandAmpersandEqualsToken") return checkLogicalAssign(c, node, "&&", scope)
     const compound = compoundOps.get(op)
     if (compound !== null) return checkAssign(c, node, compound, scope)
 
@@ -443,6 +446,80 @@ export function checkAssign(c: Checker, node: Node, op: ArithOp | null, scope: S
         if (op === null && result.k === "typed" && assigned !== null) narrowTo(c, key, result.expr.type, assigned)
     }
     return result
+}
+
+/**
+ * `x ??= v` assigns `v` only when `x` is null, `x ||= v` only when the
+ * boolean `x` is false, `x &&= v` only when it is true; the target is
+ * evaluated once, and the expression is the value `x` ends with.
+ */
+function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): Operand {
+    const target = assignTarget(c, left(node), scope)
+    if (target === null) return errorOperand
+    if (target.accessor !== null)
+        return c.fail(left(node), `'${op}=' cannot assign to an accessor; write 'x = x ${op} v'.`)
+    const place = target.lvalue!
+    if (place.k === "local" && c.untyped.has(place.local)) {
+        c.readEarly.add(place.local)
+        return c.fail(left(node), `Variable '${place.local.name}' is used before being assigned.`)
+    }
+    const type = target.type
+    // The parts of the target, held so that they are evaluated once.
+    const locals: BindLocal[] = []
+    const hold = (value: Expr): Expr => {
+        const local = c.newLocal("tmp", value.type, false)
+        locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    let lvalue: LValue
+    let read: Expr
+    if (place.k === "local") {
+        lvalue = place
+        read = new LocalRef(type, place.local)
+    } else if (place.k === "element") {
+        const array = hold(place.array)
+        const index = hold(place.index)
+        lvalue = new ElementLValue(array, index)
+        read = new Index(type, array, index)
+    } else if (place.k === "field") {
+        const object = hold(place.object)
+        lvalue = new FieldLValue(object, place.name)
+        read = new FieldGet(type, object, place.name)
+    } else {
+        return c.fail(
+            left(node),
+            `'${op}=' cannot assign to a field of an interface or a union; write 'x = x ${op} v'.`,
+        )
+    }
+    let result: Expr
+    if (op === "??") {
+        if (!canBeNull(type))
+            return c.fail(left(node), `Type '${typeToString(type)}' cannot be null; '??=' is not needed.`)
+        const nonNull = c.withoutNull(type)
+        const value = checkExpr(c, right(node), scope, nonNull)
+        if (value.k === "error") return errorOperand
+        const fresh = c.newLocal("value", nonNull, false)
+        const ref: Expr = new LocalRef(nonNull, fresh)
+        const assign: Expr = new Assign(type, lvalue, c.coerce(typed(ref), type, right(node)))
+        const fallback: Expr = new Bind(
+            nonNull,
+            [new BindLocal(fresh, c.coerce(value, nonNull, right(node)))],
+            new Seq(nonNull, [assign, ref]),
+        )
+        result = new Coalesce(nonNull, read, fallback)
+    } else {
+        if (type.kind !== "bool")
+            return c.fail(left(node), `Operator '${op}=' needs a boolean, got '${typeToString(type)}'.`)
+        const value = checkCondition(c, right(node), scope)
+        const assign: Expr = new Assign(type, lvalue, value)
+        result = new Logical(types.bool, op === "||" ? "||" : "&&", read, assign)
+    }
+    const key = refKey(c, left(node), scope)
+    if (key !== null) {
+        invalidate(c, key)
+        if (op === "??") narrowTo(c, key, type, c.withoutNull(type))
+    }
+    return typed(locals.length > 0 ? new Bind(result.type, locals, result) : result)
 }
 
 /** The locals of a `Bind` built while writing an accessor. */

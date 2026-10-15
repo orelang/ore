@@ -192,6 +192,10 @@ narrowed type, so a check made stale by a call cannot corrupt memory.
 
 `x?.f`, `x?.m()` and `x?.[i]` give `null` when `x` is null. `x ?? y` gives
 `y` when `x` is null. `x!` asserts that `x` is not null and panics otherwise.
+`x ??= y` assigns `y` only when `x` is null, and `x` is not null after it;
+on booleans, `x ||= y` assigns only when `x` is false and `x &&= y` only
+when it is true. The target (`o.f`, `a[i]`) is evaluated once, and `y` only
+when assigned.
 
 A `switch` over a union of string literals with a case for every literal is
 exhaustive: like a `default`, it lets a function end without `return`.

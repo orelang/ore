@@ -1,0 +1,48 @@
+// `??=`, `||=` and `&&=` assign only when needed, and evaluate the target once.
+let name: string | null = null
+name ??= "first"
+name ??= "second"
+console.log(name, name.length)
+
+class Cache {
+    hits: int | null = null
+    ok = false
+}
+const cache = new Cache()
+let reads = 0
+function get(): Cache {
+    reads++
+    return cache
+}
+get().hits ??= 3
+get().hits ??= 4
+console.log(cache.hits, reads)
+
+const slots: (string | null)[] = [null, "b"]
+let index = 0
+function next(): int {
+    return index++
+}
+slots[next()] ??= "a"
+slots[next()] ??= "x"
+console.log(slots.join(","), index)
+
+// The right side runs only when it is assigned.
+let calls = 0
+function yes(): bool {
+    calls++
+    return true
+}
+let flag = false
+flag ||= yes()
+flag ||= yes()
+console.log(flag, calls)
+flag &&= !yes()
+flag &&= yes()
+console.log(flag, calls)
+cache.ok ||= true
+console.log(cache.ok)
+
+// The value of the expression is the value the target ends with.
+let more: string | null = null
+console.log(more ?? "-", (more ??= "set"), more)
