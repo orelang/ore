@@ -88,6 +88,18 @@ exports, type assertions (Ore converts: `i32(x)`).
   references and rename across the workspace, formatting, the outline,
   inlay hints of inferred types, semantic tokens, quick fixes (done);
   checking the runtime once rather than on every change.
+- `console.log` of any value, as Node prints it: objects, class instances
+  (`Point { x: 1, y: 2 }`), arrays, maps, sets, nested and with colors on a
+  terminal; strings inside them quoted.
+- A designed command line: the output of `ore` (diagnostics, build and test
+  progress, `help`) colored in the Ore brand's colors on terminals that have
+  true color, the terminal's default colors otherwise, none when the output
+  is not a terminal or `NO_COLOR` is set; one consistent style for headers,
+  paths, codes and hints.
+- Benchmarks: the same algorithms in Ore, Bun, Node and Go (numbers,
+  strings, maps, allocation, JSON, channels and tasks against goroutines and
+  promises, regular expressions), run by one script that prints a table of
+  times and memory, kept in the repository with their results.
 - Modules from GitHub: `import { x } from "https://github.com/owner/repo/..."`
   resolves a module of a repository by its URL, without vendoring it into
   the project: it is downloaded into the cache (`~/.cache/ore`), and
