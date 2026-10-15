@@ -102,11 +102,53 @@ declare namespace Number {
     function parseFloat(s: string): f64 | null
 }
 
-/** Files, read and written whole as UTF-8 text. */
+/**
+ * Files, read and written whole as UTF-8 text, directories and file
+ * metadata. Calls block only their OS thread. The members from `readDir` on
+ * are written in Ore, in runtime/core/fs.ore, whose exports are members of
+ * the namespace: these declarations document them.
+ */
 declare namespace fs {
     function readFile(path: string): string | Error
+    /** Writes a file, created or truncated. */
     function writeFile(path: string, data: string): Error | null
     function exists(path: string): bool
+
+    /** The names in a directory, without "." and "..", sorted. */
+    function readDir(path: string): string[] | Error
+    /** Creates a directory; with `recursive`, also its missing parents, and one that exists is no error. */
+    function mkdir(path: string, recursive?: bool): Error | null
+    /** Removes a file or an empty directory; with `recursive`, a directory and everything in it. Links are not followed. */
+    function remove(path: string, recursive?: bool): Error | null
+    /** Renames or moves a file or a directory. */
+    function rename(from: string, to: string): Error | null
+    /** The metadata of a file, following symbolic links. */
+    function stat(path: string): FileInfo | Error
+    /** The metadata of a file, or of a symbolic link itself. */
+    function lstat(path: string): FileInfo | Error
+    /** Whether `path` is a regular file (following links). */
+    function isFile(path: string): bool
+    /** Whether `path` is a directory (following links). */
+    function isDir(path: string): bool
+    /** The absolute path of a file, without links, "." or "..". */
+    function realpath(path: string): string | Error
+    /** The directory for temporary files: $TMPDIR, or /tmp. */
+    function tempDir(): string
+    /** Creates a directory with a unique name starting with `prefix` in `dir` (default: `tempDir()`); returns its path. */
+    function mkdtemp(prefix?: string, dir?: string): string | Error
+
+    /** What `stat` and `lstat` tell: `fs.FileInfo`. */
+    class FileInfo {
+        readonly isFile: bool
+        readonly isDir: bool
+        readonly isSymlink: bool
+        /** In bytes. */
+        readonly size: int
+        /** The time of the last modification, in milliseconds since the Unix epoch. */
+        readonly mtime: int
+        /** The permission bits, such as 0o644. */
+        readonly mode: int
+    }
 }
 
 /** Time. */

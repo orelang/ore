@@ -58,7 +58,7 @@ function allocBytes(size: int): ptr {
 
 /** A NUL-terminated copy of a string, for C. */
 //ore:runtime ore_rt_cstring
-function cString(s: string): ptr {
+export function cString(s: string): ptr {
     const p = bytes(s.length + 1)
     unsafe.copy(p, unsafe.stringData(s), s.length)
     unsafe.store<u8>(unsafe.add(p, s.length), 0)
@@ -70,7 +70,7 @@ function cString(s: string): ptr {
  * after its end, so that C functions such as strtod that read it stop there.
  */
 //ore:runtime ore_rt_from_cstring
-function fromCString(p: ptr): string {
+export function fromCString(p: ptr): string {
     if (unsafe.toInt(p) === 0) return ""
     const n = i64(strlen(p))
     const copy = bytes(n + 1)
@@ -89,12 +89,12 @@ function oCloexec(): i32 {
     return target.os === "darwin" ? 0x1000000 : 0x80000
 }
 
-function errno(): i32 {
+export function errno(): i32 {
     return unsafe.load<i32>(target.os === "darwin" ? __error() : __errno_location())
 }
 
 /** "cannot open a.txt: No such file or directory": what failed, the path and errno's message. */
-function failure(what: string, path: string): string {
+export function failure(what: string, path: string): string {
     const reason = fromCString(strerror(errno()))
     return `${what} ${path}: ${reason}`
 }
