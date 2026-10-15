@@ -73,9 +73,10 @@
   initialization of `A` (its parameter properties, field initializers and
   constructor body) on the new instance, then the parameter properties and
   field initializers of `B`. A class without a constructor takes the
-  parameters of its base class's constructor and passes them on. Fields of
-  `B` without a zero value must be assigned by `B`'s constructor, as for any
-  class.
+  parameters of its base class's constructor and passes them on; for a
+  generic class without a constructor, `new` needs explicit type arguments
+  (`new Leaf<string>("a")`). Fields of `B` without a zero value must be
+  assigned by `B`'s constructor, as for any class.
 - `abstract class A` cannot be instantiated with `new`. It may declare
   abstract methods without a body, `abstract area(): f64`, which a class
   that is not abstract must override (directly or through a base class).
