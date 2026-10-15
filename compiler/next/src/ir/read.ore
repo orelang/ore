@@ -1,0 +1,1456 @@
+// Reads the canonical text of an IR module, as written by `dump` (./dump.ore
+// and compiler/ir/src/dump.ts, where the format is described), back into a
+// `Module`: `dump(readModule(dump(m)))` is `dump(m)`. Until the checker is
+// written in Ore, this is how the optimizer and the backend written in Ore
+// get the IR of a program: the TypeScript checker dumps it.
+//
+// Structs, interfaces and unions are shared by id, locals by `$id` (a
+// reference before the declaration gets a placeholder that the declaration
+// fills in), and functions by name: every `func` and `init` line is read
+// first, so that struct methods and calls can refer to functions defined
+// later in the text.
+
+import {
+    Alloc,
+    ArrayLit,
+    ArrayMethod,
+    Arith,
+    Assign,
+    Bind,
+    BindLocal,
+    Block,
+    BoolLit,
+    BoundMethod,
+    BreakStmt,
+    BuiltinCall,
+    BuiltinError,
+    Call,
+    CallValue,
+    ChanOp,
+    Closure,
+    Coalesce,
+    Compare,
+    Concat,
+    Conditional,
+    ContinueStmt,
+    Convert,
+    Downcast,
+    ElementLValue,
+    ExprStmt,
+    FieldGet,
+    FieldInit,
+    FieldLValue,
+    FloatLit,
+    ForOfStmt,
+    Func,
+    FuncAttributes,
+    FuncRef,
+    IfaceCall,
+    IfaceField,
+    IfaceFieldLValue,
+    IfStmt,
+    IncDec,
+    Index,
+    IntLit,
+    Is,
+    IsNull,
+    Itab,
+    Len,
+    LetStmt,
+    Local,
+    LocalLValue,
+    LocalRef,
+    Logical,
+    LoopStmt,
+    MapOp,
+    MethodCall,
+    Module,
+    Not,
+    NullLit,
+    ObjectLit,
+    Optional,
+    Pop,
+    Push,
+    Recast,
+    ReturnStmt,
+    Seq,
+    Slice,
+    StringLit,
+    StringMethod,
+    SwitchClause,
+    SwitchStmt,
+    ToIface,
+    TypeOf,
+    Unary,
+    UnionField,
+    UsingStmt,
+    setLine,
+    type ArithOp,
+    type ChanOpName,
+    type CompareOp,
+    type Expr,
+    type LValue,
+    type MapOpName,
+    type Stmt,
+} from "./nodes"
+import {
+    ArrayType,
+    ChanType,
+    Field,
+    FuncType,
+    InterfaceField,
+    InterfaceMethod,
+    InterfaceType,
+    LiteralType,
+    MapType,
+    Method,
+    StructType,
+    UnionType,
+    types,
+    type BoolType,
+    type FloatType,
+    type IntType,
+    type StringType,
+    type Type,
+} from "./types"
+
+/** The module of a dump, or an error naming the first line that does not read. */
+export function readModule(text: string): Module | Error {
+    const reader = new Reader(text)
+    const module = reader.module()
+    const err = reader.err
+    if (err !== null) return new Error(err)
+    return module
+}
+
+const SPACE = 0x20
+const QUOTE = 0x22
+const BACKSLASH = 0x5c
+const DOLLAR = 0x24
+const HASH = 0x23
+const AT = 0x40
+const OPEN = 0x28
+
+/** The characters U+0000 to U+001F, to make one from its code. */
+const control = "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f"
+
+function isDigit(c: u8): bool {
+    return c >= 0x30 && c <= 0x39
+}
+
+function isIdentChar(c: u8): bool {
+    return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f || c === DOLLAR || isDigit(c)
+}
+
+function hexValue(c: u8): int {
+    if (isDigit(c)) return i64(c) - 0x30
+    if (c >= 0x61 && c <= 0x66) return i64(c) - 0x61 + 10
+    if (c >= 0x41 && c <= 0x46) return i64(c) - 0x41 + 10
+    return -1
+}
+
+/** A position in the text of one line. */
+class Cursor {
+    pos = 0
+    /** The first problem met, if any. */
+    err: string | null = null
+
+    constructor(readonly text: string) {}
+
+    done(): bool {
+        return this.pos >= this.text.length
+    }
+
+    peek(): int {
+        return this.pos < this.text.length ? i64(this.text[this.pos]) : -1
+    }
+
+    fail(message: string) {
+        if (this.err === null) this.err = `${message} at column ${this.pos + 1} of ${JSON.stringify(this.text)}`
+    }
+
+    startsWith(s: string): bool {
+        return this.text.slice(this.pos, this.pos + s.length) === s
+    }
+
+    eat(s: string): bool {
+        if (!this.startsWith(s)) return false
+        this.pos += s.length
+        return true
+    }
+
+    expect(s: string) {
+        if (!this.eat(s)) this.fail(`expected ${JSON.stringify(s)}`)
+    }
+
+    /** The text up to the next space or the end. */
+    word(): string {
+        const start = this.pos
+        while (this.pos < this.text.length && this.text[this.pos] !== SPACE) this.pos++
+        return this.text.slice(start, this.pos)
+    }
+
+    /** The text up to `stop`, which is consumed; the rest of the line if it does not occur. */
+    until(stop: string): string {
+        const start = this.pos
+        while (this.pos < this.text.length && !this.startsWith(stop)) this.pos++
+        const out = this.text.slice(start, this.pos)
+        this.eat(stop)
+        return out
+    }
+
+    /** A run of identifier characters. */
+    ident(): string {
+        const start = this.pos
+        while (this.pos < this.text.length && isIdentChar(this.text[this.pos])) this.pos++
+        return this.text.slice(start, this.pos)
+    }
+
+    /** A decimal integer, with an optional sign; `u64` values above the `i64` range wrap, as `IntLit` holds them. */
+    int(): i64 {
+        const negative = this.eat("-")
+        if (!isDigit(u8(Math.max(this.peek(), 0)))) {
+            this.fail("expected a number")
+            return 0
+        }
+        let value: u64 = 0
+        while (this.pos < this.text.length && isDigit(this.text[this.pos])) {
+            value = value * 10 + u64(this.text[this.pos] - 0x30)
+            this.pos++
+        }
+        return negative ? -i64(value) : i64(value)
+    }
+
+    /** A string in double quotes as `quote` writes it. */
+    quoted(): string {
+        if (!this.eat("\"")) {
+            this.fail("expected a string")
+            return ""
+        }
+        let out = ""
+        let start = this.pos
+        while (this.pos < this.text.length) {
+            const c = this.text[this.pos]
+            if (c === QUOTE) {
+                out += this.text.slice(start, this.pos)
+                this.pos++
+                return out
+            }
+            if (c !== BACKSLASH) {
+                this.pos++
+                continue
+            }
+            out += this.text.slice(start, this.pos)
+            this.pos++
+            const e = this.peek()
+            this.pos++
+            if (e === 0x6e) out += "\n"
+            else if (e === 0x72) out += "\r"
+            else if (e === 0x74) out += "\t"
+            else if (e === 0x75) {
+                let code = 0
+                for (let i = 0; i < 4; i++) {
+                    const h = this.pos < this.text.length ? hexValue(this.text[this.pos]) : -1
+                    if (h < 0) this.fail("bad \\u escape")
+                    code = code * 16 + Math.max(h, 0)
+                    this.pos++
+                }
+                if (code < 0x20) out += control.slice(code, code + 1)
+                else this.fail("unsupported \\u escape")
+            } else if (e === QUOTE || e === BACKSLASH) out += this.text.slice(this.pos - 1, this.pos)
+            else this.fail("bad escape")
+            start = this.pos
+        }
+        this.fail("unterminated string")
+        return out
+    }
+}
+
+class Reader {
+    lines: string[]
+    i = 0
+    err: string | null = null
+    structs = new Map<int, StructType>()
+    unions = new Map<int, UnionType>()
+    ifaces = new Map<int, InterfaceType>()
+    locals = new Map<int, Local>()
+    /** Functions by name; the first of two external declarations of one C function. */
+    funcs = new Map<string, Func>()
+    /** The function of each `func` or `init` line, by line index. */
+    heads = new Map<int, Func>()
+
+    constructor(text: string) {
+        this.lines = text.split("\n")
+        while (this.lines.length > 0 && this.lines[this.lines.length - 1] === "") this.lines.pop()
+    }
+
+    fail(message: string) {
+        if (this.err === null) this.err = `line ${Math.min(this.i, this.lines.length - 1) + 1}: ${message}`
+    }
+
+    /** Fails with the cursor's problem, if it met one. */
+    close(c: Cursor) {
+        const err = c.err
+        if (err !== null) this.fail(err)
+        else if (!c.done()) this.fail(`unexpected ${JSON.stringify(c.text.slice(c.pos))}`)
+    }
+
+    depthOf(line: string): int {
+        let n = 0
+        while (n < line.length && line[n] === SPACE) n++
+        return n / 2
+    }
+
+    /** The text of the current line if it is at `depth`, else null. */
+    at(depth: int): string | null {
+        if (this.err !== null || this.i >= this.lines.length) return null
+        const line = this.lines[this.i]
+        if (this.depthOf(line) !== depth) return null
+        return line.slice(depth * 2)
+    }
+
+    /** Whether the current line is at `depth` and starts with `prefix`. */
+    has(depth: int, prefix: string): bool {
+        const text = this.at(depth)
+        return text !== null && text.startsWith(prefix)
+    }
+
+    /** A cursor on the current line after `prefix`, which it must start with at `depth`. */
+    open(depth: int, prefix: string): Cursor {
+        const text = this.at(depth)
+        if (text === null) {
+            this.fail(`expected ${JSON.stringify(prefix.trimEnd())} at depth ${depth}`)
+            return new Cursor("")
+        }
+        const c = new Cursor(text)
+        c.expect(prefix)
+        return c
+    }
+
+    /** Ends the current line: nothing may remain, and reading moves to the next. */
+    next(c: Cursor) {
+        this.close(c)
+        this.i++
+    }
+
+    // -----------------------------------------------------------------------
+    // Types
+
+    structOf(id: int, name: string | null): StructType {
+        const known = this.structs.get(id)
+        if (known !== null) return known
+        const s = new StructType(id, name, false, [], [])
+        this.structs.set(id, s)
+        return s
+    }
+
+    ifaceOf(id: int, name: string): InterfaceType {
+        const known = this.ifaces.get(id)
+        if (known !== null) return known
+        const t = new InterfaceType(id, name, [])
+        this.ifaces.set(id, t)
+        return t
+    }
+
+    unionOf(id: int, members: Type[]): UnionType {
+        const known = this.unions.get(id)
+        if (known !== null) return known
+        const u = new UnionType(id, members)
+        this.unions.set(id, u)
+        return u
+    }
+
+    primitive(name: string, c: Cursor): Type {
+        switch (name) {
+            case "i8":
+                return types.i8
+            case "i16":
+                return types.i16
+            case "i32":
+                return types.i32
+            case "i64":
+                return types.i64
+            case "u8":
+                return types.u8
+            case "u16":
+                return types.u16
+            case "u32":
+                return types.u32
+            case "u64":
+                return types.u64
+            case "f32":
+                return types.f32
+            case "f64":
+                return types.f64
+            case "bool":
+                return types.bool
+            case "string":
+                return types.string
+            case "void":
+                return types.void
+            case "never":
+                return types.never
+            case "null":
+                return types.null
+            case "ptr":
+                return types.ptr
+            case "SelectCase":
+                return types.SelectCase
+            default:
+                c.fail(`unknown type ${JSON.stringify(name)}`)
+                return types.void
+        }
+    }
+
+    /** A type as `Dumper.type` writes it. */
+    type(c: Cursor): Type {
+        let t = this.typeHead(c)
+        while (c.eat("[]")) t = new ArrayType(t)
+        return t
+    }
+
+    typeHead(c: Cursor): Type {
+        const p = c.peek()
+        if (p === OPEN) return this.group(c)
+        if (c.eat("Map<")) {
+            const key = this.type(c)
+            c.expect(", ")
+            const value = this.type(c)
+            c.expect(">")
+            return new MapType(key, value)
+        }
+        if (c.eat("Chan<")) {
+            const elem = this.type(c)
+            c.expect(">")
+            return new ChanType(elem)
+        }
+        if (p === QUOTE) {
+            const value = c.quoted()
+            if (c.peek() === HASH) {
+                c.pos++
+                return this.structOf(c.int(), value)
+            }
+            if (c.peek() === AT) {
+                c.pos++
+                return this.ifaceOf(c.int(), value)
+            }
+            return new LiteralType(value)
+        }
+        const name = c.ident()
+        if (c.eat("#")) return this.structOf(c.int(), name === "" ? null : name)
+        if (c.eat("@")) return this.ifaceOf(c.int(), name)
+        return this.primitive(name, c)
+    }
+
+    /** `(` ... `)`: a function type, a union `(A | B)%id`, or a parenthesized type (a function in a union or an array). */
+    group(c: Cursor): Type {
+        c.expect("(")
+        if (c.eat(")")) {
+            c.expect(" => ")
+            return new FuncType([], this.type(c))
+        }
+        const first = this.type(c)
+        if (c.startsWith(", ")) {
+            const params: Type[] = [first]
+            while (c.eat(", ")) params.push(this.type(c))
+            c.expect(")")
+            c.expect(" => ")
+            return new FuncType(params, this.type(c))
+        }
+        if (c.startsWith(" | ")) {
+            const members: Type[] = [first]
+            while (c.eat(" | ")) members.push(this.type(c))
+            c.expect(")")
+            c.expect("%")
+            return this.unionOf(c.int(), members)
+        }
+        c.expect(")")
+        if (c.eat(" => ")) return new FuncType([first], this.type(c))
+        if (c.eat("%")) return this.unionOf(c.int(), [first])
+        return first
+    }
+
+    intType(t: Type): IntType {
+        if (t.kind === "int") return t
+        this.fail("expected an integer type")
+        return types.i64
+    }
+
+    floatType(t: Type): FloatType {
+        if (t.kind === "float") return t
+        this.fail("expected a float type")
+        return types.f64
+    }
+
+    boolType(t: Type): BoolType {
+        if (t.kind === "bool") return t
+        this.fail("expected bool")
+        return types.bool
+    }
+
+    stringType(t: Type): StringType {
+        if (t.kind === "string") return t
+        this.fail("expected string")
+        return types.string
+    }
+
+    stringLike(t: Type): StringType | LiteralType {
+        if (t.kind === "string") return t
+        if (t.kind === "literal") return t
+        this.fail("expected a string type")
+        return types.string
+    }
+
+    numericType(t: Type): IntType | FloatType {
+        if (t.kind === "int") return t
+        if (t.kind === "float") return t
+        this.fail("expected a numeric type")
+        return types.i64
+    }
+
+    structType(t: Type): StructType {
+        if (t.kind === "struct") return t
+        this.fail("expected a struct type")
+        return this.structOf(-1, null)
+    }
+
+    unionType(t: Type): UnionType {
+        if (t.kind === "union") return t
+        this.fail("expected a union type")
+        return this.unionOf(-1, [])
+    }
+
+    ifaceType(t: Type): InterfaceType {
+        if (t.kind === "interface") return t
+        this.fail("expected an interface type")
+        return this.ifaceOf(-1, "")
+    }
+
+    funcType(t: Type): FuncType {
+        if (t.kind === "func") return t
+        this.fail("expected a function type")
+        return new FuncType([], types.void)
+    }
+
+    arrayType(t: Type): ArrayType {
+        if (t.kind === "array") return t
+        this.fail("expected an array type")
+        return new ArrayType(types.void)
+    }
+
+    mapType(t: Type): MapType {
+        if (t.kind === "map") return t
+        this.fail("expected a map type")
+        return new MapType(types.void, types.void)
+    }
+
+    chanType(t: Type): ChanType {
+        if (t.kind === "chan") return t
+        this.fail("expected a channel type")
+        return new ChanType(types.void)
+    }
+
+    // -----------------------------------------------------------------------
+    // Locals and functions
+
+    /** A local where it is declared: `$id name: T` and its flags. */
+    localDecl(c: Cursor): Local {
+        c.expect("$")
+        const id = c.int()
+        c.expect(" ")
+        const name = c.until(": ")
+        const type = this.type(c)
+        let mutable = false
+        let captured = false
+        let assigned = false
+        let global = false
+        let threadLocal = false
+        let exportName: string | null = null
+        while (true) {
+            if (c.eat(" mut")) mutable = true
+            else if (c.eat(" captured")) captured = true
+            else if (c.eat(" assigned")) assigned = true
+            else if (c.eat(" global")) global = true
+            else if (c.eat(" threadlocal")) threadLocal = true
+            else if (c.eat(" export=")) exportName = c.quoted()
+            else break
+        }
+        const known = this.locals.get(id)
+        if (known !== null) {
+            known.name = name
+            known.type = type
+            known.mutable = mutable
+            known.captured = captured
+            known.assigned = assigned
+            known.global = global
+            known.threadLocal = threadLocal
+            known.exportName = exportName
+            return known
+        }
+        const local = new Local(id, name, type, mutable, captured, assigned, global, threadLocal, exportName)
+        this.locals.set(id, local)
+        return local
+    }
+
+    /** A reference to a local, `$id name`: a placeholder until its declaration is read. */
+    localRef(c: Cursor): Local {
+        c.expect("$")
+        const id = c.int()
+        c.expect(" ")
+        const name = c.word()
+        const known = this.locals.get(id)
+        if (known !== null) return known
+        const local = new Local(id, name, types.void, false)
+        this.locals.set(id, local)
+        return local
+    }
+
+    func(name: string, c: Cursor): Func {
+        const f = this.funcs.get(name)
+        if (f !== null) return f
+        c.fail(`unknown function ${JSON.stringify(name)}`)
+        return new Func(name, name, 0, new FuncType([], types.void), [], new Block([]), false)
+    }
+
+    itab(id: int, c: Cursor): Itab {
+        for (const t of this.itabs) if (t.id === id) return t
+        c.fail(`unknown itab ${id}`)
+        return new Itab(id, this.structOf(-1, null), this.ifaceOf(-1, ""))
+    }
+
+    itabs: Itab[] = []
+
+    /** The head of a `func` or `init` line: everything but the attributes, locals and body. */
+    funcHead(c: Cursor): Func {
+        const name = c.word()
+        c.expect(" ")
+        const sourceName = c.quoted()
+        c.expect(" line=")
+        const line = c.int()
+        let file: string | null = null
+        if (c.eat(" file=")) file = c.quoted()
+        const extern = c.eat(" extern")
+        let variadic: Type | null = null
+        if (c.eat(" variadic=")) variadic = this.type(c)
+        const exported = c.eat(" exported")
+        c.expect(" : ")
+        const type = this.funcType(this.type(c))
+        return new Func(name, sourceName, line, type, [], new Block([]), exported, file, extern, variadic)
+    }
+
+    attributes(c: Cursor): FuncAttributes {
+        const a = new FuncAttributes()
+        while (true) {
+            if (c.eat(" noinline")) a.noinline = true
+            else if (c.eat(" inline")) a.inline = true
+            else if (c.eat(" cold")) a.cold = true
+            else if (c.eat(" export=")) a.exportName = c.quoted()
+            else if (c.eat(" runtime=")) a.runtime = c.quoted()
+            else if (c.eat(" naked")) a.naked = true
+            else return a
+        }
+    }
+
+    /** The lines after a `func` head: attributes, receiver, parameters, captures and the body. */
+    funcBody(f: Func) {
+        if (this.has(1, "attributes")) {
+            const c = this.open(1, "attributes")
+            f.attributes = this.attributes(c)
+            this.next(c)
+        }
+        if (this.has(1, "receiver: ")) {
+            const c = this.open(1, "receiver: ")
+            f.receiver = this.localDecl(c)
+            this.next(c)
+        }
+        while (this.has(1, "param: ")) {
+            const c = this.open(1, "param: ")
+            f.params.push(this.localDecl(c))
+            this.next(c)
+        }
+        if (this.has(1, "capture: ")) {
+            const captures: Local[] = []
+            while (this.has(1, "capture: ")) {
+                const c = this.open(1, "capture: ")
+                captures.push(this.localDecl(c))
+                this.next(c)
+            }
+            f.captures = captures
+        }
+        const body = this.stmt(1, "body: ")
+        if (body.k === "block") f.body = body
+        else this.fail("expected a block")
+    }
+
+    // -----------------------------------------------------------------------
+    // Statements
+
+    /** The optional ` line=N` ending a statement's line, then the end of the line. */
+    stmtLine(c: Cursor): int | null {
+        let line: int | null = null
+        if (c.eat(" line=")) line = c.int()
+        this.next(c)
+        return line
+    }
+
+    /** `#id`, then ` labeled` and the other flags of loops and switches. */
+    loopId(c: Cursor): int {
+        c.expect(" #")
+        return c.int()
+    }
+
+    stmt(depth: int, prefix: string): Stmt {
+        const c = this.open(depth, prefix)
+        const kind = c.word()
+        const d = depth + 1
+        let s: Stmt = new Block([])
+        let line: int | null = null
+        switch (kind) {
+            case "block": {
+                line = this.stmtLine(c)
+                const body: Stmt[] = []
+                while (this.at(d) !== null) body.push(this.stmt(d, ""))
+                s = new Block(body)
+                break
+            }
+            case "let": {
+                c.expect(" ")
+                const local = this.localDecl(c)
+                line = this.stmtLine(c)
+                let init: Expr | null = null
+                if (this.has(d, "init: ")) init = this.expr(d, "init")
+                s = new LetStmt(local, init)
+                break
+            }
+            case "expr": {
+                line = this.stmtLine(c)
+                s = new ExprStmt(this.expr(d, "expr"))
+                break
+            }
+            case "if": {
+                line = this.stmtLine(c)
+                const cond = this.expr(d, "cond")
+                const then = this.stmt(d, "then: ")
+                let otherwise: Stmt | null = null
+                if (this.has(d, "else: ")) otherwise = this.stmt(d, "else: ")
+                s = new IfStmt(cond, then, otherwise)
+                break
+            }
+            case "loop": {
+                const id = this.loopId(c)
+                const labeled = c.eat(" labeled")
+                const condAfter = c.eat(" condAfter")
+                line = this.stmtLine(c)
+                let perIteration: Local[] | null = null
+                if (this.has(d, "perIteration: ")) {
+                    const locals: Local[] = []
+                    while (this.has(d, "perIteration: ")) {
+                        const l = this.open(d, "perIteration: ")
+                        locals.push(this.localDecl(l))
+                        this.next(l)
+                    }
+                    perIteration = locals
+                }
+                let cond: Expr | null = null
+                if (this.has(d, "cond: ")) cond = this.expr(d, "cond")
+                let update: Expr | null = null
+                if (this.has(d, "update: ")) update = this.expr(d, "update")
+                const body = this.stmt(d, "body: ")
+                s = new LoopStmt(id, labeled, condAfter, body, perIteration, cond, update)
+                break
+            }
+            case "for-of": {
+                const id = this.loopId(c)
+                const labeled = c.eat(" labeled")
+                line = this.stmtLine(c)
+                const local = this.localLine(d, "local: ")
+                let value: Local | null = null
+                if (this.has(d, "value: ")) value = this.localLine(d, "value: ")
+                const iterable = this.expr(d, "iterable")
+                const body = this.stmt(d, "body: ")
+                s = new ForOfStmt(id, labeled, local, iterable, body, value)
+                break
+            }
+            case "switch": {
+                const id = this.loopId(c)
+                const labeled = c.eat(" labeled")
+                const exhaustive = c.eat(" exhaustive")
+                line = this.stmtLine(c)
+                const local = this.localLine(d, "local: ")
+                const value = this.expr(d, "value")
+                const clauses: SwitchClause[] = []
+                while (this.has(d, "clause: ")) {
+                    const l = this.open(d, "clause: ")
+                    const what = l.word()
+                    if (what !== "case" && what !== "default") this.fail("expected case or default")
+                    this.next(l)
+                    let test: Expr | null = null
+                    if (what === "case") test = this.expr(d + 1, "test")
+                    const body: Stmt[] = []
+                    while (this.has(d + 1, "body: ")) body.push(this.stmt(d + 1, "body: "))
+                    clauses.push(new SwitchClause(body, test))
+                }
+                s = new SwitchStmt(id, labeled, exhaustive, local, value, clauses)
+                break
+            }
+            case "using": {
+                line = this.stmtLine(c)
+                const local = this.localLine(d, "local: ")
+                const init = this.expr(d, "init")
+                const dispose = this.stmt(d, "dispose: ")
+                const body: Stmt[] = []
+                while (this.has(d, "body: ")) body.push(this.stmt(d, "body: "))
+                s = new UsingStmt(local, init, dispose, body)
+                break
+            }
+            case "break":
+            case "continue": {
+                let target: int | null = null
+                if (c.eat(" target=#")) target = c.int()
+                line = this.stmtLine(c)
+                if (kind === "break") s = new BreakStmt(target)
+                else s = new ContinueStmt(target)
+                break
+            }
+            case "return": {
+                line = this.stmtLine(c)
+                let value: Expr | null = null
+                if (this.has(d, "value: ")) value = this.expr(d, "value")
+                s = new ReturnStmt(value)
+                break
+            }
+            default:
+                this.fail(`unknown statement ${JSON.stringify(kind)}`)
+                this.i++
+        }
+        setLine(s, line)
+        return s
+    }
+
+    /** A line declaring a local after a role: `local: $id name: T ...`. */
+    localLine(depth: int, prefix: string): Local {
+        const c = this.open(depth, prefix)
+        const local = this.localDecl(c)
+        this.next(c)
+        return local
+    }
+
+    // -----------------------------------------------------------------------
+    // Expressions
+
+    /** The ` : type` ending an expression's line, then the end of the line. */
+    exprType(c: Cursor): Type {
+        c.expect(" : ")
+        const type = this.type(c)
+        this.next(c)
+        return type
+    }
+
+    exprs(depth: int, role: string): Expr[] {
+        const out: Expr[] = []
+        while (this.has(depth, `${role}: `)) out.push(this.expr(depth, role))
+        return out
+    }
+
+    lvalue(depth: int): LValue {
+        const c = this.open(depth, "target: ")
+        const kind = c.word()
+        const d = depth + 1
+        switch (kind) {
+            case "local": {
+                c.expect(" ")
+                const local = this.localRef(c)
+                this.next(c)
+                return new LocalLValue(local)
+            }
+            case "element": {
+                this.next(c)
+                const array = this.expr(d, "array")
+                const index = this.expr(d, "index")
+                return new ElementLValue(array, index)
+            }
+            case "field": {
+                c.expect(" ")
+                const name = c.word()
+                this.next(c)
+                return new FieldLValue(this.expr(d, "object"), name)
+            }
+            case "iface-field": {
+                c.expect(" ")
+                const index = c.int()
+                this.next(c)
+                return new IfaceFieldLValue(this.expr(d, "value"), index)
+            }
+            default:
+                this.fail(`unknown target ${JSON.stringify(kind)}`)
+                this.i++
+                return new LocalLValue(new Local(-1, "", types.void, false))
+        }
+    }
+
+    float(word: string): f64 {
+        let zero = 0.0
+        let one = 1.0
+        if (word === "NaN") return zero / zero
+        if (word === "Infinity") return one / zero
+        if (word === "-Infinity") return -one / zero
+        if (word === "-0") return -zero
+        const v = Number.parseFloat(word)
+        if (v === null) {
+            this.fail(`bad float ${JSON.stringify(word)}`)
+            return 0
+        }
+        return v
+    }
+
+    expr(depth: int, role: string): Expr {
+        const c = this.open(depth, `${role}: `)
+        const kind = c.word()
+        const d = depth + 1
+        switch (kind) {
+            case "int": {
+                c.expect(" ")
+                const value = c.int()
+                return new IntLit(this.intType(this.exprType(c)), value)
+            }
+            case "float": {
+                c.expect(" ")
+                const value = this.float(c.word())
+                return new FloatLit(this.floatType(this.exprType(c)), value)
+            }
+            case "bool": {
+                c.expect(" ")
+                const value = c.word()
+                if (value !== "true" && value !== "false") this.fail("expected true or false")
+                return new BoolLit(this.boolType(this.exprType(c)), value === "true")
+            }
+            case "string": {
+                c.expect(" ")
+                const value = c.quoted()
+                return new StringLit(this.stringLike(this.exprType(c)), value)
+            }
+            case "local": {
+                c.expect(" ")
+                const local = this.localRef(c)
+                return new LocalRef(this.exprType(c), local)
+            }
+            case "assign": {
+                let op: ArithOp | null = null
+                if (!c.startsWith(" : ") && c.eat(" ")) op = this.arithOp(c.word())
+                const type = this.exprType(c)
+                const target = this.lvalue(d)
+                const value = this.expr(d, "value")
+                return new Assign(type, target, value, op)
+            }
+            case "incdec": {
+                c.expect(" ")
+                const op = c.word()
+                c.expect(" ")
+                const prefix = c.word()
+                if (op !== "++" && op !== "--") this.fail("expected ++ or --")
+                if (prefix !== "prefix" && prefix !== "postfix") this.fail("expected prefix or postfix")
+                const type = this.numericType(this.exprType(c))
+                return new IncDec(type, this.lvalue(d), op === "++" ? "++" : "--", prefix === "prefix")
+            }
+            case "arith": {
+                c.expect(" ")
+                const op = this.arithOp(c.word())
+                const type = this.numericType(this.exprType(c))
+                return new Arith(type, op, this.expr(d, "left"), this.expr(d, "right"))
+            }
+            case "compare": {
+                c.expect(" ")
+                const op = this.compareOp(c.word())
+                const type = this.boolType(this.exprType(c))
+                return new Compare(type, op, this.expr(d, "left"), this.expr(d, "right"))
+            }
+            case "logical": {
+                c.expect(" ")
+                const op = c.word()
+                if (op !== "&&" && op !== "||") this.fail("expected && or ||")
+                const type = this.boolType(this.exprType(c))
+                return new Logical(type, op === "&&" ? "&&" : "||", this.expr(d, "left"), this.expr(d, "right"))
+            }
+            case "unary": {
+                c.expect(" ")
+                const op = c.word()
+                if (op !== "-" && op !== "~") this.fail("expected - or ~")
+                const type = this.numericType(this.exprType(c))
+                return new Unary(type, op === "-" ? "-" : "~", this.expr(d, "operand"))
+            }
+            case "not":
+                return new Not(this.boolType(this.exprType(c)), this.expr(d, "operand"))
+            case "convert":
+                return new Convert(this.numericType(this.exprType(c)), this.expr(d, "value"))
+            case "len":
+                return new Len(this.intType(this.exprType(c)), this.expr(d, "value"))
+            case "recast":
+                return new Recast(this.exprType(c), this.expr(d, "value"))
+            case "is-null":
+                return new IsNull(this.boolType(this.exprType(c)), this.expr(d, "value"))
+            case "typeof":
+                return new TypeOf(this.stringType(this.exprType(c)), this.expr(d, "value"))
+            case "downcast":
+                return new Downcast(this.structType(this.exprType(c)), this.expr(d, "value"))
+            case "call": {
+                c.expect(" ")
+                const func = this.func(c.word(), c)
+                const type = this.exprType(c)
+                return new Call(type, func, this.exprs(d, "arg"))
+            }
+            case "builtin": {
+                c.expect(" ")
+                const name = c.word()
+                let typeArgs: Type[] | null = null
+                if (c.eat(" typeArgs=<")) {
+                    const args: Type[] = []
+                    if (!c.eat(">")) {
+                        args.push(this.type(c))
+                        while (c.eat(", ")) args.push(this.type(c))
+                        c.expect(">")
+                    }
+                    typeArgs = args
+                }
+                let error: BuiltinError | null = null
+                if (c.eat(" error=")) {
+                    const ctor = this.func(c.word(), c)
+                    c.expect(" itab=")
+                    error = new BuiltinError(ctor, this.itab(c.int(), c))
+                }
+                const type = this.exprType(c)
+                return new BuiltinCall(type, name, this.exprs(d, "arg"), error, typeArgs)
+            }
+            case "cond": {
+                const type = this.exprType(c)
+                return new Conditional(type, this.expr(d, "cond"), this.expr(d, "then"), this.expr(d, "else"))
+            }
+            case "concat":
+                return new Concat(this.stringType(this.exprType(c)), this.exprs(d, "part"))
+            case "index": {
+                const type = this.exprType(c)
+                return new Index(type, this.expr(d, "target"), this.expr(d, "index"))
+            }
+            case "slice": {
+                const type = this.exprType(c)
+                const value = this.expr(d, "value")
+                let start: Expr | null = null
+                if (this.has(d, "start: ")) start = this.expr(d, "start")
+                let end: Expr | null = null
+                if (this.has(d, "end: ")) end = this.expr(d, "end")
+                return new Slice(type, value, start, end)
+            }
+            case "array":
+                return new ArrayLit(this.arrayType(this.exprType(c)), this.exprs(d, "elem"))
+            case "push": {
+                const type = this.intType(this.exprType(c))
+                return new Push(type, this.expr(d, "array"), this.exprs(d, "value"))
+            }
+            case "pop":
+                return new Pop(this.exprType(c), this.expr(d, "array"))
+            case "object": {
+                const type = this.structType(this.exprType(c))
+                const fields: FieldInit[] = []
+                while (this.has(d, "field ")) {
+                    const text = this.at(d) ?? ""
+                    const name = text.slice("field ".length, text.indexOf(": "))
+                    fields.push(new FieldInit(name, this.expr(d, `field ${name}`)))
+                }
+                return new ObjectLit(type, fields)
+            }
+            case "field": {
+                c.expect(" ")
+                const name = c.word()
+                const type = this.exprType(c)
+                return new FieldGet(type, this.expr(d, "object"), name)
+            }
+            case "alloc":
+                return new Alloc(this.structType(this.exprType(c)))
+            case "method-call": {
+                c.expect(" ")
+                const func = this.func(c.word(), c)
+                const type = this.exprType(c)
+                return new MethodCall(type, func, this.expr(d, "receiver"), this.exprs(d, "arg"))
+            }
+            case "to-iface": {
+                let itab: Itab | null = null
+                if (c.eat(" itab=")) itab = this.itab(c.int(), c)
+                let indices: int[] | null = null
+                if (c.eat(" indices=[")) {
+                    const list: int[] = []
+                    if (!c.eat("]")) {
+                        list.push(c.int())
+                        while (c.eat(", ")) list.push(c.int())
+                        c.expect("]")
+                    }
+                    indices = list
+                }
+                const type = this.ifaceType(this.exprType(c))
+                return new ToIface(type, this.expr(d, "value"), itab, indices)
+            }
+            case "iface-field": {
+                c.expect(" ")
+                const index = c.int()
+                const type = this.exprType(c)
+                return new IfaceField(type, this.expr(d, "value"), index)
+            }
+            case "iface-call": {
+                c.expect(" ")
+                const index = c.int()
+                c.expect(" method=")
+                const method = this.funcType(this.type(c))
+                const type = this.exprType(c)
+                return new IfaceCall(type, this.expr(d, "value"), index, method, this.exprs(d, "arg"))
+            }
+            case "null":
+                return new NullLit(this.unionType(this.exprType(c)))
+            case "optional": {
+                const type = this.unionType(this.exprType(c))
+                const value = this.expr(d, "value")
+                const binding = this.localLine(d, "binding: ")
+                return new Optional(type, value, binding, this.expr(d, "body"))
+            }
+            case "coalesce": {
+                const type = this.exprType(c)
+                return new Coalesce(type, this.expr(d, "value"), this.expr(d, "fallback"))
+            }
+            case "union-field": {
+                c.expect(" ")
+                const name = c.word()
+                const type = this.exprType(c)
+                return new UnionField(type, this.expr(d, "value"), name)
+            }
+            case "is": {
+                c.expect(" member=")
+                const member = this.type(c)
+                let via: InterfaceType | null = null
+                if (c.eat(" via=")) via = this.ifaceType(this.type(c))
+                const type = this.boolType(this.exprType(c))
+                return new Is(type, this.expr(d, "value"), member, via)
+            }
+            case "map": {
+                c.expect(" ")
+                const op = this.mapOp(c.word())
+                c.expect(" mapType=")
+                const mapType = this.mapType(this.type(c))
+                const type = this.exprType(c)
+                let map: Expr | null = null
+                if (this.has(d, "map: ")) map = this.expr(d, "map")
+                let key: Expr | null = null
+                if (this.has(d, "key: ")) key = this.expr(d, "key")
+                let value: Expr | null = null
+                if (this.has(d, "value: ")) value = this.expr(d, "value")
+                return new MapOp(op, type, mapType, map, key, value)
+            }
+            case "func-ref": {
+                c.expect(" ")
+                const func = this.func(c.word(), c)
+                return new FuncRef(this.funcType(this.exprType(c)), func)
+            }
+            case "closure": {
+                c.expect(" ")
+                const func = this.func(c.word(), c)
+                return new Closure(this.funcType(this.exprType(c)), func)
+            }
+            case "call-value": {
+                const type = this.exprType(c)
+                return new CallValue(type, this.expr(d, "callee"), this.exprs(d, "arg"))
+            }
+            case "bound-method": {
+                let func: Func | null = null
+                if (c.eat(" func=")) func = this.func(c.word(), c)
+                let index: int | null = null
+                if (c.eat(" index=")) index = c.int()
+                const type = this.funcType(this.exprType(c))
+                return new BoundMethod(type, this.expr(d, "receiver"), func, index)
+            }
+            case "array-method": {
+                c.expect(" ")
+                const method = c.word()
+                let arity: int | null = null
+                if (c.eat(" arity=")) arity = c.int()
+                const type = this.exprType(c)
+                return new ArrayMethod(method, type, this.expr(d, "array"), this.exprs(d, "arg"), arity)
+            }
+            case "string-method": {
+                c.expect(" ")
+                const method = c.word()
+                const type = this.exprType(c)
+                return new StringMethod(method, type, this.expr(d, "value"), this.exprs(d, "arg"))
+            }
+            case "chan": {
+                c.expect(" ")
+                const op = this.chanOp(c.word())
+                c.expect(" chanType=")
+                const chanType = this.chanType(this.type(c))
+                let arity: int | null = null
+                if (c.eat(" arity=")) arity = c.int()
+                const type = this.exprType(c)
+                let chan: Expr | null = null
+                if (this.has(d, "chan: ")) chan = this.expr(d, "chan")
+                let value: Expr | null = null
+                if (this.has(d, "value: ")) value = this.expr(d, "value")
+                let handler: Expr | null = null
+                if (this.has(d, "handler: ")) handler = this.expr(d, "handler")
+                return new ChanOp(op, type, chanType, chan, value, handler, arity)
+            }
+            case "bind": {
+                const type = this.exprType(c)
+                const locals: BindLocal[] = []
+                while (this.has(d, "local: ")) {
+                    const local = this.localLine(d, "local: ")
+                    locals.push(new BindLocal(local, this.expr(d + 1, "init")))
+                }
+                return new Bind(type, locals, this.expr(d, "body"))
+            }
+            case "seq":
+                return new Seq(this.exprType(c), this.exprs(d, "expr"))
+            default:
+                this.fail(`unknown expression ${JSON.stringify(kind)}`)
+                this.i++
+                return new NullLit(this.unionOf(-1, []))
+        }
+    }
+
+    arithOp(op: string): ArithOp {
+        switch (op) {
+            case "+":
+                return "+"
+            case "-":
+                return "-"
+            case "*":
+                return "*"
+            case "/":
+                return "/"
+            case "%":
+                return "%"
+            case "&":
+                return "&"
+            case "|":
+                return "|"
+            case "^":
+                return "^"
+            case "<<":
+                return "<<"
+            case ">>":
+                return ">>"
+            default:
+                this.fail(`unknown operator ${JSON.stringify(op)}`)
+                return "+"
+        }
+    }
+
+    compareOp(op: string): CompareOp {
+        switch (op) {
+            case "===":
+                return "==="
+            case "!==":
+                return "!=="
+            case "<":
+                return "<"
+            case "<=":
+                return "<="
+            case ">":
+                return ">"
+            case ">=":
+                return ">="
+            default:
+                this.fail(`unknown comparison ${JSON.stringify(op)}`)
+                return "==="
+        }
+    }
+
+    mapOp(op: string): MapOpName {
+        switch (op) {
+            case "new":
+                return "new"
+            case "get":
+                return "get"
+            case "set":
+                return "set"
+            case "has":
+                return "has"
+            case "delete":
+                return "delete"
+            case "clear":
+                return "clear"
+            case "size":
+                return "size"
+            case "keys":
+                return "keys"
+            case "values":
+                return "values"
+            default:
+                this.fail(`unknown map operation ${JSON.stringify(op)}`)
+                return "new"
+        }
+    }
+
+    chanOp(op: string): ChanOpName {
+        switch (op) {
+            case "new":
+                return "new"
+            case "send":
+                return "send"
+            case "receive":
+                return "receive"
+            case "close":
+                return "close"
+            case "on-receive":
+                return "on-receive"
+            case "on-send":
+                return "on-send"
+            default:
+                this.fail(`unknown channel operation ${JSON.stringify(op)}`)
+                return "new"
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The module
+
+    /** A struct or interface name at the start of a `struct` or `interface` line: an identifier or quoted. */
+    typeName(c: Cursor): string {
+        return c.peek() === QUOTE ? c.quoted() : c.ident()
+    }
+
+    module(): Module {
+        const structs: StructType[] = []
+        const unions: UnionType[] = []
+        const functions: Func[] = []
+        const inits: Func[] = []
+        // Structs first, so that their types exist before any field or signature refers to them.
+        for (let i = 0; i < this.lines.length; i++) {
+            const line = this.lines[i]
+            if (!line.startsWith("struct ")) continue
+            const c = new Cursor(line)
+            c.expect("struct ")
+            const name = this.typeName(c)
+            c.expect("#")
+            const id = c.int()
+            const nominal = c.eat(" nominal")
+            const s = new StructType(id, name === "" ? null : name, nominal, [], [])
+            if (this.structs.has(id)) this.fail(`struct ${id} declared twice`)
+            this.structs.set(id, s)
+            structs.push(s)
+            this.i = i
+            this.close(c)
+        }
+        // Then every function, so that methods, constructors and calls can refer to them.
+        for (let i = 0; i < this.lines.length; i++) {
+            const line = this.lines[i]
+            const isFunc = line.startsWith("func ")
+            if (!isFunc && !line.startsWith("init ")) continue
+            const c = new Cursor(line)
+            c.expect(isFunc ? "func " : "init ")
+            this.i = i
+            const f = this.funcHead(c)
+            this.close(c)
+            if (!this.funcs.has(f.name)) this.funcs.set(f.name, f)
+            this.heads.set(i, f)
+        }
+        this.i = 0
+        let file = ""
+        {
+            const c = this.open(0, "module ")
+            file = c.quoted()
+            this.next(c)
+        }
+        while (this.err === null && this.i < this.lines.length) {
+            const text = this.at(0)
+            if (text === null) {
+                this.fail("expected a declaration")
+                break
+            }
+            const kind = new Cursor(text).word()
+            switch (kind) {
+                case "struct": {
+                    const c = this.open(0, "struct ")
+                    const s = this.structType(this.type(c))
+                    c.eat(" nominal")
+                    this.next(c)
+                    while (this.has(1, "field ")) {
+                        const l = this.open(1, "field ")
+                        const name = l.until(": ")
+                        const type = this.type(l)
+                        const isReadonly = l.eat(" readonly")
+                        const isPrivate = l.eat(" private")
+                        s.fields.push(new Field(name, type, isReadonly, isPrivate))
+                        this.next(l)
+                    }
+                    while (this.has(1, "method ")) {
+                        const l = this.open(1, "method ")
+                        const name = l.until(": ")
+                        const func = this.func(l.word(), l)
+                        const isPrivate = l.eat(" private")
+                        s.methods.push(new Method(name, func, isPrivate))
+                        this.next(l)
+                    }
+                    if (this.has(1, "ctor: ")) {
+                        const l = this.open(1, "ctor: ")
+                        s.ctor = this.func(l.word(), l)
+                        this.next(l)
+                    }
+                    break
+                }
+                case "union": {
+                    const c = this.open(0, "union ")
+                    const u = this.unionType(this.type(c))
+                    if (c.eat(" name=")) u.name = c.quoted()
+                    this.next(c)
+                    unions.push(u)
+                    break
+                }
+                case "itab": {
+                    const c = this.open(0, "itab ")
+                    const id = c.int()
+                    c.expect(": ")
+                    const s = this.structType(this.type(c))
+                    c.expect(" -> ")
+                    const iface = this.ifaceType(this.type(c))
+                    this.next(c)
+                    this.itabs.push(new Itab(id, s, iface))
+                    break
+                }
+                case "func":
+                case "init": {
+                    const f = this.heads.get(this.i)
+                    if (f === null) {
+                        this.fail("function without a head")
+                        break
+                    }
+                    this.i++
+                    this.funcBody(f)
+                    if (kind === "func") functions.push(f)
+                    else inits.push(f)
+                    break
+                }
+                case "interface": {
+                    const c = this.open(0, "interface ")
+                    const t = this.ifaceType(this.type(c))
+                    this.next(c)
+                    t.members = []
+                    while (this.has(1, "field ") || this.has(1, "method ")) {
+                        if (this.has(1, "field ")) {
+                            const l = this.open(1, "field ")
+                            const name = l.until(": ")
+                            const type = this.type(l)
+                            const isReadonly = l.eat(" readonly")
+                            t.members.push(new InterfaceField(name, type, isReadonly))
+                            this.next(l)
+                        } else {
+                            const l = this.open(1, "method ")
+                            const name = l.until(": ")
+                            const type = this.funcType(this.type(l))
+                            t.members.push(new InterfaceMethod(name, type))
+                            this.next(l)
+                        }
+                    }
+                    break
+                }
+                default:
+                    this.fail(`unknown declaration ${JSON.stringify(kind)}`)
+            }
+        }
+        return new Module(file, functions, inits, structs, this.itabs, unions)
+    }
+}

@@ -22,17 +22,21 @@ errors until the checker is ported.
 | `ir/types.ore` | The type model (`compiler/ir/src/types.ts`): `Type`, `types`, `sameType`, `typeToString`, `typeKey`, `unionRepr` |
 | `ir/nodes.ore` | The IR nodes (`compiler/ir/src/nodes.ts`): `Module`, `Func`, `Local`, statements and expressions |
 | `ir/dump.ore` | `dump(module)`: the canonical text of a module, the same as `dump` of `compiler/ir/src/dump.ts` |
+| `ir/read.ore` | `readModule(text)`: the module of a dump, so that `dump(readModule(dump(m)))` is `dump(m)`; how the backend gets the IR of the TypeScript checker until the checker is ported |
 | `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
 | `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
 | `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
-| `main.ore` | `ore-next tokens\|tree\|roles\|modules <file>`: prints the tokens, the tree, or the modules of a program; `ore-next lsp`: the language server on stdio |
+| `main.ore` | `ore-next tokens\|tree\|roles\|modules <file>`: prints the tokens, the tree, or the modules of a program; `ore-next ir <dump.txt>`: reads a dump and writes it again; `ore-next lsp`: the language server on stdio |
 
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
 equal those of the TypeScript scanner and parser; on every program of
 `tests/`, that the modules it loads equal those of `@ore/project`; and runs
-the tests of `test/*.test.ore` (also run by `bun run ore test compiler/next/test`).
+the tests of `test/*.test.ore` (also run by `bun run ore test compiler/next/test`);
+and, on every program of `tests/run` and on the compiler itself, that the dump
+of the IR of `@ore/checker`, read by `ore-next ir` and dumped again, is the
+same text.
 `test/ir-dump.test.ore` and `compiler/ir/test/dump.test.ts` build the same
 IR module by hand and check that their dumps both equal `test/ir-dump.txt`
 (`UPDATE=1 bun test compiler/ir` rewrites it after a change of the format).

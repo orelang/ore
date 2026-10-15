@@ -17,12 +17,18 @@
  * Ore compiler itself, the modules loaded in order, their imports and text
  * imports must equal those of @ore/project, and so must the formatted
  * diagnostics when there is no syntax error.
+ *
+ * IR: for each valid program of tests/run and the Ore compiler itself, the
+ * dump of the IR module built by the TypeScript checker, read by
+ * compiler/next/src/ir/read.ore and dumped again, must be the same text.
  */
+import { check } from "@ore/checker"
 import { build } from "@ore/driver"
+import { dump } from "@ore/ir"
 import { loadProgram } from "@ore/project"
 import { formatDiagnostic } from "@ore/syntax"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import ts from "typescript"
@@ -205,6 +211,33 @@ describe("next modules", () => {
       expect(lines.slice(0, count)).toEqual(expected.modules)
       if (expected.diagnostics !== null) expect(lines.slice(count)).toEqual(expected.diagnostics)
     })
+  }
+})
+
+/** The valid programs whose IR the TypeScript checker builds: every one of tests/run, and the Ore compiler. */
+const checkedPrograms = [...entries(join(root, "tests/run")), join(root, "compiler/next/src/main.ore")]
+
+/** The IR module of a program, from @ore/checker, which every program of tests/run has. */
+function irModule(entry: string) {
+  const program = loadProgram(entry)
+  expect(program.diagnostics.map((d) => d.message)).toEqual([])
+  const checked = check(program)
+  expect(checked.diagnostics.map((d) => d.message)).toEqual([])
+  return checked.module!
+}
+
+describe("next ir", () => {
+  const work = mkdtempSync(join(tmpdir(), "ore-next-ir-"))
+  for (const file of checkedPrograms) {
+    test(relative(root, file), async () => {
+      const text = dump(irModule(relative(process.cwd(), file)))
+      const path = join(work, `${relative(root, file).replaceAll("/", "_")}.txt`)
+      writeFileSync(path, text)
+      const { code, stdout, stderr } = await run("ir", path)
+      expect(stderr).toBe("")
+      expect(code).toBe(0)
+      expect(stdout).toBe(text)
+    }, 120_000)
   }
 })
 
