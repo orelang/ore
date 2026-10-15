@@ -260,48 +260,59 @@ export function isNumeric(t: Type): bool {
     return t.kind === "int" || t.kind === "float"
 }
 
-/** Interface pairs assumed equal while comparing recursive interfaces: `assumedA[i]` with `assumedB[i]`. */
-const assumedA: InterfaceType[] = []
-const assumedB: InterfaceType[] = []
+/**
+ * Interface pairs assumed equal while comparing recursive interfaces: `a[i]`
+ * with `b[i]`. One per comparison, not a global, so that threads compare
+ * types at the same time.
+ */
+class Assumed {
+    a: InterfaceType[] = []
+    b: InterfaceType[] = []
+}
 
 /** Whether two interfaces have the same members; recursive interfaces are compared coinductively. */
-function sameInterface(a: InterfaceType, b: InterfaceType): bool {
+function sameInterface(a: InterfaceType, b: InterfaceType, given: Assumed | null): bool {
     if (a.members.length !== b.members.length) return false
-    for (let i = 0; i < assumedA.length; i++) {
-        const x = assumedA[i]
-        const y = assumedB[i]
+    const assumed = given ?? new Assumed()
+    for (let i = 0; i < assumed.a.length; i++) {
+        const x = assumed.a[i]
+        const y = assumed.b[i]
         if ((x === a && y === b) || (x === b && y === a)) return true
     }
-    assumedA.push(a)
-    assumedB.push(b)
+    assumed.a.push(a)
+    assumed.b.push(b)
     let same = true
     for (let i = 0; i < a.members.length && same; i++) {
         const m = a.members[i]
         const n = b.members[i]
-        same = m.k === n.k && m.name === n.name && sameType(m.type, n.type)
+        same = m.k === n.k && m.name === n.name && sameIn(m.type, n.type, assumed)
     }
-    assumedA.pop()
-    assumedB.pop()
+    assumed.a.pop()
+    assumed.b.pop()
     return same
 }
 
-function sameTypes(a: Type[], b: Type[]): bool {
+function sameTypes(a: Type[], b: Type[], assumed: Assumed | null): bool {
     if (a.length !== b.length) return false
-    for (let i = 0; i < a.length; i++) if (!sameType(a[i], b[i])) return false
+    for (let i = 0; i < a.length; i++) if (!sameIn(a[i], b[i], assumed)) return false
     return true
 }
 
 export function sameType(a: Type, b: Type): bool {
+    return sameIn(a, b, null)
+}
+
+function sameIn(a: Type, b: Type, assumed: Assumed | null): bool {
     if (a === b) return true
     if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
-    if (a.kind === "array" && b.kind === "array") return sameType(a.elem, b.elem)
-    if (a.kind === "map" && b.kind === "map") return sameType(a.key, b.key) && sameType(a.value, b.value)
-    if (a.kind === "set" && b.kind === "set") return sameType(a.elem, b.elem)
-    if (a.kind === "chan" && b.kind === "chan") return sameType(a.elem, b.elem)
-    if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b)
-    if (a.kind === "union" && b.kind === "union") return sameTypes(a.members, b.members)
+    if (a.kind === "array" && b.kind === "array") return sameIn(a.elem, b.elem, assumed)
+    if (a.kind === "map" && b.kind === "map") return sameIn(a.key, b.key, assumed) && sameIn(a.value, b.value, assumed)
+    if (a.kind === "set" && b.kind === "set") return sameIn(a.elem, b.elem, assumed)
+    if (a.kind === "chan" && b.kind === "chan") return sameIn(a.elem, b.elem, assumed)
+    if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b, assumed)
+    if (a.kind === "union" && b.kind === "union") return sameTypes(a.members, b.members, assumed)
     if (a.kind !== "func" || b.kind !== "func") return false
-    return sameTypes(a.params, b.params) && sameType(a.result, b.result)
+    return sameTypes(a.params, b.params, assumed) && sameIn(a.result, b.result, assumed)
 }
 
 export function typeToString(t: Type): string {

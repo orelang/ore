@@ -170,7 +170,9 @@ export function join(separator: Doc, docs: Doc[]): Doc {
     return concat(parts)
 }
 
-let lastId = 0
+// Per OS thread, as a formatting runs on one thread and threads format at the same time.
+//ore:threadlocal
+let lastId: int
 
 /** A new group id. */
 export function newId(): int {
@@ -309,7 +311,9 @@ function flattenInto(d: Doc, out: Doc[]) {
     out.push(d)
 }
 
-let traversal = 0
+// Per OS thread, as `lastId`.
+//ore:threadlocal
+let traversal: int
 
 /** Breaks the groups that contain a hard line or a broken group, as prettier's propagateBreaks. */
 export function propagateBreaks(d: Doc) {
