@@ -106,7 +106,7 @@ equivalent in Ore:
 | inline object types (`{ test?, body }`, `{ k: "field", ... }` of `InterfaceMember` or `LValue`) | a named class: `SwitchClause`, `InterfaceField` / `InterfaceMethod`, `LocalLValue` / `ElementLValue` / `FieldLValue` / `IfaceFieldLValue`, `FieldInit`, `BindLocal`, `BuiltinError`, `StringsRepr` / `NullableRepr` / `TaggedRepr` |
 | optional field `x?: T` | `x: T \| null`, a constructor parameter with default `null` (`undefined` checks become `!== null`) |
 | optional flag `x?: boolean` | `x: bool`, default `false` |
-| `line?: number` of statements (`StmtBase`) | `line: int \| null = null`, not a constructor parameter; on a `Stmt` union use `setLine(stmt, line)`, since Ore reads but does not assign a field common to union members |
+| `line?: number` of statements (`StmtBase`) | `line: int \| null = null`, not a constructor parameter, assigned after creating the statement (`stmt.line = line` also on a `Stmt` union) |
 | `readonly` field | `readonly` field; a field named with a reserved word (`else`, `readonly`, `private`) is declared in the class body and assigned by the constructor |
 | `number` (ids, lines, indices, arity) | `int` |
 | `bits: 8 \| 16 \| 32 \| 64` (numeric literal types) | `int` |
@@ -120,20 +120,12 @@ equivalent in Ore:
 | `ts.isX(node)`, `node.x` of the TypeScript AST | `node.kind === "X"` and the accessors of `syntax/nodes.ore`; `node.getText()` is `c.text(node)`, the source of a node is `c.sourceOf(node)` (nodes have no parent) |
 | node flags (`NodeFlags.Const`), operator token kinds of unary expressions, `heritageClause.token` | read back from the source text: `declarationKind`, `prefixOperator`, `heritageToken` |
 | `ts.getLeadingCommentRanges(text, stmt.pos)` | `leadingCommentRanges(text, c.fullStart(stmt))` |
-| `WeakMap` / `Set` of objects | `Map<K, bool>`; maps of struct and interface types are keyed by their id |
-| `withFacts(facts, () => ...)` | `c.pushFacts(facts)` ... `c.popFacts()` |
+| `WeakMap` / `Set` of objects | `Map<K, bool>` |
+| `withFacts(facts, () => ...)`, `inBlock(() => ...)` | `c.pushFacts(facts)` ... `c.popFacts()`, or `c.popBlockFacts()` for a block |
 | a function's `.length` (`writeAccessor`'s `next`) | an explicit `usesOld` flag |
 | a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `llvm/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names |
-| `Map` keyed by a union (`Map<ir.Expr \| ir.Local, string>`) | one map per class of key (`SlotMap`, `NodeIds`) |
 
-Ore limitations to keep in mind: an array literal passed where `T[] | null` is
-expected takes its type from its first element, so declare it with a type
-first (`const args: Type[] = [...]`); a default parameter value that
-constructs a class needs a type annotation (`o: O = new O()`); union types cannot be `Map` keys (key by `typeKey(t)` or an id instead).
-Narrowing is lost when a `let` is assigned again, so `let x = map.get(k); if
-(x === null) { x = ...; map.set(k, x) }` fails: return early with a `const`
-instead (`const found = ...; if (found !== null) return found`). Conversions
-are the type names (`i64(x)`); `int(x)` does not exist. A release build of
+A release build of
 the compiler takes minutes, so the harness builds it in debug mode.
 
 ## Building without clang

@@ -531,7 +531,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
                 c.error(nameId, `Property '${name}' does not exist on type '${ot.name}'.`)
                 return null
             }
-            defineMember(c, nameId, ot.id, name)
+            defineMember(c, nameId, ot, name)
             if (m.readonly) {
                 c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
                 return null
@@ -541,7 +541,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         }
         const property = accessor(c, ot, name)
         if (property !== null && ot.kind === "struct") {
-            defineMember(c, nameId, ot.id, name)
+            defineMember(c, nameId, ot, name)
             if (!checkAccess(c, ot, property.private, name, nameId)) return null
             if (property.set === null) {
                 c.error(nameId, `Cannot assign to '${name}' because it has a getter but no setter.`)
@@ -557,7 +557,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
             c.error(nameId, `Property '${name}' does not exist on type '${typeToString(ot)}'.`)
             return null
         }
-        defineMember(c, nameId, struct.id, name)
+        defineMember(c, nameId, struct, name)
         if (!checkAccess(c, struct, field.private, name, nameId)) return null
         // A constructor may initialize the read-only fields of its own instance.
         const fn = c.fn
@@ -891,7 +891,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     if (name === "size" && type.kind === "map") return typed(new MapOp("size", types.i64, type, value))
     const property = accessor(c, type, name)
     if (property !== null && type.kind === "struct") {
-        defineMember(c, nameNode_, type.id, name)
+        defineMember(c, nameNode_, type, name)
         if (!checkAccess(c, type, property.private, name, nameNode_)) return errorOperand
         const get = property.get
         if (get === null) return c.fail(nameNode_, `Property '${name}' has a setter but no getter.`)
@@ -899,7 +899,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     }
     if (type.kind === "struct") {
         const field = findField(type, name)
-        defineMember(c, nameNode_, type.id, name)
+        defineMember(c, nameNode_, type, name)
         if (field !== null) {
             if (!checkAccess(c, type, field.private, name, nameNode_)) return errorOperand
             return typed(new FieldGet(field.type, value, name))
@@ -913,7 +913,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
         if (generics !== null && generics.has(name)) return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
     }
     if (type.kind === "interface") {
-        defineMember(c, nameNode_, type.id, name)
+        defineMember(c, nameNode_, type, name)
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
             if (m.name !== name) continue
@@ -1049,8 +1049,8 @@ export function checkIndex(c: Checker, node: Node, scope: Scope, allowNegative: 
 }
 
 /** Records the declaration of a field or method for go to definition. */
-export function defineMember(c: Checker, node: Node, id: int, name: string) {
-    const decls = c.memberDecls.get(id)
+export function defineMember(c: Checker, node: Node, type: StructType | InterfaceType, name: string) {
+    const decls = c.memberDecls.get(type)
     const decl = decls === null ? null : decls.get(name)
     if (decl !== null && isIdentifier(node)) c.info.definitions.set(node, decl)
 }
