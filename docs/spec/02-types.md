@@ -50,6 +50,8 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
 - Converting an untyped float constant to an integer type truncates it at
   compile time and range-checks the result: `i32(2.7)` is `2`, `u8(256.5)` is
   an error.
+- `x as T` is rejected; `x satisfies T` checks that `x` fits `T`, with `T`
+  as the context of `x`, and leaves `x` its own type.
 
 ## Arithmetic
 
