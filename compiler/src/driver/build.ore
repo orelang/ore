@@ -116,9 +116,10 @@ export function buildIr(ir: string, name: string, native: NativeCode, options: B
 
 function buildIn(dir: string, ir: string, name: string, native: NativeCode, options: BuildOptions): Error | null {
     let started = Date.now()
-    // A debug build splits the module, so that LLVM compiles the parts on
-    // every CPU; a release build keeps one, for inlining across functions.
-    const parts = options.release ? [ir] : splitModule(ir, process.cpus())
+    // A debug build splits the module by source file, so that LLVM compiles
+    // the parts on every CPU; a release build keeps one, for inlining across
+    // functions.
+    const parts = options.release ? [ir] : splitModule(ir)
     if (parts.length > 1) report(options, "split", Date.now() - started)
     started = Date.now()
     const objects: string[] = []

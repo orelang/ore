@@ -12,6 +12,7 @@ import { declareExtern, emitFunction } from "./functions"
 import { findGlobals } from "./helpers"
 import { cString, FRAME_POINTER, globalName, sizeOf } from "./ll"
 import { nameClosures } from "./names"
+import { DATA_MARKER, FILE_MARKER } from "./split"
 
 export { EmitOptions } from "./context"
 
@@ -31,6 +32,7 @@ export function emitModule(module: Module, options: EmitOptions | null = null): 
 /** `ModuleEmitter.emit` of the TypeScript. */
 export function emit(g: Emitter): string {
     const m = g.module
+    const opts = g.options
     g.file = m.file
     g.defs.set(STR, `${STR} = type { ptr, i64 }`)
     g.defs.set(FN, `${FN} = type { ptr, ptr }`)
@@ -72,21 +74,31 @@ export function emit(g: Emitter): string {
             declareExtern(g, func)
             continue
         }
+        // Debug builds are split by file (llvm/split.ore), which this line
+        // gives; a function without one (a method) goes with its first caller.
+        const file = func.file
+        const marker = opts.debug && file !== null ? `${FILE_MARKER}${file}` : ""
+        if (marker !== "") g.out.push(marker)
         g.out.push(emitFunction(g, func, false))
-        if (g.plan.ctorsAt.has(func)) g.out.push(emitFunction(g, func, true))
+        if (g.plan.ctorsAt.has(func)) {
+            if (marker !== "") g.out.push(marker)
+            g.out.push(emitFunction(g, func, true))
+        }
     }
     // The tables after the functions, so that the runtime names its types first (see llvm/names.ore).
     for (const t of m.itabs) g.out.push(itab(g, t))
     for (const s of m.structs) if (g.tables.has(s.id)) g.out.push(classTable(g, s))
-    let entry = "define void @ore_entry() #0 {"
+    // What depends on the whole program goes to the part with the globals.
+    const data = opts.debug ? `${DATA_MARKER}\n` : ""
+    let entry = `${data}define void @ore_entry() #0 {`
     for (const f of m.inits) entry += `\n  call void ${globalName(f.name)}()`
     g.out.push(`${entry}\n  ret void\n}`)
     // The runtime declares ore_entry to take its address; the definition is here.
     g.decls.delete("@ore_entry")
     // The table of globals for the collector's roots, read through two functions the runtime declares.
     g.out.push(`@ore.globals = internal constant [${roots.length} x { ptr, i64 }] [${roots.join(", ")}]`)
-    g.out.push("define ptr @ore_globals_table() #0 {\n  ret ptr @ore.globals\n}")
-    g.out.push(`define i64 @ore_globals_count() #0 {\n  ret i64 ${roots.length}\n}`)
+    g.out.push(`${data}define ptr @ore_globals_table() #0 {\n  ret ptr @ore.globals\n}`)
+    g.out.push(`${data}define i64 @ore_globals_count() #0 {\n  ret i64 ${roots.length}\n}`)
     if (g.usesEntryFile) {
         const bytes = `${m.file}\u0000`
         g.out.push(`@ore.file = internal unnamed_addr constant [${bytes.length} x i8] ${cString(bytes)}`)

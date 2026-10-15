@@ -1,41 +1,94 @@
 // Splitting a module's LLVM IR into parts that LLVM compiles in parallel,
 // for debug builds: code generation is the slowest step there, and it runs on
-// one thread per module. Every part has the module's types, declarations and
-// attributes; the functions are shared out by size; the globals (constants
-// and strings included) are defined in part 0 only, so that each has one
-// address, as an interface table must, and declared in the others. What was
-// internal or private becomes hidden: visible to the other parts, not outside
-// the executable. A function defined in one part is declared in the others.
+// one thread per module. The parts are also what the build cache keeps
+// (driver/cache.ore), by the hash of their text, so a part must not change
+// when code outside it does: its functions are those of one source file (a
+// large file gives several parts), and it has only the types, declarations
+// and constants that they use, in the order they use them. The functions of
+// the runtime are thus parts of their own, the same in every program.
+//
+// A function is in the part of the file the line `; file <path>` before it
+// names (the emitter writes it in debug builds); a helper or a method
+// without one, in the part of the first function that uses it. The globals
+// (interface and class tables included) are defined in part 0, with the
+// functions after a line `; data`, such as `ore_entry`, and those nothing
+// else uses, so that each has one address, and declared
+// in the parts that use them; string and array constants, which are private,
+// are copied into each part that uses them. What was internal becomes hidden:
+// visible to the other parts, not outside the executable. A function defined
+// in one part is declared in the others that call it.
 //
 // The text is the emitter's (llvm/emit.ore), whose shapes are few: a
 // definition starts a line with `define` and ends at a line `}`; a global is
-// one line `@name = ... global|constant <type> <value>`.
+// one line `@name = ...`, a type one line `%name = type ...`.
+
+/** The line before a function that names its file: `; file <path>`. */
+export const FILE_MARKER = "; file "
+
+/** The line before a function of part 0, which depends on the whole program, such as `ore_entry`. */
+export const DATA_MARKER = "; data"
+
+/** A part grows to about this many bytes of functions before the next part takes the rest of its file. */
+const PART_SIZE = 256 * 1024
 
 /** A function of the module: its definition, made hidden, and its declaration for the other parts. */
 class Function {
+    /** The part's group: its file's, or -1 before it is known. */
+    group = -1
+    /** After a line `; data`: in part 0. */
+    data = false
+    /** The globals and types it uses, each once, in order. */
+    references: string[] = []
+
     constructor(
-        readonly definition: string,
+        readonly name: string,
+        /** The `define` line, made hidden. */
+        readonly head: string,
+        /** The lines after it, to the `}`. */
+        readonly body: string,
         readonly declaration: string,
+        /** The file the line before it names, or "". */
+        readonly file: string,
     ) {}
 }
 
-/** A global: its definition, made hidden, for part 0, and its declaration for the others. */
-class Global {
+/** A global, a constant, a type or an external declaration: its text in a part, and what it uses. */
+class Definition {
     constructor(
-        readonly definition: string,
+        /** A global's hidden definition, a type's, a constant's or a declaration. */
+        readonly text: string,
+        /** A global's declaration for the parts that do not define it; "" for the others. */
         readonly declaration: string,
+        readonly references: string[],
     ) {}
+}
+
+/** What the module has, by name (with its sigil, `@` or `%`). */
+class Symbols {
+    functions = new Map<string, Function>()
+    /** Internal and external globals: defined in part 0, declared in the others. */
+    globals = new Map<string, Definition>()
+    /** Private constants (strings, arrays), copied into the parts that use them. */
+    constants = new Map<string, Definition>()
+    types = new Map<string, Definition>()
+    /** External functions and globals. */
+    externals = new Map<string, Definition>()
 }
 
 /**
- * The IR of `ir` in at most `parts` modules, which together define what it
- * does; one when `parts` is 1 or there are too few functions to share.
+ * The IR of `ir` in parts, which together define what it does: one per
+ * source file (several for a large file), after part 0 with the globals; just
+ * `ir` when it has no `; file` lines, as IR that the emitter did not write
+ * for a debug build.
  */
-export function splitModule(ir: string, parts: int): string[] {
-    if (parts <= 1) return [ir]
-    const shared: string[] = []
-    const globals: Global[] = []
-    const functions: Function[] = []
+export function splitModule(ir: string): string[] {
+    if (!ir.includes(`\n${FILE_MARKER}`)) return [ir]
+    const symbols = new Symbols()
+    const order: Function[] = []
+    const globalOrder: string[] = []
+    const attributes: string[] = []
+    let file = ""
+    let data = false
     let at = 0
     while (at < ir.length) {
         let end = ir.indexOf("\n", at)
@@ -45,42 +98,264 @@ export function splitModule(ir: string, parts: int): string[] {
             // The body runs to the line that is a single `}`.
             let close = ir.indexOf("\n}\n", end)
             close = close < 0 ? ir.length : close + 2
-            functions.push(new Function(hidden(line, "define ") + ir.slice(end, close), declareFunction(line)))
+            const name = functionName(line)
+            const f = new Function(name, hidden(line, "define "), ir.slice(end + 1, close), declareFunction(line), file)
+            f.data = data
+            symbols.functions.set(name, f)
+            order.push(f)
+            file = ""
+            data = false
             at = close + 1
             continue
         }
-        if (line.startsWith("@")) globals.push(splitGlobal(line))
-        else shared.push(line)
+        if (line.startsWith(FILE_MARKER)) file = line.slice(FILE_MARKER.length)
+        else if (line === DATA_MARKER) data = true
+        else if (line.startsWith("%")) {
+            symbols.types.set(line.slice(0, line.indexOf(" = ")), new Definition(line, "", references(line)))
+        } else if (line.startsWith("declare ")) {
+            symbols.externals.set(functionName(line), new Definition(line, "", []))
+        } else if (line.startsWith("@")) {
+            const name = line.slice(0, line.indexOf(" = "))
+            const rest = line.slice(name.length + 3)
+            if (rest.startsWith("external ")) symbols.externals.set(name, new Definition(line, "", references(line)))
+            else if (rest.startsWith("private "))
+                symbols.constants.set(name, new Definition(line, "", references(line)))
+            else {
+                const global = splitGlobal(line)
+                symbols.globals.set(name, new Definition(global.definition, global.declaration, references(line)))
+                globalOrder.push(name)
+            }
+        } else if (line.startsWith("attributes ")) attributes.push(line)
         at = end + 1
     }
-    if (functions.length < parts * 4) return [ir]
 
-    // The largest functions first, each to the part with the least code so far.
-    const order: int[] = []
-    for (let i = 0; i < functions.length; i++) order.push(i)
-    order.sort((a, b) => functions[b].definition.length - functions[a].definition.length)
-    const owner: int[] = []
-    for (let i = 0; i < functions.length; i++) owner.push(0)
-    const sizes: int[] = []
-    for (let p = 0; p < parts; p++) sizes.push(0)
-    for (const i of order) {
-        let smallest = 0
-        for (let p = 1; p < parts; p++) if (sizes[p] < sizes[smallest]) smallest = p
-        owner[i] = smallest
-        sizes[smallest] += functions[i].definition.length
+    // What the functions use, found on every CPU.
+    parallel(process.cpus(), (worker, workers) => {
+        for (let i = worker; i < order.length; i += workers) {
+            const f = order[i]
+            const found: string[] = []
+            const seen = new Set<string>()
+            scan(f.head, found, seen)
+            scan(f.body, found, seen)
+            f.references = found
+        }
+    })
+
+    // Each function of a file in that file's group, with the helpers it is the first to use.
+    const groups: Function[][] = [[]]
+    const groupOf = new Map<string, int>()
+    for (const f of order) {
+        if (f.file === "" || f.group >= 0) continue
+        let group = groupOf.get(f.file) ?? -1
+        if (group < 0) {
+            group = groups.length
+            groupOf.set(f.file, group)
+            groups.push([])
+        }
+        claim(symbols, f, group, groups)
     }
+    // Part 0: the globals, its functions and the functions nothing else uses.
+    for (const f of order) if (f.data) claim(symbols, f, 0, groups)
+    for (const f of order) if (f.group < 0) claim(symbols, f, 0, groups)
 
-    const header = shared.join("\n")
+    // The parts of each group, of about PART_SIZE each.
+    const chunks: Function[][] = [groups[0]]
+    for (let g = 1; g < groups.length; g++) {
+        let chunk: Function[] = []
+        let size = 0
+        for (const f of groups[g]) {
+            chunk.push(f)
+            size += f.body.length
+            if (size >= PART_SIZE) {
+                chunks.push(chunk)
+                chunk = []
+                size = 0
+            }
+        }
+        if (chunk.length > 0) chunks.push(chunk)
+    }
     const result: string[] = []
-    for (let p = 0; p < parts; p++) {
-        const text: string[] = [header]
-        for (const g of globals) text.push(p === 0 ? g.definition : g.declaration)
-        for (let i = 0; i < functions.length; i++)
-            text.push(owner[i] === p ? functions[i].definition : functions[i].declaration)
-        text.push("")
-        result.push(text.join("\n"))
-    }
+    for (let i = 0; i < chunks.length; i++) result.push("")
+    parallel(chunks.length, (index, workers) => {
+        result[index] = part(symbols, chunks[index], index === 0 ? globalOrder : [], attributes)
+    })
     return result
+}
+
+/** Runs `body(worker, workers)` in `workers` tasks and waits for them. */
+function parallel(workers: int, body: (worker: int, workers: int) => void): void {
+    const done = new Chan<bool>(workers)
+    for (let w = 0; w < workers; w++) {
+        const worker = w
+        task.spawn(() => {
+            body(worker, workers)
+            done.send(true)
+        })
+    }
+    for (let w = 0; w < workers; w++) done.receive()
+}
+
+/** Puts a function in a group, with the functions without a file it uses that have none yet, after it. */
+function claim(symbols: Symbols, f: Function, group: int, groups: Function[][]): void {
+    f.group = group
+    const pending: Function[] = [f]
+    for (let i = 0; i < pending.length; i++) {
+        const next = pending[i]
+        groups[group].push(next)
+        for (const name of next.references) {
+            const used = symbols.functions.get(name)
+            if (used !== null && used.group < 0 && used.file === "" && !used.data) {
+                used.group = group
+                pending.push(used)
+            }
+        }
+    }
+}
+
+/**
+ * A part: the types, declarations, constants and globals (`globals`, in
+ * part 0) that its functions use, then the functions, then the attributes.
+ */
+function part(symbols: Symbols, functions: Function[], globals: string[], attributes: string[]): string {
+    const builder = new PartBuilder(symbols)
+    for (const f of functions) builder.defined.add(f.name)
+    for (const name of globals) builder.defined.add(name)
+    for (const name of globals) {
+        const global = symbols.globals.get(name)
+        if (global !== null) builder.useAll(global.references)
+    }
+    for (const f of functions) builder.useAll(f.references)
+    const text: string[] = builder.types
+    for (const d of builder.declarations) text.push(d)
+    for (const c of builder.constants) text.push(c)
+    for (const name of globals) {
+        const global = symbols.globals.get(name)
+        if (global !== null) text.push(global.text)
+    }
+    for (const f of functions) {
+        text.push(f.head)
+        text.push(f.body)
+    }
+    for (const a of attributes) text.push(a)
+    text.push("")
+    return text.join("\n")
+}
+
+/** What a part needs, in the order its code first uses it. */
+class PartBuilder {
+    /** Names the part defines: its functions, and in part 0 the globals. */
+    defined = new Set<string>()
+    seen = new Set<string>()
+    types: string[] = []
+    declarations: string[] = []
+    constants: string[] = []
+
+    constructor(readonly symbols: Symbols) {}
+
+    useAll(names: string[]): void {
+        for (const name of names) this.use(name)
+    }
+
+    use(name: string): void {
+        if (this.seen.has(name)) return
+        this.seen.add(name)
+        const type = this.symbols.types.get(name)
+        if (type !== null) {
+            this.types.push(type.text)
+            this.useAll(type.references)
+            return
+        }
+        const constant = this.symbols.constants.get(name)
+        if (constant !== null) {
+            this.constants.push(constant.text)
+            this.useAll(constant.references)
+            return
+        }
+        if (this.defined.has(name)) return
+        const f = this.symbols.functions.get(name)
+        if (f !== null) {
+            this.declarations.push(f.declaration)
+            return
+        }
+        const global = this.symbols.globals.get(name)
+        if (global !== null) {
+            this.declarations.push(global.declaration)
+            return
+        }
+        const external = this.symbols.externals.get(name)
+        if (external !== null) {
+            this.declarations.push(external.text)
+            this.useAll(external.references)
+        }
+    }
+}
+
+/** Whether a byte can be in an unquoted LLVM name: letters, digits, `.`, `_`, `$` and `-`. */
+function nameByte(c: u8): bool {
+    return (
+        (c >= 0x61 && c <= 0x7a) ||
+        (c >= 0x41 && c <= 0x5a) ||
+        (c >= 0x30 && c <= 0x39) ||
+        c === 0x2e ||
+        c === 0x5f ||
+        c === 0x24 ||
+        c === 0x2d
+    )
+}
+
+/**
+ * The globals (`@name`) and named types (`%name`) that IR text refers to,
+ * each once, in order; not what is in quotes (assembly, strings). Locals and
+ * labels (`%t1`, `%entry`) are skipped: the emitter's types start with `S.`,
+ * `U.`, `E.` or `ore.`.
+ */
+function references(text: string): string[] {
+    const found: string[] = []
+    scan(text, found, new Set<string>())
+    return found
+}
+
+/** Adds the names `text` refers to that are not in `seen` to `found` and `seen`. */
+function scan(text: string, found: string[], seen: Set<string>): void {
+    let i = 0
+    while (i < text.length) {
+        const c = text[i]
+        if (c === 0x22) {
+            const close = text.indexOf('"', i + 1)
+            i = close < 0 ? text.length : close + 1
+            continue
+        }
+        if (c !== 0x40 && c !== 0x25) {
+            i++
+            continue
+        }
+        let end = i + 1
+        while (end < text.length && nameByte(text[end])) end++
+        if (end > i + 1 && (c === 0x40 || typeName(text, i + 1))) {
+            const name = text.slice(i, end)
+            if (!seen.has(name)) {
+                seen.add(name)
+                found.push(name)
+            }
+        }
+        i = end
+    }
+}
+
+/** Whether the name at `at`, after a `%`, is one of the emitter's types. */
+function typeName(text: string, at: int): bool {
+    const c = text[at]
+    if (c === 0x53 || c === 0x55 || c === 0x45) return at + 1 < text.length && text[at + 1] === 0x2e
+    // "ore."
+    return at + 3 < text.length && c === 0x6f && text[at + 1] === 0x72 && text[at + 2] === 0x65 && text[at + 3] === 0x2e
+}
+
+/** The name, with its `@`, of the function a `define` or `declare` line starts. */
+function functionName(line: string): string {
+    const at = line.indexOf("@")
+    let end = at + 1
+    while (end < line.length && nameByte(line[end])) end++
+    return line.slice(at, end)
 }
 
 /** `line` with an internal or private linkage after `prefix` made hidden. */
@@ -152,9 +427,18 @@ function splitTopLevel(text: string): string[] {
     return parts
 }
 
+/** A global's hidden definition and its declaration. */
+class Global {
+    constructor(
+        readonly definition: string,
+        readonly declaration: string,
+    ) {}
+}
+
 /**
  * A global's definition, hidden, and its declaration: `@name = external
- * [hidden] [thread_local] [unnamed_addr] global|constant <type>`.
+ * [hidden] [thread_local] [unnamed_addr] global|constant <type>`, with
+ * arrays of no elements.
  */
 function splitGlobal(line: string): Global {
     const equals = line.indexOf(" = ")
@@ -183,7 +467,18 @@ function splitGlobal(line: string): Global {
         if (q === "internal" || q === "private") visibility = "hidden "
         else if (q === "thread_local" || q === "unnamed_addr") flags += `${q} `
     }
-    return new Global(definition, `${name} = external ${visibility}${flags}${kind} ${leadingType(after)}`)
+    return new Global(definition, `${name} = external ${visibility}${flags}${kind} ${declaredType(leadingType(after))}`)
+}
+
+/**
+ * The type of a global in its declarations: an array as one of no elements,
+ * since what refers to it does not need its length, so that the parts that
+ * use a table or a string of part 0 do not change with its length.
+ */
+function declaredType(type: string): string {
+    if (!type.startsWith("[")) return type
+    const x = type.indexOf(" x ")
+    return x < 0 ? type : `[0${type.slice(x)}`
 }
 
 /** The type at the start of `text`: a bracketed type such as `[3 x i8]` or `{ ptr, i64 }`, or one word. */
