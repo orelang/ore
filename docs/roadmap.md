@@ -63,7 +63,7 @@ exports, type assertions (Ore converts: `i32(x)`).
     (done).
 - Types:
   - `unknown`;
-  - intersections `A & B`;
+  - intersections `A & B` (done, of object types and interfaces);
   - methods in object types (`{ f(): void }`, done), optional members of
     interfaces (done; not methods), generic methods in interfaces;
   - `keyof`, `typeof x` as a type, indexed access `T["k"]`;

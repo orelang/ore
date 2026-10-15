@@ -98,6 +98,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE2047](ORE2047.md) | Cannot find name '…'. Use '…'. |
 | [ORE2048](ORE2048.md) | Type '…' cannot be converted to or from JSON: the keys of a Map must be strings. |
 | [ORE2049](ORE2049.md) | Type '…' cannot be converted to or from JSON. |
+| [ORE2050](ORE2050.md) | A class or a tuple cannot be part of an intersection; use an interface, or extend the class. |
+| [ORE2051](ORE2051.md) | Only object types and interfaces can be intersected, not '…'. |
+| [ORE2052](ORE2052.md) | Member '…' has the type '…' in one part of the intersection and '…' in another. |
 
 ## ORE3xxx: Expressions
 

@@ -8,8 +8,7 @@
 `Map`), `namespace` (use modules), `throw` / `try`.
 
 Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
-`await` and `Promise`, `unknown`, intersections, `keyof` and the other
-computed types.
+`await` and `Promise`, `unknown`, `keyof` and the other computed types.
 
 ## Changed semantics
 

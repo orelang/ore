@@ -44,6 +44,7 @@ before 1.0, a minor version may change the language.
 - Optional, default and rest parameters of closures and function types.
 - Overload signatures of top-level functions.
 - Default type arguments: `<T, C = T[]>`.
+- Intersections `A & B` of object types and interfaces.
 - Methods in object literals (`{ add(n: int) { this.count += n } }`) and in
   object types, which are structural interfaces.
 - Type aliases in any order, and recursive object types

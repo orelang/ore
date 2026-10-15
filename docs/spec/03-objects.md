@@ -26,6 +26,11 @@
   written for (a method that returns a value needs one or the other).
   Spreads work as in other literals; accessors are not supported in such a
   literal yet.
+- An intersection `A & B` of object types is the object type with the fields
+  of both; with an interface among the parts, it is the interface with the
+  members of all. A member in two parts must have the same type in both
+  (writable in one is writable in the intersection). Classes, tuples and
+  primitives cannot be parts.
 - An object type with methods, `{ count: int; add(n: int): void }`, is a
   structural interface, as in TypeScript: classes with those members, and
   object literals with those fields and methods, fit it. An interface's

@@ -1015,6 +1015,82 @@ export function objectInterface(c: Checker, node: Node, scope: Scope): Interface
     return type
 }
 
+/**
+ * `A & B`: object types merge into one with the fields of all; with an
+ * interface among them, an interface with the members of all. A member in
+ * two parts must have the same type in both.
+ */
+export function intersection(c: Checker, node: Node, scope: Scope): Type | null {
+    const parts: Type[] = []
+    for (const t of typeNodes(node)) {
+        const type = c.resolveValueType(t, scope)
+        if (type === null) return null
+        if (type.kind === "struct" && (type.nominal || type.tuple)) {
+            c.error(t, "A class or a tuple cannot be part of an intersection; use an interface, or extend the class.")
+            return null
+        }
+        if (type.kind !== "struct" && type.kind !== "interface") {
+            c.error(t, `Only object types and interfaces can be intersected, not '${typeToString(type)}'.`)
+            return null
+        }
+        parts.push(type)
+    }
+    // The members of all the parts, by name: a field's type and whether it is read-only, or a method's type.
+    const names: string[] = []
+    const memberTypes: Type[] = []
+    const readonly: bool[] = []
+    const methods: bool[] = []
+    const add = (name: string, type: Type, isReadonly: bool, method: bool, at: Node): bool => {
+        const i = names.indexOf(name)
+        if (i < 0) {
+            names.push(name)
+            memberTypes.push(type)
+            readonly.push(isReadonly)
+            methods.push(method)
+            return true
+        }
+        if (!sameType(memberTypes[i], type) || methods[i] !== method) {
+            c.error(
+                at,
+                `Member '${name}' has the type '${typeToString(memberTypes[i])}' in one part of the intersection and '${typeToString(type)}' in another.`,
+            )
+            return false
+        }
+        // Writable in one part is writable in the intersection.
+        readonly[i] = readonly[i] && isReadonly
+        return true
+    }
+    let anyInterface = false
+    for (const part of parts) {
+        if (part.kind === "struct") {
+            for (const f of part.fields) if (!add(f.name, f.type, f.readonly, false, node)) return null
+        } else if (part.kind === "interface") {
+            anyInterface = true
+            // Type aliases are resolved before interfaces are filled: this one is needed now.
+            const info = c.interfaces.get(part)
+            if (info !== null) fillInterface(c, info, info.scope)
+            for (const m of part.members)
+                if (!add(m.name, m.type, m.k === "field" && m.readonly, m.k === "method", node)) return null
+        }
+    }
+    if (!anyInterface) {
+        const fields: Field[] = []
+        for (let i = 0; i < names.length; i++) fields.push(new Field(names[i], memberTypes[i], readonly[i]))
+        return c.shape(fields)
+    }
+    const members: InterfaceMember[] = []
+    for (let i = 0; i < names.length; i++) {
+        const t = memberTypes[i]
+        if (methods[i] && t.kind === "func") members.push(new InterfaceMethod(names[i], t))
+        else members.push(new InterfaceField(names[i], t, readonly[i]))
+    }
+    members.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    const type = new InterfaceTypeClass(c.nextStructId++, collapseSpaces(c.text(node)), members)
+    c.interfaces.set(type, new InterfaceInfoClass(node, type, scope, "filled"))
+    c.memberDecls.set(type, new Map<string, Node>())
+    return type
+}
+
 /** Text on one line, runs of white space as one space. */
 function collapseSpaces(text: string): string {
     let out = ""
