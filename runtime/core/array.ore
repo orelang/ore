@@ -40,6 +40,25 @@ function arrayPush(a: ptr, size: int): ptr {
     return unsafe.add(data(a), size * len)
 }
 
+/** Appends the elements of `b`, which can be `a` itself. */
+//ore:runtime ore_rt_array_append
+function arrayAppend(a: ptr, b: ptr, size: int): void {
+    const n = length(b)
+    if (n === 0) return
+    const len = length(a)
+    const cap = unsafe.load<int>(unsafe.add(a, capOffset))
+    if (len + n > cap) {
+        let grown = cap < 4 ? 4 : cap * 2
+        if (grown < len + n) grown = len + n
+        const buffer = unsafe.alloc(size * grown)
+        if (len > 0) unsafe.copy(buffer, data(a), size * len)
+        unsafe.store<ptr>(a, buffer)
+        unsafe.store<int>(unsafe.add(a, capOffset), grown)
+    }
+    unsafe.copy(unsafe.add(data(a), size * len), data(b), size * n)
+    unsafe.store<int>(unsafe.add(a, lenOffset), len + n)
+}
+
 /** Removes the last element and returns its address. */
 //ore:runtime ore_rt_array_pop
 function arrayPop(a: ptr, size: int): ptr {

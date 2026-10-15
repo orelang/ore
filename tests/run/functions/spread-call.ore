@@ -1,0 +1,33 @@
+// `...array` among the arguments of a rest parameter: the elements join the
+// other arguments, in order.
+function sum(label: string, ...xs: int[]): string {
+    let total = 0
+    for (const x of xs) total += x
+    return `${label}: ${xs.length} = ${total}`
+}
+const a = [1, 2, 3]
+const b = [10, 20]
+console.log(sum("none"))
+console.log(sum("one", ...a))
+console.log(sum("mixed", 0, ...a, 4, ...b, 5))
+console.log(sum("twice", ...a, ...a))
+
+// Spread arguments are evaluated once, in order.
+let calls = 0
+function next(): int[] {
+    calls++
+    return [calls]
+}
+console.log(sum("calls", ...next(), 100, ...next()), calls)
+
+// `push` appends every element of a spread array, even of itself.
+const xs: int[] = [1]
+xs.push(...a)
+console.log(xs.join(","))
+xs.push(0, ...b, 9)
+console.log(xs.join(","))
+xs.push(...xs)
+console.log(xs.length, xs.join(","))
+const words: string[] = []
+words.push(...["a", "b"], "c")
+console.log(words.join(""))

@@ -185,8 +185,12 @@ export function expr(g: Emitter, e: Expr): V {
             const array = expr(g, e.array)
             const values: V[] = []
             for (const v of e.values) values.push(expr(g, v))
-            for (const v of values)
-                g.store(v, g.rt("ore_rt_array_push", [array, { ty: "i64", v: sizeOf(g.mt(type)) }]).v, type)
+            const size: V = { ty: "i64", v: sizeOf(g.mt(type)) }
+            const spread = e.spread
+            for (let i = 0; i < values.length; i++) {
+                if (spread !== null && spread[i]) g.rt("ore_rt_array_append", [array, values[i], size])
+                else g.store(values[i], g.rt("ore_rt_array_push", [array, size]).v, type)
+            }
             return g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
         }
         case "pop":

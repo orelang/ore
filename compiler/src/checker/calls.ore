@@ -86,6 +86,7 @@ import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
 import { genericCall, isInternal } from "./declarations"
 import {
     checkExpr,
+    checkSpreadArray,
     checkIndex,
     defineMember,
     literalText,
@@ -1018,13 +1019,14 @@ export function callFunc(
         if (extra.length === 1 && extra[0].kind === "SpreadElement") {
             const spread = expression(extra[0])
             values.push(c.coerce(checkExpr(c, spread, scope, array), array, spread))
+        } else if (extra.some((arg) => arg.kind === "SpreadElement")) {
+            // Arguments and spread arrays together, as in an array literal.
+            const elems = checkSpreadArray(c, node, extra, scope, array)
+            if (elems.k === "error") return errorOperand
+            values.push(c.coerce(elems, array, node))
         } else {
             const elems: Expr[] = []
-            for (const arg of extra) {
-                if (arg.kind === "SpreadElement")
-                    return c.fail(arg, "Pass a single '...array' as all the rest arguments.")
-                elems.push(c.coerce(checkExpr(c, arg, scope, array.elem), array.elem, arg))
-            }
+            for (const arg of extra) elems.push(c.coerce(checkExpr(c, arg, scope, array.elem), array.elem, arg))
             // Before default values, which come only when there are no extra arguments.
             if (values.length === fixed) values.push(new ArrayLit(array, elems))
         }
@@ -1309,11 +1311,30 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     }
     if (type.kind === "array" && name === "push") {
         const values: Expr[] = []
+        const spread: bool[] = []
+        let spreads = false
         for (const arg of args) {
-            if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
-            values.push(c.coerce(checkExpr(c, arg, scope, type.elem), type.elem, arg))
+            if (arg.kind !== "SpreadElement") {
+                values.push(c.coerce(checkExpr(c, arg, scope, type.elem), type.elem, arg))
+                spread.push(false)
+                continue
+            }
+            const inner = expression(arg)
+            const array = checkExpr(c, inner, scope, type)
+            if (array.k === "error") return errorOperand
+            if (array.k !== "typed" || array.expr.type.kind !== "array")
+                return c.fail(inner, "Only an array can be spread into an array.")
+            const elem = array.expr.type.elem
+            if (!sameType(elem, type.elem))
+                return c.fail(
+                    inner,
+                    `An array of '${typeToString(elem)}' cannot be spread into an array of '${typeToString(type.elem)}'.`,
+                )
+            values.push(array.expr)
+            spread.push(true)
+            spreads = true
         }
-        return typed(new Push(types.i64, value, values))
+        return typed(new Push(types.i64, value, values, spreads ? spread : null))
     }
     if (type.kind === "array" && name === "pop") {
         if (args.length > 0) return c.fail(node, `'pop' expects no arguments, got ${args.length}.`)

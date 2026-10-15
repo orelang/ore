@@ -1087,7 +1087,21 @@ class Reader {
             }
             case "push": {
                 const type = this.intType(this.exprType(c))
-                return new Push(type, this.expr(d, "array"), this.exprs(d, "value"))
+                const array = this.expr(d, "array")
+                const values: Expr[] = []
+                const spread: bool[] = []
+                let any = false
+                while (true) {
+                    if (this.has(d, "value: ")) {
+                        values.push(this.expr(d, "value"))
+                        spread.push(false)
+                    } else if (this.has(d, "spread: ")) {
+                        values.push(this.expr(d, "spread"))
+                        spread.push(true)
+                        any = true
+                    } else break
+                }
+                return new Push(type, array, values, any ? spread : null)
             }
             case "pop":
                 return new Pop(this.exprType(c), this.expr(d, "array"))
