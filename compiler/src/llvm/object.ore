@@ -113,11 +113,14 @@ function compile(module: ptr, options: ObjectOptions, started: int): ObjectTimes
         return new Error(`target ${triple}: ${message(unsafe.load<ptr>(error))}`)
     }
     const level = options.release ? codeGenLevelDefault : codeGenLevelNone
+    // The baseline CPU of the architecture, so that a program (`ore` itself
+    // included) runs on any machine of it; ORE_CPU=native targets this one.
+    const native = process.getenv("ORE_CPU") === "native"
     const machine = LLVMCreateTargetMachine(
         unsafe.load<ptr>(out),
         triple,
-        message(LLVMGetHostCPUName()),
-        message(LLVMGetHostCPUFeatures()),
+        native ? message(LLVMGetHostCPUName()) : "generic",
+        native ? message(LLVMGetHostCPUFeatures()) : "",
         level,
         relocPic,
         codeModelDefault,

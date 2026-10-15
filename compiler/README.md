@@ -99,6 +99,10 @@ Debian's `/usr/lib/llvm-N/bin`, or `$ORE_LD`). On macOS the SDK comes from
 system's or `$MACOSX_DEPLOYMENT_TARGET`; on Linux, executables are PIE with
 glibc's start files and dynamic linker.
 
+Code is generated for the baseline CPU of the architecture (`generic`), so
+that programs, `ore` itself included, run on any machine of it;
+`ORE_CPU=native` generates it for the machine that builds.
+
 Debug builds split the module into one part per CPU (`llvm/split.ore`) and
 compile the parts in parallel; release builds keep one module, so that the
 runtime inlines into the program.
