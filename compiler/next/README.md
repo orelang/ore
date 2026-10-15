@@ -59,6 +59,16 @@ server, which reports syntax errors until it uses the checker.
 | `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
 | `main.ore` | `ore-next tokens\|tree\|roles\|modules\|fmt <file>`: prints the tokens, the tree, the modules of a program, or the file formatted; `ore-next ir <entry>`: the dump of the checked program, or its diagnostics; `ore-next read <dump.txt>`: reads a dump and writes it again; `ore-next llvm <dump.txt> [--debug]`: the LLVM IR of the module of a dump, inlined unless `--debug`; `ore-next build <entry> -o <out> [--release] [--emit-llvm <f>] [--time]`: an executable; `ore-next object <in.ll> [<src.c>...] -o <out> [-c] [-l lib] [-L dir]`: an executable (or with `-c` an object file) from LLVM IR; `ore-next lsp`: the language server on stdio |
 
+[`ci/test.sh`](../../ci/test.sh) tests it without Bun (see
+[`tests/README.md`](../../tests/README.md)): the runner of `tests/runner`
+holds this compiler, builds and runs every program of `tests/run` with it
+and checks every one of `tests/diag`, in its own process; runs the tests of
+`test/*.test.ore` (ported from the unit tests of the TypeScript packages,
+and the language server over pipes); checks that every `.ore` file is
+formatted and that the formatter keeps code and comments and is idempotent
+on unformatted variants; and builds this compiler with itself.
+
+Until CI switches to it, the Bun suite also runs:
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
 equal those of the TypeScript scanner and parser; on every program of
