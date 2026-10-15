@@ -345,15 +345,18 @@ export class Checker {
         const left = name.kind === "QualifiedName" ? name.child("left") : name.kind === "PropertyAccessExpression" ? name.child("expression") : null
         const right = name.kind === "QualifiedName" ? name.child("right") : name.kind === "PropertyAccessExpression" ? name.child("name") : null
         const module = left !== null && isIdentifier(left) ? scope.lookupValue(left.text) : null
-        if (module === null || module.k !== "module" || right === null || !isIdentifier(right)) {
+        // A type of a built-in namespace implemented in Ore, such as `fs.FileInfo`.
+        const exports = module === null ? null : module.k === "module" ? module.exports : module.k === "namespace" ? module.module : null
+        if (module === null || exports === null || right === null || !isIdentifier(right)) {
             this.error(name, "Only types of modules imported with '* as' can be qualified.")
             return null
         }
         this.info.definitions.set(left!, module.decl)
-        const exported = module.exports(right.text)
+        const exported = exports(right.text)
         const symbol = exported === null ? null : exported.type
         if (symbol === null) {
-            this.error(right, `Module '${module.name}' has no exported type '${right.text}'.`)
+            const moduleName = module.k === "namespace" ? module.name : module.k === "module" ? module.name : ""
+            this.error(right, module.k === "namespace" ? `'${moduleName}' has no type '${right.text}'.` : `Module '${moduleName}' has no exported type '${right.text}'.`)
             return null
         }
         this.info.definitions.set(right, symbol.decl)

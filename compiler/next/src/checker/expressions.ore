@@ -813,6 +813,15 @@ export function moduleMember(c: Checker, node: Node, scope: Scope): ValueSymbol 
     const module = scope.lookupValue(object.text)
     if (module === null) return null
     if (module.k === "namespace") {
+        // An export of the module implementing the namespace in Ore, such as `fs.stat`.
+        const implementation = module.module
+        const exported = implementation !== null ? implementation(nameId.text) : null
+        const value = exported !== null ? exported.value : null
+        if (value !== null) {
+            c.info.definitions.set(object, module.decl)
+            if (isIdentifier(nameId)) c.info.definitions.set(nameId, value.decl)
+            return value
+        }
         // A constant of a built-in namespace, such as `Math.PI`.
         const member_ = module.members.get(nameId.text)
         if (member_ === null || member_.k !== "const") return null

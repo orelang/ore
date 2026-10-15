@@ -228,14 +228,8 @@ function typescriptIr(entry: string): { code: number; stdout: string; stderr: st
 
 describe("next ir", () => {
   const programs = [...entries(join(root, "tests/run")), ...entries(join(root, "tests/diag")), join(root, "compiler/next/src/main.ore")]
-  // Programs whose IR or diagnostics still differ, with the reason.
-  const skipped = new Set<string>([
-    // Members of `fs` and `process` implemented by Ore modules (namespaceModules of the TS checker): not ported yet.
-    "tests/run/concurrency/spawn-many.ore",
-    "tests/run/library/dirs.ore",
-    "tests/run/library/spawn.ore",
-    "tests/diag/library/namespaces.ore",
-  ])
+  // Programs whose IR or diagnostics still differ, with the reason. None so far.
+  const skipped = new Set<string>([])
   for (const file of programs) {
     const entry = relative(process.cwd(), file)
     const name = relative(root, file)

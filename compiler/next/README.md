@@ -29,7 +29,7 @@ the checker.
 | `checker/symbols.ore` | Value and type symbols, generics, scopes |
 | `checker/context.ore` | The types shared by the layers: `CheckResult`, `FuncContext`, `ClassInfo`, facts... |
 | `checker/helpers.ore` | Tables and pure functions: operators, string and array methods, `terminates`, `visitLocals`, `jsonProblem` |
-| `checker/builtins.ore` | The root scope, from `runtime/std/builtin.d.ore` |
+| `checker/builtins.ore` | The root scope, from `runtime/std/builtin.d.ore`, and the runtime modules that implement namespaces (`fs`, `process`) |
 | `checker/assigned.ore` | Definite assignment |
 | `checker/base.ore` | `Checker`: the state of a check, type resolution, unions and shapes, `coerce`, diagnostics |
 | `checker/declarations.ore` | Modules, imports and exports, directives, functions, generics and their instances, parameters |

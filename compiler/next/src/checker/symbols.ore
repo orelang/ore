@@ -83,13 +83,19 @@ export class GenericFuncSymbol {
     ) {}
 }
 
-/** A built-in namespace such as `console`, whose members are called as `console.log(...)`. */
+/**
+ * A built-in namespace such as `console`, whose members are called as
+ * `console.log(...)`. The exports of the runtime module that implements it
+ * in Ore, if any, are members too (`fs.stat`, `fs.FileInfo`), before those
+ * of builtin.d.ore.
+ */
 export class NamespaceSymbol {
     readonly k: "namespace" = "namespace"
     constructor(
         readonly name: string,
         readonly members: Map<string, ValueSymbol>,
         readonly decl: Node,
+        public module: ((name: string) => Exported | null) | null = null,
     ) {}
 }
 
