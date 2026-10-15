@@ -1,0 +1,91 @@
+// Regular expressions: literals, RegExp, exec and lastIndex, and the string
+// methods that take them, as in JavaScript.
+
+function show(text: string | null): string {
+    return text ?? "-"
+}
+
+function captures(m: RegExpMatch | null): string {
+    if (m === null) return "null"
+    const parts: string[] = []
+    for (let i = 0; i < m.length; i++) parts.push(show(m.at(i)))
+    return `[${parts.join(", ")}]`
+}
+
+// Literals and their properties.
+const word = /(\w+)\s(\w+)/
+console.log(word.source, word.flags, word.global, word.ignoreCase, word.toString())
+const flagged = /a/gimsy
+console.log(flagged.flags, flagged.global, flagged.ignoreCase, flagged.multiline, flagged.dotAll, flagged.sticky)
+console.log(/a\/b[/]/.source, new RegExp("a/b[/]").source, new RegExp("").source, new RegExp("\n").source)
+console.log(new RegExp("x+", "gi").toString(), new RegExp("\\d").test("a1"))
+let division = 10
+division = division / 2 / 5
+console.log(division)
+
+// exec, test and lastIndex.
+const digits = /\d+/g
+console.log(digits.lastIndex, digits.test("a12b345"), digits.lastIndex)
+console.log(captures(digits.exec("a12b345")), digits.lastIndex)
+console.log(captures(digits.exec("a12b345")), digits.lastIndex)
+const pairs = /(\w)=(\d)/g
+let found = pairs.exec("a=1, b=2, c=3")
+while (found !== null) {
+    console.log(captures(found), found.index, found.input, pairs.lastIndex)
+    found = pairs.exec("a=1, b=2, c=3")
+}
+const sticky = /foo/y
+sticky.lastIndex = 3
+console.log(sticky.test("barfoo"), sticky.lastIndex, sticky.test("barfoo"), sticky.lastIndex)
+const plain = /o/
+plain.lastIndex = 5
+console.log(captures(plain.exec("foo")), plain.lastIndex)
+const named = /(?<day>\d{2})\.(?<month>\d{2})/.exec("on 17.05")
+if (named !== null) console.log(named.groups.get("day"), named.groups.get("month"), named.index, named.at(-1))
+console.log(captures(/(a)|(b)/.exec("b")), /x/.exec("abc") === null)
+
+// match and matchAll.
+console.log(captures("2024-05-17".match(/(\d+)-(\d+)/)))
+console.log(captures("2024-05-17".match(/\d+/g)), captures("abc".match(/\d+/g)))
+console.log(captures("a.b".match(".")), "a+b".search("\\+"))
+for (const m of "x1y22z333".matchAll(/([a-z])(\d+)/g)) console.log(captures(m), m.index)
+for (const m of "aaa".matchAll("a")) console.log(m.index)
+let empties = 0
+for (const m of "abc".matchAll(/x*/g)) empties += m.index
+console.log(empties)
+
+// replace and replaceAll.
+console.log("John Smith".replace(/(\w+)\s(\w+)/, "$2, $1"))
+console.log("a-b-c".replace(/-/, "+"), "a-b-c".replace(/-/g, "+"), "a-b-c".replaceAll(/-/g, "+"))
+console.log("abc".replace(/b/, "[$&|$`|$'|$$|$0|$3]"))
+console.log("abc".replace(/(?<x>b)/, "[$<x>|$<y>|$1$2]"), "abc".replace(/(b)/, "$<x>"))
+console.log("abcdefghijkl".replace(/(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)/, "$11-$10-$1-$01-$012"))
+console.log("aaa".replace(/a*?/g, "-"), "abc".replace(/x*/g, "-"), "".replace(/^/, "start"))
+console.log("hello world".replace(/o/g, (m) => m.toUpperCase()))
+// The function gets the matched text and the match (JavaScript passes the groups, the index and the input).
+console.log(
+    "3 apples and 5 pears".replace(/(\d+) (\w+)/g, (m, match) => `${match.at(2)}:${match.at(1)}@${match.index}`),
+)
+console.log("a.b.c".replace(".", "!"), "a.b.c".replaceAll(".", "!"))
+const replacer = (m: string, match: RegExpMatch): string => `<${m}${match.length}>`
+console.log("ab".replace(/[ab]/g, replacer))
+
+// split and search.
+console.log("a, b,c ,d".split(/\s*,\s*/).join("|"))
+console.log("a1b2c3".split(/\d/).join("|"), "a1b2c3".split(/(\d)/).join("|"))
+console.log("abc".split(/(?:)/).join("|"), "".split(/x/).length, "".split(/(?:)/).length)
+console.log("a1b2c3".split(/\d/, 2).join("|"), "a1b2c3".split(/(\d)/, 3).join("|"), "abc".split(/b/, 0).length)
+console.log("ab".split(/a*?/).join("|"), "ab".split(/a*/).join("|"), "test".split(/(?:)/, 2).join("|"))
+console.log("a,b".split(",").join("|"), "A<B>bold</B>and<CODE>coded</CODE>".split(/<(\/)?([^<>]+)>/).join("|"))
+console.log("hello".search(/l+/), "hello".search(/z/), "hello".search(/^h/))
+const searched = /l/g
+searched.lastIndex = 4
+console.log("hello".search(searched), searched.lastIndex)
+
+// A regular expression in a function, created at each call.
+function words(s: string): string[] {
+    const out: string[] = []
+    for (const m of s.matchAll(/[a-z]+/gi)) out.push(m.at(0)!)
+    return out
+}
+console.log(words("Hello, big World!").join(" "))

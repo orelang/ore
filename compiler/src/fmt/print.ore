@@ -1576,6 +1576,7 @@ function isLoneShortArgument(n: ENode): bool {
     const threshold = 30
     if (n.type === "ThisExpression" || (n.type === "Identifier" && n.name.length <= threshold)) return true
     if (isSignedNumericLiteral(n) && !hasComment(n.get("argument"))) return true
+    if (n.type === "Literal" && n.literal === "regex") return n.raw.lastIndexOf("/") - 1 <= 5
     if (isStringLiteral(n)) return quoteString(n.raw).length <= threshold
     if (n.type === "TemplateLiteral") {
         const quasis = n.all("quasis")
@@ -2970,6 +2971,13 @@ function printLiteral(n: ENode): Doc {
             return t(n.raw.toLowerCase())
         case "string":
             return literalText(quoteString(n.raw))
+        case "regex": {
+            // Flags sorted, as prettier prints them.
+            const close = n.raw.lastIndexOf("/")
+            const flags = n.raw.slice(close + 1).split("")
+            flags.sort()
+            return t(n.raw.slice(0, close + 1) + flags.join(""))
+        }
     }
     return t(n.raw)
 }

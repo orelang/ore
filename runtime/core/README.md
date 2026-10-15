@@ -35,6 +35,8 @@ Rules for this code:
 | `chan.ore` | Channels and `select` |
 | `poll.ore` | Waiting for sockets, pipes and the exit of children: the kqueue or epoll poller thread |
 | `fs.ore` | The namespace `fs` in Ore: directories, `stat`, `remove`, `rename`, `realpath`, temporary directories, with the `stat` and `dirent` layouts of each platform |
+| `regexp-syntax.ore` | Regular expressions parsed and compiled into programs for the matcher, with JavaScript's syntax and errors; also imported by the compiler, which checks literals with it, so it uses only what stage 0 of the bootstrap compiles |
+| `regexp.ore` | The global classes `RegExp` and `RegExpMatch`: the backtracking matcher over UTF-8, `exec`, `test`, `lastIndex`, and the string methods that take a regular expression (`s.match(re)` calls `re`'s private `stringMatch`) |
 | `process.ore` | The namespace `process` in Ore: running programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller, the environment |
 | `net.ore` | TCP on non-blocking sockets: listen, connect, accept, read, write, with the socket layouts and constants of each platform |
 | `io.ore` | Printing through one shared buffer, and the end of the program |

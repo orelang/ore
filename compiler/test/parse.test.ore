@@ -3,6 +3,7 @@
 
 import { test, expect, fail } from "ore:test"
 import { formatDiagnostic } from "../src/syntax/diagnostic"
+import { tokenize } from "../src/syntax/lexer"
 import { parse } from "../src/syntax/parse"
 
 test("parses a valid file without diagnostics", () => {
@@ -18,4 +19,18 @@ test("reports syntax errors with positions", () => {
     const want = ["bad.ore:2:1: error: Identifier expected.", "  ", "  ^"].join("\n")
     const got = formatDiagnostic(diagnostics[0])
     if (got !== want) fail(`expected:\n${want}\ngot:\n${got}`)
+})
+
+test("tells regular expressions from divisions by the token before", () => {
+    const text = "const r = [/a\\/[/]b/gi, x / 2 / y, x! / 2, !/c/.test(s), f(a) / b, x.in / 1]\nreturn /d/"
+    const found: string[] = []
+    for (const t of tokenize(text))
+        if (t.kind === "RegularExpressionLiteral" || t.kind === "SlashToken") found.push(text.slice(t.start, t.end))
+    expect(found.join(" ")).toBe("/a\\/[/]b/gi / / / /c/ / / /d/")
+})
+
+test("reports an unterminated regular expression", () => {
+    const { diagnostics } = parse("bad.ore", "const r = /ab[/]\n")
+    expect(diagnostics.length).toBe(1)
+    expect(diagnostics[0].message).toBe("Unterminated regular expression literal.")
 })

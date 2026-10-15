@@ -1,0 +1,989 @@
+// The syntax of regular expressions, as in JavaScript (ECMAScript with its
+// Annex B, without the `u` flag): a pattern and its flags parsed and
+// compiled into a program for the backtracking matcher of regexp.ore.
+//
+// The compiler imports this module too, to report the errors of a regular
+// expression literal at compile time; so it uses only what the compiler
+// that builds the compiler (stage 0 of the bootstrap) has.
+
+// Instructions of a program: an opcode and its operands, in `Program.code`.
+
+/** `CHAR c`: the character `c`. */
+export const OP_CHAR = 1
+/** `CHAR_I c`: a character whose canonical case (`canonicalize`) is `c`. */
+export const OP_CHAR_I = 2
+/** `ANY`: any character but a line terminator. */
+export const OP_ANY = 3
+/** `ANY_ALL`: any character (`.` with the `s` flag). */
+export const OP_ANY_ALL = 4
+/** `CLASS set negate`: a character in `Program.sets[set]`, or not in it. */
+export const OP_CLASS = 5
+/** `CLASS_I set negate`: the same, ignoring case. */
+export const OP_CLASS_I = 6
+/** `SPLIT a b`: continues at `a`, and at `b` when that fails. */
+export const OP_SPLIT = 7
+/** `JUMP a`. */
+export const OP_JUMP = 8
+/** `SAVE slot`: the position into a slot (a capture's start or end, or a loop's start). */
+export const OP_SAVE = 9
+/** `RESET from to`: the slots `from` to `to - 1` unset, at each iteration of a loop around groups. */
+export const OP_RESET = 10
+/** `BOL`: the start of the input (or of a line, with the `m` flag). */
+export const OP_BOL = 11
+/** `EOL`: the end of the input (or of a line, with the `m` flag). */
+export const OP_EOL = 12
+/** `WORD negate`: a word boundary (`\b`), or not one (`\B`). */
+export const OP_WORD = 13
+/** `BACKREF group`: the text of a group again; nothing when the group is unset. */
+export const OP_BACKREF = 14
+/** `LOOK negate end`: a lookahead, whose body follows and ends with `LOOK_END`; continues at `end`. */
+export const OP_LOOK = 15
+/** The end of a lookahead's body. */
+export const OP_LOOK_END = 16
+/** `PROGRESS slot`: fails when the position is still the one in the slot: a loop's iteration matched nothing. */
+export const OP_PROGRESS = 17
+/** The end of the pattern: a match. */
+export const OP_MATCH = 18
+
+/** The largest program, in instructions and operands, as a counted repetition copies its atom. */
+const maxCode = 1000000
+/** "Unbounded", as the maximum of a repetition. */
+const unbounded = -1
+
+// Kinds of the nodes of a parsed pattern.
+const K_EMPTY = 0
+const K_CHAR = 1
+const K_ANY = 2
+const K_CLASS = 3
+const K_SEQ = 4
+const K_ALT = 5
+const K_GROUP = 6
+const K_REPEAT = 7
+const K_BOL = 8
+const K_EOL = 9
+const K_WORD = 10
+const K_BACKREF = 11
+const K_LOOK = 12
+
+/** A node of a parsed pattern. */
+class Node {
+    kids: Node[] = []
+    /** The ranges of a class: first and last character of each. */
+    ranges: int[] = []
+    /** The group a backreference names, resolved once all groups are known. */
+    name = ""
+    /** For a character written as itself, its bytes in the pattern; -1 for an escape. */
+    from = -1
+    to = -1
+    /** For a repetition: the minimum and maximum (`unbounded`) counts, and whether it is greedy. */
+    min = 0
+    max = 0
+    greedy = true
+
+    constructor(
+        readonly kind: int,
+        /** The character, the group's number, or 1 when negated (classes, `\B`, `(?!`). */
+        public value: int,
+    ) {}
+}
+
+/** A compiled regular expression: what the matcher runs. */
+export class Program {
+    code: int[] = []
+    /** The ranges of each class. */
+    sets: int[][] = []
+    /** The number of capture groups, with the whole match as group 0. */
+    groups = 1
+    /** The number of slots: two per group (start and end), then one per loop that could match nothing. */
+    slots = 2
+    /** The name of each group, "" for one without. */
+    names: string[] = [""]
+    /** Text that every match starts with, for a fast search of where to try. */
+    prefix = ""
+    /** Whether matches can only start at the start of the input (`^` first, without the `m` flag). */
+    anchored = false
+    global = false
+    ignoreCase = false
+    multiline = false
+    dotAll = false
+    sticky = false
+    /** The error that makes the pattern or the flags invalid, or "". */
+    error = ""
+}
+
+/** The program of a pattern and its flags; `error` tells when they are invalid. */
+export function compileRegExp(pattern: string, flags: string): Program {
+    const program = new Program()
+    const flagError = readFlags(program, flags)
+    if (flagError !== "") {
+        program.error = flagError
+        return program
+    }
+    const parser = new Parser(pattern)
+    const root = parser.parse()
+    if (parser.error !== "") {
+        program.error = parser.error
+        return program
+    }
+    program.groups = parser.names.length
+    program.names = parser.names
+    program.slots = 2 * program.groups
+    const compiler = new Compiler(program, pattern)
+    compiler.emit(root)
+    program.code.push(OP_MATCH)
+    if (program.code.length > maxCode) {
+        program.error = "Regular expression too large"
+        return program
+    }
+    compiler.start(root)
+    return program
+}
+
+/** Sets the flags of a program; an error message for an invalid or unsupported flag, or "". */
+function readFlags(program: Program, flags: string): string {
+    for (let i = 0; i < flags.length; i++) {
+        const f = flags[i]
+        let seen = false
+        for (let j = 0; j < i; j++) if (flags[j] === f) seen = true
+        if (seen) return `Invalid flags '${flags}'`
+        if (f === 103) program.global = true
+        else if (f === 105) program.ignoreCase = true
+        else if (f === 109) program.multiline = true
+        else if (f === 115) program.dotAll = true
+        else if (f === 121) program.sticky = true
+        else if (f === 117 || f === 100 || f === 118) return `The flag '${flags.slice(i, i + 1)}' is not supported`
+        else return `Invalid flags '${flags}'`
+    }
+    return ""
+}
+
+// -----------------------------------------------------------------------------
+// Characters
+
+/** Whether a character ends a line: `\n`, `\r`, U+2028 or U+2029. */
+export function isLineTerminator(c: int): bool {
+    return c === 10 || c === 13 || c === 0x2028 || c === 0x2029
+}
+
+/** Whether a character is a word character of `\w`: an ASCII letter, a digit or `_`. */
+export function isWordChar(c: int): bool {
+    return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95
+}
+
+/**
+ * The canonical case of a character, which the `i` flag compares: its
+ * uppercase, as JavaScript's Canonicalize without the `u` flag, for ASCII,
+ * Latin-1, Greek and Cyrillic letters; other characters are their own.
+ */
+export function canonicalize(c: int): int {
+    if (c < 97) return c
+    if (c <= 122) return c - 32
+    if (c < 0xb5) return c
+    if (c === 0xb5) return 0x39c
+    if (c >= 0xe0 && c <= 0xfe && c !== 0xf7) return c - 32
+    if (c === 0xff) return 0x178
+    if (c >= 0x3b1 && c <= 0x3c9) return c === 0x3c2 ? 0x3a3 : c - 32
+    if (c >= 0x3ac && c <= 0x3af) return c === 0x3ac ? 0x386 : c - 37
+    if (c >= 0x430 && c <= 0x44f) return c - 32
+    if (c >= 0x450 && c <= 0x45f) return c - 80
+    return c
+}
+
+/** The lowercase of an uppercase letter that `canonicalize` maps, or the character itself. */
+export function lowercase(c: int): int {
+    if (c >= 65 && c <= 90) return c + 32
+    if (c >= 0xc0 && c <= 0xde && c !== 0xd7) return c + 32
+    if (c === 0x178) return 0xff
+    if (c >= 0x391 && c <= 0x3a9 && c !== 0x3a2) return c + 32
+    if (c === 0x386) return 0x3ac
+    if (c >= 0x388 && c <= 0x38a) return c + 37
+    if (c >= 0x410 && c <= 0x42f) return c + 32
+    if (c >= 0x400 && c <= 0x40f) return c + 80
+    return c
+}
+
+/** Whether a character is in sorted or unsorted ranges. */
+export function inRanges(ranges: int[], c: int): bool {
+    for (let i = 0; i < ranges.length; i += 2) if (c >= ranges[i] && c <= ranges[i + 1]) return true
+    return false
+}
+
+const digitRanges = [48, 57]
+const wordRanges = [48, 57, 65, 90, 95, 95, 97, 122]
+const spaceRanges = [
+    9, 13, 32, 32, 0xa0, 0xa0, 0x1680, 0x1680, 0x2000, 0x200a, 0x2028, 0x2029, 0x202f, 0x202f, 0x205f, 0x205f, 0x3000,
+    0x3000, 0xfeff, 0xfeff,
+]
+
+/** The characters not in sorted ranges, up to U+10FFFF. */
+function complement(ranges: int[]): int[] {
+    const out: int[] = []
+    let next = 0
+    for (let i = 0; i < ranges.length; i += 2) {
+        if (ranges[i] > next) {
+            out.push(next)
+            out.push(ranges[i] - 1)
+        }
+        next = ranges[i + 1] + 1
+    }
+    if (next <= 0x10ffff) {
+        out.push(next)
+        out.push(0x10ffff)
+    }
+    return out
+}
+
+/** The ranges of a class escape letter (`d`, `D`, `w`, `W`, `s`, `S`), or null for another letter. */
+function classEscape(letter: int): int[] | null {
+    if (letter === 100) return digitRanges
+    if (letter === 68) return complement(digitRanges)
+    if (letter === 119) return wordRanges
+    if (letter === 87) return complement(wordRanges)
+    if (letter === 115) return spaceRanges
+    if (letter === 83) return complement(spaceRanges)
+    return null
+}
+
+function isDigit(c: int): bool {
+    return c >= 48 && c <= 57
+}
+
+function hexValue(c: int): int {
+    if (c >= 48 && c <= 57) return c - 48
+    if (c >= 97 && c <= 102) return c - 87
+    if (c >= 65 && c <= 70) return c - 55
+    return -1
+}
+
+function isLetter(c: int): bool {
+    return (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+}
+
+/** Whether a character can be in a group's name: ASCII letters, digits, `$`, `_`, and any other non-ASCII character. */
+function isNameChar(c: int, first: bool): bool {
+    return isLetter(c) || c === 36 || c === 95 || c >= 128 || (!first && isDigit(c))
+}
+
+// -----------------------------------------------------------------------------
+// Parsing
+
+class Parser {
+    pos = 0
+    error = ""
+    /** The name of each group, by number; group 0 is the whole match. */
+    names: string[] = [""]
+    /** The number of groups in the whole pattern, which tells `\10` a backreference from an escape. */
+    total = 0
+    /** Whether the pattern has named groups, in which `\k` must name one. */
+    named = false
+    /** The backreferences by name, resolved at the end. */
+    references: Node[] = []
+
+    constructor(readonly text: string) {}
+
+    parse(): Node {
+        this.countGroups()
+        const root = this.disjunction()
+        if (this.error !== "") return root
+        if (this.pos < this.text.length) {
+            // Only `)` stops a disjunction before the end.
+            this.fail("Unmatched ')'")
+            return root
+        }
+        for (const ref of this.references) {
+            let found = false
+            for (let i = 1; i < this.names.length; i++) {
+                if (!found && this.names[i] === ref.name) {
+                    ref.value = i
+                    found = true
+                }
+            }
+            if (!found) this.fail("Invalid named capture referenced")
+        }
+        return root
+    }
+
+    fail(message: string): Node {
+        if (this.error === "") this.error = message
+        return new Node(K_EMPTY, 0)
+    }
+
+    /** The groups of the pattern counted ahead, and whether any is named. */
+    countGroups() {
+        const t = this.text
+        let inClass = false
+        for (let i = 0; i < t.length; i++) {
+            const c = t[i]
+            if (c === 92) i++
+            else if (c === 91) inClass = true
+            else if (c === 93) inClass = false
+            else if (c === 40 && !inClass) {
+                if (i + 1 < t.length && t[i + 1] === 63) {
+                    // `(?<name>`, but not `(?<=` or `(?<!`.
+                    if (i + 3 < t.length && t[i + 2] === 60 && t[i + 3] !== 61 && t[i + 3] !== 33) {
+                        this.total++
+                        this.named = true
+                    }
+                } else {
+                    this.total++
+                }
+            }
+        }
+    }
+
+    atEnd(): bool {
+        return this.pos >= this.text.length
+    }
+
+    /** The byte at the position, or -1 at the end. */
+    peek(): int {
+        return this.pos < this.text.length ? int(this.text[this.pos]) : -1
+    }
+
+    peekAt(offset: int): int {
+        const i = this.pos + offset
+        return i < this.text.length ? int(this.text[i]) : -1
+    }
+
+    /** The character at the position, decoded from UTF-8, and the position moved past it. */
+    char(): int {
+        const t = this.text
+        const b = int(t[this.pos])
+        let n = 1
+        let c = b
+        if (b >= 0xf0 && b < 0xf8) {
+            n = 4
+            c = b & 7
+        } else if (b >= 0xe0) {
+            n = 3
+            c = b & 15
+        } else if (b >= 0xc0) {
+            n = 2
+            c = b & 31
+        }
+        if (b >= 0x80 && (b < 0xc0 || b >= 0xf8 || this.pos + n > t.length)) {
+            this.pos++
+            return 0xfffd
+        }
+        for (let k = 1; k < n; k++) {
+            const x = int(t[this.pos + k])
+            if ((x & 0xc0) !== 0x80) {
+                this.pos++
+                return 0xfffd
+            }
+            c = (c << 6) | (x & 63)
+        }
+        this.pos += n
+        return c
+    }
+
+    disjunction(): Node {
+        const first = this.alternative()
+        if (this.peek() !== 124) return first
+        const alt = new Node(K_ALT, 0)
+        alt.kids.push(first)
+        while (this.peek() === 124 && this.error === "") {
+            this.pos++
+            alt.kids.push(this.alternative())
+        }
+        return alt
+    }
+
+    alternative(): Node {
+        const seq = new Node(K_SEQ, 0)
+        while (!this.atEnd() && this.error === "") {
+            const c = this.peek()
+            if (c === 124 || c === 41) break
+            const term = this.term()
+            if (this.error !== "") break
+            seq.kids.push(term)
+        }
+        if (seq.kids.length === 1) return seq.kids[0]
+        return seq
+    }
+
+    /** An atom or an assertion, with its quantifier. */
+    term(): Node {
+        const c = this.peek()
+        if (c === 94) {
+            this.pos++
+            return this.unquantifiable(new Node(K_BOL, 0))
+        }
+        if (c === 36) {
+            this.pos++
+            return this.unquantifiable(new Node(K_EOL, 0))
+        }
+        if (c === 92 && (this.peekAt(1) === 98 || this.peekAt(1) === 66)) {
+            const negate = this.peekAt(1) === 66 ? 1 : 0
+            this.pos += 2
+            return this.unquantifiable(new Node(K_WORD, negate))
+        }
+        if (c === 42 || c === 43 || c === 63) return this.fail("Nothing to repeat")
+        if (c === 123 && this.quantifierAhead()) return this.fail("Nothing to repeat")
+        const atom = this.atom()
+        if (this.error !== "") return atom
+        return this.quantified(atom)
+    }
+
+    /** An assertion, which no quantifier may follow. */
+    unquantifiable(node: Node): Node {
+        const c = this.peek()
+        if (c === 42 || c === 43 || c === 63 || (c === 123 && this.quantifierAhead()))
+            return this.fail("Nothing to repeat")
+        return node
+    }
+
+    /** Whether a `{` at the position starts a quantifier: `{n}`, `{n,}` or `{n,m}`. */
+    quantifierAhead(): bool {
+        let i = this.pos + 1
+        const t = this.text
+        const start = i
+        while (i < t.length && isDigit(int(t[i]))) i++
+        if (i === start || i >= t.length) return false
+        if (t[i] === 125) return true
+        if (t[i] !== 44) return false
+        i++
+        while (i < t.length && isDigit(int(t[i]))) i++
+        return i < t.length && t[i] === 125
+    }
+
+    /** A decimal number at the position, at most `limit` (larger ones stay `limit`). */
+    number(limit: int): int {
+        let n = 0
+        while (isDigit(this.peek())) {
+            n = n * 10 + this.peek() - 48
+            if (n > limit) n = limit
+            this.pos++
+        }
+        return n
+    }
+
+    quantified(atom: Node): Node {
+        const c = this.peek()
+        let min = 0
+        let max = 0
+        if (c === 42) {
+            min = 0
+            max = unbounded
+            this.pos++
+        } else if (c === 43) {
+            min = 1
+            max = unbounded
+            this.pos++
+        } else if (c === 63) {
+            min = 0
+            max = 1
+            this.pos++
+        } else if (c === 123 && this.quantifierAhead()) {
+            const limit = 1000000000
+            this.pos++
+            min = this.number(limit)
+            max = min
+            if (this.peek() === 44) {
+                this.pos++
+                max = isDigit(this.peek()) ? this.number(limit) : unbounded
+            }
+            this.pos++
+            if (max !== unbounded && max < min) return this.fail("numbers out of order in {} quantifier")
+        } else {
+            return atom
+        }
+        const repeat = new Node(K_REPEAT, 0)
+        repeat.min = min
+        repeat.max = max
+        if (this.peek() === 63) {
+            repeat.greedy = false
+            this.pos++
+        }
+        repeat.kids.push(atom)
+        return repeat
+    }
+
+    atom(): Node {
+        const c = this.peek()
+        if (c === 46) {
+            this.pos++
+            return new Node(K_ANY, 0)
+        }
+        if (c === 40) return this.group()
+        if (c === 91) return this.characterClass()
+        if (c === 92) return this.atomEscape()
+        const start = this.pos
+        const node = new Node(K_CHAR, this.char())
+        node.from = start
+        node.to = this.pos
+        return node
+    }
+
+    group(): Node {
+        this.pos++
+        let node: Node
+        if (this.peek() === 63) {
+            const kind = this.peekAt(1)
+            if (kind === 58) {
+                this.pos += 2
+                node = this.disjunction()
+            } else if (kind === 61 || kind === 33) {
+                this.pos += 2
+                node = new Node(K_LOOK, kind === 33 ? 1 : 0)
+                node.kids.push(this.disjunction())
+            } else if (kind === 60 && (this.peekAt(2) === 61 || this.peekAt(2) === 33)) {
+                return this.fail("Lookbehind assertions are not supported")
+            } else if (kind === 60) {
+                this.pos += 2
+                const name = this.groupName()
+                if (this.error !== "") return new Node(K_EMPTY, 0)
+                for (const other of this.names) if (other === name) return this.fail("Duplicate capture group name")
+                node = new Node(K_GROUP, this.names.length)
+                this.names.push(name)
+                node.kids.push(this.disjunction())
+            } else {
+                return this.fail("Invalid group")
+            }
+        } else {
+            node = new Node(K_GROUP, this.names.length)
+            this.names.push("")
+            node.kids.push(this.disjunction())
+        }
+        if (this.error !== "") return node
+        if (this.peek() !== 41) return this.fail("Unterminated group")
+        this.pos++
+        return node
+    }
+
+    /** A group's name after `<`, and its `>`. */
+    groupName(): string {
+        const start = this.pos
+        while (!this.atEnd() && this.peek() !== 62) {
+            const at = this.pos
+            const c = this.char()
+            if (!isNameChar(c, at === start)) {
+                this.fail("Invalid capture group name")
+                return ""
+            }
+        }
+        if (this.atEnd() || this.pos === start) {
+            this.fail("Invalid capture group name")
+            return ""
+        }
+        const name = this.text.slice(start, this.pos)
+        this.pos++
+        return name
+    }
+
+    /** An escape outside a class, after which the position is past it. */
+    atomEscape(): Node {
+        this.pos++
+        if (this.atEnd()) return this.fail("\\ at end of pattern")
+        const c = this.peek()
+        if (c >= 49 && c <= 57) {
+            // `\1`..: a backreference when there are that many groups, else an octal escape or the digit.
+            const start = this.pos
+            const n = this.number(1000000)
+            if (n <= this.total) return new Node(K_BACKREF, n)
+            this.pos = start
+            if (c >= 56) {
+                this.pos++
+                return new Node(K_CHAR, c)
+            }
+            return new Node(K_CHAR, this.octal())
+        }
+        if (c === 107 && this.named) {
+            this.pos++
+            if (this.peek() !== 60) return this.fail("Invalid named reference")
+            this.pos++
+            const name = this.groupName()
+            if (this.error !== "") return new Node(K_EMPTY, 0)
+            const ref = new Node(K_BACKREF, 0)
+            ref.name = name
+            this.references.push(ref)
+            return ref
+        }
+        const ranges = classEscape(c)
+        if (ranges !== null) {
+            this.pos++
+            const node = new Node(K_CLASS, 0)
+            node.ranges = ranges
+            return node
+        }
+        return new Node(K_CHAR, this.characterEscape(false))
+    }
+
+    /** Up to three octal digits, at most 0o377. */
+    octal(): int {
+        let n = 0
+        let count = 0
+        while (count < 3 && this.peek() >= 48 && this.peek() <= 55 && n * 8 + this.peek() - 48 <= 255) {
+            n = n * 8 + this.peek() - 48
+            this.pos++
+            count++
+        }
+        return n
+    }
+
+    /** `count` hex digits at the position, or -1 (consuming nothing) when they are not there. */
+    hex(count: int): int {
+        let n = 0
+        for (let i = 0; i < count; i++) {
+            const d = hexValue(this.peekAt(i))
+            if (d < 0) return -1
+            n = n * 16 + d
+        }
+        this.pos += count
+        return n
+    }
+
+    /**
+     * The character of an escape after its `\`, other than a class escape
+     * or a backreference: `\n`, `\x41`, `A`, `\cJ`, `\0`, octal, or the
+     * character itself. In a class, `\b` is a backspace and `\-` a `-`.
+     */
+    characterEscape(inClass: bool): int {
+        const c = this.peek()
+        switch (c) {
+            case 116:
+                this.pos++
+                return 9
+            case 110:
+                this.pos++
+                return 10
+            case 118:
+                this.pos++
+                return 11
+            case 102:
+                this.pos++
+                return 12
+            case 114:
+                this.pos++
+                return 13
+            case 98:
+                this.pos++
+                return 8
+            case 48:
+                this.pos++
+                if (isDigit(this.peek())) {
+                    this.pos--
+                    return this.octal()
+                }
+                return 0
+            case 99: {
+                const letter = this.peekAt(1)
+                if (isLetter(letter) || (inClass && (isDigit(letter) || letter === 95))) {
+                    this.pos += 2
+                    return letter % 32
+                }
+                // A `\` that escapes nothing: the `c` is read next.
+                return 92
+            }
+            case 120: {
+                this.pos++
+                const value = this.hex(2)
+                return value < 0 ? 120 : value
+            }
+            case 117: {
+                this.pos++
+                const value = this.hex(4)
+                if (value < 0) return 117
+                // A surrogate pair written as two escapes is one character.
+                if (value >= 0xd800 && value <= 0xdbff && this.peek() === 92 && this.peekAt(1) === 117) {
+                    const save = this.pos
+                    this.pos += 2
+                    const low = this.hex(4)
+                    if (low >= 0xdc00 && low <= 0xdfff) return 0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00)
+                    this.pos = save
+                }
+                return value
+            }
+        }
+        if (inClass && c >= 49 && c <= 55) return this.octal()
+        return this.char()
+    }
+
+    characterClass(): Node {
+        this.pos++
+        const node = new Node(K_CLASS, 0)
+        if (this.peek() === 94) {
+            node.value = 1
+            this.pos++
+        }
+        const ranges: int[] = []
+        for (;;) {
+            if (this.atEnd()) return this.fail("Unterminated character class")
+            if (this.peek() === 93) {
+                this.pos++
+                break
+            }
+            const first = this.classAtom(ranges)
+            if (this.error !== "") return node
+            if (this.peek() !== 45 || this.peekAt(1) === 93 || this.peekAt(1) === -1) {
+                if (first >= 0) {
+                    ranges.push(first)
+                    ranges.push(first)
+                }
+                continue
+            }
+            // A range `a-b`; with a class escape on either side, `-` is itself (Annex B).
+            this.pos++
+            const last = this.classAtom(ranges)
+            if (this.error !== "") return node
+            if (first < 0 || last < 0) {
+                if (first >= 0) {
+                    ranges.push(first)
+                    ranges.push(first)
+                }
+                if (last >= 0) {
+                    ranges.push(last)
+                    ranges.push(last)
+                }
+                ranges.push(45)
+                ranges.push(45)
+                continue
+            }
+            if (first > last) return this.fail("Range out of order in character class")
+            ranges.push(first)
+            ranges.push(last)
+        }
+        node.ranges = ranges
+        return node
+    }
+
+    /** A character of a class, or -1 for a class escape such as `\d`, whose ranges are added. */
+    classAtom(ranges: int[]): int {
+        if (this.peek() !== 92) return this.char()
+        this.pos++
+        if (this.atEnd()) {
+            this.fail("\\ at end of pattern")
+            return -1
+        }
+        const c = this.peek()
+        const escape = classEscape(c)
+        if (escape !== null) {
+            this.pos++
+            for (const r of escape) ranges.push(r)
+            return -1
+        }
+        if (c === 45) {
+            this.pos++
+            return 45
+        }
+        return this.characterEscape(true)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Compiling
+
+/** Whether a node can match the empty string, so that a loop around it must check its progress. */
+function canBeEmpty(node: Node): bool {
+    switch (node.kind) {
+        case K_CHAR:
+        case K_ANY:
+        case K_CLASS:
+            return false
+        case K_SEQ:
+            for (const kid of node.kids) if (!canBeEmpty(kid)) return false
+            return true
+        case K_ALT:
+            for (const kid of node.kids) if (canBeEmpty(kid)) return true
+            return false
+        case K_GROUP:
+            return canBeEmpty(node.kids[0])
+        case K_REPEAT:
+            return node.min === 0 || canBeEmpty(node.kids[0])
+    }
+    return true
+}
+
+/** The lowest and one past the highest group number in a node, or [0, 0]. */
+function groupSpan(node: Node, span: int[]) {
+    if (node.kind === K_GROUP) {
+        if (span[1] === 0 || node.value < span[0]) span[0] = node.value
+        if (node.value + 1 > span[1]) span[1] = node.value + 1
+    }
+    for (const kid of node.kids) groupSpan(kid, span)
+}
+
+class Compiler {
+    constructor(
+        readonly program: Program,
+        readonly pattern: string,
+    ) {}
+
+    op(code: int) {
+        this.program.code.push(code)
+    }
+
+    /** Emits an instruction with a target filled later; returns the operand's index. */
+    hole(): int {
+        this.program.code.push(-1)
+        return this.program.code.length - 1
+    }
+
+    here(): int {
+        return this.program.code.length
+    }
+
+    patch(at: int) {
+        this.program.code[at] = this.program.code.length
+    }
+
+    emit(node: Node) {
+        const p = this.program
+        if (p.code.length > maxCode) return
+        switch (node.kind) {
+            case K_EMPTY:
+                return
+            case K_CHAR:
+                if (p.ignoreCase) {
+                    this.op(OP_CHAR_I)
+                    this.op(canonicalize(node.value))
+                } else {
+                    this.op(OP_CHAR)
+                    this.op(node.value)
+                }
+                return
+            case K_ANY:
+                this.op(p.dotAll ? OP_ANY_ALL : OP_ANY)
+                return
+            case K_CLASS:
+                this.op(p.ignoreCase ? OP_CLASS_I : OP_CLASS)
+                this.op(p.sets.length)
+                this.op(node.value)
+                p.sets.push(node.ranges)
+                return
+            case K_SEQ:
+                for (const kid of node.kids) this.emit(kid)
+                return
+            case K_ALT: {
+                const ends: int[] = []
+                for (let i = 0; i < node.kids.length; i++) {
+                    if (i < node.kids.length - 1) {
+                        this.op(OP_SPLIT)
+                        this.op(this.here() + 2)
+                        const next = this.hole()
+                        this.emit(node.kids[i])
+                        this.op(OP_JUMP)
+                        ends.push(this.hole())
+                        this.patch(next)
+                    } else {
+                        this.emit(node.kids[i])
+                    }
+                }
+                for (const end of ends) this.patch(end)
+                return
+            }
+            case K_GROUP:
+                this.op(OP_SAVE)
+                this.op(2 * node.value)
+                this.emit(node.kids[0])
+                this.op(OP_SAVE)
+                this.op(2 * node.value + 1)
+                return
+            case K_REPEAT:
+                this.repeat(node)
+                return
+            case K_BOL:
+                this.op(OP_BOL)
+                return
+            case K_EOL:
+                this.op(OP_EOL)
+                return
+            case K_WORD:
+                this.op(OP_WORD)
+                this.op(node.value)
+                return
+            case K_BACKREF:
+                this.op(OP_BACKREF)
+                this.op(node.value)
+                return
+            case K_LOOK: {
+                this.op(OP_LOOK)
+                this.op(node.value)
+                const end = this.hole()
+                this.emit(node.kids[0])
+                this.op(OP_LOOK_END)
+                this.patch(end)
+                return
+            }
+        }
+    }
+
+    /**
+     * A repetition: its atom copied `min` times, then a loop or `max - min`
+     * optional copies. Each iteration starts with the atom's groups unset,
+     * and one beyond the minimum fails when it matches nothing.
+     */
+    repeat(node: Node) {
+        const atom = node.kids[0]
+        if (node.max === 0) return
+        const span = [0, 0]
+        groupSpan(atom, span)
+        const empty = canBeEmpty(atom)
+        for (let i = 0; i < node.min && this.program.code.length <= maxCode; i++) this.iteration(atom, span, -1)
+        if (node.max === unbounded) {
+            const loop = this.here()
+            const exit = this.split(node.greedy)
+            this.iteration(atom, span, empty ? this.register() : -1)
+            this.op(OP_JUMP)
+            this.op(loop)
+            this.patch(exit)
+            return
+        }
+        const exits: int[] = []
+        for (let i = node.min; i < node.max && this.program.code.length <= maxCode; i++) {
+            exits.push(this.split(node.greedy))
+            this.iteration(atom, span, empty ? this.register() : -1)
+        }
+        for (const exit of exits) this.patch(exit)
+    }
+
+    /** A `SPLIT` into the code that follows and an exit, in the order of greediness; returns the exit's hole. */
+    split(greedy: bool): int {
+        this.op(OP_SPLIT)
+        if (greedy) {
+            this.op(this.here() + 2)
+            return this.hole()
+        }
+        const exit = this.hole()
+        this.op(this.here() + 1)
+        return exit
+    }
+
+    register(): int {
+        this.program.slots++
+        return this.program.slots - 1
+    }
+
+    iteration(atom: Node, span: int[], register: int) {
+        if (register >= 0) {
+            this.op(OP_SAVE)
+            this.op(register)
+        }
+        if (span[1] > 0) {
+            this.op(OP_RESET)
+            this.op(2 * span[0])
+            this.op(2 * span[1])
+        }
+        this.emit(atom)
+        if (register >= 0) {
+            this.op(OP_PROGRESS)
+            this.op(register)
+        }
+    }
+
+    /** What every match starts with: literal text, or the start of the input. */
+    start(root: Node) {
+        const p = this.program
+        let first = root
+        if (root.kind === K_SEQ && root.kids.length > 0) first = root.kids[0]
+        if (first.kind === K_BOL && !p.multiline) p.anchored = true
+        if (p.ignoreCase) return
+        let prefix = ""
+        const kids = root.kind === K_SEQ ? root.kids : [root]
+        for (const kid of kids) {
+            if (kid.kind !== K_CHAR || kid.from < 0) break
+            prefix += this.pattern.slice(kid.from, kid.to)
+        }
+        p.prefix = prefix
+    }
+}
