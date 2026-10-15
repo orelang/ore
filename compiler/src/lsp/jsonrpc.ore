@@ -242,6 +242,13 @@ export class Connection {
         }
     }
 
+    /** Whether a message with a method is waiting, among those received so far. */
+    pending(method: string): bool {
+        while (this.take(false)) {}
+        for (const m of this.queue) if (m instanceof Message && m.method === method) return true
+        return false
+    }
+
     /** Writes a message. */
     send(body: string): void {
         fs.write(this.output, frame(body))

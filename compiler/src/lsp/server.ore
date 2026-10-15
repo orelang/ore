@@ -66,6 +66,9 @@ class Document {
         public version: int,
         public text: string,
     ) {}
+
+    /** Changed since its last analysis, which waits for the changes typed right after. */
+    stale = false
 }
 
 /** The text with a change applied: a whole new text, or a range replaced. */
@@ -226,6 +229,11 @@ export class Server {
         for (const change of p.contentChanges) document.text = applyChange(document.text, change)
         const version = p.textDocument.version
         if (version !== null) document.version = version
+        // While typing, only the last of the changes received is analyzed.
+        if (this.connection.pending("textDocument/didChange")) {
+            document.stale = true
+            return
+        }
         this.update(document)
     }
 
@@ -238,8 +246,16 @@ export class Server {
         this.publish(uri, [])
     }
 
+    /** The analysis of an open document, brought up to date if it is stale. */
+    private analysisOf(uri: string): Analysis | null {
+        const document = this.documents.get(uri)
+        if (document !== null && document.stale) this.update(document)
+        return this.analyses.get(uri)
+    }
+
     /** Analyzes a document and publishes its diagnostics. */
     private update(document: Document): void {
+        document.stale = false
         const analysis = analyze(uriToPath(document.uri), document.text)
         this.analyses.set(document.uri, analysis)
         const diagnostics: LspDiagnostic[] = []
@@ -272,7 +288,7 @@ export class Server {
 
     /** The analysis of the current text of a document (kept for an open one), or null if it cannot be read. */
     private fresh(uri: string): Analysis | null {
-        const kept = this.analyses.get(uri)
+        const kept = this.analysisOf(uri)
         if (kept !== null) return kept
         const path = uriToPath(uri)
         const open = this.documents.get(uri)
@@ -307,7 +323,7 @@ export class Server {
     private hover(m: Message): void {
         const p = params<PositionParams>(m)
         if (p instanceof Error) return this.invalid(m, p)
-        const analysis = this.analyses.get(p.textDocument.uri)
+        const analysis = this.analysisOf(p.textDocument.uri)
         const hover = analysis === null ? null : analysis.hover(p.position)
         if (hover === null) return this.connection.respond(m.id, "null")
         const result: { contents: { kind: string; value: string }; range: Range } = {
@@ -334,7 +350,7 @@ export class Server {
     private definition(m: Message): void {
         const p = params<PositionParams>(m)
         if (p instanceof Error) return this.invalid(m, p)
-        const analysis = this.analyses.get(p.textDocument.uri)
+        const analysis = this.analysisOf(p.textDocument.uri)
         const location = analysis === null ? null : analysis.definition(p.position)
         if (location === null) return this.connection.respond(m.id, "null")
         const result: LspLocation = { uri: locationUri(location, p.textDocument.uri), range: location.range }
