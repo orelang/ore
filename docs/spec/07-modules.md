@@ -43,4 +43,12 @@ arguments to, and each argument after the fixed ones converts to it.
 In package.json, `"ore": { "link": [...], "sources": [...] }` adds libraries
 to link (`-l`) and C files, relative to the package, to compile into the
 program. This applies to every package of the program, including
-dependencies in `node_modules`.
+dependencies in `node_modules`. `"libDirs": [...]` adds directories to
+search for the libraries (`-L`): a path relative to the package, or
+`$(command args...)`, the output of a command run without a shell. Entries
+whose directory does not exist, or whose command fails, are skipped, so a
+package can list where a library is on several systems:
+
+```json
+"ore": { "link": ["LLVM"], "libDirs": ["$(llvm-config --libdir)", "/opt/homebrew/opt/llvm/lib"] }
+```

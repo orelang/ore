@@ -64,8 +64,12 @@ export interface PackageJson {
   /** The entry file of a program, or the module imported by a package's name. */
   main?: string
   dependencies?: Record<string, string>
-  /** Native code: libraries to link (`-l`), and C sources relative to the package. */
-  ore?: { link?: string[]; sources?: string[] }
+  /**
+   * Native code: libraries to link (`-l`), C sources relative to the package,
+   * and directories to search for the libraries (`-L`, see `libDirs` of
+   * @ore/driver).
+   */
+  ore?: { link?: string[]; sources?: string[]; libDirs?: string[] }
 }
 
 function isFile(path: string): boolean {

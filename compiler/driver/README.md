@@ -7,4 +7,10 @@ Builds programs.
   its garbage collector, written in Ore) and the C sources of packages into a
   binary with clang. Debug builds use `-O0 -g` and stack traces; `--release`
   uses `-O2` and inlining.
+- `nativeCode(paths)`: the libraries, C sources and library directories that
+  the packages of a program ask for in `"ore"` of their package.json;
+  `libDirs` entries are paths or `$(command ...)`, skipped when missing.
 - `clang.ts`: runs `$CC` (clang by default).
+
+The compiler in Ore builds without clang, through LLVM's C API and lld
+(`compiler/next/src/driver`).
