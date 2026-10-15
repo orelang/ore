@@ -1370,8 +1370,14 @@ function bindArg(
  * the caller. Optional (`x?: T`, `x = value`) and rest (`...xs: T[]`)
  * parameters are recorded in `signatures`.
  */
-export function resolveParams(c: Checker, params_: Node[], scope: Scope): Local[] {
+export function resolveParams(c: Checker, params_: Node[], scope: Scope, properties: bool = false): Local[] {
     const params: Local[] = []
+    // `public x`, `readonly x`: only a constructor's parameters declare fields.
+    if (!properties)
+        for (const p of params_) {
+            const mods = modifiers(p)
+            if (mods.length > 0) c.error(mods[0], "A parameter property is only allowed in a constructor.")
+        }
     // Default values may use the parameters before them: each parameter is
     // declared in a scope of its own, so a value checked later sees only those.
     let defaults = new Scope(scope)

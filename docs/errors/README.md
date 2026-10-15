@@ -388,6 +388,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6058](ORE6058.md) | A function cannot be both '//ore:noinline' and '//ore:inline'. |
 | [ORE6059](ORE6059.md) | Cannot infer type argument… of '…'. Specify them, e.g. '…<...>(...)'. |
 | [ORE6060](ORE6060.md) | A '//ore:naked' function can branch only on conditions known at compile time, such as 'target.arch'. |
+| [ORE6061](ORE6061.md) | A parameter property is only allowed in a constructor. |
 
 ## ORE7xxx: Statements
 
