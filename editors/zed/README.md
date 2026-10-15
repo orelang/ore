@@ -10,7 +10,21 @@ TypeScript; to update them, copy them again from a newer commit.
 `src/lib.rs` starts `ore lsp` for diagnostics, hover, definitions,
 references, rename and completion.
 
-Install: in Zed, `zed: install dev extension` and pick this directory.
+## Install
+
+Each release of Ore has this extension as `ore-zed-vX.Y.Z.zip` (from
+[the releases](https://github.com/orelang/ore/releases)):
+
+1. Unzip it; it unpacks into a directory `ore-zed-vX.Y.Z`. Keep that
+   directory: Zed loads the extension from it.
+2. In Zed, run `zed: install dev extension` (from the command palette, or the
+   Extensions page) and pick that directory.
+
+Zed builds `src/` to WebAssembly itself, so Rust must be installed with
+[rustup](https://rustup.rs) (Zed adds the `wasm32-wasip2` target it
+needs). From a clone of the repository, pick `editors/zed` instead. The
+language server is `ore lsp`, so `ore` must be on `PATH`, or set
+`lsp.ore.binary.path` in Zed's settings.
 
 ## License
 

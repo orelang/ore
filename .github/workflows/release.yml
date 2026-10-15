@@ -3,9 +3,13 @@
 # compiler bootstraps from the previous release (from the seed, the last
 # commit with the compiler in TypeScript, for the first one), checks that it
 # reproduces itself, passes the test suite, and is packed with its LLVM and
-# lld. The archives and SHA256SUMS make a GitHub Release, and the Homebrew
-# formula in orelang/homebrew-tap is updated. GitLab's pipeline for the same
-# tag copies the files to its package registry and its release.
+# lld. The editor extensions, which carry the same version (ci/versions.sh),
+# are packed: the VS Code .vsix and the Zed extension's zip. The archives, the
+# extensions and SHA256SUMS make a GitHub Release, the Homebrew formula in
+# orelang/homebrew-tap is updated, and the .vsix is published to the Visual
+# Studio Marketplace and Open VSX (each only when its token, the secret
+# VSCE_PAT or OVSX_PAT, is set). GitLab's pipeline for the same tag copies the
+# files to its package registry and its release.
 name: release
 
 on:
@@ -64,7 +68,9 @@ jobs:
         run: ci/bootstrap.sh dist
 
       - name: The version is the tag's
-        run: test "v$(dist/ore version)" = "$GITHUB_REF_NAME"
+        run: |
+          test "v$(dist/ore version)" = "$GITHUB_REF_NAME"
+          ci/versions.sh "$GITHUB_REF_NAME"
 
       - name: Tests
         run: ORE=dist/ore ci/test.sh
@@ -77,8 +83,26 @@ jobs:
           name: ore-${{ matrix.os }}-${{ matrix.arch }}
           path: out/*.tar.gz
 
+  extensions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The extensions carry the tag's version
+        run: ci/versions.sh "$GITHUB_REF_NAME"
+      - name: Pack
+        run: ci/extensions.sh "$GITHUB_REF_NAME" out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ore-extensions
+          path: |
+            out/*.vsix
+            out/*.zip
+
   release:
-    needs: build
+    needs: [build, extensions]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -88,13 +112,13 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: out
-        run: sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum *.tar.gz *.vsix *.zip > SHA256SUMS && cat SHA256SUMS
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ci/notes.sh "$GITHUB_REF_NAME" > notes.md
-          gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/*.vsix out/*.zip out/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md
       - uses: actions/upload-artifact@v4
         with:
@@ -126,3 +150,32 @@ jobs:
           git add Formula/ore.rb
           git commit -qm "ore ${GITHUB_REF_NAME#v}"
           git push -q origin HEAD
+
+  # The .vsix of the release, to the Visual Studio Marketplace (publisher
+  # ore-lang, token VSCE_PAT) and to Open VSX (namespace ore-lang, token
+  # OVSX_PAT). Without its secret, a step is skipped with a notice.
+  vscode:
+    needs: release
+    runs-on: ubuntu-24.04
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ore-extensions
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Visual Studio Marketplace
+        if: env.VSCE_PAT != ''
+        run: npx --yes @vscode/vsce@3.2.1 publish --skip-duplicate --packagePath "ore-vscode-$GITHUB_REF_NAME.vsix"
+      - name: Visual Studio Marketplace (no VSCE_PAT)
+        if: env.VSCE_PAT == ''
+        run: echo "::notice::VSCE_PAT is not set; the extension is not published to the Visual Studio Marketplace"
+      - name: Open VSX
+        if: env.OVSX_PAT != ''
+        run: npx --yes ovsx@1.2.0 publish --skip-duplicate -p "$OVSX_PAT" "ore-vscode-$GITHUB_REF_NAME.vsix"
+      - name: Open VSX (no OVSX_PAT)
+        if: env.OVSX_PAT == ''
+        run: echo "::notice::OVSX_PAT is not set; the extension is not published to Open VSX"

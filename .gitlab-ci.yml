@@ -41,9 +41,14 @@ release:
       set -e
       CI_COMMIT_TAG=${CI_COMMIT_TAG:-$RELEASE_TAG}
       api="https://api.github.com/repos/orelang/ore/releases/tags/$CI_COMMIT_TAG"
-      # The GitHub workflow builds three platforms first: wait for its release.
+      # The GitHub workflow builds three platforms first: wait for its release,
+      # until it has SHA256SUMS and every file listed there (the archives and
+      # the editor extensions).
       for attempt in $(seq 1 180); do
-        if curl -fsSL "$api" -o release.json && [ "$(jq '[.assets[].name] | length' release.json)" -ge 4 ]; then break; fi
+        if curl -fsSL "$api" -o release.json \
+          && sums=$(jq -r '.assets[] | select(.name == "SHA256SUMS") | .browser_download_url' release.json) \
+          && [ -n "$sums" ] && curl -fsSL "$sums" -o SHA256SUMS \
+          && [ "$(jq --rawfile sums SHA256SUMS '($sums | split("\n") | map(select(length > 0) | split("  ")[1])) - [.assets[].name] | length' release.json)" = 0 ]; then break; fi
         sleep 30
       done
       jq -r '.assets[] | .browser_download_url' release.json | while read -r url; do curl -fsSL -O "$url"; done
