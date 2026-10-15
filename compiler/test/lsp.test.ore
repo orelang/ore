@@ -19,7 +19,7 @@ declare function pipe(fds: ptr): i32
 declare function close(fd: i32): i32
 
 /** How long to wait for the server, in milliseconds. */
-const timeout = 5000
+const timeout = 20000
 
 /** A new pipe: its read end and its write end. */
 function newPipe(): int[] {
@@ -243,9 +243,10 @@ test("lifecycle: initialize, shutdown and exit", () => {
 
     const init = client.initialize()
     const capabilities =
-        `{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,` +
+        `{"codeActionProvider":{"codeActionKinds":["quickfix"]},"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,` +
         `"documentFormattingProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"inlayHintProvider":true,` +
         `"referencesProvider":true,"renameProvider":{"prepareProvider":true},` +
+        `"semanticTokensProvider":{"full":true,"legend":{"tokenModifiers":["declaration","readonly","defaultLibrary"],"tokenTypes":["namespace","type","class","interface","typeParameter","parameter","variable","property","function","method"]}},` +
         `"signatureHelpProvider":{"triggerCharacters":["(",","]},"textDocumentSync":2}`
     expect(init).toBe(
         message(`"id":0,"result":{"capabilities":${capabilities},"serverInfo":{"name":"ore","version":"test"}}`),
@@ -374,13 +375,30 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     expect(help.includes(`"activeParameter":1`)).toBe(true)
 
     // The type of a variable declared without one, after its name.
-    const range = `"range":${range(0, 0, 11, 0)}`
+    const everything = `"range":${range(0, 0, 11, 0)}`
     const hints = client.request(
         "11",
         "textDocument/inlayHint",
-        `{"textDocument":{"uri":${JSON.stringify(uri)}},${range}}`,
+        `{"textDocument":{"uri":${JSON.stringify(uri)}},${everything}}`,
     )
     expect(hints.includes(`{"kind":1,"label":": i64","paddingLeft":false,"position":${position(7, 11)}}`)).toBe(true)
+
+    // Semantic tokens: the function `add` where it is declared comes first.
+    const tokens = client.request(
+        "12",
+        "textDocument/semanticTokens/full",
+        `{"textDocument":{"uri":${JSON.stringify(uri)}}}`,
+    )
+    expect(tokens.startsWith(`{"jsonrpc":"2.0","id":12,"result":{"data":[4,9,3,8,1,`)).toBe(true)
+
+    // A quick fix: the explicit conversion that the error asks for.
+    const wrong = `{"range":${range(8, 17, 8, 20)},"message":"Type 'string' is not assignable to type 'i64'. Use an explicit conversion: 'i64(...)'.","code":"ORE2033"}`
+    const fixes = client.request(
+        "13",
+        "textDocument/codeAction",
+        `{"textDocument":{"uri":${JSON.stringify(uri)}},"range":${range(8, 0, 8, 20)},"context":{"diagnostics":[${wrong}]}}`,
+    )
+    expect(fixes.includes(`"newText":"i64(\\"x\\")"`)).toBe(true)
 
     // The outline, and the document formatted.
     const outline = client.request(

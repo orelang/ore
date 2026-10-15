@@ -11,7 +11,9 @@ before 1.0, a minor version may change the language.
   signature or type and the JSDoc comment, go to definition (also into the
   standard library), completion after `.` with the members' comments,
   signature help, references and rename across the workspace, formatting,
-  the outline, and the inferred types of variables as inlay hints.
+  the outline, the inferred types of variables as inlay hints, semantic
+  tokens from the checker, and quick fixes for the errors that say their fix
+  (an explicit conversion, `===`, `let`, a misspelled name, an extra `!`).
 - A build cache in `~/.cache/ore` (`$ORE_CACHE`, `$XDG_CACHE_HOME`;
   `ORE_CACHE=off` turns it off): LLVM's object files are kept by a hash of
   their IR, the compiler and the target. Debug builds are split by source

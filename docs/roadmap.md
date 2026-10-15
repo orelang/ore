@@ -85,7 +85,7 @@ exports, type assertions (Ore converts: `i32(x)`).
 - The language server on the checker: diagnostics with codes, hover with
   JSDoc, go to definition, completion with JSDoc, signature help,
   references and rename across the workspace, formatting, the outline,
-  inlay hints of inferred types (done); semantic tokens, quick fixes, and
+  inlay hints of inferred types, semantic tokens, quick fixes (done);
   checking the runtime once rather than on every change.
 - Diagnostics with codes (`ORE1234`) and a page per code in the
   documentation, linked from the editor (`codeDescription`) and printed by

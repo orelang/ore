@@ -2,7 +2,7 @@
 // kept as the client edits them (full or incremental changes, positions in
 // UTF-16 units) and analyzed on every change, which publishes diagnostics.
 
-import { analyze, type Analysis, type Location, type Reference } from "./analysis"
+import { analyze, tokenModifiers, tokenTypes, type Analysis, type Location, type Reference } from "./analysis"
 import {
     Connection,
     InvalidParams,
@@ -51,6 +51,20 @@ type LspDiagnostic = {
 }
 type LspLocation = { uri: string; range: Range }
 type TextEdit = { range: Range; newText: string }
+/** A diagnostic as a client sends it back in a code action request. */
+type ClientDiagnostic = { range: Range; message: string; code: string | null }
+type CodeActionParams = {
+    textDocument: TextDocumentIdentifier
+    range: Range
+    context: { diagnostics: ClientDiagnostic[] }
+}
+type CodeAction = {
+    title: string
+    kind: string
+    diagnostics: ClientDiagnostic[]
+    isPreferred: bool
+    edit: { changes: Map<string, TextEdit[]> }
+}
 
 /** TextDocumentSyncKind.Incremental */
 const syncIncremental = 2
@@ -164,6 +178,18 @@ export class Server {
             case "textDocument/formatting":
                 this.formatting(m)
                 return
+            case "textDocument/semanticTokens/full": {
+                const p = params<{ textDocument: TextDocumentIdentifier }>(m)
+                if (p instanceof Error) return this.invalid(m, p)
+                const analysis = this.analysisOf(p.textDocument.uri)
+                const data: int[] = analysis !== null ? analysis.semanticTokens() : []
+                const result: { data: int[] } = { data }
+                this.connection.respond(m.id, JSON.stringify(result))
+                return
+            }
+            case "textDocument/codeAction":
+                this.codeAction(m)
+                return
             case "textDocument/inlayHint": {
                 const p = params<{ textDocument: TextDocumentIdentifier; range: Range }>(m)
                 if (p instanceof Error) return this.invalid(m, p)
@@ -236,6 +262,8 @@ export class Server {
                 documentFormattingProvider: true,
                 documentSymbolProvider: true,
                 inlayHintProvider: true,
+                semanticTokensProvider: { legend: { tokenTypes, tokenModifiers }, full: true },
+                codeActionProvider: { codeActionKinds: ["quickfix"] },
             },
             serverInfo: { name: "ore", version: this.version },
         }
@@ -424,6 +452,31 @@ export class Server {
         this.connection.respond(m.id, JSON.stringify(edits))
     }
 
+    /** Quick fixes of the diagnostics in the range that have a mechanical fix. */
+    private codeAction(m: Message): void {
+        const p = params<CodeActionParams>(m)
+        if (p instanceof Error) return this.invalid(m, p)
+        const uri = p.textDocument.uri
+        const document = this.documents.get(uri)
+        const actions: CodeAction[] = []
+        if (document !== null) {
+            for (const d of p.context.diagnostics) {
+                const fix = quickFix(document.text, d.message, d.range)
+                if (fix === null) continue
+                const changes = new Map<string, TextEdit[]>()
+                changes.set(uri, [fix.edit])
+                actions.push({
+                    title: fix.title,
+                    kind: "quickfix",
+                    diagnostics: [d],
+                    isPreferred: true,
+                    edit: { changes },
+                })
+            }
+        }
+        this.connection.respond(m.id, JSON.stringify(actions))
+    }
+
     private signatureHelp(m: Message): void {
         const p = params<PositionParams>(m)
         if (p instanceof Error) return this.invalid(m, p)
@@ -522,6 +575,47 @@ function locationUri(location: Location, current: string): string {
     fs.mkdir(dirname(path), true)
     fs.writeFile(path, text)
     return pathToUri(path)
+}
+
+/** A fix of a diagnostic: what it does, and the edit. */
+class QuickFix {
+    constructor(
+        readonly title: string,
+        readonly edit: TextEdit,
+    ) {}
+}
+
+/**
+ * The fix of a diagnostic that says the change to make: an explicit
+ * conversion, `===` for `==`, `let` for `var`, a name for a misspelled
+ * one, a `!` that is not needed. Null for the others.
+ */
+function quickFix(text: string, message: string, range: Range): QuickFix | null {
+    const start = offsetAt(text, range.start)
+    const end = offsetAt(text, range.end)
+    const written = text.slice(start, end)
+    const conversion = "Use an explicit conversion: '"
+    const at = message.indexOf(conversion)
+    if (at >= 0) {
+        const rest = message.slice(at + conversion.length)
+        const open = rest.indexOf("(")
+        if (open > 0) {
+            const name = rest.slice(0, open)
+            return new QuickFix(`Convert with '${name}(...)'`, { range, newText: `${name}(${written})` })
+        }
+    }
+    if (message.endsWith("'!' is not needed.") && written.endsWith("!"))
+        return new QuickFix("Remove the '!'", { range, newText: written.slice(0, written.length - 1) })
+    if (message.startsWith("'var' is not supported in Ore.") && written.startsWith("var"))
+        return new QuickFix("Use 'let'", { range, newText: `let${written.slice(3)}` })
+    // "'==' is not supported in Ore. Use '==='." and "Cannot find name 'x'. Use 'y'.": the written text replaced.
+    const use = message.lastIndexOf(" Use '")
+    if (use >= 0 && message.endsWith("'.")) {
+        const replacement = message.slice(use + 6, message.length - 2)
+        if (!replacement.includes("'") && !replacement.includes("(") && replacement !== written)
+            return new QuickFix(`Use '${replacement}'`, { range, newText: replacement })
+    }
+    return null
 }
 
 /** Adds the .ore files below a directory, outside node_modules, dist, target and hidden directories. */

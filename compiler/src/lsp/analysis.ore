@@ -100,7 +100,24 @@ export interface Analysis {
     symbols(): DocumentSymbol[]
     /** The inferred types of the variables and parameters declared without one in a range. */
     inlayHints(range: Range): InlayHint[]
+    /** The semantic tokens of the document, encoded as LSP sends them (see `tokenTypes`). */
+    semanticTokens(): int[]
 }
+
+/** The legend of semantic tokens: their types and modifiers, by index. */
+export const tokenTypes = [
+    "namespace",
+    "type",
+    "class",
+    "interface",
+    "typeParameter",
+    "parameter",
+    "variable",
+    "property",
+    "function",
+    "method",
+]
+export const tokenModifiers = ["declaration", "readonly", "defaultLibrary"]
 
 // LSP's SymbolKind.
 const kindNamespace = 3
@@ -476,6 +493,45 @@ class CheckedAnalysis {
         }
     }
 
+    semanticTokens(): int[] {
+        const data: int[] = []
+        const source = this.source
+        const info = this.info
+        if (source === null || info === null) return data
+        const identifiers: Node[] = []
+        collectIdentifiers(source.ast, identifiers)
+        const parents = this.parentsOf(source)
+        let line = 0
+        let character = 0
+        for (const identifier of identifiers) {
+            const decl = this.declarationOf(identifier)
+            if (decl === null) continue
+            const declSource = this.sourceOf(decl)
+            if (declSource === null) continue
+            let type = tokenType(decl, declSource, this.parentsOf(declSource))
+            if (type < 0) continue
+            let modifiers = 0
+            const name = this.nameOf(decl)
+            // A parameter property (`constructor(readonly x: int)`) is a field where it is used.
+            if (type === 5 && name !== identifier && decl.list("modifiers").length > 0) type = 7
+            if (name === identifier) modifiers |= 1
+            if (isReadonly(decl, declSource, this.parentsOf(declSource))) modifiers |= 2
+            if (!isAbsolute(this.pathOf(declSource))) modifiers |= 4
+            const start = positionAt(this.text, identifier.start)
+            const end = positionAt(this.text, identifier.end)
+            if (start.line !== end.line) continue
+            const deltaLine = start.line - line
+            data.push(deltaLine)
+            data.push(deltaLine === 0 ? start.character - character : start.character)
+            data.push(end.character - start.character)
+            data.push(type)
+            data.push(modifiers)
+            line = start.line
+            character = start.character
+        }
+        return data
+    }
+
     inlayHints(range: Range): InlayHint[] {
         const found: InlayHint[] = []
         const source = this.source
@@ -779,6 +835,67 @@ function moduleName(path: string): string {
     if (dir.endsWith("/runtime/core")) module = `ore:runtime/${name}`
     else if (dir.endsWith("/runtime/std")) module = `ore:${name}`
     return module !== "" && stdModules.has(module) ? module : ""
+}
+
+/** The index in `tokenTypes` of what a declaration declares, or -1. */
+function tokenType(decl: Node, source: Source, parents: Parents): int {
+    let k = decl.kind
+    let node = decl
+    // A name declared by itself: a variable, a parameter or a binding element, by its parent.
+    if (k === "Identifier") {
+        const parent = parents.of.get(decl)
+        if (parent === null) return 6
+        node = parent
+        k = parent.kind
+    }
+    switch (k) {
+        case "ModuleDeclaration":
+            return 0
+        case "TypeAliasDeclaration":
+            return 1
+        case "ClassDeclaration":
+            return 2
+        case "InterfaceDeclaration":
+            return 3
+        case "TypeParameter":
+            return 4
+        case "Parameter":
+            // A parameter property is a field too, but where it is declared it is a parameter.
+            return 5
+        case "VariableDeclaration":
+        case "BindingElement":
+            return 6
+        case "PropertyDeclaration":
+        case "PropertySignature":
+        case "PropertyAssignment":
+        case "ShorthandPropertyAssignment":
+        case "GetAccessor":
+        case "SetAccessor":
+            return 7
+        case "FunctionDeclaration":
+            return 8
+        case "MethodDeclaration":
+        case "MethodSignature":
+            return 9
+        default:
+            return node === decl ? -1 : 6
+    }
+}
+
+/** Whether a declaration is read-only: a `const`, or a `readonly` field. */
+function isReadonly(decl: Node, source: Source, parents: Parents): bool {
+    let node: Node | null = decl
+    while (node !== null) {
+        const k = node.kind
+        if (k === "VariableDeclarationList") return source.text.slice(node.start, node.end).startsWith("const")
+        if (k === "PropertyDeclaration" || k === "PropertySignature" || k === "Parameter") {
+            const name = node.child("name")
+            return name !== null && source.text.slice(node.start, name.start).includes("readonly")
+        }
+        if (k === "VariableStatement" || k === "Block" || k === "SourceFile") return false
+        node = parents.of.get(node)
+    }
+    return false
 }
 
 /** The innermost identifier at a byte offset, or ending there. */
