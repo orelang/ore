@@ -1,0 +1,195 @@
+// Splitting a module's LLVM IR into parts that LLVM compiles in parallel,
+// for debug builds: code generation is the slowest step there, and it runs on
+// one thread per module. Every part has the module's types, declarations and
+// attributes; the functions are shared out by size; the globals (constants
+// and strings included) are defined in part 0 only, so that each has one
+// address, as an interface table must, and declared in the others. What was
+// internal or private becomes hidden: visible to the other parts, not outside
+// the executable. A function defined in one part is declared in the others.
+//
+// The text is the emitter's (llvm/emit.ore), whose shapes are few: a
+// definition starts a line with `define` and ends at a line `}`; a global is
+// one line `@name = ... global|constant <type> <value>`.
+
+/** A function of the module: its definition, made hidden, and its declaration for the other parts. */
+class Function {
+    constructor(
+        readonly definition: string,
+        readonly declaration: string,
+    ) {}
+}
+
+/** A global: its definition, made hidden, for part 0, and its declaration for the others. */
+class Global {
+    constructor(
+        readonly definition: string,
+        readonly declaration: string,
+    ) {}
+}
+
+/**
+ * The IR of `ir` in at most `parts` modules, which together define what it
+ * does; one when `parts` is 1 or there are too few functions to share.
+ */
+export function splitModule(ir: string, parts: int): string[] {
+    if (parts <= 1) return [ir]
+    const shared: string[] = []
+    const globals: Global[] = []
+    const functions: Function[] = []
+    let at = 0
+    while (at < ir.length) {
+        let end = ir.indexOf("\n", at)
+        if (end < 0) end = ir.length
+        const line = ir.slice(at, end)
+        if (line.startsWith("define ")) {
+            // The body runs to the line that is a single `}`.
+            let close = ir.indexOf("\n}\n", end)
+            close = close < 0 ? ir.length : close + 2
+            functions.push(new Function(hidden(line, "define ") + ir.slice(end, close), declareFunction(line)))
+            at = close + 1
+            continue
+        }
+        if (line.startsWith("@")) globals.push(splitGlobal(line))
+        else shared.push(line)
+        at = end + 1
+    }
+    if (functions.length < parts * 4) return [ir]
+
+    // The largest functions first, each to the part with the least code so far.
+    const order: int[] = []
+    for (let i = 0; i < functions.length; i++) order.push(i)
+    order.sort((a, b) => functions[b].definition.length - functions[a].definition.length)
+    const owner: int[] = []
+    for (let i = 0; i < functions.length; i++) owner.push(0)
+    const sizes: int[] = []
+    for (let p = 0; p < parts; p++) sizes.push(0)
+    for (const i of order) {
+        let smallest = 0
+        for (let p = 1; p < parts; p++) if (sizes[p] < sizes[smallest]) smallest = p
+        owner[i] = smallest
+        sizes[smallest] += functions[i].definition.length
+    }
+
+    const header = shared.join("\n")
+    const result: string[] = []
+    for (let p = 0; p < parts; p++) {
+        const text: string[] = [header]
+        for (const g of globals) text.push(p === 0 ? g.definition : g.declaration)
+        for (let i = 0; i < functions.length; i++)
+            text.push(owner[i] === p ? functions[i].definition : functions[i].declaration)
+        text.push("")
+        result.push(text.join("\n"))
+    }
+    return result
+}
+
+/** `line` with an internal or private linkage after `prefix` made hidden. */
+function hidden(line: string, prefix: string): string {
+    const rest = line.slice(prefix.length)
+    if (rest.startsWith("internal ")) return `${prefix}hidden ${rest.slice(9)}`
+    if (rest.startsWith("private ")) return `${prefix}hidden ${rest.slice(8)}`
+    return line
+}
+
+/**
+ * The declaration of the function a `define` line starts: its return type,
+ * name and parameter types, hidden unless it is external; without the
+ * parameters' names and the function's attributes.
+ */
+function declareFunction(line: string): string {
+    let rest = line.slice("define ".length)
+    let visibility = ""
+    if (rest.startsWith("internal ")) {
+        rest = rest.slice(9)
+        visibility = "hidden "
+    } else if (rest.startsWith("private ")) {
+        rest = rest.slice(8)
+        visibility = "hidden "
+    }
+    const open = rest.indexOf("(")
+    const close = matching(rest, open)
+    const types: string[] = []
+    for (const parameter of splitTopLevel(rest.slice(open + 1, close))) {
+        const p = parameter.trim()
+        if (p === "") continue
+        // The last word is the parameter's name, such as %p0.
+        const space = p.lastIndexOf(" ")
+        types.push(space > 0 && p.slice(space + 1).startsWith("%") ? p.slice(0, space) : p)
+    }
+    return `declare ${visibility}${rest.slice(0, open)}(${types.join(", ")})`
+}
+
+/** The index of the bracket that closes the one at `open`. */
+function matching(text: string, open: int): int {
+    let depth = 0
+    for (let i = open; i < text.length; i++) {
+        const c = text[i]
+        // ( [ { < open, ) ] } > close.
+        if (c === 0x28 || c === 0x5b || c === 0x7b || c === 0x3c) depth++
+        else if (c === 0x29 || c === 0x5d || c === 0x7d || c === 0x3e) {
+            depth--
+            if (depth === 0) return i
+        }
+    }
+    return text.length
+}
+
+/** `text` split at the commas outside any brackets. */
+function splitTopLevel(text: string): string[] {
+    const parts: string[] = []
+    let depth = 0
+    let start = 0
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i]
+        if (c === 0x28 || c === 0x5b || c === 0x7b || c === 0x3c) depth++
+        else if (c === 0x29 || c === 0x5d || c === 0x7d || c === 0x3e) depth--
+        else if (c === 0x2c && depth === 0) {
+            parts.push(text.slice(start, i))
+            start = i + 1
+        }
+    }
+    parts.push(text.slice(start))
+    return parts
+}
+
+/**
+ * A global's definition, hidden, and its declaration: `@name = external
+ * [hidden] [thread_local] [unnamed_addr] global|constant <type>`.
+ */
+function splitGlobal(line: string): Global {
+    const equals = line.indexOf(" = ")
+    const name = line.slice(0, equals)
+    const definition = hidden(line, `${name} = `)
+    const words = line.slice(equals + 3)
+    let keyword = words.indexOf(" global ")
+    let kind = "global"
+    const constant = words.indexOf(" constant ")
+    if (keyword < 0 || (constant >= 0 && constant < keyword)) {
+        keyword = constant
+        kind = "constant"
+    }
+    if (words.startsWith("global ")) {
+        keyword = -1
+        kind = "global"
+    } else if (words.startsWith("constant ")) {
+        keyword = -1
+        kind = "constant"
+    }
+    const qualifiers = keyword < 0 ? "" : words.slice(0, keyword)
+    const after = words.slice(keyword < 0 ? kind.length + 1 : keyword + kind.length + 2)
+    let visibility = ""
+    let flags = ""
+    for (const q of qualifiers.split(" ")) {
+        if (q === "internal" || q === "private") visibility = "hidden "
+        else if (q === "thread_local" || q === "unnamed_addr") flags += `${q} `
+    }
+    return new Global(definition, `${name} = external ${visibility}${flags}${kind} ${leadingType(after)}`)
+}
+
+/** The type at the start of `text`: a bracketed type such as `[3 x i8]` or `{ ptr, i64 }`, or one word. */
+function leadingType(text: string): string {
+    const c = text[0]
+    if (c === 0x5b || c === 0x7b || c === 0x3c) return text.slice(0, matching(text, 0) + 1)
+    const space = text.indexOf(" ")
+    return space < 0 ? text : text.slice(0, space)
+}

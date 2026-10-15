@@ -238,6 +238,10 @@ class Dumper {
         this.line(depth, `target: iface-field ${t.index}`)
         this.expr(t.value, d, "value")
         return
+      case "union-field":
+        this.line(depth, `target: union-field ${t.name}`)
+        this.expr(t.value, d, "value")
+        return
     }
   }
 

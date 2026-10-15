@@ -88,6 +88,13 @@ export abstract class CheckerBase {
   /** Checks of generic instances, run after the other bodies. */
   protected readonly pending: (() => void)[] = []
 
+  /**
+   * Set when a class is constructed before its constructor is declared, in
+   * the default value of a parameter without a type: the value gives its type,
+   * and is checked once every declaration is known.
+   */
+  protected constructedEarly = false
+
   /** The generic and type arguments of each instance type. */
   protected readonly instanceOf = new Map<Type, { generic: Generic; args: Type[] }>()
 

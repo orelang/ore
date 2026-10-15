@@ -1,7 +1,7 @@
 // Emits an LLVM IR module for an Ore module: the layers of ModuleEmitter put together.
 import * as ir from "@ore/ir"
 import { inlineCalls, planStack } from "@ore/opt"
-import { globalName, sizeOf } from "./ll"
+import { FRAME_POINTER, globalName, sizeOf } from "./ll"
 import { type EmitOptions, STR, FN, IFACE, FRAME, ARRAY, MAP } from "./context"
 import { findGlobals } from "./helpers"
 import { JsonEmitter } from "./json"
@@ -55,13 +55,14 @@ export class ModuleEmitter extends JsonEmitter {
       if (this.plan.ctorsAt.has(func)) this.out.push(this.function(func, true))
     }
     const inits = m.inits.map((f) => `  call void ${globalName(f.name)}()`)
-    this.out.push(["define void @ore_entry() {", ...inits, "  ret void", "}"].join("\n"))
+    this.out.push(["define void @ore_entry() #0 {", ...inits, "  ret void", "}"].join("\n"))
     // The runtime declares ore_entry to take its address; the definition is here.
     this.decls.delete("@ore_entry")
     // The table of globals for the collector's roots, read through two functions the runtime declares.
     this.out.push(`@ore.globals = internal constant [${roots.length} x { ptr, i64 }] [${roots.join(", ")}]`)
-    this.out.push("define ptr @ore_globals_table() {\n  ret ptr @ore.globals\n}")
-    this.out.push(`define i64 @ore_globals_count() {\n  ret i64 ${roots.length}\n}`)
+    this.out.push("define ptr @ore_globals_table() #0 {\n  ret ptr @ore.globals\n}")
+    this.out.push(`define i64 @ore_globals_count() #0 {\n  ret i64 ${roots.length}\n}`)
+    this.out.push(FRAME_POINTER)
     this.decls.delete("@ore_globals_table")
     this.decls.delete("@ore_globals_count")
     return [

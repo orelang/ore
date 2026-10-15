@@ -2,11 +2,11 @@
 // compiler/codegen/src/collections.ts.
 
 import { type ArrayMethod, type ChanOp, type Itab, type MapOp, type SetOp } from "../ir/nodes"
-import { findMethod, FuncType, isStringLike, typeKey, types, type Type, type UnionType } from "../ir/types"
+import { findMethod, FuncType, isStringLike, typeKey, types, unionRepr, type Type, type UnionType } from "../ir/types"
 import { callClosure, helper, toStr } from "./calls"
 import { ARRAY, FN, MAP, STR } from "./context"
 import { Emitter } from "./base"
-import { choose, compare, convert, equals, expr, inject, recast, unionOf } from "./expressions"
+import { choose, compare, convert, equals, expr, inject, payload, recast, slotTest, unionOf } from "./expressions"
 import { typeId } from "./helpers"
 import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
 
@@ -255,29 +255,82 @@ export function keyFunctions(g: Emitter, key: Type): KeyFunctions {
     // Both take an unused environment first, so that the runtime calls them as closures.
     helper(g, hash, `define internal i64 ${hash}(ptr %env, ptr %k)`, (e) => {
         const k = e.load("%k", key)
-        let h: V
-        if (key.kind === "float") h = e.rt("ore_rt_hash_f64", [convert(e, k, key, types.f64)])
-        else if (isStringLike(key)) {
-            const data = e.extract(k, 0, "ptr")
-            const len = e.extract(k, 1, "i64")
-            h = e.rt("ore_rt_hash_bytes", [data, len])
-        } else if (key.kind === "interface") h = e.rt("ore_rt_hash_u64", [e.b.value("i64", `ptrtoint ptr ${e.extract(k, 0, "ptr").v} to i64`)])
-        else if (k.ty === "ptr") h = e.rt("ore_rt_hash_u64", [e.b.value("i64", `ptrtoint ptr ${k.v} to i64`)])
-        else h = e.rt("ore_rt_hash_u64", [e.intToI64(k, key)])
-        e.b.terminate(`ret i64 ${h.v}`)
+        e.b.terminate(`ret i64 ${keyHash(e, k, key).v}`)
     })
     helper(g, eq, `define internal i1 ${eq}(ptr %env, ptr %a, ptr %b)`, (e) => {
         const a = e.load("%a", key)
         const b = e.load("%b", key)
-        let same: V
-        if (key.kind === "float") {
-            const x = convert(e, a, key, types.f64)
-            const y = convert(e, b, key, types.f64)
-            same = e.rtBool("ore_rt_same_f64", [x, y])
-        } else same = equals(e, a, b, key)
-        e.b.terminate(`ret i1 ${same.v}`)
+        e.b.terminate(`ret i1 ${keyEquals(e, a, b, key).v}`)
     })
     return { hash, eq }
+}
+
+/** The hash of a map key. */
+function keyHash(g: Emitter, k: V, key: Type): V {
+    if (key.kind === "union") return unionKeyHash(g, k, key)
+    if (key.kind === "float") return g.rt("ore_rt_hash_f64", [convert(g, k, key, types.f64)])
+    if (isStringLike(key)) {
+        const data = g.extract(k, 0, "ptr")
+        const len = g.extract(k, 1, "i64")
+        return g.rt("ore_rt_hash_bytes", [data, len])
+    }
+    if (key.kind === "interface") return g.rt("ore_rt_hash_u64", [g.b.value("i64", `ptrtoint ptr ${g.extract(k, 0, "ptr").v} to i64`)])
+    if (k.ty === "ptr") return g.rt("ore_rt_hash_u64", [g.b.value("i64", `ptrtoint ptr ${k.v} to i64`)])
+    return g.rt("ore_rt_hash_u64", [g.intToI64(k, key)])
+}
+
+/** The hash of a union key: the hash of its member's value plus the member's index. */
+function unionKeyHash(g: Emitter, k: V, u: UnionType): V {
+    if (unionRepr(u).k === "strings") return keyHash(g, k, types.string)
+    const result = g.b.alloca("i64")
+    const end = g.b.label("khash")
+    for (let i = 0; i < u.members.length; i++) {
+        const m = u.members[i]
+        const here = g.b.label("kmember")
+        const next = g.b.label("knext")
+        g.b.condBr(slotTest(g, u, k, i), here, next)
+        g.b.start(here)
+        const h = m.kind === "null" ? "0" : keyHash(g, payload(g, u, k, i), m).v
+        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${h}, ${i}`).v}, ptr ${result}`)
+        g.b.br(end)
+        g.b.start(next)
+    }
+    g.b.terminate("unreachable")
+    g.b.start(end)
+    return g.b.value("i64", `load i64, ptr ${result}`)
+}
+
+/** Whether two map keys are the same key. */
+function keyEquals(g: Emitter, a: V, b: V, key: Type): V {
+    if (key.kind === "float") {
+        const x = convert(g, a, key, types.f64)
+        const y = convert(g, b, key, types.f64)
+        return g.rtBool("ore_rt_same_f64", [x, y])
+    }
+    if (key.kind !== "union" || unionRepr(key).k !== "tagged") return equals(g, a, b, key)
+    // The same member, with the same value as that member's keys.
+    const u = key
+    const result = g.b.alloca("i1")
+    g.b.emit(`store i1 false, ptr ${result}`)
+    const end = g.b.label("keq")
+    const sameTag = g.b.value("i1", `icmp eq i32 ${g.extract(a, 0, "i32").v}, ${g.extract(b, 0, "i32").v}`)
+    const check = g.b.label("ktag")
+    g.b.condBr(sameTag, check, end)
+    g.b.start(check)
+    for (let i = 0; i < u.members.length; i++) {
+        const m = u.members[i]
+        const here = g.b.label("kmember")
+        const next = g.b.label("knext")
+        g.b.condBr(slotTest(g, u, a, i), here, next)
+        g.b.start(here)
+        const same = m.kind === "null" ? "true" : keyEquals(g, payload(g, u, a, i), payload(g, u, b, i), m).v
+        g.b.emit(`store i1 ${same}, ptr ${result}`)
+        g.b.br(end)
+        g.b.start(next)
+    }
+    g.b.terminate("unreachable")
+    g.b.start(end)
+    return g.b.value("i1", `load i1, ptr ${result}`)
 }
 
 export function mapOp(g: Emitter, e: MapOp): V {

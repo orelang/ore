@@ -74,7 +74,7 @@ export function declareClass(c: Checker, decl: Node, scope: Scope) {
         return
     }
     c.module.structs.push(type)
-    c.memberDecls.set(type.id, new Map<string, Node>())
+    c.memberDecls.set(type, new Map<string, Node>())
     const ctorThis = c.newLocal("this", type, false)
     c.classes.push(new ClassInfo(decl, type, scope, c.prefix + cIdent(name), [], [], ctorThis, []))
 }
@@ -93,7 +93,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
     const decl = info.decl
     const type = info.type
     const className = type.name!
-    const decls = c.memberDecls.get(type.id)!
+    const decls = c.memberDecls.get(type)!
 
     for (const member of members(decl)) {
         if (member.kind === "SemicolonClassElement") continue
@@ -229,7 +229,7 @@ export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope
             const expr = c.toDefault(value, init.node)
             init.value = expr
             info.type.fields[index] = new Field(field.name, expr.type, field.readonly, field.private)
-            const decl = c.memberDecls.get(info.type.id)!.get(init.name)!
+            const decl = c.memberDecls.get(info.type)!.get(init.name)!
             c.info.types.set(nameNode(decl), expr.type)
         }
     }
@@ -286,7 +286,7 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
     }
     for (const field of type.fields) {
         if (!hasZeroValue(field.type) && !assigned.has(field.name)) {
-            const decl = c.memberDecls.get(type.id)!.get(field.name)!
+            const decl = c.memberDecls.get(type)!.get(field.name)!
             c.error(nameNode(decl), `Field '${field.name}' of type '${typeToString(field.type)}' must be initialized in its declaration or at the top level of the constructor.`)
         }
     }
@@ -304,7 +304,7 @@ export function declareAccessor(c: Checker, member: Node, info: ClassInfo, scope
     const name = c.memberName(nameNode(member))
     if (name === null) return
     const type = info.type
-    const decls = c.memberDecls.get(type.id)!
+    const decls = c.memberDecls.get(type)!
     const known = c.accessors.get(type)
     const accessors = known ?? new Map<string, Accessor>()
     if (known === null) c.accessors.set(type, accessors)
@@ -401,7 +401,7 @@ export function declareInterface(c: Checker, decl: Node, scope: Scope) {
         return
     }
     c.interfaces.set(type, new InterfaceInfoClass(decl, type, scope, "declared"))
-    c.memberDecls.set(type.id, new Map<string, Node>())
+    c.memberDecls.set(type, new Map<string, Node>())
 }
 
 /** Adds a member to an interface being filled, unless it conflicts with an inherited one. */
@@ -424,7 +424,7 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
     }
     info.state = "filling"
     const found: InterfaceMember[] = []
-    const decls = c.memberDecls.get(info.type.id)!
+    const decls = c.memberDecls.get(info.type)!
 
     for (const clause of heritageClauses(info.decl)) {
         for (const ref of typeNodes(clause)) {
@@ -438,7 +438,7 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
             if (isIdentifier(target)) c.info.definitions.set(target, base.decl)
             const baseInfo = c.interfaces.get(baseType)!
             fillInterface(c, baseInfo, scope)
-            for (const m of baseType.members) addMember(c, found, decls, m, ref, c.memberDecls.get(baseType.id)!.get(m.name)!)
+            for (const m of baseType.members) addMember(c, found, decls, m, ref, c.memberDecls.get(baseType)!.get(m.name)!)
         }
     }
     for (const member of members(info.decl)) {
@@ -520,11 +520,12 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
 /** The interface table of a struct, created once per struct and interface. */
 export function itab(c: Checker, struct: StructType, iface: InterfaceType): Itab {
     const key = `${struct.id}:${iface.id}`
-    const existing = c.itabs.get(key)
-    if (existing !== null) return existing
-    const table = new Itab(c.itabs.size, struct, iface)
-    c.itabs.set(key, table)
-    c.module.itabs.push(table)
+    let table = c.itabs.get(key)
+    if (table === null) {
+        table = new Itab(c.itabs.size, struct, iface)
+        c.itabs.set(key, table)
+        c.module.itabs.push(table)
+    }
     return table
 }
 

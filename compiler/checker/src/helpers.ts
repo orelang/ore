@@ -1,6 +1,6 @@
 // Tables and pure functions of the checker.
 import * as ir from "@ore/ir"
-import { arrayOf, findField, findMethod, isStringLike, membersOf, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
+import { arrayOf, findField, findMethod, isNumeric, isStringLike, membersOf, sameType, types, typeToString, type Field, type FuncType, type Type } from "@ore/ir"
 import ts from "typescript"
 import type { Operand } from "./operand"
 
@@ -134,6 +134,24 @@ export function fieldType(type: Type, name: string): Type | undefined {
   return undefined
 }
 
+/** Whether a type other than a union can be a `Map` key: numbers, strings and references. */
+export function isKeyType(type: Type): boolean {
+  return isNumeric(type) || ["bool", "string", "literal", "struct", "array", "interface", "map", "set"].includes(type.kind)
+}
+
+/** A public field of a class or a field of an interface, with its type and whether it is read-only. */
+export function memberField(type: Type, name: string): Field | undefined {
+  if (type.kind === "struct") {
+    const field = findField(type, name)
+    return field && !field.private ? field : undefined
+  }
+  if (type.kind === "interface") {
+    const member = type.members.find((m) => m.name === name)
+    return member?.k === "field" ? { name, type: member.type, readonly: member.readonly } : undefined
+  }
+  return undefined
+}
+
 /** The type of a public method of a class or interface, if it has one. */
 export function methodType(type: Type, name: string): FuncType | undefined {
   if (type.kind === "struct") {
@@ -214,9 +232,9 @@ export function hasZeroValue(type: Type): boolean {
   return type.kind !== "struct" && type.kind !== "interface" && type.kind !== "chan" && type.kind !== "func"
 }
 
-/** Whether values of a type can be Map keys and Set elements: numbers and strings by value, references by identity. */
+/** Whether values of a type can be Map keys and Set elements: numbers and strings by value, references by identity, and unions of those and null. */
 export function hashable(type: Type): boolean {
-  return ir.isNumeric(type) || ["bool", "string", "literal", "struct", "array", "interface", "map", "set"].includes(type.kind)
+  return type.kind === "union" ? type.members.every((m) => m.kind === "null" || isKeyType(m)) : isKeyType(type)
 }
 
 /**

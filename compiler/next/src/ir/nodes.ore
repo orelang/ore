@@ -137,48 +137,6 @@ export class Local {
 
 export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | SwitchStmt | UsingStmt | BreakStmt | ContinueStmt | ReturnStmt
 
-/**
- * Sets the source line of a statement: `stmt.line = line` in TypeScript, as
- * Ore reads a field common to the members of a union but does not assign it.
- */
-export function setLine(s: Stmt, line: int | null) {
-    switch (s.k) {
-        case "block":
-            s.line = line
-            return
-        case "let":
-            s.line = line
-            return
-        case "expr":
-            s.line = line
-            return
-        case "if":
-            s.line = line
-            return
-        case "loop":
-            s.line = line
-            return
-        case "for-of":
-            s.line = line
-            return
-        case "switch":
-            s.line = line
-            return
-        case "using":
-            s.line = line
-            return
-        case "break":
-            s.line = line
-            return
-        case "continue":
-            s.line = line
-            return
-        case "return":
-            s.line = line
-            return
-    }
-}
-
 export class Block {
     readonly k: "block" = "block"
     line?: int
@@ -451,8 +409,20 @@ export class IfaceFieldLValue {
     ) {}
 }
 
+/**
+ * A field that every member of a union of structs and interfaces has, with the
+ * same type: `{ k: "union-field"; value; name }` of `LValue`.
+ */
+export class UnionFieldLValue {
+    readonly k: "union-field" = "union-field"
+    constructor(
+        public value: Expr,
+        public name: string,
+    ) {}
+}
+
 /** A place that can be assigned to. */
-export type LValue = LocalLValue | ElementLValue | FieldLValue | IfaceFieldLValue
+export type LValue = LocalLValue | ElementLValue | FieldLValue | IfaceFieldLValue | UnionFieldLValue
 
 /**
  * Assignment. With `op` it is a compound assignment `target op= value`, where

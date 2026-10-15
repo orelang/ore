@@ -49,6 +49,7 @@ import {
     IfaceCall,
     IfaceField,
     IfaceFieldLValue,
+    UnionFieldLValue,
     IfStmt,
     IncDec,
     Index,
@@ -86,7 +87,6 @@ import {
     Unary,
     UnionField,
     UsingStmt,
-    setLine,
     type ArithOp,
     type ChanOpName,
     type CompareOp,
@@ -147,9 +147,9 @@ function isIdentChar(c: u8): bool {
 }
 
 function hexValue(c: u8): int {
-    if (isDigit(c)) return i64(c) - 0x30
-    if (c >= 0x61 && c <= 0x66) return i64(c) - 0x61 + 10
-    if (c >= 0x41 && c <= 0x46) return i64(c) - 0x41 + 10
+    if (isDigit(c)) return int(c) - 0x30
+    if (c >= 0x61 && c <= 0x66) return int(c) - 0x61 + 10
+    if (c >= 0x41 && c <= 0x46) return int(c) - 0x41 + 10
     return -1
 }
 
@@ -166,7 +166,7 @@ class Cursor {
     }
 
     peek(): int {
-        return this.pos < this.text.length ? i64(this.text[this.pos]) : -1
+        return this.pos < this.text.length ? int(this.text[this.pos]) : -1
     }
 
     fail(message: string) {
@@ -222,7 +222,7 @@ class Cursor {
             value = value * 10 + u64(this.text[this.pos] - 0x30)
             this.pos++
         }
-        return negative ? -i64(value) : i64(value)
+        return negative ? -int(value) : int(value)
     }
 
     /** A string in double quotes as `quote` writes it. */
@@ -847,7 +847,7 @@ class Reader {
                 this.fail(`unknown statement ${JSON.stringify(kind)}`)
                 this.i++
         }
-        setLine(s, line)
+        s.line = line
         return s
     }
 
@@ -904,6 +904,12 @@ class Reader {
                 const index = c.int()
                 this.next(c)
                 return new IfaceFieldLValue(this.expr(d, "value"), index)
+            }
+            case "union-field": {
+                c.expect(" ")
+                const name = c.word()
+                this.next(c)
+                return new UnionFieldLValue(this.expr(d, "value"), name)
             }
             default:
                 this.fail(`unknown target ${JSON.stringify(kind)}`)

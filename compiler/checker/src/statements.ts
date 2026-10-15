@@ -25,7 +25,7 @@ export abstract class StatementChecker extends ClassChecker {
   protected checkBlock(block: ts.Block, scope: Scope): ir.Block {
     const inner = new Scope(scope)
     const body: ir.Stmt[] = []
-    this.withFacts([], () => {
+    this.inBlock(() => {
       // Function declarations are hoisted, as in JavaScript: they exist from the
       // start of the block, can call each other, and see every variable of the
       // block. Their signatures are declared first and their bodies checked last.
@@ -150,7 +150,7 @@ export abstract class StatementChecker extends ClassChecker {
   protected checkNested(stmt: ts.Statement, scope: Scope): ir.Stmt {
     if (ts.isBlock(stmt)) return this.checkBlock(stmt, scope)
     const body: ir.Stmt[] = []
-    this.withFacts([], () => this.checkStmt(stmt, new Scope(scope), body))
+    this.inBlock(() => this.checkStmt(stmt, new Scope(scope), body))
     return body.length === 1 ? body[0]! : { k: "block", body }
   }
 
@@ -170,14 +170,29 @@ export abstract class StatementChecker extends ClassChecker {
       if (value.k === "typed") out.push({ k: "expr", expr: value.expr })
     } else if (ts.isIfStatement(stmt)) {
       const condition = this.condition(stmt.expression, scope)
-      const then = this.withFacts(condition.whenTrue, () => this.checkNested(stmt.thenStatement, scope))
-      const elseStmt = stmt.elseStatement ? this.withFacts(condition.whenFalse, () => this.checkNested(stmt.elseStatement!, scope)) : undefined
+      // Each branch starts from the facts before the `if`, and ends with its own.
+      const before = this.copyFacts()
+      let thenEnd = new Map<string, Type>()
+      const then = this.withFacts(condition.whenTrue, () => {
+        const checked = this.checkNested(stmt.thenStatement, scope)
+        thenEnd = this.flatFacts()
+        return checked
+      })
+      this.facts = before
+      let elseEnd = new Map<string, Type>()
+      const elseStmt = this.withFacts(condition.whenFalse, () => {
+        const checked = stmt.elseStatement ? this.checkNested(stmt.elseStatement, scope) : undefined
+        elseEnd = this.flatFacts()
+        return checked
+      })
       out.push({ k: "if", cond: condition.expr, then, else: elseStmt })
-      // After `if (x === null) return` (or continue, break), x is not null for the rest of the block.
-      const thenExits = exits(then)
-      const elseExits = elseStmt !== undefined && exits(elseStmt)
-      if (thenExits && !elseExits) this.addFacts(condition.whenFalse)
-      else if (elseExits && !thenExits) this.addFacts(condition.whenTrue)
+      // After the `if`, what holds at the end of each branch that does not exit:
+      // after `if (x === null) return`, x is not null; after
+      // `if (x === null) x = make()`, neither.
+      const ends: Map<string, Type>[] = []
+      if (!exits(then)) ends.push(thenEnd)
+      if (elseStmt === undefined || !exits(elseStmt)) ends.push(elseEnd)
+      this.joinFacts(ends)
     } else if (ts.isWhileStatement(stmt)) {
       this.invalidateAssigned(stmt, scope)
       const condition = this.condition(stmt.expression, scope)
@@ -875,9 +890,59 @@ export abstract class StatementChecker extends ClassChecker {
     }
   }
 
+  /** Checks a block, or a statement as one: the facts at its end hold after it. */
+  protected inBlock(check: () => void) {
+    this.facts.push(new Map())
+    try {
+      check()
+    } finally {
+      const frame = this.facts.pop()!
+      this.addFacts([...frame].map(([key, type]) => ({ key, type })))
+    }
+  }
+
   /** Adds facts that hold for the rest of the current flow scope. */
   protected addFacts(facts: Fact[]) {
     for (const f of facts) this.facts.at(-1)!.set(f.key, f.type)
+  }
+
+  /** The facts in effect, by key. */
+  protected flatFacts(): Map<string, Type> {
+    const flat = new Map<string, Type>()
+    for (const frame of this.facts) for (const [key, type] of frame) flat.set(key, type)
+    return flat
+  }
+
+  /** A copy of the frames of facts, to check another branch from the same point. */
+  protected copyFacts(): Map<string, Type>[] {
+    return this.facts.map((frame) => new Map(frame))
+  }
+
+  /**
+   * Sets the facts where branches join, from the facts at their ends: a key
+   * keeps a fact when every branch has one, with the union of their types, and
+   * loses it otherwise. With no branch (all exit), the facts are kept.
+   */
+  protected joinFacts(ends: Map<string, Type>[]) {
+    if (ends.length === 0) return
+    const joined = new Map<string, Type>()
+    for (const [key, type] of ends[0]!) {
+      let union: Type | undefined = type
+      for (const end of ends.slice(1)) {
+        const other = end.get(key)
+        if (!other || !union) union = undefined
+        else if (!sameType(other, union)) union = this.unionOf([union, other])
+      }
+      if (union) joined.set(key, union)
+    }
+    const current = this.flatFacts()
+    for (const key of current.keys()) {
+      if (!joined.has(key)) for (const frame of this.facts) frame.delete(key)
+    }
+    for (const [key, type] of joined) {
+      const known = current.get(key)
+      if (!known || !sameType(known, type)) this.facts.at(-1)!.set(key, type)
+    }
   }
 
   /** Forgets facts about a variable or field path and paths through it, after it may have changed. */

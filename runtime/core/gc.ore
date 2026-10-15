@@ -79,7 +79,14 @@ const spanAllocBits = 48
 const spanMarkBits = 56
 const spanNext = 64
 const spanClass = 72
-const spanRecordSize = 80
+/**
+ * 2^32 / size rounded up: the index of the object at `offset` in the span is
+ * (offset * divMul) >> 32, without a division, as in Go's mspan; exact for
+ * every offset in a span of every size class (checked for all of them).
+ * 0 for a span of one large object.
+ */
+const spanDivMul = 80
+const spanRecordSize = 88
 
 // A thread record, in permanent memory, pointed to by the thread-local `thread`.
 const threadId = 0
@@ -444,6 +451,8 @@ function useSpan(span: ptr, size: int, elems: int, noscan: bool, cls: int): void
     setField(span, spanNoscan, noscan ? 1 : 0)
     setField(span, spanFreeIndex, 0)
     setField(span, spanClass, cls)
+    // A large object is alone in its span: any offset is index 0, which a multiplier of 0 gives.
+    setField(span, spanDivMul, elems === 1 ? 0 : i64(~u32(0) / u32(size)) + 1)
     unsafe.fill(pointerAt(span, spanAllocBits), 0, bitmapSize)
     unsafe.fill(pointerAt(span, spanMarkBits), 0, bitmapSize)
     const first = unsafe.diff(pointerAt(span, spanStart), heapBase) >> pageShift
@@ -881,7 +890,9 @@ function mark(m: ptr, p: u64): void {
     const span = pointerAt(pageTable, i64(offset >> 13) * 8)
     if (isNil(span)) return
     const elemSize = field(span, spanElemSize)
-    const index = unsafe.diff(unsafe.fromInt(p), pointerAt(span, spanStart)) / elemSize
+    const index = i64(
+        (u64(unsafe.diff(unsafe.fromInt(p), pointerAt(span, spanStart))) * u64(field(span, spanDivMul))) >> 32,
+    )
     if (index >= field(span, spanElems)) return
     if (!bit(pointerAt(span, spanAllocBits), index)) return
     // The bitmaps are read as bytes elsewhere: little-endian words hold the same bits.

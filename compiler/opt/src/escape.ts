@@ -353,6 +353,7 @@ class FuncAnalysis {
       case "field":
         return this.expr(t.object, safe)
       case "iface-field":
+      case "union-field":
         return this.expr(t.value, escapes)
     }
   }

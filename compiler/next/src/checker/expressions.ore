@@ -23,6 +23,7 @@ import {
     FuncRef,
     IfaceField,
     IfaceFieldLValue,
+    UnionFieldLValue,
     IncDec,
     Index,
     IntLit,
@@ -49,6 +50,7 @@ import {
     type CompareOp,
 } from "../ir/nodes"
 import {
+    type ArrayType,
     type InterfaceType,
     type StructType,
     type Type,
@@ -95,7 +97,7 @@ import { checkCall, checkNew } from "./calls"
 import { accessor, checkAccess, conformance } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
 import { foldBinary, foldUnary } from "./fold"
-import { arithOps, numericType, poison, canBeNull, compareOps, compoundOps, fieldType, isNull, isString, nullOperand, numericLiteral, typed, typeOf, unknownName } from "./helpers"
+import { arithOps, numericType, poison, canBeNull, compareOps, compoundOps, fieldType, isNull, memberField, isString, nullOperand, numericLiteral, typed, typeOf, unknownName } from "./helpers"
 import { type Operand, errorOperand, Typed, untypedOf } from "./operand"
 import {
     addFacts,
@@ -388,7 +390,7 @@ export function writeAccessor(c: Checker, target: AssignTarget, node: Node, next
     let old: Expr | null = null
     const getOld = (): Expr => {
         if (old === null) old = holder.hold(c, new MethodCall(type, property.get!, self, []))
-        return old!
+        return old
     }
     if ((yieldOld || usesOld) && property.get === null) return c.fail(node, `Property '${access.name}' has a setter but no getter.`)
     if (yieldOld) getOld()
@@ -530,7 +532,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
                 c.error(nameId, `Property '${name}' does not exist on type '${ot.name}'.`)
                 return null
             }
-            defineMember(c, nameId, ot.id, name)
+            defineMember(c, nameId, ot, name)
             if (m.readonly) {
                 c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
                 return null
@@ -540,7 +542,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         }
         const property = accessor(c, ot, name)
         if (property !== null && ot.kind === "struct") {
-            defineMember(c, nameId, ot.id, name)
+            defineMember(c, nameId, ot, name)
             if (!checkAccess(c, ot, property.private, name, nameId)) return null
             if (property.set === null) {
                 c.error(nameId, `Cannot assign to '${name}' because it has a getter but no setter.`)
@@ -549,13 +551,14 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
             c.info.types.set(node, property.type)
             return new AssignTargetClass(property.type, null, new AccessorTarget(object, property, name))
         }
+        if (ot.kind === "union") return unionFieldTarget(c, node, object, ot, name)
         const struct = ot.kind === "struct" ? ot : null
         const field = struct !== null ? findField(struct, name) : null
         if (struct === null || field === null) {
             c.error(nameId, `Property '${name}' does not exist on type '${typeToString(ot)}'.`)
             return null
         }
-        defineMember(c, nameId, struct.id, name)
+        defineMember(c, nameId, struct, name)
         if (!checkAccess(c, struct, field.private, name, nameId)) return null
         // A constructor may initialize the read-only fields of its own instance.
         const fn = c.fn
@@ -594,6 +597,28 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
     symbol.local.assigned = true
     c.info.types.set(node, symbol.local.type)
     return new AssignTargetClass(symbol.local.type, new LocalLValue(symbol.local))
+}
+
+/** A field that every member of a union has, writable and of the same type in each: `stmt.line = 3`. */
+function unionFieldTarget(c: Checker, node: Node, object: Expr, union: UnionType, name: string): AssignTarget | null {
+    const nameId = nameNode(node)
+    const fields: (Field | null)[] = []
+    if (!canBeNull(union)) for (const m of union.members) fields.push(memberField(m, name))
+    if (fields.length === 0 || fields.some((f) => f === null)) {
+        c.error(nameId, noProperty(union, name))
+        return null
+    }
+    if (fields.some((f) => f!.readonly)) {
+        c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
+        return null
+    }
+    const type = fields[0]!.type
+    if (fields.some((f) => !sameType(f!.type, type))) {
+        c.error(nameId, `Cannot assign to '${name}': its type differs between the members of '${typeToString(union)}'.`)
+        return null
+    }
+    c.info.types.set(node, type)
+    return new AssignTargetClass(type, new UnionFieldLValue(object, name))
 }
 
 export function checkPrefixUnary(c: Checker, node: Node, scope: Scope): Operand {
@@ -654,10 +679,14 @@ export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected
         if (e.kind === "SpreadElement") return c.fail(e, "Spread elements are not supported yet.")
         if (e.kind === "OmittedExpression") return c.fail(node, "Array holes are not supported.")
     }
-    if (expected !== null && expected.kind === "array") {
+    // The context gives the element type: an array type, or a union with exactly one array type (`T[] | null`).
+    const arrays: ArrayType[] = []
+    if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "array") arrays.push(m)
+    if (arrays.length === 1) {
+        const type = arrays[0]
         const values: Expr[] = []
-        for (const e of elems) values.push(c.coerce(checkExpr(c, e, scope, expected.elem), expected.elem, e))
-        return typed(new ArrayLit(expected, values))
+        for (const e of elems) values.push(c.coerce(checkExpr(c, e, scope, type.elem), type.elem, e))
+        return typed(new ArrayLit(type, values))
     }
     const values: Operand[] = []
     for (const e of elems) values.push(checkExpr(c, e, scope))
@@ -864,7 +893,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     if (name === "size" && type.kind === "set") return typed(new SetOp("size", types.i64, type, value))
     const property = accessor(c, type, name)
     if (property !== null && type.kind === "struct") {
-        defineMember(c, nameNode_, type.id, name)
+        defineMember(c, nameNode_, type, name)
         if (!checkAccess(c, type, property.private, name, nameNode_)) return errorOperand
         const get = property.get
         if (get === null) return c.fail(nameNode_, `Property '${name}' has a setter but no getter.`)
@@ -872,7 +901,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     }
     if (type.kind === "struct") {
         const field = findField(type, name)
-        defineMember(c, nameNode_, type.id, name)
+        defineMember(c, nameNode_, type, name)
         if (field !== null) {
             if (!checkAccess(c, type, field.private, name, nameNode_)) return errorOperand
             return typed(new FieldGet(field.type, value, name))
@@ -886,7 +915,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
         if (generics !== null && generics.has(name)) return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
     }
     if (type.kind === "interface") {
-        defineMember(c, nameNode_, type.id, name)
+        defineMember(c, nameNode_, type, name)
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
             if (m.name !== name) continue
@@ -1022,8 +1051,8 @@ export function checkIndex(c: Checker, node: Node, scope: Scope, allowNegative: 
 }
 
 /** Records the declaration of a field or method for go to definition. */
-export function defineMember(c: Checker, node: Node, id: int, name: string) {
-    const decls = c.memberDecls.get(id)
+export function defineMember(c: Checker, node: Node, type: StructType | InterfaceType, name: string) {
+    const decls = c.memberDecls.get(type)
     const decl = decls === null ? null : decls.get(name)
     if (decl !== null && isIdentifier(node)) c.info.definitions.set(node, decl)
 }

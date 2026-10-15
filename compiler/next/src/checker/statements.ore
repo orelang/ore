@@ -36,7 +36,6 @@ import {
     SwitchStmt,
     UsingStmt,
     Logical,
-    setLine,
 } from "../ir/nodes"
 import { type FuncType, type StructType, type Type, FuncType as FuncTypeClass, findMethod, isNumeric, isStringLike, membersOf, sameType, typeofName, types, typeToString } from "../ir/types"
 import { type Node } from "../syntax/ast"
@@ -144,7 +143,7 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
     for (const s of boxes) out.push(s)
     for (const s of creations) out.push(s)
     for (const s of stmts) out.push(s)
-    c.popFacts()
+    c.popBlockFacts()
     return new Block(out)
 }
 
@@ -268,7 +267,7 @@ export function checkNested(c: Checker, stmt: Node, scope: Scope): Stmt {
     const out: Stmt[] = []
     c.pushFacts([])
     checkStmt(c, stmt, new Scope(scope), out)
-    c.popFacts()
+    c.popBlockFacts()
     return out.length === 1 ? out[0] : new Block(out)
 }
 
@@ -276,7 +275,7 @@ export function checkStmt(c: Checker, stmt: Node, scope: Scope, out: Stmt[]) {
     const before = out.length
     checkStmtInner(c, stmt, scope, out)
     const line = c.line(stmt)
-    for (let i = before; i < out.length; i++) if (out[i].line === null) setLine(out[i], line)
+    for (let i = before; i < out.length; i++) if (out[i].line === null) out[i].line = line
 }
 
 function findLoop(fn: FuncContext, name: string): LoopContext | null {
@@ -294,22 +293,27 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
         if (value.k === "typed") out.push(new ExprStmt(value.expr))
     } else if (k === "IfStatement") {
         const cond = condition(c, expression(stmt), scope)
+        // Each branch starts from the facts before the `if`, and ends with its own.
+        const before = copyFacts(c)
         c.pushFacts(cond.whenTrue)
         const then = checkNested(c, thenStatement(stmt), scope)
+        const thenEnd = flatFacts(c)
         c.popFacts()
+        c.facts = before
         const elseNode = elseStatement(stmt)
         let elseStmt: Stmt | null = null
-        if (elseNode !== null) {
-            c.pushFacts(cond.whenFalse)
-            elseStmt = checkNested(c, elseNode, scope)
-            c.popFacts()
-        }
+        c.pushFacts(cond.whenFalse)
+        if (elseNode !== null) elseStmt = checkNested(c, elseNode, scope)
+        const elseEnd = flatFacts(c)
+        c.popFacts()
         out.push(new IfStmt(cond.expr, then, elseStmt))
-        // After `if (x === null) return` (or continue, break), x is not null for the rest of the block.
-        const thenExits = exits(then)
-        const elseExits = elseStmt !== null && exits(elseStmt)
-        if (thenExits && !elseExits) addFacts(c, cond.whenFalse)
-        else if (elseExits && !thenExits) addFacts(c, cond.whenTrue)
+        // After the `if`, what holds at the end of each branch that does not exit:
+        // after `if (x === null) return`, x is not null; after
+        // `if (x === null) x = make()`, neither.
+        const ends: Map<string, Type>[] = []
+        if (!exits(then)) ends.push(thenEnd)
+        if (elseStmt === null || !exits(elseStmt)) ends.push(elseEnd)
+        joinFacts(c, ends)
     } else if (k === "WhileStatement") {
         invalidateAssigned(c, stmt, scope)
         const cond = condition(c, expression(stmt), scope)
@@ -1142,6 +1146,52 @@ export function narrowConvert(c: Checker, expr: Expr, type: Type): Expr {
 export function addFacts(c: Checker, facts: Fact[]) {
     const frame = c.facts[c.facts.length - 1]
     for (const f of facts) frame.set(f.key, f.type)
+}
+
+/** The facts in effect, by key. */
+export function flatFacts(c: Checker): Map<string, Type> {
+    const flat = new Map<string, Type>()
+    for (const frame of c.facts) for (const [key, type] of frame) flat.set(key, type)
+    return flat
+}
+
+/** A copy of the frames of facts, to check another branch from the same point. */
+export function copyFacts(c: Checker): Map<string, Type>[] {
+    const frames: Map<string, Type>[] = []
+    for (const frame of c.facts) {
+        const copy = new Map<string, Type>()
+        for (const [key, type] of frame) copy.set(key, type)
+        frames.push(copy)
+    }
+    return frames
+}
+
+/**
+ * Sets the facts where branches join, from the facts at their ends: a key
+ * keeps a fact when every branch has one, with the union of their types, and
+ * loses it otherwise. With no branch (all exit), the facts are kept.
+ */
+export function joinFacts(c: Checker, ends: Map<string, Type>[]) {
+    if (ends.length === 0) return
+    const joined = new Map<string, Type>()
+    for (const [key, type] of ends[0]) {
+        let union: Type | null = type
+        for (const end of ends.slice(1)) {
+            const other = end.get(key)
+            if (other === null || union === null) union = null
+            else if (!sameType(other, union)) union = c.unionOf([union, other])
+        }
+        if (union !== null) joined.set(key, union)
+    }
+    const current = flatFacts(c)
+    for (const key of current.keys()) {
+        if (!joined.has(key)) for (const frame of c.facts) frame.delete(key)
+    }
+    const top = c.facts[c.facts.length - 1]
+    for (const [key, type] of joined) {
+        const known = current.get(key)
+        if (known === null || !sameType(known, type)) top.set(key, type)
+    }
 }
 
 /** Forgets facts about a variable or field path and paths through it, after it may have changed. */

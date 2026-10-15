@@ -716,14 +716,23 @@ export abstract class DeclarationChecker extends CheckerBase {
     let rest = false
     for (const [i, p] of parameters.entries()) {
       let type: Type | undefined
+      let early = false
       if (p.type) type = this.resolveValueType(p.type, scope)
       else if (p.initializer) {
+        const saved = this.constructedEarly
+        const before = this.diagnostics.length
+        this.constructedEarly = false
         const value = this.checkDefault(p.initializer, defaults, undefined)
         if (value) type = value.type
+        // A value that constructs a class declared further down has the class's
+        // type; its diagnostics come from checking it again with that type.
+        early = this.constructedEarly && value !== undefined
+        if (early) this.diagnostics.length = before
+        this.constructedEarly = saved
       } else this.error(p.name, `Parameter '${p.name.getText()}' must have a type annotation.`)
       // A value with a declared type is checked once every declaration is known,
       // since it may construct a class or use a constant declared further down.
-      if (type && p.type && p.initializer) {
+      if (type && (p.type || early) && p.initializer) {
         const [initializer, before, declared] = [p.initializer, defaults, type]
         this.pending.push(() => void this.checkDefault(initializer, before, declared))
       }

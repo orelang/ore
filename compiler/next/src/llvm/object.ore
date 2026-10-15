@@ -27,7 +27,6 @@ import {
     LLVMRunPasses,
     LLVMSetModuleDataLayout,
     LLVMSetTarget,
-    LLVMSetTargetMachineGlobalISel,
     LLVMTargetMachineEmitToFile,
     LLVMVerifyModule,
     message,
@@ -64,6 +63,13 @@ export class ObjectTimes {
 
 let initialized = false
 
+/** Registers the host's target with LLVM, once: before tasks compile modules in parallel. */
+export function initializeLLVM(): void {
+    if (initialized) return
+    initializeTarget()
+    initialized = true
+}
+
 /** LLVM's default target triple, the host's, such as "arm64-apple-darwin25.5.0". */
 export function defaultTriple(): string {
     return message(LLVMGetDefaultTargetTriple())
@@ -75,10 +81,7 @@ export function defaultTriple(): string {
  * target is unknown or the file cannot be written.
  */
 export function emitObject(ir: string, options: ObjectOptions): ObjectTimes | Error {
-    if (!initialized) {
-        initializeTarget()
-        initialized = true
-    }
+    initializeLLVM()
     const started = Date.now()
     const out = outs()
     const error = unsafe.add(out, 8)
@@ -120,12 +123,6 @@ function compile(module: ptr, options: ObjectOptions, started: int): ObjectTimes
         codeModelDefault,
     )
     if (unsafe.toInt(machine) === 0) return new Error(`target ${triple}: no target machine`)
-    // AArch64 selects instructions with GlobalISel at -O0, which reuses the
-    // address of a thread-local variable across calls in a function. A task
-    // may resume on another OS thread after a call, so the debug frames of
-    // `ore_rt_top` would be pushed on one thread and popped on another:
-    // SelectionDAG (FastISel at -O0), as clang uses, computes it at each use.
-    LLVMSetTargetMachineGlobalISel(machine, 0)
     LLVMSetTarget(module, triple)
     const layout = LLVMCreateTargetDataLayout(machine)
     LLVMSetModuleDataLayout(module, layout)
@@ -145,4 +142,3 @@ function compile(module: ptr, options: ObjectOptions, started: int): ObjectTimes
     if (written !== 0) return new Error(`${options.output}: ${message(unsafe.load<ptr>(error))}`)
     return new ObjectTimes(parsed - started, optimized - parsed, Date.now() - optimized)
 }
-

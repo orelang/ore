@@ -126,9 +126,15 @@ export class Checker {
 
     /** Checks of generic instances, run after the other bodies. */
     readonly pending: (() => void)[] = []
+    /**
+     * Set when a class is constructed before its constructor is declared, in
+     * the default value of a parameter without a type: the value gives its type,
+     * and is checked once every declaration is known.
+     */
+    constructedEarly = false
 
-    /** The generic and type arguments of each instance type, by the type's id. */
-    readonly instanceOf = new Map<int, InstanceInfo>()
+    /** The generic and type arguments of each instance type. */
+    readonly instanceOf = new Map<Type, InstanceInfo>()
 
     instanceCount = 0
 
@@ -142,8 +148,8 @@ export class Checker {
 
     readonly itabs = new Map<string, Itab>()
 
-    /** Declarations of fields and methods, for tooling, by the id of the struct or interface. */
-    readonly memberDecls = new Map<int, Map<string, Node>>()
+    /** Declarations of fields and methods of structs and interfaces, for tooling. */
+    readonly memberDecls = new Map<StructType | InterfaceType, Map<string, Node>>()
 
     /** Variables declared without a value that must be assigned before they are read. */
     readonly unassigned = new Set<Local>()
@@ -403,13 +409,13 @@ export class Checker {
         }
         const shape = this.shape(fields)
         // The first declaration of a shape is where its fields are defined.
-        if (!this.memberDecls.has(shape.id)) {
+        if (!this.memberDecls.has(shape)) {
             const decls = new Map<string, Node>()
             for (const m of members(node)) {
                 const n = m.child("name")
                 if (n !== null && isIdentifier(n)) decls.set(n.text, m)
             }
-            this.memberDecls.set(shape.id, decls)
+            this.memberDecls.set(shape, decls)
         }
         return shape
     }
@@ -431,10 +437,11 @@ export class Checker {
     }
 
     literal(value: string): LiteralType {
-        const existing = this.literals.get(value)
-        if (existing !== null) return existing
-        const type = new LiteralType(value)
-        this.literals.set(value, type)
+        let type = this.literals.get(value)
+        if (type === null) {
+            type = new LiteralType(value)
+            this.literals.set(value, type)
+        }
         return type
     }
 
@@ -457,11 +464,12 @@ export class Checker {
         if (members_.length === 1) return members_[0]
         members_.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0))
         const key = members_.map(typeKey).join("|")
-        const existing = this.unions.get(key)
-        if (existing !== null) return existing
-        const union = new UnionType(this.unions.size, members_)
-        this.unions.set(key, union)
-        this.module.unions.push(union)
+        let union = this.unions.get(key)
+        if (union === null) {
+            union = new UnionType(this.unions.size, members_)
+            this.unions.set(key, union)
+            this.module.unions.push(union)
+        }
         return union
     }
 
@@ -479,11 +487,12 @@ export class Checker {
     shape(fields: Field[]): StructType {
         const sorted = fields.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         const key = sorted.map((f) => `${f.readonly ? "readonly " : ""}${f.name}:${typeKey(f.type)}`).join(";")
-        const existing = this.shapes.get(key)
-        if (existing !== null) return existing
-        const struct = new StructType(this.nextStructId++, null, false, sorted, [])
-        this.shapes.set(key, struct)
-        this.module.structs.push(struct)
+        let struct = this.shapes.get(key)
+        if (struct === null) {
+            struct = new StructType(this.nextStructId++, null, false, sorted, [])
+            this.shapes.set(key, struct)
+            this.module.structs.push(struct)
+        }
         return struct
     }
 
@@ -698,6 +707,13 @@ export class Checker {
         const frame = new Map<string, Type>()
         for (const f of facts) frame.set(f.key, f.type)
         this.facts.push(frame)
+    }
+
+    /** Ends a block, or a statement checked as one: the facts at its end hold after it (`inBlock`). */
+    popBlockFacts() {
+        const frame = this.facts.pop()
+        const parent = this.facts[this.facts.length - 1]
+        for (const [key, type] of frame) parent.set(key, type)
     }
 
     popFacts() {
