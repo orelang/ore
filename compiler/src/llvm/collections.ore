@@ -2,6 +2,7 @@
 
 import { type ArrayMethod, type ChanOp, type Itab, type MapOp, type SetOp } from "../ir/nodes"
 import {
+    findField,
     findMethod,
     FuncType,
     isStringLike,
@@ -628,7 +629,10 @@ export function itab(g: Emitter, t: Itab): string {
     const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${typeId(t.struct)})`]
     for (const m of t.iface.members) {
         if (m.k === "field") {
-            all.push(`ptr getelementptr (${s}, ptr null, i32 0, i32 ${g.fieldIndex(t.struct, m.name)})`)
+            const field = findField(t.struct, m.name)
+            // A missing optional field: -1.
+            if (field === null || field.private) all.push("ptr inttoptr (i64 -1 to ptr)")
+            else all.push(`ptr getelementptr (${s}, ptr null, i32 0, i32 ${g.fieldIndex(t.struct, m.name)})`)
         } else {
             const method = findMethod(t.struct, m.name)
             if (method === null) process.panic(`no method ${m.name} for an itab`)

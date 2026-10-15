@@ -967,18 +967,22 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
         const name = c.memberName(memberName)
         if (name === null) continue
         const question = questionToken(member)
-        if (question !== null) c.error(question, "Optional members are not supported yet.")
+        if (question !== null && member.kind !== "PropertySignature")
+            c.error(question, "Optional methods are not supported.")
         if (member.kind === "PropertySignature") {
             const annotation = typeNode(member)
             if (annotation === null) {
                 c.error(memberName, `Property '${name}' must have a type annotation.`)
                 continue
             }
-            const type = c.resolveValueType(annotation, scope)
+            const resolved = c.resolveValueType(annotation, scope)
             const isReadonly = hasModifier(member, "ReadonlyKeyword")
-            if (type !== null) {
+            if (resolved !== null) {
+                const type = question !== null ? c.unionOf([resolved, types.null]) : resolved
                 c.info.types.set(memberName, type)
-                addMember(c, found, decls, new InterfaceField(name, type, isReadonly), memberName, member)
+                const field = new InterfaceField(name, type, isReadonly)
+                field.optional = question !== null
+                addMember(c, found, decls, field, memberName, member)
             }
         } else if (member.kind === "MethodSignature") {
             const typeParams = typeParameters(member)
@@ -1042,9 +1046,13 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
                 )
             if (source.k === "field" && member.k === "field" && source.readonly && !member.readonly)
                 return new Conformance(`${what} is read-only`, null)
+            if (source.k === "field" && member.k === "field" && source.optional && !member.optional)
+                return new Conformance(`${what} is optional`, null)
             indices.push(index)
         } else if (member.k === "field") {
             const field = findField(from, member.name)
+            // An optional member may be missing.
+            if ((field === null || field.private) && member.optional) continue
             if (field === null || field.private) return new Conformance(`${what} is missing`, null)
             if (!sameType(field.type, member.type))
                 return new Conformance(

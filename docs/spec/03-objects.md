@@ -7,9 +7,17 @@
   compares identity.
 - Object types are structural: two object types with the same fields (names,
   types and `readonly`) are the same type, regardless of field order.
-- An object literal for a known object type must have exactly its fields.
+- An optional property `name?: T` has the type `T | null`: an object
+  literal may leave it out, and then it is null; `JSON.stringify` leaves it
+  out when it is null, as JavaScript leaves out `undefined`.
+- An object literal for a known object type must have exactly its fields,
+  but optional ones.
   Without a context type, the literal's type is inferred from its values;
   shorthand properties (`{ name }`) are allowed.
+- `...object` in an object literal copies the fields of an object: the
+  public fields of a class instance (not its methods), the fields of an
+  object type or an interface. A later property replaces an earlier one
+  (`{ ...p, y: 0 }`); the values are evaluated once, in order.
 - Variables of object, class and interface types must be initialized: there
   is no `null` yet.
 
@@ -132,6 +140,10 @@ on that slot reads the class table.
   through the interface are the object's fields, and `===` compares the
   objects.
 - An object literal for an interface may only have fields of the interface.
+- An optional member `label?: T` of an interface has the type `T | null`. A
+  class or object type conforms with a field `label` of that type, or
+  without one: then reading `label` through the interface gives null, and
+  assigning it panics. Optional methods are not supported.
 - Object types (`type P = { ... }`) and interfaces differ on purpose: an
   object type is an exact record, an interface accepts any record or class
   with the members.

@@ -12,6 +12,10 @@ before 1.0, a minor version may change the language.
 - Spread arguments: arrays among the rest arguments (`f(1, ...xs, 2)`) and
   into `push`, `console.log`, `Math.min` and `Math.max`, which take any number
   of values; tuples into any parameters, array literals and tuples.
+- Object spread `{ ...o, x: 1 }`.
+- `**` and `**=`, and `satisfies`.
+- Optional properties of object types and interfaces (`name?: T`), default values in
+  destructuring (`{ size = 1 }`, `[x = 0]`) and `...rest` in object patterns.
 - `??=`, `||=` and `&&=`; an assigned `?:` narrows to its branches' types.
 - `Number.NaN`, the infinities and the other constants of `Number`, and
   `Number.isNaN`, `isFinite`, `isInteger`, `isSafeInteger`.

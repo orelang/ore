@@ -48,12 +48,13 @@ exports, type assertions (Ore converts: `i32(x)`).
   - the constants and predicates of `Number` (done);
   - `JSON.stringify(value, replacer, space)` as in JavaScript;
   - narrowing through `||` and by assigning with `?:`;
-  - object spread `{ ...o }`;
+  - object spread `{ ...o }` (done);
   - methods and accessors in object literals;
   - `static` members of classes;
-  - default values in destructuring, and `...rest` in object destructuring;
+  - default values in destructuring, and `...rest` in object destructuring
+    (done), optional properties of object types (done);
   - optional, default and rest parameters of closures;
-  - `**`, `bigint` literals (`10n`), `satisfies`;
+  - `**` and `satisfies` (done), `bigint` literals (`10n`);
   - overloads (several signatures of one function);
   - generic closures, nested generic functions, default type arguments
     (`<T = X>`).
@@ -61,7 +62,7 @@ exports, type assertions (Ore converts: `i32(x)`).
   - `unknown`;
   - intersections `A & B`;
   - methods in object types (`{ f(): void }`), optional members of
-    interfaces, generic methods in interfaces;
+    interfaces (done; not methods), generic methods in interfaces;
   - `keyof`, `typeof x` as a type, indexed access `T["k"]`;
   - conditional types, mapped types and template literal types, and with
     them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...).

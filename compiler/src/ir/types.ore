@@ -128,6 +128,12 @@ export class InterfaceField {
         readonly type: Type,
         readonly readonly: bool,
     ) {}
+
+    /**
+     * `x?: T`: of type `T | null`, and a struct may not have it; then its
+     * table holds -1 for the offset, reading gives null and writing panics.
+     */
+    public optional = false
 }
 
 /** A method member of an interface: `{ k: "method", ... }` in TypeScript. */
@@ -353,11 +359,15 @@ function sameInterface(a: InterfaceType, b: InterfaceType, given: Assumed | null
     for (let i = 0; i < a.members.length && same; i++) {
         const m = a.members[i]
         const n = b.members[i]
-        same = m.k === n.k && m.name === n.name && sameIn(m.type, n.type, assumed)
+        same = m.k === n.k && m.name === n.name && sameIn(m.type, n.type, assumed) && optionalOf(m) === optionalOf(n)
     }
     assumed.a.pop()
     assumed.b.pop()
     return same
+}
+
+function optionalOf(m: InterfaceMember): bool {
+    return m.k === "field" && m.optional
 }
 
 function sameTypes(a: Type[], b: Type[], assumed: Assumed | null): bool {

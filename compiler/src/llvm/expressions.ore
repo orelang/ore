@@ -229,7 +229,24 @@ export function expr(g: Emitter, e: Expr): V {
         }
         case "iface-field": {
             const value = expr(g, e.value)
-            return g.load(ifaceField(g, value, e.index), e.type)
+            const it = e.value.type
+            const member = it.kind === "interface" ? it.members[e.index] : null
+            if (member === null || member.k !== "field" || !member.optional || e.type.kind !== "union")
+                return g.load(ifaceField(g, value, e.index), e.type)
+            // A missing optional field reads as null.
+            const u = e.type
+            const offset = ifaceOffset(g, value, e.index)
+            return choose(
+                g,
+                g.b.value("i1", `icmp eq i64 ${offset.v}, -1`),
+                () => inject(g, u, nullIndex(u), null),
+                () =>
+                    g.load(
+                        g.b.value("ptr", `getelementptr i8, ptr ${g.extract(value, 0, "ptr").v}, i64 ${offset.v}`).v,
+                        u,
+                    ),
+                g.lt(u),
+            )
         }
         case "iface-call": {
             // The receiver is evaluated once, before the arguments.
@@ -468,8 +485,12 @@ export function placePointer(g: Emitter, target: Place, parts: V[], type: Type):
     switch (target.k) {
         case "field":
             return fieldPtr(g, parts[0].v, structOf(target.object.type), target.name)
-        case "iface-field":
-            return ifaceField(g, parts[0], target.index)
+        case "iface-field": {
+            const it = target.value.type
+            const member = it.kind === "interface" ? it.members[target.index] : null
+            const optional = member !== null && member.k === "field" && member.optional ? member.name : null
+            return ifaceField(g, parts[0], target.index, optional)
+        }
         case "union-field":
             return unionFieldPtr(g, parts[0], unionOf(target.value.type), target.name)
         case "element":
@@ -738,11 +759,23 @@ export function inject(g: Emitter, u: UnionType, i: int, p: V | null): V {
  * The address of member `index` of an interface value that is a field:
  * entry `index + 1` of its table holds the field's offset in the object.
  */
-export function ifaceField(g: Emitter, value: V, index: int): string {
-    const data = g.extract(value, 0, "ptr")
+/** The offset of the field at `index` of an interface's members in the value's struct; -1 for a missing optional field. */
+function ifaceOffset(g: Emitter, value: V, index: int): V {
     const table = g.extract(value, 1, "ptr")
     const entry = g.b.value("ptr", `getelementptr ptr, ptr ${table.v}, i64 ${index + 1}`)
-    const offset = g.b.value("i64", `load i64, ptr ${entry.v}`)
+    return g.b.value("i64", `load i64, ptr ${entry.v}`)
+}
+
+/** The address of a field of an interface value's struct; panics for a missing optional field. */
+export function ifaceField(g: Emitter, value: V, index: int, optional: string | null = null): string {
+    const data = g.extract(value, 0, "ptr")
+    const offset = ifaceOffset(g, value, index)
+    if (optional !== null)
+        check(
+            g,
+            g.b.value("i1", `icmp ne i64 ${offset.v}, -1`),
+            `assignment to the missing optional field '${optional}'`,
+        )
     return g.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${offset.v}`).v
 }
 
