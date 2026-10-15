@@ -3,7 +3,7 @@
 // that Ore uses.
 
 import { Node, type NodeKind } from "./ast"
-import { tokenize, type Token } from "./lexer"
+import { regexClose, tokenize, type Token } from "./lexer"
 import { type Kind } from "./tokens"
 
 /** Parses a source text; syntax errors are in `errors`. */
@@ -1343,6 +1343,11 @@ export class Parser {
                 return this.tokenNode()
             case "TemplateHead":
                 return this.template()
+            case "RegularExpressionLiteral": {
+                const t = this.token()
+                if (regexClose(this.text, t.start + 1) < 0) this.error("Unterminated regular expression literal")
+                return this.tokenNode()
+            }
             case "OpenParenToken": {
                 this.next()
                 const expression = this.expression()

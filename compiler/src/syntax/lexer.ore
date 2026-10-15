@@ -80,6 +80,30 @@ function isIdentifierPart(c: u8): bool {
     return isIdentifierStart(c) || isDigit(c)
 }
 
+/**
+ * The offset of the `/` that closes a regular expression whose pattern
+ * starts at `start`: the first one not escaped and not in a class
+ * (`[...]`); -1 when the line or the text ends first.
+ */
+export function regexClose(text: string, start: int): int {
+    let inClass = false
+    let i = start
+    while (i < text.length) {
+        const c = text[i]
+        if (c === LF || c === CR) return -1
+        if (c === BACKSLASH) {
+            if (i + 1 >= text.length || text[i + 1] === LF || text[i + 1] === CR) return -1
+            i += 2
+            continue
+        }
+        if (c === LBRACKET) inClass = true
+        else if (c === RBRACKET) inClass = false
+        else if (c === SLASH && !inClass) return i
+        i++
+    }
+    return -1
+}
+
 /** Tokens of a source text, ending with EndOfFileToken. */
 export function tokenize(text: string): Token[] {
     const lexer = new Lexer(text)
@@ -91,8 +115,49 @@ export function tokenize(text: string): Token[] {
     }
 }
 
+/**
+ * Tokens after which an expression has ended, so that a `/` is a division:
+ * after any other token it starts a regular expression.
+ */
+const operandEnds: Kind[] = [
+    "Identifier",
+    "PrivateIdentifier",
+    "NumericLiteral",
+    "BigIntLiteral",
+    "StringLiteral",
+    "NoSubstitutionTemplateLiteral",
+    "TemplateTail",
+    "RegularExpressionLiteral",
+    "CloseParenToken",
+    "CloseBracketToken",
+    "CloseBraceToken",
+    "PlusPlusToken",
+    "MinusMinusToken",
+]
+
+/** Keywords after which an expression starts; other keywords end one (`this`, `null`) or are names. */
+const operandKeywords: Kind[] = [
+    "ReturnKeyword",
+    "TypeOfKeyword",
+    "CaseKeyword",
+    "DeleteKeyword",
+    "VoidKeyword",
+    "ThrowKeyword",
+    "NewKeyword",
+    "InKeyword",
+    "OfKeyword",
+    "InstanceOfKeyword",
+    "ElseKeyword",
+    "DoKeyword",
+    "YieldKeyword",
+    "AwaitKeyword",
+]
+
 export class Lexer {
     private pos = 0
+    /** The kinds of the last two tokens, which tell a regular expression from a division. */
+    private last: Kind = "Unknown"
+    private beforeLast: Kind = "Unknown"
     /** For each template literal being read: the `{` opened inside its current substitution. */
     private templates: int[] = []
 
@@ -102,7 +167,25 @@ export class Lexer {
         const newline = this.skipTrivia()
         const start = this.pos
         const kind = this.scan()
+        this.beforeLast = this.last
+        this.last = kind
         return { kind, start, end: this.pos, newline }
+    }
+
+    /**
+     * Whether a `/` here starts a regular expression rather than a division,
+     * decided by the token before it as TypeScript's scanner does: after an
+     * operand (a name, a literal, `)`, `]`, `}`) it divides.
+     */
+    private regexAllowed(): bool {
+        const last = this.last
+        if (operandEnds.includes(last)) return false
+        // `!` after an operand is a non-null assertion: `x! / 2`.
+        if (last === "ExclamationToken") return !operandEnds.includes(this.beforeLast)
+        if (!last.endsWith("Keyword")) return true
+        // A keyword after `.` is a property name: `x.in / 2`.
+        if (this.beforeLast === "DotToken" || this.beforeLast === "QuestionDotToken") return false
+        return operandKeywords.includes(last)
     }
 
     private at(offset: int): u8 {
@@ -256,7 +339,7 @@ export class Lexer {
                 }
                 return this.either(EQ, "AsteriskToken", "AsteriskEqualsToken")
             case SLASH:
-                // Regular expressions are read only where the parser expects them.
+                if (this.regexAllowed()) return this.regex()
                 return this.either(EQ, "SlashToken", "SlashEqualsToken")
             case PERCENT:
                 return this.either(EQ, "PercentToken", "PercentEqualsToken")
@@ -373,6 +456,22 @@ export class Lexer {
         }
         this.pos = this.text.length
         return "StringLiteral"
+    }
+
+    /**
+     * A regular expression literal after its `/`: the pattern up to a `/`
+     * that is not escaped or in a class (`[...]`), then the flags. One not
+     * closed on its line ends there, and the parser reports it.
+     */
+    private regex(): Kind {
+        const close = regexClose(this.text, this.pos)
+        if (close < 0) {
+            this.skipLine()
+            return "RegularExpressionLiteral"
+        }
+        this.pos = close + 1
+        while (this.pos < this.text.length && isIdentifierPart(this.at(0))) this.pos++
+        return "RegularExpressionLiteral"
     }
 
     /**
