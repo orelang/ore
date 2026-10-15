@@ -178,7 +178,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3073](ORE3073.md) | Tuple type '…' of length … has no element at index …. |
 | [ORE3074](ORE3074.md) | Index … must not be negative. |
 | [ORE3075](ORE3075.md) | An index must be an integer, got '…'. |
-| [ORE3076](ORE3076.md) | Spreads and accessors are not supported in an object literal with methods yet. |
+| [ORE3076](ORE3076.md) | Accessors are not supported in an object literal with methods yet. |
 | [ORE3077](ORE3077.md) | A method of an object literal needs a return type annotation, or a type to fit. |
 
 ## ORE4xxx: Calls and built-in functions

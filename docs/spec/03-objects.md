@@ -24,7 +24,8 @@
   object; it can use the variables around it, as any closure. Its parameter
   and result types come from its annotations or from the type the literal is
   written for (a method that returns a value needs one or the other).
-  Accessors and spreads are not supported in such a literal yet.
+  Spreads work as in other literals; accessors are not supported in such a
+  literal yet.
 - An object type with methods, `{ count: int; add(n: int): void }`, is a
   structural interface, as in TypeScript: classes with those members, and
   object literals with those fields and methods, fit it. An interface's

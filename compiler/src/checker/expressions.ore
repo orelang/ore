@@ -1232,28 +1232,76 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
     let hints: StructType | InterfaceType | null = null
     if (expected !== null && expected.kind === "struct") hints = expected
     else if (expected !== null && expected.kind === "interface") hints = expected
-    // The fields, in order: their names, nodes, and types (of methods, before their bodies are checked).
+    // The values are held in locals in order, then the object is allocated and its fields assigned.
+    const locals: BindLocal[] = []
+    const hold = (value: Expr): Expr => {
+        const local = c.newLocal("prop", value.type, false)
+        locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    // The fields, in order: names, nodes, values (null for a method, checked once `this` is known), types.
     const names: string[] = []
     const nodes: Node[] = []
-    const values: Expr[] = []
-    const methods: Node[] = []
+    const values: (Expr | null)[] = []
     const fields: Field[] = []
+    const spread: bool[] = []
+    // A later property replaces one from a spread; two written ones are a duplicate.
+    const put = (name: string, at: Node, value: Expr | null, type: Type, fromSpread: bool): bool => {
+        let index = -1
+        for (let i = 0; i < names.length; i++) if (names[i] === name) index = i
+        if (index >= 0 && !fromSpread && !spread[index]) {
+            c.error(at, `Duplicate property '${name}'.`)
+            return false
+        }
+        if (index >= 0) {
+            removeAt(names, index)
+            removeAt(nodes, index)
+            removeAt(values, index)
+            removeAt(fields, index)
+            removeAt(spread, index)
+        }
+        names.push(name)
+        nodes.push(at)
+        values.push(value)
+        fields.push(new Field(name, type, false))
+        spread.push(fromSpread)
+        return true
+    }
     for (const prop of properties(node)) {
         const k = prop.kind
-        if (k === "SpreadAssignment" || k === "GetAccessor" || k === "SetAccessor")
-            return c.fail(prop, "Spreads and accessors are not supported in an object literal with methods yet.")
+        if (k === "GetAccessor" || k === "SetAccessor")
+            return c.fail(prop, "Accessors are not supported in an object literal with methods yet.")
+        if (k === "SpreadAssignment") {
+            const inner = expression(prop)
+            const operand_ = checkExpr(c, inner, scope)
+            if (operand_.k === "error") return errorOperand
+            const object = hold(c.toDefault(operand_, inner))
+            const type = object.type
+            if (type.kind === "struct" && !type.tuple) {
+                for (const f of type.fields)
+                    if (!f.private && !put(f.name, prop, new FieldGet(f.type, object, f.name), f.type, true))
+                        return errorOperand
+            } else if (type.kind === "interface") {
+                for (let m = 0; m < type.members.length; m++) {
+                    const member_ = type.members[m]
+                    if (member_.k !== "field") continue
+                    if (!put(member_.name, prop, new IfaceField(member_.type, object, m), member_.type, true))
+                        return errorOperand
+                }
+            } else {
+                return c.fail(
+                    inner,
+                    `Only an object can be spread into an object literal, got '${typeToString(type)}'.`,
+                )
+            }
+            continue
+        }
         const nameAt = prop.child("name")
         const name = nameAt !== null ? c.memberName(nameAt) : null
         if (nameAt === null || name === null) return errorOperand
-        if (names.includes(name)) return c.fail(nameAt, `Duplicate property '${name}'.`)
         if (k === "MethodDeclaration") {
             const type = methodType(c, prop, scope, hints !== null ? memberHint(hints, name) : null)
-            if (type === null) return errorOperand
-            names.push(name)
-            nodes.push(prop)
-            methods.push(prop)
-            values.push(new NullLit(types.null))
-            fields.push(new Field(name, type, false))
+            if (type === null || !put(name, prop, null, type, false)) return errorOperand
             continue
         }
         const valueNode = k === "ShorthandPropertyAssignment" ? nameAt : initializer(prop)!
@@ -1261,11 +1309,7 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
         const value = checkExpr(c, valueNode, scope, hint)
         if (value.k === "error") return errorOperand
         const expr = hint !== null ? c.coerce(value, hint, valueNode) : c.toDefault(value, valueNode)
-        names.push(name)
-        nodes.push(prop)
-        methods.push(prop)
-        values.push(expr)
-        fields.push(new Field(name, expr.type, false))
+        if (!put(name, prop, hold(expr), expr.type, false)) return errorOperand
     }
     const struct = expected !== null && expected.kind === "struct" && !expected.nominal ? expected : c.shape(fields)
     const self = c.newLocal("this", struct, false)
@@ -1275,16 +1319,24 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
         const field = findField(struct, names[i])
         if (field === null)
             return c.fail(nodes[i], `Property '${names[i]}' does not exist in type '${typeToString(struct)}'.`)
-        let value = values[i]
-        if (nodes[i].kind === "MethodDeclaration") {
+        const given = values[i]
+        let value: Expr
+        if (given === null) {
             const closure = checkClosure(c, nodes[i], scope, field.type, false, self)
             if (closure.k === "error") return errorOperand
             value = c.coerce(closure, field.type, nodes[i])
-        }
+        } else value = c.coerce(typed(given), field.type, nodes[i])
         assigns.push(new Assign(field.type, new FieldLValue(selfRef, names[i]), value))
     }
     assigns.push(selfRef)
-    return typed(new Bind(struct, [new BindLocal(self, new Alloc(struct))], new Seq(struct, assigns)))
+    locals.push(new BindLocal(self, new Alloc(struct)))
+    return typed(new Bind(struct, locals, new Seq(struct, assigns)))
+}
+
+/** Removes the element at an index, moving the later ones down. */
+function removeAt<T>(xs: T[], index: int) {
+    for (let i = index; i + 1 < xs.length; i++) xs[i] = xs[i + 1]
+    xs.pop()
 }
 
 /** The type the expected struct or interface gives a member, or null. */
