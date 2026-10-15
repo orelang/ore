@@ -46,5 +46,8 @@ if ! cmp -s "$work/stage2.ll" "$work/stage3.ll"; then
     diff "$work/stage2.ll" "$work/stage3.ll" | head -40 >&2
     exit 1
 fi
+# A new file rather than one written over: macOS kills a signed binary
+# replaced in place, its old signature still cached for the file.
+rm -f "$out/ore"
 cp "$work/stage3" "$out/ore"
 step "stages 2 and 3 agree ($(wc -c <"$work/stage3.ll" | tr -d ' ') bytes of LLVM IR); $out/ore installed in $(($(date +%s) - started)) s"
