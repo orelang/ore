@@ -63,10 +63,41 @@ import { type Source } from "../syntax/source"
 import { leadingCommentRanges } from "../syntax/nodes"
 import { checkAssigned } from "./assigned"
 import { type Checker, structOrInterface } from "./base"
-import { conformance, checkClassBodies, checkFieldInitializers, checkImplements, checkMethodBody, declareClassMembers, fillInterface, makeMethod } from "./classes"
-import { type ClassInfo as ClassInfoType, type ModuleInfo, ClassInfo, Directive, InterfaceInfo, Signature } from "./context"
+import {
+    conformance,
+    checkClassBodies,
+    checkFieldInitializers,
+    checkImplements,
+    checkMethodBody,
+    declareClassMembers,
+    fillInterface,
+    makeMethod,
+} from "./classes"
+import {
+    type ClassInfo as ClassInfoType,
+    type ModuleInfo,
+    ClassInfo,
+    Directive,
+    InterfaceInfo,
+    Signature,
+} from "./context"
 import { checkExpr } from "./expressions"
-import { cIdent, directiveKind, directiveNames, fieldType, isCName, isLiteral, memberOf, mentions, methodType, paramName, strictReserved, terminates, visitLocals, typed } from "./helpers"
+import {
+    cIdent,
+    directiveKind,
+    directiveNames,
+    fieldType,
+    isCName,
+    isLiteral,
+    memberOf,
+    mentions,
+    methodType,
+    paramName,
+    strictReserved,
+    terminates,
+    visitLocals,
+    typed,
+} from "./helpers"
 import { type Operand, Typed } from "./operand"
 import { checkBlock, checkClosure, bindPattern } from "./statements"
 import {
@@ -151,30 +182,55 @@ export function checkDirectives(c: Checker, stmt: Node) {
         }
         const named = d.name === "export" || d.name === "runtime"
         if (named ? d.arg === "" : d.arg !== "") {
-            directiveError(c, stmt, d, named ? `'//ore:${d.name}' needs a C name, e.g. '//ore:${d.name} my_function'.` : `'//ore:${d.name}' takes no argument.`)
+            directiveError(
+                c,
+                stmt,
+                d,
+                named
+                    ? `'//ore:${d.name}' needs a C name, e.g. '//ore:${d.name} my_function'.`
+                    : `'//ore:${d.name}' takes no argument.`,
+            )
             continue
         }
         if (d.name === "runtime" && !isInternal(c, c.sourceOf(stmt))) {
-            directiveError(c, stmt, d, "'//ore:runtime' is only for the standard library. Add '//ore:internal' at the top of the file to use it here.")
+            directiveError(
+                c,
+                stmt,
+                d,
+                "'//ore:runtime' is only for the standard library. Add '//ore:internal' at the top of the file to use it here.",
+            )
             continue
         }
         if (kind === "module") {
-            if (c.statementsOf(c.sourceOf(stmt))[0] !== stmt) directiveError(c, stmt, d, `'//ore:${d.name}' goes at the top of the file, before the first statement.`)
+            if (c.statementsOf(c.sourceOf(stmt))[0] !== stmt)
+                directiveError(c, stmt, d, `'//ore:${d.name}' goes at the top of the file, before the first statement.`)
             continue
         }
         // `//ore:export` also names a top-level variable for C.
         if (d.name === "export" && stmt.kind === "VariableStatement") {
             const list = declarationList(stmt)
             const decls = declarations(list)
-            const ok = declarationKind(list, c.sourceOf(stmt).text) === "let" && decls.length === 1 && isIdentifier(nameNode(decls[0]))
-            if (!ok) directiveError(c, stmt, d, "'//ore:export' applies to a function, or to a top-level 'let' of one name.")
+            const ok =
+                declarationKind(list, c.sourceOf(stmt).text) === "let" &&
+                decls.length === 1 &&
+                isIdentifier(nameNode(decls[0]))
+            if (!ok)
+                directiveError(c, stmt, d, "'//ore:export' applies to a function, or to a top-level 'let' of one name.")
             continue
         }
         if (kind === "function") {
             const ok = stmt.kind === "FunctionDeclaration" && body(stmt) !== null && typeParameters(stmt).length === 0
-            if (!ok) directiveError(c, stmt, d, `'//ore:${d.name}' applies to a function declaration with a body, not generic.`)
+            if (!ok)
+                directiveError(
+                    c,
+                    stmt,
+                    d,
+                    `'//ore:${d.name}' applies to a function declaration with a body, not generic.`,
+                )
         } else {
-            let ok = stmt.kind === "VariableStatement" && declarationKind(declarationList(stmt), c.sourceOf(stmt).text) === "let"
+            let ok =
+                stmt.kind === "VariableStatement" &&
+                declarationKind(declarationList(stmt), c.sourceOf(stmt).text) === "let"
             if (ok) for (const v of declarations(declarationList(stmt))) if (!isIdentifier(nameNode(v))) ok = false
             if (!ok) directiveError(c, stmt, d, "'//ore:threadlocal' applies to a top-level 'let' of plain names.")
         }
@@ -209,7 +265,13 @@ export function applyFuncDirectives(c: Checker, decl: Node, func: Func) {
             // The body runs without a frame, so it may hold nothing but assembly, chosen by `if` on the target.
             let ok = true
             for (const s of statements(body(decl)!)) if (!asmOnly(c, s)) ok = false
-            if (!ok) directiveError(c, decl, d, "A '//ore:naked' function holds only 'unsafe.asm(template, constraints)' statements.")
+            if (!ok)
+                directiveError(
+                    c,
+                    decl,
+                    d,
+                    "A '//ore:naked' function holds only 'unsafe.asm(template, constraints)' statements.",
+                )
             else {
                 attributes.naked = true
                 attributes.noinline = true
@@ -225,7 +287,12 @@ export function applyFuncDirectives(c: Checker, decl: Node, func: Func) {
             for (const t of func.type.params) if (bad === null && !cType(t)) bad = t
             if (bad === null && func.type.result.kind !== "void" && !cType(func.type.result)) bad = func.type.result
             if (bad !== null) {
-                directiveError(c, decl, d, `An exported function takes and returns numbers, 'bool' and 'ptr' only, not '${typeToString(bad)}'.`)
+                directiveError(
+                    c,
+                    decl,
+                    d,
+                    `An exported function takes and returns numbers, 'bool' and 'ptr' only, not '${typeToString(bad)}'.`,
+                )
                 continue
             }
             if (c.signatures.has(func.params)) {
@@ -242,7 +309,8 @@ export function applyFuncDirectives(c: Checker, decl: Node, func: Func) {
             func.name = d.arg
         }
     }
-    if (attributes.noinline && attributes.inline) c.error(nameNode(decl), "A function cannot be both '//ore:noinline' and '//ore:inline'.")
+    if (attributes.noinline && attributes.inline)
+        c.error(nameNode(decl), "A function cannot be both '//ore:noinline' and '//ore:inline'.")
     func.attributes = attributes
 }
 
@@ -279,7 +347,10 @@ export function threadLocal(c: Checker, decl: Node, local: Local) {
         return
     }
     if (initializer(decl) !== null || typeNode(decl) === null) {
-        c.error(nameNode(decl), "A thread-local variable starts at zero in each thread: write 'let name: T' with a type and no value.")
+        c.error(
+            nameNode(decl),
+            "A thread-local variable starts at zero in each thread: write 'let name: T' with a type and no value.",
+        )
         return
     }
     local.threadLocal = true
@@ -288,11 +359,16 @@ export function threadLocal(c: Checker, decl: Node, local: Local) {
 /** Reports variables that may be read before they are assigned; see `checkAssigned`. */
 export function checkUnassigned(c: Checker) {
     for (const local of c.untyped) {
-        if (!c.readEarly.has(local)) c.error(c.declNodes.get(local)!, `Variable '${local.name}' needs a type annotation or an initializer.`)
+        if (!c.readEarly.has(local))
+            c.error(c.declNodes.get(local)!, `Variable '${local.name}' needs a type annotation or an initializer.`)
     }
     for (const local of c.unassigned) {
         // Functions may run at any time, so a global they use needs its value at once.
-        if (local.global) c.error(c.declNodes.get(local)!, `Variable '${local.name}' is used by functions, so it must have a value where it is declared.`)
+        if (local.global)
+            c.error(
+                c.declNodes.get(local)!,
+                `Variable '${local.name}' is used by functions, so it must have a value where it is declared.`,
+            )
     }
     if (c.unassigned.size === 0) return
     for (const func of c.module.functions) {
@@ -322,19 +398,30 @@ export function localizeGlobals(c: Checker) {
             if (local.global && owners.get(local) !== func) shared.add(local)
         })
     }
-    for (const [local, _] of owners) if (!shared.has(local) && !local.threadLocal && local.exportName === null) local.global = false
+    for (const [local, _] of owners)
+        if (!shared.has(local) && !local.threadLocal && local.exportName === null) local.global = false
 }
 
 /** Whether an expression is made of literals and constants. */
 function isConstantExpr(c: Checker, e: Node, scope: Scope): bool {
-    if (e.kind === "NumericLiteral" || isStringLiteralNode(e) || e.kind === "TrueKeyword" || e.kind === "FalseKeyword") return true
+    if (e.kind === "NumericLiteral" || isStringLiteralNode(e) || e.kind === "TrueKeyword" || e.kind === "FalseKeyword")
+        return true
     if (e.kind === "ParenthesizedExpression") return isConstantExpr(c, expression(e), scope)
     if (e.kind === "PrefixUnaryExpression") return isConstantExpr(c, e.child("operand")!, scope)
     if (e.kind === "BinaryExpression") {
         const op = operatorToken(e).kind
-        return !isAssignmentOperator(op) && isConstantExpr(c, e.child("left")!, scope) && isConstantExpr(c, e.child("right")!, scope)
+        return (
+            !isAssignmentOperator(op) &&
+            isConstantExpr(c, e.child("left")!, scope) &&
+            isConstantExpr(c, e.child("right")!, scope)
+        )
     }
-    if (e.kind === "ConditionalExpression") return isConstantExpr(c, e.child("condition")!, scope) && isConstantExpr(c, whenTrue(e), scope) && isConstantExpr(c, whenFalse(e), scope)
+    if (e.kind === "ConditionalExpression")
+        return (
+            isConstantExpr(c, e.child("condition")!, scope) &&
+            isConstantExpr(c, whenTrue(e), scope) &&
+            isConstantExpr(c, whenFalse(e), scope)
+        )
     if (isIdentifier(e)) {
         const symbol = scope.lookupValue(e.text)
         return symbol !== null && symbol.k === "const"
@@ -373,7 +460,10 @@ export function declareExports(c: Checker, stmt: Node, module: ModuleInfo) {
         }
     } else if (
         exported &&
-        (stmt.kind === "FunctionDeclaration" || stmt.kind === "ClassDeclaration" || stmt.kind === "InterfaceDeclaration" || stmt.kind === "TypeAliasDeclaration") &&
+        (stmt.kind === "FunctionDeclaration" ||
+            stmt.kind === "ClassDeclaration" ||
+            stmt.kind === "InterfaceDeclaration" ||
+            stmt.kind === "TypeAliasDeclaration") &&
         optionalName(stmt) !== null
     ) {
         const name = nameNode(stmt)
@@ -407,7 +497,12 @@ export function importedModule(c: Checker, specifier: Node, module: ModuleInfo):
 }
 
 /** What a module exports under a name, following re-exports. */
-export function exportOf(c: Checker, module: ModuleInfo, name: string, seen: Set<ModuleInfo> | null = null): Exported | null {
+export function exportOf(
+    c: Checker,
+    module: ModuleInfo,
+    name: string,
+    seen: Set<ModuleInfo> | null = null,
+): Exported | null {
     const visited = seen ?? new Set<ModuleInfo>()
     const entry = module.exports.get(name)
     if (entry === null || visited.has(module)) return null
@@ -429,7 +524,8 @@ export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
     const clause = importClause(stmt)
     if (target === null || clause === null) return
     const defaultName = clause.child("name")
-    if (defaultName !== null) c.error(defaultName, "Default imports are not supported in Ore. Use 'import { name } from ...'.")
+    if (defaultName !== null)
+        c.error(defaultName, "Default imports are not supported in Ore. Use 'import { name } from ...'.")
     const bindings = namedBindings(clause)
     if (bindings === null) return
     if (bindings.kind === "NamespaceImport") {
@@ -442,7 +538,10 @@ export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
         const original = propertyName(element)
         const imported = (original ?? nameNode(element)).text
         if (!target.exports.has(imported)) {
-            c.error(original ?? nameNode(element), `Module '${stringText(specifier!)}' has no exported member '${imported}'.`)
+            c.error(
+                original ?? nameNode(element),
+                `Module '${stringText(specifier!)}' has no exported member '${imported}'.`,
+            )
             continue
         }
         if (!module.scope.declareAlias(nameNode(element).text, () => exportOf(c, target, imported))) {
@@ -453,7 +552,8 @@ export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
             const value = exported === null ? null : exported.value
             const type = exported === null ? null : exported.type
             const decl = value !== null ? value.decl : type !== null ? type.decl : null
-            if (decl !== null) c.info.definitions.set(original !== null && isIdentifier(original) ? original : nameNode(element), decl)
+            if (decl !== null)
+                c.info.definitions.set(original !== null && isIdentifier(original) ? original : nameNode(element), decl)
         })
     }
 }
@@ -467,7 +567,10 @@ export function declareTextImport(c: Checker, stmt: Node, module: ModuleInfo) {
     const specifier = moduleSpecifierNode(stmt)!
     const name = clause === null ? null : clause.child("name")
     if (clause === null || name === null || namedBindings(clause) !== null) {
-        c.error(stmt, `A text import has one name: 'import text from "${stringText(specifier)}" with { type: "text" }'.`)
+        c.error(
+            stmt,
+            `A text import has one name: 'import text from "${stringText(specifier)}" with { type: "text" }'.`,
+        )
         return
     }
     // The loader reported a missing file.
@@ -475,7 +578,8 @@ export function declareTextImport(c: Checker, stmt: Node, module: ModuleInfo) {
     const contents = texts === null ? null : texts.get(stringText(specifier))
     if (contents === null) return
     const value: Operand = new Typed(new StringLit(types.string, contents))
-    if (!module.scope.declareValue(name.text, new ConstSymbol(value, types.string, clause))) c.error(name, `Duplicate declaration '${name.text}'.`)
+    if (!module.scope.declareValue(name.text, new ConstSymbol(value, types.string, clause)))
+        c.error(name, `Duplicate declaration '${name.text}'.`)
 }
 
 /** Reports exports of names that a module does not declare. */
@@ -485,7 +589,13 @@ export function checkExports(c: Checker, modules: ModuleInfo[]) {
         // `export { a, b as c }` refers to declarations of the module.
         for (const stmt of c.statementsOf(module.source)) {
             const clause = stmt.kind === "ExportDeclaration" ? exportClause(stmt) : null
-            if (stmt.kind !== "ExportDeclaration" || moduleSpecifierNode(stmt) !== null || clause === null || clause.kind !== "NamedExports") continue
+            if (
+                stmt.kind !== "ExportDeclaration" ||
+                moduleSpecifierNode(stmt) !== null ||
+                clause === null ||
+                clause.kind !== "NamedExports"
+            )
+                continue
             for (const e of elements(clause)) {
                 const local = propertyName(e) ?? nameNode(e)
                 if (!isIdentifier(local)) continue
@@ -501,7 +611,8 @@ export function checkExports(c: Checker, modules: ModuleInfo[]) {
         for (const [name, entry] of module.exports) {
             if (entry.from === null && exportOf(c, module, name) === null) {
                 let node: Node | null = null
-                for (const s of c.statementsOf(module.source)) if (node === null && s.kind === "ExportDeclaration") node = s
+                for (const s of c.statementsOf(module.source))
+                    if (node === null && s.kind === "ExportDeclaration") node = s
                 if (node !== null) c.error(node, `Cannot export '${entry.local}': it is not declared in this module.`)
             }
         }
@@ -518,7 +629,8 @@ export function declareTypeAlias(c: Checker, decl: Node, scope: Scope) {
     // An anonymous object type or a union is displayed by the first alias that names it.
     if (type.kind === "struct" && type.name === null) type.name = nameNode(decl).text
     if (type.kind === "union" && type.name === null) type.name = nameNode(decl).text
-    if (!scope.declareType(nameNode(decl).text, new TypeSymbol(type, decl))) c.error(nameNode(decl), `Duplicate type '${nameNode(decl).text}'.`)
+    if (!scope.declareType(nameNode(decl).text, new TypeSymbol(type, decl)))
+        c.error(nameNode(decl), `Duplicate type '${nameNode(decl).text}'.`)
 }
 
 export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | null {
@@ -588,8 +700,18 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
     if (last !== null && dotDotDotToken(last) !== null) {
         const rest = params.length > 0 ? params[params.length - 1].type : null
         const elem = rest !== null && rest.kind === "array" ? rest.elem : null
-        if (elem === null || !((elem.kind === "int" && elem.bits === 64) || (elem.kind === "float" && elem.bits === 64) || elem.kind === "ptr")) {
-            c.error(last, "The variadic arguments of a C function are i64, f64 or ptr, as C promotes them: write '...args: i64[]'.")
+        if (
+            elem === null ||
+            !(
+                (elem.kind === "int" && elem.bits === 64) ||
+                (elem.kind === "float" && elem.bits === 64) ||
+                elem.kind === "ptr"
+            )
+        ) {
+            c.error(
+                last,
+                "The variadic arguments of a C function are i64, f64 or ptr, as C promotes them: write '...args: i64[]'.",
+            )
         }
         variadic = elem
         params = params.slice(0, params.length - 1)
@@ -599,20 +721,55 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
     const annotation = typeNode(decl)
     const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
     for (let i = 0; i < params_.length; i++) {
-        if (i < params.length && !cCompatible(params[i].type)) c.error(params_[i], `Type '${typeToString(params[i].type)}' cannot be passed to C.`)
+        if (i < params.length && !cCompatible(params[i].type))
+            c.error(params_[i], `Type '${typeToString(params[i].type)}' cannot be passed to C.`)
     }
-    if (!cCompatible(result) && result.kind !== "void") c.error(annotation!, `Type '${typeToString(result)}' cannot be returned from C.`)
-    const func = new Func(name, name, c.line(nameId), new FuncType(params.map((p) => p.type), result), params, new Block([]), false, c.sourceOf(decl).path, true, variadic)
+    if (!cCompatible(result) && result.kind !== "void")
+        c.error(annotation!, `Type '${typeToString(result)}' cannot be returned from C.`)
+    const func = new Func(
+        name,
+        name,
+        c.line(nameId),
+        new FuncType(
+            params.map((p) => p.type),
+            result,
+        ),
+        params,
+        new Block([]),
+        false,
+        c.sourceOf(decl).path,
+        true,
+        variadic,
+    )
     c.module.functions.push(func)
     if (!scope.declareValue(name, new FuncSymbol(func, decl))) c.error(nameId, `Duplicate declaration '${name}'.`)
 }
 
 /** A function with the signature of a declaration, resolved in `scope`; the body is checked later. */
-export function makeFunc(c: Checker, decl: Node, scope: Scope, sourceName: string, cname: string, exported: bool): Func {
+export function makeFunc(
+    c: Checker,
+    decl: Node,
+    scope: Scope,
+    sourceName: string,
+    cname: string,
+    exported: bool,
+): Func {
     const params = resolveParams(c, parameters(decl), scope)
     const annotation = typeNode(decl)
     const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
-    const func = new Func(`ore_fn_${cname}`, sourceName, c.line(nameNode(decl)), new FuncType(params.map((p) => p.type), result), params, new Block([]), exported, c.sourceOf(decl).path)
+    const func = new Func(
+        `ore_fn_${cname}`,
+        sourceName,
+        c.line(nameNode(decl)),
+        new FuncType(
+            params.map((p) => p.type),
+            result,
+        ),
+        params,
+        new Block([]),
+        exported,
+        c.sourceOf(decl).path,
+    )
     c.module.functions.push(func)
     return func
 }
@@ -629,7 +786,8 @@ export function declareGeneric(c: Checker, decl: Node, scope: Scope) {
     if (decl.kind === "FunctionDeclaration") declared = scope.declareValue(name, new GenericFuncSymbol(generic, decl))
     else {
         declared = scope.declareType(name, new TypeSymbol(types.never, decl, generic))
-        if (declared && decl.kind === "ClassDeclaration") declared = scope.declareValue(name, new ClassSymbol(null, decl))
+        if (declared && decl.kind === "ClassDeclaration")
+            declared = scope.declareValue(name, new ClassSymbol(null, decl))
     }
     if (!declared) c.error(nameNode(decl), `Duplicate declaration '${name}'.`)
 }
@@ -662,13 +820,17 @@ export function instantiate(c: Checker, generic: Generic, args: Type[], node: No
     }
 
     const scope = new Scope(generic.scope)
-    for (let i = 0; i < generic.params.length; i++) scope.declareType(nameNode(generic.params[i]).text, new TypeSymbol(args[i], generic.params[i]))
+    for (let i = 0; i < generic.params.length; i++)
+        scope.declareType(nameNode(generic.params[i]).text, new TypeSymbol(args[i], generic.params[i]))
     for (let i = 0; i < generic.params.length; i++) {
         const p = generic.params[i]
         const bound = constraint(p)
         const resolved = bound !== null ? c.resolveType(bound, scope) : null
         if (resolved !== null && !satisfiesConstraint(c, args[i], resolved)) {
-            c.error(node, `Type '${typeToString(args[i])}' does not satisfy the constraint '${typeToString(resolved)}' of '${nameNode(p).text}'.`)
+            c.error(
+                node,
+                `Type '${typeToString(args[i])}' does not satisfy the constraint '${typeToString(resolved)}' of '${nameNode(p).text}'.`,
+            )
             return null
         }
     }
@@ -738,7 +900,13 @@ export function satisfiesConstraint(c: Checker, arg: Type, bound: Type): bool {
  * Infers type arguments of a generic from the types of arguments, by
  * matching parameter type annotations against them.
  */
-export function inferTypeArgs(c: Checker, generic: Generic, params: Node[], argTypes: (Type | null)[], node: Node): Type[] | null {
+export function inferTypeArgs(
+    c: Checker,
+    generic: Generic,
+    params: Node[],
+    argTypes: (Type | null)[],
+    node: Node,
+): Type[] | null {
     const names = generic.params.map((p) => nameNode(p).text)
     const bindings = new Map<string, Type>()
     for (let i = 0; i < params.length; i++) {
@@ -748,14 +916,24 @@ export function inferTypeArgs(c: Checker, generic: Generic, params: Node[], argT
     }
     const missing = names.filter((n) => !bindings.has(n))
     if (missing.length > 0) {
-        c.error(node, `Cannot infer type argument${missing.length > 1 ? "s" : ""} ${missing.map((m) => `'${m}'`).join(", ")} of '${generic.name}'. Specify them, e.g. '${generic.name}<...>(...)'.`)
+        c.error(
+            node,
+            `Cannot infer type argument${missing.length > 1 ? "s" : ""} ${missing.map((m) => `'${m}'`).join(", ")} of '${generic.name}'. Specify them, e.g. '${generic.name}<...>(...)'.`,
+        )
         return null
     }
     return names.map((n) => bindings.get(n)!)
 }
 
 /** Binds type parameters `names` in annotation `n` by matching it against `type`. */
-export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bindings: Map<string, Type>, scope: Scope): void {
+export function inferFrom(
+    c: Checker,
+    n: Node,
+    type: Type,
+    names: string[],
+    bindings: Map<string, Type>,
+    scope: Scope,
+): void {
     if (n.kind === "ParenthesizedType") {
         inferFrom(c, typeNode(n)!, type, names, bindings, scope)
         return
@@ -765,7 +943,8 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
         const params = parameters(n)
         for (let i = 0; i < params.length; i++) {
             const annotation = typeNode(params[i])
-            if (annotation !== null && i < type.params.length) inferFrom(c, annotation, type.params[i], names, bindings, scope)
+            if (annotation !== null && i < type.params.length)
+                inferFrom(c, annotation, type.params[i], names, bindings, scope)
         }
         inferFrom(c, typeNode(n)!, type.result, names, bindings, scope)
         return
@@ -799,7 +978,8 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
         if (typeArgs.length === 0 || generic === null) return
         const instance = c.instanceOf.get(type)
         if (instance !== null && instance.generic === generic) {
-            for (let i = 0; i < typeArgs.length; i++) if (i < instance.args.length) inferFrom(c, typeArgs[i], instance.args[i], names, bindings, scope)
+            for (let i = 0; i < typeArgs.length; i++)
+                if (i < instance.args.length) inferFrom(c, typeArgs[i], instance.args[i], names, bindings, scope)
         } else if (generic.decl.kind === "TypeAliasDeclaration") {
             // A generic alias: infer its parameters from its definition, then match its type arguments.
             const inner = generic.params.map((p) => nameNode(p).text)
@@ -809,7 +989,10 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
                 const t = i < inner.length ? found.get(inner[i]) : null
                 if (t !== null) inferFrom(c, typeArgs[i], t, names, bindings, scope)
             }
-        } else if (generic.decl.kind === "InterfaceDeclaration" && (type.kind === "struct" || type.kind === "interface")) {
+        } else if (
+            generic.decl.kind === "InterfaceDeclaration" &&
+            (type.kind === "struct" || type.kind === "interface")
+        ) {
             // A class or object for a generic interface: infer the interface's
             // parameters from the members it has, then match its type arguments.
             const inner = generic.params.map((p) => nameNode(p).text)
@@ -828,7 +1011,8 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
                     const params = parameters(member)
                     for (let i = 0; i < params.length; i++) {
                         const pt = typeNode(params[i])
-                        if (pt !== null && i < method.params.length) inferFrom(c, pt, method.params[i], inner, found, generic.scope)
+                        if (pt !== null && i < method.params.length)
+                            inferFrom(c, pt, method.params[i], inner, found, generic.scope)
                     }
                     if (annotation !== null) inferFrom(c, annotation, method.result, inner, found, generic.scope)
                 }
@@ -855,7 +1039,12 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
         for (const member of members(n)) {
             const annotation = typeNode(member)
             const memberName = member.child("name")
-            if (member.kind === "PropertySignature" && annotation !== null && memberName !== null && isIdentifier(memberName)) {
+            if (
+                member.kind === "PropertySignature" &&
+                annotation !== null &&
+                memberName !== null &&
+                isIdentifier(memberName)
+            ) {
                 const field = fieldType(type, memberName.text)
                 if (field !== null) inferFrom(c, annotation, field, names, bindings, scope)
             }
@@ -873,7 +1062,12 @@ export class GenericCall {
 
 /** Whether an argument is a function literal for a parameter such as `f: (x: T) => U`, checked after the others. */
 function deferred(arg: Node, p: Node | null, names: string[]): bool {
-    return (arg.kind === "ArrowFunction" || arg.kind === "FunctionExpression") && p !== null && p.kind === "FunctionType" && mentions(p, names)
+    return (
+        (arg.kind === "ArrowFunction" || arg.kind === "FunctionExpression") &&
+        p !== null &&
+        p.kind === "FunctionType" &&
+        mentions(p, names)
+    )
 }
 
 /**
@@ -881,7 +1075,15 @@ function deferred(arg: Node, p: Node | null, names: string[]): bool {
  * first (with their parameter type when it has no type parameters), then the
  * type arguments are taken from `typeArgs` or inferred.
  */
-export function genericCall(c: Checker, generic: Generic, params: Node[], typeArgs: Node[], args: Node[], node: Node, scope: Scope): GenericCall | null {
+export function genericCall(
+    c: Checker,
+    generic: Generic,
+    params: Node[],
+    typeArgs: Node[],
+    args: Node[],
+    node: Node,
+    scope: Scope,
+): GenericCall | null {
     for (const arg of args) {
         if (arg.kind === "SpreadElement") {
             c.error(arg, "Spread arguments are not supported yet.")
@@ -951,10 +1153,19 @@ export function genericCall(c: Checker, generic: Generic, params: Node[], typeAr
 }
 
 /** Binds the type parameters mentioned by the parameter of argument `i` from the argument's type. */
-function bindArg(c: Checker, generic: Generic, params: Node[], found: (Operand | null)[], i: int, names: string[], bindings: Map<string, Type>) {
+function bindArg(
+    c: Checker,
+    generic: Generic,
+    params: Node[],
+    found: (Operand | null)[],
+    i: int,
+    names: string[],
+    bindings: Map<string, Type>,
+) {
     const o = found[i]
     const p = i < params.length ? typeNode(params[i]) : null
-    if (o !== null && o.k !== "error" && p !== null) inferFrom(c, p, o.k === "typed" ? o.expr.type : c.defaultType(o), names, bindings, generic.scope)
+    if (o !== null && o.k !== "error" && p !== null)
+        inferFrom(c, p, o.k === "typed" ? o.expr.type : c.defaultType(o), names, bindings, generic.scope)
 }
 
 /**
@@ -1001,13 +1212,16 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope): Local[
         if (type !== null && question !== null) type = c.unionOf([type, types.null])
         if (dotDotDotToken(p) !== null) {
             if (i !== params_.length - 1) c.error(p, "A rest parameter must be the last parameter.")
-            else if (type !== null && type.kind !== "array") c.error(annotation ?? p, "A rest parameter must have an array type.")
+            else if (type !== null && type.kind !== "array")
+                c.error(annotation ?? p, "A rest parameter must have an array type.")
             else rest = true
         }
-        if (init !== null && question !== null) c.error(question, "A parameter with a default value is already optional.")
+        if (init !== null && question !== null)
+            c.error(question, "A parameter with a default value is already optional.")
         const optional = init !== null || question !== null || (dotDotDotToken(p) !== null && i === params_.length - 1)
         if (optional && required === -1) required = i
-        if (!optional && required !== -1) c.error(p, "A required parameter cannot follow an optional or rest parameter.")
+        if (!optional && required !== -1)
+            c.error(p, "A required parameter cannot follow an optional or rest parameter.")
         if (type !== null) c.info.types.set(nameNode(p), type)
         const local = c.newLocal(paramName(p, i), type ?? types.i64, true)
         params.push(local)
@@ -1047,7 +1261,8 @@ export function paramScope(c: Checker, params_: Node[], locals: Local[], outer: 
         const local = locals[i]
         const name = nameNode(p)
         if (isIdentifier(name)) {
-            if (!scope.declareValue(local.name, new LocalSymbol(local, p))) c.error(name, `Duplicate parameter '${local.name}'.`)
+            if (!scope.declareValue(local.name, new LocalSymbol(local, p)))
+                c.error(name, `Duplicate parameter '${local.name}'.`)
         } else {
             bindPattern(c, name, new LocalRef(local.type, local), true, scope, prologue)
         }
@@ -1086,7 +1301,11 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     // Without a frame, a naked function can branch only on what is known at compile time.
     const attributes = func.attributes
     if (attributes !== null && attributes.naked) {
-        if (!func.body.body.every(constantBranches)) c.error(nameNode(decl), "A '//ore:naked' function can branch only on conditions known at compile time, such as 'target.arch'.")
+        if (!func.body.body.every(constantBranches))
+            c.error(
+                nameNode(decl),
+                "A '//ore:naked' function can branch only on conditions known at compile time, such as 'target.arch'.",
+            )
     }
 }
 
@@ -1096,7 +1315,10 @@ export function checkReturns(c: Checker, func: Func, node: Node) {
     const attributes = func.attributes
     const naked = attributes !== null && attributes.naked
     if (result.kind !== "void" && !naked && !terminates(func.body)) {
-        c.error(node, `Function '${func.sourceName}' must return a value of type '${typeToString(result)}' on every path.`)
+        c.error(
+            node,
+            `Function '${func.sourceName}' must return a value of type '${typeToString(result)}' on every path.`,
+        )
     }
 }
 
@@ -1131,7 +1353,8 @@ export function checkTopLevelConstants(c: Checker, stmt: Node, scope: Scope): bo
     for (const k of constants) if (k.value.k === "typed" && !isLiteral(k.value.expr)) nonLiteral = true
     if (c.diagnostics.length === errors && nonLiteral) return false
     for (const k of constants) {
-        if (!scope.declareValue(k.name.text, new ConstSymbol(k.value, k.type, k.decl))) c.error(k.name, `Duplicate declaration '${k.name.text}'.`)
+        if (!scope.declareValue(k.name.text, new ConstSymbol(k.value, k.type, k.decl)))
+            c.error(k.name, `Duplicate declaration '${k.name.text}'.`)
     }
     return true
 }
@@ -1153,7 +1376,9 @@ export function checkStrictNames(c: Checker, node: Node, inClass: bool) {
     const nested = inClass || k === "ClassDeclaration"
     const name = named ? node.child("name") : null
     if (name !== null && name.kind === "Identifier" && strictReserved.includes(name.text)) {
-        const reason = nested ? "Class definitions are automatically in strict mode." : "Modules are automatically in strict mode."
+        const reason = nested
+            ? "Class definitions are automatically in strict mode."
+            : "Modules are automatically in strict mode."
         c.error(name, `Identifier expected. '${name.text}' is a reserved word in strict mode. ${reason}`)
     }
     for (const child of node.children) checkStrictNames(c, child, nested)

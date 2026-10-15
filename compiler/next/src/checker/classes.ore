@@ -1,7 +1,21 @@
 // Classes and interfaces: members, constructors, accessors, conformance and
 // interface tables; see compiler/checker/src/classes.ts.
 
-import { type Expr, type Stmt, Alloc, Assign, Block, ExprStmt, FieldLValue, Func, Itab, LetStmt, Local, LocalRef, ReturnStmt } from "../ir/nodes"
+import {
+    type Expr,
+    type Stmt,
+    Alloc,
+    Assign,
+    Block,
+    ExprStmt,
+    FieldLValue,
+    Func,
+    Itab,
+    LetStmt,
+    Local,
+    LocalRef,
+    ReturnStmt,
+} from "../ir/nodes"
 import {
     type InterfaceMember,
     type InterfaceType,
@@ -44,7 +58,16 @@ import {
     types as typeNodes,
 } from "../syntax/nodes"
 import { type Checker } from "./base"
-import { type InterfaceInfo, Accessor, ClassInfo, FieldInitInfo, GenericMethod, InterfaceInfo as InterfaceInfoClass, MethodInfo, FuncContext } from "./context"
+import {
+    type InterfaceInfo,
+    Accessor,
+    ClassInfo,
+    FieldInitInfo,
+    GenericMethod,
+    InterfaceInfo as InterfaceInfoClass,
+    MethodInfo,
+    FuncContext,
+} from "./context"
 import { declareGeneric, paramScope, prepend, resolveParams, checkReturns } from "./declarations"
 import { checkExpr } from "./expressions"
 import { cIdent, hasZeroValue, indexSignatureMessage, zeroNeedsInit, zeroValue } from "./helpers"
@@ -63,13 +86,17 @@ export function declareClass(c: Checker, decl: Node, scope: Scope) {
         return
     }
     for (const clause of heritageClauses(decl)) {
-        if (heritageToken(clause, c.sourceOf(decl).text) === "extends") c.error(clause, "Class inheritance is not supported in Ore. Use composition and interfaces.")
+        if (heritageToken(clause, c.sourceOf(decl).text) === "extends")
+            c.error(clause, "Class inheritance is not supported in Ore. Use composition and interfaces.")
     }
     for (const mod of modifiers(decl)) {
         if (mod.kind !== "ExportKeyword") c.error(mod, `Modifier '${c.text(mod)}' is not allowed on classes.`)
     }
     const type = new StructTypeClass(c.nextStructId++, name, true, [], [])
-    if (!scope.declareType(name, new TypeSymbol(type, decl)) || !scope.declareValue(name, new ClassSymbol(type, decl))) {
+    if (
+        !scope.declareType(name, new TypeSymbol(type, decl)) ||
+        !scope.declareValue(name, new ClassSymbol(type, decl))
+    ) {
         c.error(nameId, `Duplicate declaration '${name}'.`)
         return
     }
@@ -109,7 +136,8 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             const init = initializer(member)
             if (annotation !== null) fieldType = c.resolveValueType(annotation, scope)
             else if (question !== null) c.error(nameNode(member), `Optional field '${name}' needs a type annotation.`)
-            else if (init === null) c.error(nameNode(member), `Field '${name}' needs a type annotation or an initializer.`)
+            else if (init === null)
+                c.error(nameNode(member), `Field '${name}' needs a type annotation or an initializer.`)
             // `x?: T` is `T | null`, null unless initialized.
             if (fieldType !== null && question !== null) fieldType = c.unionOf([fieldType, types.null])
             if (init !== null) info.inits.push(new FieldInitInfo(name, init))
@@ -139,7 +167,14 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                 c.genericMethods.get(type)!.set(name, new GenericMethod(generic, info, flags.isPrivate))
                 continue
             }
-            const func = makeMethod(c, member, info, scope, `${className}.${name}`, `ore_m_${info.cname}_${cIdent(name)}`)
+            const func = makeMethod(
+                c,
+                member,
+                info,
+                scope,
+                `${className}.${name}`,
+                `ore_m_${info.cname}_${cIdent(name)}`,
+            )
             type.methods.push(new Method(name, func, flags.isPrivate))
             info.methods.push(new MethodInfo(member, func))
         } else if (member.kind === "Constructor") {
@@ -168,14 +203,28 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
         } else if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
             declareAccessor(c, member, info, scope, flags.isPrivate)
         } else {
-            c.error(member, member.kind === "IndexSignature" ? indexSignatureMessage : "This class member is not supported.")
+            c.error(
+                member,
+                member.kind === "IndexSignature" ? indexSignatureMessage : "This class member is not supported.",
+            )
         }
     }
     if (type.ctor === null) type.ctor = ctorFunc(c, info, [], nameNode(decl))
 }
 
 export function ctorFunc(c: Checker, info: ClassInfo, params: Local[], node: Node): Func {
-    const func = new Func(`ore_new_${info.cname}`, `${info.type.name}.constructor`, c.line(node), new FuncType(params.map((p) => p.type), info.type), params, new Block([]), false)
+    const func = new Func(
+        `ore_new_${info.cname}`,
+        `${info.type.name}.constructor`,
+        c.line(node),
+        new FuncType(
+            params.map((p) => p.type),
+            info.type,
+        ),
+        params,
+        new Block([]),
+        false,
+    )
     c.module.functions.push(func)
     return func
 }
@@ -220,7 +269,8 @@ export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope
     c.fn = new FuncContext(types.void, [], 0, null, null, null, null, false, true)
     for (const init of info.inits) {
         let index = -1
-        for (let i = 0; i < info.type.fields.length; i++) if (index === -1 && info.type.fields[i].name === init.name) index = i
+        for (let i = 0; i < info.type.fields.length; i++)
+            if (index === -1 && info.type.fields[i].name === init.name) index = i
         const field = info.type.fields[index]
         const declared = field.type.kind === "void" ? null : field.type
         const value = checkExpr(c, init.node, scope, declared)
@@ -249,7 +299,8 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
     for (const p of info.paramProps) initialized.add(p.name)
     for (const init of info.inits) initialized.add(init.name)
     for (const field of type.fields)
-        if (!initialized.has(field.name) && zeroNeedsInit(field.type)) body_.push(setField(thisRef, field.name, zeroValue(field.type)))
+        if (!initialized.has(field.name) && zeroNeedsInit(field.type))
+            body_.push(setField(thisRef, field.name, zeroValue(field.type)))
     for (const p of info.paramProps) body_.push(setField(thisRef, p.name, new LocalRef(p.type, p)))
     for (const init of info.inits) {
         const value = init.value
@@ -279,7 +330,11 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
             const e = expression(stmt)
             if (e.kind !== "BinaryExpression") continue
             const target = left(e)
-            if (operatorToken(e).kind === "EqualsToken" && target.kind === "PropertyAccessExpression" && expression(target).kind === "ThisKeyword") {
+            if (
+                operatorToken(e).kind === "EqualsToken" &&
+                target.kind === "PropertyAccessExpression" &&
+                expression(target).kind === "ThisKeyword"
+            ) {
                 assigned.add(nameNode(target).text)
             }
         }
@@ -287,7 +342,10 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
     for (const field of type.fields) {
         if (!hasZeroValue(field.type) && !assigned.has(field.name)) {
             const decl = c.memberDecls.get(type)!.get(field.name)!
-            c.error(nameNode(decl), `Field '${field.name}' of type '${typeToString(field.type)}' must be initialized in its declaration or at the top level of the constructor.`)
+            c.error(
+                nameNode(decl),
+                `Field '${field.name}' of type '${typeToString(field.type)}' must be initialized in its declaration or at the top level of the constructor.`,
+            )
         }
     }
 
@@ -310,7 +368,10 @@ export function declareAccessor(c: Checker, member: Node, info: ClassInfo, scope
     if (known === null) c.accessors.set(type, accessors)
     const existing = accessors.get(name)
     const getter = member.kind === "GetAccessor"
-    if ((decls.has(name) && existing === null) || (existing !== null && (getter ? existing.get !== null : existing.set !== null))) {
+    if (
+        (decls.has(name) && existing === null) ||
+        (existing !== null && (getter ? existing.get !== null : existing.set !== null))
+    ) {
         c.error(nameNode(member), `Duplicate member '${name}'.`)
         return
     }
@@ -329,11 +390,21 @@ export function declareAccessor(c: Checker, member: Node, info: ClassInfo, scope
         return
     }
     const kind = getter ? "get" : "set"
-    const func = makeMethod(c, member, info, scope, `${type.name}.${kind} ${name}`, `ore_m_${info.cname}_${kind}_${cIdent(name)}`)
+    const func = makeMethod(
+        c,
+        member,
+        info,
+        scope,
+        `${type.name}.${kind} ${name}`,
+        `ore_m_${info.cname}_${kind}_${cIdent(name)}`,
+    )
     info.methods.push(new MethodInfo(member, func))
     const propertyType = getter ? func.type.result : func.type.params[0]
     if (existing !== null && !sameType(existing.type, propertyType)) {
-        c.error(nameNode(member), `The getter and setter of '${name}' must have the same type, got '${typeToString(existing.type)}' and '${typeToString(propertyType)}'.`)
+        c.error(
+            nameNode(member),
+            `The getter and setter of '${name}' must have the same type, got '${typeToString(existing.type)}' and '${typeToString(propertyType)}'.`,
+        )
         return
     }
     const property = existing ?? new Accessor(propertyType, isPrivate)
@@ -350,11 +421,33 @@ export function accessor(c: Checker, type: Type, name: string): Accessor | null 
 }
 
 /** A method with the signature of a declaration, resolved in `scope`; the body is checked later. */
-export function makeMethod(c: Checker, decl: Node, info: ClassInfo, scope: Scope, sourceName: string, cname: string): Func {
+export function makeMethod(
+    c: Checker,
+    decl: Node,
+    info: ClassInfo,
+    scope: Scope,
+    sourceName: string,
+    cname: string,
+): Func {
     const params = resolveParams(c, parameters(decl), scope)
     const annotation = typeNode(decl)
     const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
-    const func = new Func(cname, sourceName, c.line(nameNode(decl)), new FuncType(params.map((p) => p.type), result), params, new Block([]), false, null, false, null, c.newLocal("this", info.type, false))
+    const func = new Func(
+        cname,
+        sourceName,
+        c.line(nameNode(decl)),
+        new FuncType(
+            params.map((p) => p.type),
+            result,
+        ),
+        params,
+        new Block([]),
+        false,
+        null,
+        false,
+        null,
+        c.newLocal("this", info.type, false),
+    )
     c.module.functions.push(func)
     return func
 }
@@ -384,7 +477,8 @@ export function checkImplements(c: Checker, info: ClassInfo, scope: Scope) {
             }
             const iface = type.type
             const result = conformance(c, info.type, iface)
-            if (result.reason !== null) c.error(ref, `Class '${info.type.name}' does not implement '${iface.name}': ${result.reason}.`)
+            if (result.reason !== null)
+                c.error(ref, `Class '${info.type.name}' does not implement '${iface.name}': ${result.reason}.`)
         }
     }
 }
@@ -405,7 +499,14 @@ export function declareInterface(c: Checker, decl: Node, scope: Scope) {
 }
 
 /** Adds a member to an interface being filled, unless it conflicts with an inherited one. */
-function addMember(c: Checker, found: InterfaceMember[], decls: Map<string, Node>, member: InterfaceMember, node: Node, decl: Node) {
+function addMember(
+    c: Checker,
+    found: InterfaceMember[],
+    decls: Map<string, Node>,
+    member: InterfaceMember,
+    node: Node,
+    decl: Node,
+) {
     let existing: InterfaceMember | null = null
     for (const m of found) if (existing === null && m.name === member.name) existing = m
     if (existing === null) {
@@ -438,13 +539,19 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
             if (isIdentifier(target)) c.info.definitions.set(target, base.decl)
             const baseInfo = c.interfaces.get(baseType)!
             fillInterface(c, baseInfo, scope)
-            for (const m of baseType.members) addMember(c, found, decls, m, ref, c.memberDecls.get(baseType)!.get(m.name)!)
+            for (const m of baseType.members)
+                addMember(c, found, decls, m, ref, c.memberDecls.get(baseType)!.get(m.name)!)
         }
     }
     for (const member of members(info.decl)) {
         const memberName = member.child("name")
         if (memberName === null) {
-            c.error(member, member.kind === "IndexSignature" ? indexSignatureMessage : "Call and construct signatures are not supported.")
+            c.error(
+                member,
+                member.kind === "IndexSignature"
+                    ? indexSignatureMessage
+                    : "Call and construct signatures are not supported.",
+            )
             continue
         }
         const name = c.memberName(memberName)
@@ -465,11 +572,28 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
             }
         } else if (member.kind === "MethodSignature") {
             const typeParams = typeParameters(member)
-            if (typeParams.length > 0) c.error(typeParams[0], "Generic methods are not supported in interfaces: calls through an interface cannot pick an instance.")
+            if (typeParams.length > 0)
+                c.error(
+                    typeParams[0],
+                    "Generic methods are not supported in interfaces: calls through an interface cannot pick an instance.",
+                )
             const params = resolveParams(c, parameters(member), scope)
             const annotation = typeNode(member)
             const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
-            addMember(c, found, decls, new InterfaceMethod(name, new FuncType(params.map((p) => p.type), result)), memberName, member)
+            addMember(
+                c,
+                found,
+                decls,
+                new InterfaceMethod(
+                    name,
+                    new FuncType(
+                        params.map((p) => p.type),
+                        result,
+                    ),
+                ),
+                memberName,
+                member,
+            )
         } else {
             c.error(member, "This interface member is not supported.")
         }
@@ -497,21 +621,35 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
         const what = `${member.k === "field" ? "property" : "method"} '${member.name}'`
         if (from.kind === "interface") {
             let index = -1
-            for (let i = 0; i < from.members.length; i++) if (index === -1 && from.members[i].name === member.name) index = i
+            for (let i = 0; i < from.members.length; i++)
+                if (index === -1 && from.members[i].name === member.name) index = i
             const source = index === -1 ? null : from.members[index]
             if (source === null || source.k !== member.k) return new Conformance(`${what} is missing`, null)
-            if (!sameType(source.type, member.type)) return new Conformance(`${what} has type '${typeToString(source.type)}' instead of '${typeToString(member.type)}'`, null)
-            if (source.k === "field" && member.k === "field" && source.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null)
+            if (!sameType(source.type, member.type))
+                return new Conformance(
+                    `${what} has type '${typeToString(source.type)}' instead of '${typeToString(member.type)}'`,
+                    null,
+                )
+            if (source.k === "field" && member.k === "field" && source.readonly && !member.readonly)
+                return new Conformance(`${what} is read-only`, null)
             indices.push(index)
         } else if (member.k === "field") {
             const field = findField(from, member.name)
             if (field === null || field.private) return new Conformance(`${what} is missing`, null)
-            if (!sameType(field.type, member.type)) return new Conformance(`${what} has type '${typeToString(field.type)}' instead of '${typeToString(member.type)}'`, null)
+            if (!sameType(field.type, member.type))
+                return new Conformance(
+                    `${what} has type '${typeToString(field.type)}' instead of '${typeToString(member.type)}'`,
+                    null,
+                )
             if (field.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null)
         } else {
             const method = findMethod(from, member.name)
             if (method === null || method.private) return new Conformance(`${what} is missing`, null)
-            if (!sameType(method.func.type, member.type)) return new Conformance(`${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'`, null)
+            if (!sameType(method.func.type, member.type))
+                return new Conformance(
+                    `${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'`,
+                    null,
+                )
         }
     }
     return new Conformance(null, indices)

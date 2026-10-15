@@ -14,17 +14,18 @@ const hexDigits = "0123456789abcdef"
 
 /** A string in double quotes: `"` and `\` escaped, `\n`, `\r`, `\t`, other control characters as `\u00XX`. */
 export function quote(s: string): string {
-    let out = "\""
+    let out = '"'
     let start = 0
     for (let i = 0; i < s.length; i++) {
         const c = s[i]
         let escape = ""
-        if (c === 0x22) escape = "\\\""
+        if (c === 0x22) escape = '\\"'
         else if (c === 0x5c) escape = "\\\\"
         else if (c === 0x0a) escape = "\\n"
         else if (c === 0x0d) escape = "\\r"
         else if (c === 0x09) escape = "\\t"
-        else if (c < 0x20) escape = `\\u00${hexDigits.slice(c >> 4, (c >> 4) + 1)}${hexDigits.slice(c & 15, (c & 15) + 1)}`
+        else if (c < 0x20)
+            escape = `\\u00${hexDigits.slice(c >> 4, (c >> 4) + 1)}${hexDigits.slice(c & 15, (c & 15) + 1)}`
         else continue
         out += s.slice(start, i) + escape
         start = i + 1
@@ -81,7 +82,8 @@ class Dumper {
         }
         this.line(0, `module ${quote(m.file)}`)
         for (const s of m.structs) this.struct(s)
-        for (const u of m.unions) this.line(0, `union ${this.type(u)}${u.name !== null ? ` name=${quote(u.name)}` : ""}`)
+        for (const u of m.unions)
+            this.line(0, `union ${this.type(u)}${u.name !== null ? ` name=${quote(u.name)}` : ""}`)
         for (const t of m.itabs) this.line(0, `itab ${t.id}: ${this.type(t.struct)} -> ${this.type(t.iface)}`)
         for (const f of m.functions) this.func("func", f)
         for (const f of m.inits) this.func("init", f)
@@ -103,7 +105,11 @@ class Dumper {
 
     struct(s: StructType) {
         this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}`)
-        for (const f of s.fields) this.line(1, `field ${f.name}: ${this.type(f.type)}${f.readonly ? " readonly" : ""}${f.private ? " private" : ""}`)
+        for (const f of s.fields)
+            this.line(
+                1,
+                `field ${f.name}: ${this.type(f.type)}${f.readonly ? " readonly" : ""}${f.private ? " private" : ""}`,
+            )
         for (const m of s.methods) this.line(1, `method ${m.name}: ${this.ref(m.func)}${m.private ? " private" : ""}`)
         const ctor = s.ctor
         if (ctor !== null) this.line(1, `ctor: ${this.ref(ctor)}`)
@@ -193,7 +199,12 @@ class Dumper {
                 return
             }
             case "loop": {
-                this.stmtHead(s, depth, prefix, `loop #${s.id}${s.labeled ? " labeled" : ""}${s.condAfter ? " condAfter" : ""}`)
+                this.stmtHead(
+                    s,
+                    depth,
+                    prefix,
+                    `loop #${s.id}${s.labeled ? " labeled" : ""}${s.condAfter ? " condAfter" : ""}`,
+                )
                 const perIteration = s.perIteration
                 if (perIteration !== null) for (const l of perIteration) this.line(d, `perIteration: ${this.local(l)}`)
                 const cond = s.cond
@@ -213,7 +224,12 @@ class Dumper {
                 return
             }
             case "switch":
-                this.stmtHead(s, depth, prefix, `switch #${s.id}${s.labeled ? " labeled" : ""}${s.exhaustive ? " exhaustive" : ""}`)
+                this.stmtHead(
+                    s,
+                    depth,
+                    prefix,
+                    `switch #${s.id}${s.labeled ? " labeled" : ""}${s.exhaustive ? " exhaustive" : ""}`,
+                )
                 this.line(d, `local: ${this.local(s.local)}`)
                 this.expr(s.value, d, "value")
                 for (const c of s.clauses) {
@@ -470,7 +486,12 @@ class Dumper {
                 return
             case "is": {
                 const via = e.via
-                this.exprHead(e, depth, role, `is member=${this.type(e.member)}${via !== null ? ` via=${this.type(via)}` : ""}`)
+                this.exprHead(
+                    e,
+                    depth,
+                    role,
+                    `is member=${this.type(e.member)}${via !== null ? ` via=${this.type(via)}` : ""}`,
+                )
                 this.expr(e.value, d, "value")
                 return
             }
@@ -506,7 +527,12 @@ class Dumper {
             case "bound-method": {
                 const func = e.func
                 const index = e.index
-                this.exprHead(e, depth, role, `bound-method${func !== null ? ` func=${this.ref(func)}` : ""}${index !== null ? ` index=${index}` : ""}`)
+                this.exprHead(
+                    e,
+                    depth,
+                    role,
+                    `bound-method${func !== null ? ` func=${this.ref(func)}` : ""}${index !== null ? ` index=${index}` : ""}`,
+                )
                 this.expr(e.receiver, d, "receiver")
                 return
             }
@@ -524,7 +550,12 @@ class Dumper {
                 return
             case "chan": {
                 const arity = e.arity
-                this.exprHead(e, depth, role, `chan ${e.op} chanType=${this.type(e.chanType)}${arity !== null ? ` arity=${arity}` : ""}`)
+                this.exprHead(
+                    e,
+                    depth,
+                    role,
+                    `chan ${e.op} chanType=${this.type(e.chanType)}${arity !== null ? ` arity=${arity}` : ""}`,
+                )
                 const chan = e.chan
                 if (chan !== null) this.expr(chan, d, "chan")
                 const value = e.value

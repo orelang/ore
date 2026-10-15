@@ -69,7 +69,8 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
     const callback = e.args.length > 0 ? e.args[0] : null
     const ft = funcTypeOf(callback !== null ? callback.type : null)
     let f: V | null = null
-    if (callback !== null && e.method !== "includes" && e.method !== "indexOf" && e.method !== "join") f = expr(g, callback)
+    if (callback !== null && e.method !== "includes" && e.method !== "indexOf" && e.method !== "join")
+        f = expr(g, callback)
     const fn = f
     const call = (args: V[]): V => callClosure(g, fn ?? voidValue, ft, args)
     const loop = new ArrayLoop(g, array, elem, T)
@@ -178,7 +179,9 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
             loop.run((x, i) => {
                 const data = g.b.value("ptr", `load ptr, ptr ${g.field(strings.v, ARRAY, 0)}`)
                 const text = toStr(g, x, T)
-                g.b.emit(`store ${STR} ${text.v}, ptr ${g.b.value("ptr", `getelementptr ${STR}, ptr ${data.v}, i64 ${i.v}`).v}`)
+                g.b.emit(
+                    `store ${STR} ${text.v}, ptr ${g.b.value("ptr", `getelementptr ${STR}, ptr ${data.v}, i64 ${i.v}`).v}`,
+                )
             })
             return g.rt("ore_rt_str_join", [strings, sep])
         }
@@ -187,11 +190,21 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
             return array
         default: {
             if (fn === null) {
-                g.rt("ore_rt_array_sort", [array, { ty: "i64", v: sizeOf(elem) }, { ty: "ptr", v: naturalOrder(g, T) }, { ty: "ptr", v: "null" }])
+                g.rt("ore_rt_array_sort", [
+                    array,
+                    { ty: "i64", v: sizeOf(elem) },
+                    { ty: "ptr", v: naturalOrder(g, T) },
+                    { ty: "ptr", v: "null" },
+                ])
                 return array
             }
             const ctx = g.spill(fn)
-            g.rt("ore_rt_array_sort", [array, { ty: "i64", v: sizeOf(elem) }, { ty: "ptr", v: comparator(g, ft) }, { ty: "ptr", v: ctx }])
+            g.rt("ore_rt_array_sort", [
+                array,
+                { ty: "i64", v: sizeOf(elem) },
+                { ty: "ptr", v: comparator(g, ft) },
+                { ty: "ptr", v: ctx },
+            ])
             return array
         }
     }
@@ -210,8 +223,14 @@ export function comparator(g: Emitter, type: FuncType): string {
         const r = callClosure(e, f, type, [a, b])
         const result = type.result
         const zero = result.kind === "float" ? floatConstant(0, result.bits) : ""
-        const lt = result.kind === "float" ? e.b.value("i1", `fcmp olt ${r.ty} ${r.v}, ${zero}`) : e.b.value("i1", `icmp slt ${r.ty} ${r.v}, 0`)
-        const gt = result.kind === "float" ? e.b.value("i1", `fcmp ogt ${r.ty} ${r.v}, ${zero}`) : e.b.value("i1", `icmp sgt ${r.ty} ${r.v}, 0`)
+        const lt =
+            result.kind === "float"
+                ? e.b.value("i1", `fcmp olt ${r.ty} ${r.v}, ${zero}`)
+                : e.b.value("i1", `icmp slt ${r.ty} ${r.v}, 0`)
+        const gt =
+            result.kind === "float"
+                ? e.b.value("i1", `fcmp ogt ${r.ty} ${r.v}, ${zero}`)
+                : e.b.value("i1", `icmp sgt ${r.ty} ${r.v}, 0`)
         const one = e.b.value("i32", `select i1 ${gt.v}, i32 1, i32 0`)
         e.b.terminate(`ret i32 ${e.b.value("i32", `select i1 ${lt.v}, i32 -1, i32 ${one.v}`).v}`)
     })
@@ -274,7 +293,8 @@ function keyHash(g: Emitter, k: V, key: Type): V {
         const len = g.extract(k, 1, "i64")
         return g.rt("ore_rt_hash_bytes", [data, len])
     }
-    if (key.kind === "interface") return g.rt("ore_rt_hash_u64", [g.b.value("i64", `ptrtoint ptr ${g.extract(k, 0, "ptr").v} to i64`)])
+    if (key.kind === "interface")
+        return g.rt("ore_rt_hash_u64", [g.b.value("i64", `ptrtoint ptr ${g.extract(k, 0, "ptr").v} to i64`)])
     if (k.ty === "ptr") return g.rt("ore_rt_hash_u64", [g.b.value("i64", `ptrtoint ptr ${k.v} to i64`)])
     return g.rt("ore_rt_hash_u64", [g.intToI64(k, key)])
 }
@@ -342,7 +362,12 @@ export function mapOp(g: Emitter, e: MapOp): V {
     switch (e.op) {
         case "new": {
             const keys = keyFunctions(g, K)
-            return g.rt("ore_rt_map_new", [{ ty: "i64", v: sizeOf(kt) }, { ty: "i64", v: sizeOf(vt) }, { ty: "ptr", v: keys.hash }, { ty: "ptr", v: keys.eq }])
+            return g.rt("ore_rt_map_new", [
+                { ty: "i64", v: sizeOf(kt) },
+                { ty: "i64", v: sizeOf(vt) },
+                { ty: "ptr", v: keys.hash },
+                { ty: "ptr", v: keys.eq },
+            ])
         }
         case "size":
             if (map === null) process.panic("map.size without a map")
@@ -372,7 +397,13 @@ export function mapOp(g: Emitter, e: MapOp): V {
             const result = unionOf(e.type)
             const p = g.rt("ore_rt_map_get", [m, key])
             const found = g.b.value("i1", `icmp ne ptr ${p.v}, null`)
-            return choose(g, found, () => recast(g, g.load(p.v, valueType), valueType, result), () => inject(g, result, nullIndex(result), null), g.lt(result))
+            return choose(
+                g,
+                found,
+                () => recast(g, g.load(p.v, valueType), valueType, result),
+                () => inject(g, result, nullIndex(result), null),
+                g.lt(result),
+            )
         }
         case "set": {
             const v = g.b.alloca(vt)
@@ -397,7 +428,12 @@ export function setOp(g: Emitter, e: SetOp): V {
     switch (e.op) {
         case "new": {
             const keys = keyFunctions(g, T)
-            const s = g.rt("ore_rt_map_new", [{ ty: "i64", v: sizeOf(t) }, g.i64(0), { ty: "ptr", v: keys.hash }, { ty: "ptr", v: keys.eq }])
+            const s = g.rt("ore_rt_map_new", [
+                { ty: "i64", v: sizeOf(t) },
+                g.i64(0),
+                { ty: "ptr", v: keys.hash },
+                { ty: "ptr", v: keys.eq },
+            ])
             const values = e.value
             if (values !== null) g.rt("ore_rt_map_add_keys", [s, expr(g, values)])
             return s
@@ -462,7 +498,13 @@ export function chanOp(g: Emitter, e: ChanOp): V {
             const u = unionOf(e.type)
             const v = g.b.alloca(t)
             const ok = g.rtBool("ore_rt_chan_recv", [expr(g, chan), { ty: "ptr", v }])
-            return choose(g, ok, () => recast(g, g.load(v, T), T, u), () => inject(g, u, nullIndex(u), null), g.lt(u))
+            return choose(
+                g,
+                ok,
+                () => recast(g, g.load(v, T), T, u),
+                () => inject(g, u, nullIndex(u), null),
+                g.lt(u),
+            )
         }
         case "on-receive": {
             if (chan === null || handler === null) process.panic("onReceive without a channel or handler")
@@ -473,7 +515,8 @@ export function chanOp(g: Emitter, e: ChanOp): V {
             return g.rt("ore_rt_case_recv", [c, h, { ty: "ptr", v: receiveDispatch(g, T, ht) }])
         }
         default: {
-            if (chan === null || value === null || handler === null) process.panic("onSend without a channel, value or handler")
+            if (chan === null || value === null || handler === null)
+                process.panic("onSend without a channel, value or handler")
             const c = expr(g, chan)
             const v = g.b.alloca(t)
             g.store(expr(g, value), v, T)
@@ -490,14 +533,23 @@ export function receiveDispatch(g: Emitter, elem: Type, handler: FuncType): stri
     g.helpers.set(name, "")
     helper(g, name, `define internal void ${name}(ptr %c)`, (e) => {
         const ok = e.b.alloca("i8")
-        const p = e.rt("ore_rt_case_value", [{ ty: "ptr", v: "%c" }, { ty: "ptr", v: ok }])
+        const p = e.rt("ore_rt_case_value", [
+            { ty: "ptr", v: "%c" },
+            { ty: "ptr", v: ok },
+        ])
         const h = e.rt("ore_rt_case_handler", [{ ty: "ptr", v: "%c" }])
         if (param === null) {
             callClosure(e, h, handler, [])
         } else {
             const u = unionOf(param)
             const got = e.b.value("i1", `trunc i8 ${e.b.value("i8", `load i8, ptr ${ok}`).v} to i1`)
-            const value = choose(e, got, () => recast(e, e.load(p.v, elem), elem, u), () => inject(e, u, nullIndex(u), null), e.lt(u))
+            const value = choose(
+                e,
+                got,
+                () => recast(e, e.load(p.v, elem), elem, u),
+                () => inject(e, u, nullIndex(u), null),
+                e.lt(u),
+            )
             callClosure(e, h, handler, [value])
         }
         e.b.terminate("ret void")
@@ -511,7 +563,8 @@ export function itab(g: Emitter, t: Itab): string {
     for (const m of t.iface.members) {
         if (m.k === "field") {
             let index = -1
-            for (let i = 0; i < t.struct.fields.length && index === -1; i++) if (t.struct.fields[i].name === m.name) index = i
+            for (let i = 0; i < t.struct.fields.length && index === -1; i++)
+                if (t.struct.fields[i].name === m.name) index = i
             all.push(`ptr getelementptr (${s}, ptr null, i32 0, i32 ${index})`)
         } else {
             const method = findMethod(t.struct, m.name)

@@ -134,7 +134,10 @@ export function bound(g: Emitter, e: BoundMethod): V {
     const method = e.func
     const known = e.index
     const index = known ?? 0
-    const name = method !== null ? globalName(`${method.name}.bound`) : globalName(`iface.bound.${typeKey(type)}.${known !== null ? `${known}` : "undefined"}`)
+    const name =
+        method !== null
+            ? globalName(`${method.name}.bound`)
+            : globalName(`iface.bound.${typeKey(type)}.${known !== null ? `${known}` : "undefined"}`)
     if (!g.helpers.has(name)) {
         g.helpers.set(name, "")
         const params: string[] = ["ptr %env"]
@@ -151,7 +154,10 @@ export function bound(g: Emitter, e: BoundMethod): V {
                 r = callDirect(x, method.name, ret, all)
             } else {
                 const itab = x.extract(self, 1, "ptr")
-                const fn = x.b.value("ptr", `load ptr, ptr ${x.b.value("ptr", `getelementptr ptr, ptr ${itab.v}, i64 ${index + 1}`).v}`)
+                const fn = x.b.value(
+                    "ptr",
+                    `load ptr, ptr ${x.b.value("ptr", `getelementptr ptr, ptr ${itab.v}, i64 ${index + 1}`).v}`,
+                )
                 const all: V[] = [x.extract(self, 0, "ptr")]
                 for (const a of args) all.push(a)
                 r = callIndirect(x, fn.v, ret, all)
@@ -180,7 +186,10 @@ export function concat(g: Emitter, parts: Part[]): V {
     if (strings.length === 0) return g.str("")
     if (strings.length === 1) return strings[0]
     const array = g.b.alloca(`[${strings.length} x ${STR}]`)
-    for (let i = 0; i < strings.length; i++) g.b.emit(`store ${STR} ${strings[i].v}, ptr ${g.b.value("ptr", `getelementptr ${STR}, ptr ${array}, i64 ${i}`).v}`)
+    for (let i = 0; i < strings.length; i++)
+        g.b.emit(
+            `store ${STR} ${strings[i].v}, ptr ${g.b.value("ptr", `getelementptr ${STR}, ptr ${array}, i64 ${i}`).v}`,
+        )
     return g.rt("ore_rt_str_concat", [g.i64(strings.length), { ty: "ptr", v: array }])
 }
 
@@ -192,7 +201,9 @@ export function toStr(g: Emitter, v: V, t: Type): V {
         case "literal":
             return v
         case "int":
-            return t.signed ? g.rt("ore_rt_str_from_i64", [g.toI64(v)]) : g.rt("ore_rt_str_from_u64", [g.toI64(v, false)])
+            return t.signed
+                ? g.rt("ore_rt_str_from_i64", [g.toI64(v)])
+                : g.rt("ore_rt_str_from_u64", [g.toI64(v, false)])
         case "float":
             return g.rt(`ore_rt_str_from_${t.name}`, [v])
         case "bool":
@@ -280,7 +291,25 @@ export function print(g: Emitter, v: V, t: Type) {
     }
 }
 
-const libm = ["sqrt", "pow", "exp", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "hypot", "floor", "ceil", "trunc"]
+const libm = [
+    "sqrt",
+    "pow",
+    "exp",
+    "log",
+    "log2",
+    "log10",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "hypot",
+    "floor",
+    "ceil",
+    "trunc",
+]
 
 export function builtin(g: Emitter, e: BuiltinCall): V {
     const name = e.name
@@ -328,7 +357,10 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
                 g.decls.set("@llvm.fabs.f32", "declare float @llvm.fabs.f32(float)")
                 return g.b.value(ty, `call ${ty} @llvm.fabs.${ty === "float" ? "f32" : "f64"}(${ty} ${a[0].v})`)
             }
-            return g.b.value(ty, `select i1 ${g.b.value("i1", `icmp slt ${ty} ${a[0].v}, 0`).v}, ${ty} ${g.b.value(ty, `sub ${ty} 0, ${a[0].v}`).v}, ${ty} ${a[0].v}`)
+            return g.b.value(
+                ty,
+                `select i1 ${g.b.value("i1", `icmp slt ${ty} ${a[0].v}, 0`).v}, ${ty} ${g.b.value(ty, `sub ${ty} 0, ${a[0].v}`).v}, ${ty} ${a[0].v}`,
+            )
         case "Math.min":
         case "Math.max": {
             const x = a[0]
@@ -373,7 +405,13 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
             return choose(
                 g,
                 ok,
-                () => inject(g, u, memberWhere(u, false), g.b.value(isInt ? "i64" : "double", `load ${isInt ? "i64" : "double"}, ptr ${out}`)),
+                () =>
+                    inject(
+                        g,
+                        u,
+                        memberWhere(u, false),
+                        g.b.value(isInt ? "i64" : "double", `load ${isInt ? "i64" : "double"}, ptr ${out}`),
+                    ),
                 () => inject(g, u, memberWhere(u, true), null),
                 ty,
             )
@@ -528,7 +566,10 @@ export function unsafeCall(g: Emitter, e: BuiltinCall): V {
             return g.b.value(mt, `atomicrmw ${op} ptr ${a[0].v}, ${mt} ${a[1].v} seq_cst, align ${align}`)
         }
         case "atomicCompareExchange": {
-            const pair = g.b.value(`{ ${mt}, i1 }`, `cmpxchg ptr ${a[0].v}, ${mt} ${a[1].v}, ${mt} ${a[2].v} seq_cst seq_cst, align ${align}`)
+            const pair = g.b.value(
+                `{ ${mt}, i1 }`,
+                `cmpxchg ptr ${a[0].v}, ${mt} ${a[1].v}, ${mt} ${a[2].v} seq_cst seq_cst, align ${align}`,
+            )
             return g.extract(pair, 1, "i1")
         }
         case "fence":

@@ -7,7 +7,15 @@ import { type Node } from "../syntax/ast"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
 import { builtinScope, namespaceModule, namespaceNames } from "./builtins"
-import { checkClassBodies, checkFieldInitializers, checkImplements, declareClass, declareClassMembers, declareInterface, fillInterface } from "./classes"
+import {
+    checkClassBodies,
+    checkFieldInitializers,
+    checkImplements,
+    declareClass,
+    declareClassMembers,
+    declareInterface,
+    fillInterface,
+} from "./classes"
 import { CheckResult, ExportEntry, FuncContext, ModuleInfo } from "./context"
 import {
     checkDirectives,
@@ -44,14 +52,20 @@ export function check(program: Program): CheckResult {
     const builtins = builtinScope()
     c.builtins = builtins.scope
     c.addSource(builtins.source)
-    for (const stmt of c.statementsOf(builtins.source)) if (stmt.kind === "InterfaceDeclaration") declareInterface(c, stmt, builtins.scope)
+    for (const stmt of c.statementsOf(builtins.source))
+        if (stmt.kind === "InterfaceDeclaration") declareInterface(c, stmt, builtins.scope)
     const error = builtins.scope.lookupType("Error")
     c.errorType = error !== null && error.type.kind === "interface" ? error.type : null
 
     const modules: ModuleInfo[] = []
     for (let i = 0; i < program.modules.length; i++) {
         const source = program.modules[i]
-        const info = new ModuleInfo(source, new Scope(builtins.scope), source === program.entry ? "" : `m${i}_`, new Map<string, ExportEntry>())
+        const info = new ModuleInfo(
+            source,
+            new Scope(builtins.scope),
+            source === program.entry ? "" : `m${i}_`,
+            new Map<string, ExportEntry>(),
+        )
         c.modules.set(source, info)
         modules.push(info)
     }
@@ -105,13 +119,27 @@ export function check(program: Program): CheckResult {
     // bodies, which can use the globals.
     const constants = new Set<Node>()
     each((stmt, m) => {
-        if (stmt.kind === "EnumDeclaration" || stmt.kind === "ModuleDeclaration") c.error(stmt, unsupportedTopLevel(stmt))
-        else if (stmt.kind === "VariableStatement" && isConstantStatement(c, stmt, m.scope) && checkTopLevelConstants(c, stmt, m.scope)) constants.add(stmt)
+        if (stmt.kind === "EnumDeclaration" || stmt.kind === "ModuleDeclaration")
+            c.error(stmt, unsupportedTopLevel(stmt))
+        else if (
+            stmt.kind === "VariableStatement" &&
+            isConstantStatement(c, stmt, m.scope) &&
+            checkTopLevelConstants(c, stmt, m.scope)
+        )
+            constants.add(stmt)
     })
     for (const info of c.classes) checkFieldInitializers(c, info, info.scope)
     for (const info of c.classes) checkImplements(c, info, info.scope)
     for (const m of modules) {
-        checkTopLevel(c, m, (stmt) => !isDeclaration(stmt) && !constants.has(stmt) && stmt.kind !== "EnumDeclaration" && stmt.kind !== "ModuleDeclaration")
+        checkTopLevel(
+            c,
+            m,
+            (stmt) =>
+                !isDeclaration(stmt) &&
+                !constants.has(stmt) &&
+                stmt.kind !== "EnumDeclaration" &&
+                stmt.kind !== "ModuleDeclaration",
+        )
     }
     for (const b of bodies) checkFunctionBody(c, b.decl, b.func, b.scope)
     for (const info of c.classes) checkClassBodies(c, info, info.scope)
@@ -130,7 +158,16 @@ export function check(program: Program): CheckResult {
  * variables are globals, visible to the functions of the module.
  */
 function checkTopLevel(c: Checker, module: ModuleInfo, isCode: (stmt: Node) => bool) {
-    const func = new Func(`ore_init_${module.prefix}`, "<top level>", 1, new FuncType([], types.void), [], new Block([]), false, module.source.path)
+    const func = new Func(
+        `ore_init_${module.prefix}`,
+        "<top level>",
+        1,
+        new FuncType([], types.void),
+        [],
+        new Block([]),
+        false,
+        module.source.path,
+    )
     c.prefix = module.prefix
     c.globals = module.scope
     c.facts = [new Map<string, Type>()]

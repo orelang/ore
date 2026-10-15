@@ -82,12 +82,21 @@ function parseBuildArgs(args: string[]): BuildArgs | Error {
 
 function buildCommand(args: string[]): i32 {
     const parsed = parseBuildArgs(args)
-    if (parsed instanceof Error || parsed.files.length !== 1 || parsed.objectOnly || parsed.native.link.length > 0 || parsed.native.libDirs.length > 0) {
+    if (
+        parsed instanceof Error ||
+        parsed.files.length !== 1 ||
+        parsed.objectOnly ||
+        parsed.native.link.length > 0 ||
+        parsed.native.libDirs.length > 0
+    ) {
         if (parsed instanceof Error) console.error(parsed.message)
         console.error("usage: ore-next build <entry.ore> -o <out> [--release] [--emit-llvm <file.ll>] [--time]")
         return 2
     }
-    const result = build(parsed.files[0], new BuildOptions(parsed.output, parsed.release, parsed.emitLlvm, parsed.times))
+    const result = build(
+        parsed.files[0],
+        new BuildOptions(parsed.output, parsed.release, parsed.emitLlvm, parsed.times),
+    )
     if (result instanceof Error) {
         console.error(result.message)
         return 1
@@ -102,7 +111,9 @@ function objectCommand(args: string[]): i32 {
     const ll = parsed instanceof Error ? none : parsed.files.filter((f) => f.endsWith(".ll"))
     if (parsed instanceof Error || ll.length !== 1) {
         if (parsed instanceof Error) console.error(parsed.message)
-        console.error("usage: ore-next object <in.ll> [<src.c> ...] -o <out> [--release] [-c] [-l lib] [-L dir] [--time]")
+        console.error(
+            "usage: ore-next object <in.ll> [<src.c> ...] -o <out> [--release] [-c] [-l lib] [-L dir] [--time]",
+        )
         return 2
     }
     for (const file of parsed.files) if (!file.endsWith(".ll")) parsed.native.sources.push(file)
@@ -122,10 +133,25 @@ function objectCommand(args: string[]): i32 {
     return 0
 }
 
-const llvm = process.args.length >= 2 && process.args.length <= 3 && process.args[0] === "llvm" && (process.args.length === 2 || process.args[2] === "--debug")
+const llvm =
+    process.args.length >= 2 &&
+    process.args.length <= 3 &&
+    process.args[0] === "llvm" &&
+    (process.args.length === 2 || process.args[2] === "--debug")
 const mode = llvm ? "llvm" : process.args.length === 2 ? process.args[0] : ""
-if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "fmt" && mode !== "ir" && mode !== "read" && mode !== "llvm") {
-    console.error("usage: ore-next tokens|tree|roles|modules|fmt|ir <file.ore> | ore-next read <dump.txt> | ore-next llvm <dump.txt> [--debug] | ore-next lsp")
+if (
+    mode !== "tokens" &&
+    mode !== "tree" &&
+    mode !== "roles" &&
+    mode !== "modules" &&
+    mode !== "fmt" &&
+    mode !== "ir" &&
+    mode !== "read" &&
+    mode !== "llvm"
+) {
+    console.error(
+        "usage: ore-next tokens|tree|roles|modules|fmt|ir <file.ore> | ore-next read <dump.txt> | ore-next llvm <dump.txt> [--debug] | ore-next lsp",
+    )
     process.exit(2)
 }
 if (mode === "read" || mode === "llvm") {

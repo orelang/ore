@@ -128,7 +128,14 @@ class Value {
 /** The value of a function that consists of one `return value` or one expression, if inlinable. */
 function inlinable(func: Func): Expr | null {
     const attributes = func.attributes
-    if (func.extern || func.captures !== null || (attributes !== null && attributes.noinline) || isCtor(func) || func.body.body.length !== 1) return null
+    if (
+        func.extern ||
+        func.captures !== null ||
+        (attributes !== null && attributes.noinline) ||
+        isCtor(func) ||
+        func.body.body.length !== 1
+    )
+        return null
     const stmt = func.body.body[0]
     let value: Expr | null = null
     if (stmt.k === "return") value = stmt.value
@@ -149,8 +156,17 @@ class Count {
     expr(e: Expr) {
         this.size++
         // A closure refers to the callee's locals through its captures; a call of itself would never end.
-        if (e.k === "closure" || (e.k === "call" && e.func === this.func) || (e.k === "method-call" && e.func === this.func)) this.ok = false
-        eachChild(e, (x) => this.expr(x), (t) => this.lvalue(t))
+        if (
+            e.k === "closure" ||
+            (e.k === "call" && e.func === this.func) ||
+            (e.k === "method-call" && e.func === this.func)
+        )
+            this.ok = false
+        eachChild(
+            e,
+            (x) => this.expr(x),
+            (t) => this.lvalue(t),
+        )
     }
 
     lvalue(t: LValue) {
@@ -755,7 +771,17 @@ class Inliner {
     }
 
     fresh(local: Local): Local {
-        return new Local(this.ids.fresh(), local.name, local.type, local.mutable, false, local.assigned, local.global, local.threadLocal, local.exportName)
+        return new Local(
+            this.ids.fresh(),
+            local.name,
+            local.type,
+            local.mutable,
+            false,
+            local.assigned,
+            local.global,
+            local.threadLocal,
+            local.exportName,
+        )
     }
 
     /** A local of the body: its substitute, itself for a global, or a fresh copy for one the body declares. */
@@ -842,7 +868,12 @@ class Inliner {
             case "builtin":
                 return new BuiltinCall(e.type, e.name, this.clones(e.args, values), e.error, e.typeArgs)
             case "cond":
-                return new Conditional(e.type, this.clone(e.cond, values), this.clone(e.then, values), this.clone(e.else, values))
+                return new Conditional(
+                    e.type,
+                    this.clone(e.cond, values),
+                    this.clone(e.then, values),
+                    this.clone(e.else, values),
+                )
             case "concat":
                 return new Concat(e.type, this.clones(e.parts, values))
             case "index":
@@ -850,7 +881,12 @@ class Inliner {
             case "len":
                 return new Len(e.type, this.clone(e.value, values))
             case "slice":
-                return new Slice(e.type, this.clone(e.value, values), this.cloneOrNull(e.start, values), this.cloneOrNull(e.end, values))
+                return new Slice(
+                    e.type,
+                    this.clone(e.value, values),
+                    this.cloneOrNull(e.start, values),
+                    this.cloneOrNull(e.end, values),
+                )
             case "array":
                 return new ArrayLit(e.type, this.clones(e.elems, values))
             case "push":
@@ -873,7 +909,13 @@ class Inliner {
             case "iface-field":
                 return new IfaceField(e.type, this.clone(e.value, values), e.index)
             case "iface-call":
-                return new IfaceCall(e.type, this.clone(e.value, values), e.index, e.method, this.clones(e.args, values))
+                return new IfaceCall(
+                    e.type,
+                    this.clone(e.value, values),
+                    e.index,
+                    e.method,
+                    this.clones(e.args, values),
+                )
             case "recast":
                 return new Recast(e.type, this.clone(e.value, values))
             case "is-null":
@@ -894,9 +936,22 @@ class Inliner {
             case "downcast":
                 return new Downcast(e.type, this.clone(e.value, values))
             case "map":
-                return new MapOp(e.op, e.type, e.mapType, this.cloneOrNull(e.map, values), this.cloneOrNull(e.key, values), this.cloneOrNull(e.value, values))
+                return new MapOp(
+                    e.op,
+                    e.type,
+                    e.mapType,
+                    this.cloneOrNull(e.map, values),
+                    this.cloneOrNull(e.key, values),
+                    this.cloneOrNull(e.value, values),
+                )
             case "set":
-                return new SetOp(e.op, e.type, e.setType, this.cloneOrNull(e.set, values), this.cloneOrNull(e.value, values))
+                return new SetOp(
+                    e.op,
+                    e.type,
+                    e.setType,
+                    this.cloneOrNull(e.set, values),
+                    this.cloneOrNull(e.value, values),
+                )
             case "func-ref":
                 return new FuncRef(e.type, e.func)
             case "closure":
@@ -906,11 +961,25 @@ class Inliner {
             case "bound-method":
                 return new BoundMethod(e.type, this.clone(e.receiver, values), e.func, e.index)
             case "array-method":
-                return new ArrayMethod(e.method, e.type, this.clone(e.array, values), this.clones(e.args, values), e.arity)
+                return new ArrayMethod(
+                    e.method,
+                    e.type,
+                    this.clone(e.array, values),
+                    this.clones(e.args, values),
+                    e.arity,
+                )
             case "string-method":
                 return new StringMethod(e.method, e.type, this.clone(e.value, values), this.clones(e.args, values))
             case "chan":
-                return new ChanOp(e.op, e.type, e.chanType, this.cloneOrNull(e.chan, values), this.cloneOrNull(e.value, values), this.cloneOrNull(e.handler, values), e.arity)
+                return new ChanOp(
+                    e.op,
+                    e.type,
+                    e.chanType,
+                    this.cloneOrNull(e.chan, values),
+                    this.cloneOrNull(e.value, values),
+                    this.cloneOrNull(e.handler, values),
+                    e.arity,
+                )
             case "bind": {
                 const locals: BindLocal[] = []
                 for (const b of e.locals) {

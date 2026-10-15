@@ -441,13 +441,15 @@ class FuncAnalysis {
             case "call": {
                 const summary = e.func.extern ? null : this.summaries.get(e.func)
                 if (isCtor(e.func) && (summary === null || summary.self)) this.leak(this.id(e))
-                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], summary !== null && !this.escapesAt(summary, i) ? safe : escapes)
+                for (let i = 0; i < e.args.length; i++)
+                    this.expr(e.args[i], summary !== null && !this.escapesAt(summary, i) ? safe : escapes)
                 return
             }
             case "method-call": {
                 const summary = this.summaries.get(e.func)
                 this.expr(e.receiver, summary !== null && !summary.self ? safe : escapes)
-                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], summary !== null && !this.escapesAt(summary, i) ? safe : escapes)
+                for (let i = 0; i < e.args.length; i++)
+                    this.expr(e.args[i], summary !== null && !this.escapesAt(summary, i) ? safe : escapes)
                 return
             }
             case "call-value":
@@ -457,7 +459,8 @@ class FuncAnalysis {
             case "array-method":
                 // The runtime keeps neither the callbacks nor the values searched for; the initial value of reduce is returned.
                 this.expr(e.array, safe)
-                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], e.method === "reduce" && i === 1 ? escapes : safe)
+                for (let i = 0; i < e.args.length; i++)
+                    this.expr(e.args[i], e.method === "reduce" && i === 1 ? escapes : safe)
                 return
             case "object": {
                 // Objects stored in a new object share its fate.

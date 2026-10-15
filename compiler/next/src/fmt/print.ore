@@ -121,7 +121,6 @@ function layoutArgs(layout: string): Args {
     return a
 }
 
-
 function t(s: string): Doc {
     return text(s)
 }
@@ -1019,7 +1018,15 @@ function printNode(n: ENode, args: Args): Doc {
             const inClass = parent !== null && parent.type === "ClassBody"
             const list = g(
                 c([
-                    indent(c([softline, join(c([t(", "), softline]), parameters.map((p) => pr(p)))])),
+                    indent(
+                        c([
+                            softline,
+                            join(
+                                c([t(", "), softline]),
+                                parameters.map((p) => pr(p)),
+                            ),
+                        ]),
+                    ),
                     parameters.length > 1 ? ifBreak(t(","), empty) : empty,
                     softline,
                 ]),
@@ -2511,7 +2518,8 @@ function isConciselyPrintedArray(n: ENode): bool {
     if (elements.length === 0) return false
     for (const e of elements) {
         if (!(isNumericLiteral(e) || (isSignedNumericLiteral(e) && !hasComment(e.get("argument"))))) return false
-        for (const cm of e.comments) if (cm.trailing && !cm.block && !hasNewline(ctx().text, cm.start, true)) return false
+        for (const cm of e.comments)
+            if (cm.trailing && !cm.block && !hasNewline(ctx().text, cm.start, true)) return false
     }
     return true
 }
@@ -3109,8 +3117,8 @@ function printImport(n: ENode): Doc {
 
 function hasModuleSpecifiersSyntax(n: ENode): bool {
     if (n.type !== "ImportDeclaration" || n.all("specifiers").length > 0 || n.importKind === "type") return true
-    return ctx().blank
-        .slice(locStart(n), locStart(n.at("source")))
+    return ctx()
+        .blank.slice(locStart(n), locStart(n.at("source")))
         .trimEnd()
         .endsWith("from")
 }
@@ -3153,8 +3161,8 @@ function printImportAttributes(n: ENode): Doc {
     const source = n.get("source")
     if (source === null) return empty
     const attributes = n.all("attributes")
-    const after = ctx().blank
-        .slice(locEnd(source), attributes.length > 0 ? locStart(attributes[0]) : locEnd(n))
+    const after = ctx()
+        .blank.slice(locEnd(source), attributes.length > 0 ? locStart(attributes[0]) : locEnd(n))
         .trimStart()
     let keyword = ""
     if (after.startsWith("assert")) keyword = "assert"
