@@ -1,0 +1,148 @@
+// LLVM IR text to an object file, through LLVM's C API: what `clang -c
+// -O0|-O2 main.ll` does, without clang. The IR is parsed in memory, checked
+// by the verifier, optimized by the pass pipeline of the level, and compiled
+// for the host's CPU.
+
+import {
+    codeGenLevelDefault,
+    codeGenLevelNone,
+    codeModelDefault,
+    errorMessage,
+    initializeTarget,
+    LLVMContextCreate,
+    LLVMContextDispose,
+    LLVMCreateMemoryBufferWithMemoryRangeCopy,
+    LLVMCreatePassBuilderOptions,
+    LLVMCreateTargetDataLayout,
+    LLVMCreateTargetMachine,
+    LLVMDisposeModule,
+    LLVMDisposePassBuilderOptions,
+    LLVMDisposeTargetData,
+    LLVMDisposeTargetMachine,
+    LLVMGetDefaultTargetTriple,
+    LLVMGetHostCPUFeatures,
+    LLVMGetHostCPUName,
+    LLVMGetTargetFromTriple,
+    LLVMParseIRInContext,
+    LLVMRunPasses,
+    LLVMSetModuleDataLayout,
+    LLVMSetTarget,
+    LLVMSetTargetMachineGlobalISel,
+    LLVMTargetMachineEmitToFile,
+    LLVMVerifyModule,
+    message,
+    objectFile,
+    outs,
+    relocPic,
+    verifierReturnStatus,
+} from "./bindings"
+
+export class ObjectOptions {
+    constructor(
+        /** The object file to write. */
+        readonly output: string,
+        /** Optimize (`default<O2>`, code generation at -O2) instead of compiling fast (`default<O0>`, -O0). */
+        readonly release: bool = false,
+        /** The target triple; "" for LLVM's default, the host. */
+        readonly triple: string = "",
+        /** The name of the IR in messages, such as the path of its file. */
+        readonly name: string = "main.ll",
+    ) {}
+}
+
+/** How long each step took, in milliseconds. */
+export class ObjectTimes {
+    constructor(
+        /** Parsing and verifying the IR. */
+        readonly parse: int,
+        /** The pass pipeline. */
+        readonly optimize: int,
+        /** Code generation and writing the file. */
+        readonly codegen: int,
+    ) {}
+}
+
+let initialized = false
+
+/** LLVM's default target triple, the host's, such as "arm64-apple-darwin25.5.0". */
+export function defaultTriple(): string {
+    return message(LLVMGetDefaultTargetTriple())
+}
+
+/**
+ * Compiles LLVM IR text into an object file. An Error when the IR does not
+ * parse or verify (its message has LLVM's `name:line:col`), or when the
+ * target is unknown or the file cannot be written.
+ */
+export function emitObject(ir: string, options: ObjectOptions): ObjectTimes | Error {
+    if (!initialized) {
+        initializeTarget()
+        initialized = true
+    }
+    const started = Date.now()
+    const out = outs()
+    const error = unsafe.add(out, 8)
+    const context = LLVMContextCreate()
+    // The buffer is a copy, owned and freed by the parser.
+    const buffer = LLVMCreateMemoryBufferWithMemoryRangeCopy(unsafe.stringData(ir), u64(ir.length), options.name)
+    if (LLVMParseIRInContext(context, buffer, out, error) !== 0) {
+        const text = message(unsafe.load<ptr>(error))
+        LLVMContextDispose(context)
+        return new Error(`invalid LLVM IR: ${text.trimEnd()}`)
+    }
+    const module = unsafe.load<ptr>(out)
+    const result = compile(module, options, started)
+    LLVMDisposeModule(module)
+    LLVMContextDispose(context)
+    return result
+}
+
+function compile(module: ptr, options: ObjectOptions, started: int): ObjectTimes | Error {
+    const out = outs()
+    const error = unsafe.add(out, 8)
+    if (LLVMVerifyModule(module, verifierReturnStatus, error) !== 0) {
+        return new Error(`invalid LLVM IR in ${options.name}: ${message(unsafe.load<ptr>(error)).trimEnd()}`)
+    }
+    const parsed = Date.now()
+
+    const triple = options.triple !== "" ? options.triple : defaultTriple()
+    if (LLVMGetTargetFromTriple(triple, out, error) !== 0) {
+        return new Error(`target ${triple}: ${message(unsafe.load<ptr>(error))}`)
+    }
+    const level = options.release ? codeGenLevelDefault : codeGenLevelNone
+    const machine = LLVMCreateTargetMachine(
+        unsafe.load<ptr>(out),
+        triple,
+        message(LLVMGetHostCPUName()),
+        message(LLVMGetHostCPUFeatures()),
+        level,
+        relocPic,
+        codeModelDefault,
+    )
+    if (unsafe.toInt(machine) === 0) return new Error(`target ${triple}: no target machine`)
+    // AArch64 selects instructions with GlobalISel at -O0, which reuses the
+    // address of a thread-local variable across calls in a function. A task
+    // may resume on another OS thread after a call, so the debug frames of
+    // `ore_rt_top` would be pushed on one thread and popped on another:
+    // SelectionDAG (FastISel at -O0), as clang uses, computes it at each use.
+    LLVMSetTargetMachineGlobalISel(machine, 0)
+    LLVMSetTarget(module, triple)
+    const layout = LLVMCreateTargetDataLayout(machine)
+    LLVMSetModuleDataLayout(module, layout)
+    LLVMDisposeTargetData(layout)
+
+    const passOptions = LLVMCreatePassBuilderOptions()
+    const failed = LLVMRunPasses(module, options.release ? "default<O2>" : "default<O0>", machine, passOptions)
+    LLVMDisposePassBuilderOptions(passOptions)
+    if (unsafe.toInt(failed) !== 0) {
+        LLVMDisposeTargetMachine(machine)
+        return new Error(`LLVM passes: ${errorMessage(failed)}`)
+    }
+    const optimized = Date.now()
+
+    const written = LLVMTargetMachineEmitToFile(machine, module, options.output, objectFile, error)
+    LLVMDisposeTargetMachine(machine)
+    if (written !== 0) return new Error(`${options.output}: ${message(unsafe.load<ptr>(error))}`)
+    return new ObjectTimes(parsed - started, optimized - parsed, Date.now() - optimized)
+}
+

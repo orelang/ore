@@ -6,8 +6,9 @@ and the parser, which build a tree in the shape of TypeScript's, the loading
 of a program's modules, the IR of `@ore/ir`, which the checker, the optimizer
 and the backend share, the checker, which builds the IR of a program, the
 formatter, the optimizer and the LLVM backend, which emit the same LLVM IR as
-`@ore/opt` and `@ore/codegen`, and the language server, which reports syntax
-errors until it uses the checker.
+`@ore/opt` and `@ore/codegen`, the build driver, which compiles that IR
+through LLVM's C API and links with lld, without clang, and the language
+server, which reports syntax errors until it uses the checker.
 
 | File | Contents |
 |---|---|
@@ -47,11 +48,16 @@ errors until it uses the checker.
 | `opt/inline.ore` | `inlineCalls(module)`: calls of small functions replaced by their bodies (`compiler/opt/src/inline.ts`) |
 | `opt/escape.ore` | `planStack(module)`: escape analysis, the allocations placed on the stack (`compiler/opt/src/escape.ts`) |
 | `llvm/*.ore` | The LLVM backend: `emitModule(module, options)` of `llvm/emit.ore`, the LLVM IR text of a module, ported file by file from `compiler/codegen/src` (`ll`, `context`, `helpers`, `base`, `functions`, `expressions`, `calls`, `collections`, `json`, `emit`) |
+| `llvm/bindings.ore` | The LLVM C API the compiler calls (contexts, the IR parser, the verifier, target machines, the new pass manager), and the registration of the host's target by `target.arch` |
+| `llvm/object.ore` | `emitObject(ir, options)`: LLVM IR text to an object file, as `clang -c -O0\|-O2` does: parsed in memory, verified, `default<O0>` or `default<O2>`, code generation for the host's CPU at -O0 or -O2; errors keep LLVM's `name:line:col` |
+| `driver/native.ore` | `nativeCode(paths)`: the libraries, C sources and library directories (`libDirs`) of a program's packages |
+| `driver/link.ore` | Linking with lld: `ld64.lld` with the macOS SDK, `ld.lld` with glibc's start files and dynamic linker; C sources compiled with `$CC` (cc); the target triple |
+| `driver/build.ore` | `compileToIr(entry, debug)` and `build(entry, options)` of `compiler/driver/src/build.ts`: load, check, emit, object, link; `buildIr` for IR already emitted |
 | `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
 | `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
 | `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
-| `main.ore` | `ore-next tokens\|tree\|roles\|modules\|fmt <file>`: prints the tokens, the tree, the modules of a program, or the file formatted; `ore-next ir <entry>`: the dump of the checked program, or its diagnostics; `ore-next read <dump.txt>`: reads a dump and writes it again; `ore-next llvm <dump.txt> [--debug]`: the LLVM IR of the module of a dump, inlined unless `--debug`; `ore-next lsp`: the language server on stdio |
+| `main.ore` | `ore-next tokens\|tree\|roles\|modules\|fmt <file>`: prints the tokens, the tree, the modules of a program, or the file formatted; `ore-next ir <entry>`: the dump of the checked program, or its diagnostics; `ore-next read <dump.txt>`: reads a dump and writes it again; `ore-next llvm <dump.txt> [--debug]`: the LLVM IR of the module of a dump, inlined unless `--debug`; `ore-next build <entry> -o <out> [--release] [--emit-llvm <f>] [--time]`: an executable; `ore-next object <in.ll> [<src.c>...] -o <out> [-c] [-l lib] [-L dir]`: an executable (or with `-c` an object file) from LLVM IR; `ore-next lsp`: the language server on stdio |
 
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
@@ -67,6 +73,9 @@ the tests of `test/*.test.ore` (also run by `bun run ore test compiler/next/test
 `test/ir-dump.test.ore` and `compiler/ir/test/dump.test.ts` build the same
 IR module by hand and check that their dumps both equal `test/ir-dump.txt`
 (`UPDATE=1 bun test compiler/ir` rewrites it after a change of the format).
+[`tests/harness/build-next.test.ts`](../../tests/harness/build-next.test.ts)
+builds every program of `tests/run` with `ore-next build` and checks its
+output, status and stderr as the golden tests do.
 [`tests/harness/lsp-next.test.ts`](../../tests/harness/lsp-next.test.ts) speaks
 LSP to `ore-next lsp`.
 [`tests/harness/fmt.test.ts`](../../tests/harness/fmt.test.ts) checks that
@@ -126,3 +135,35 @@ Narrowing is lost when a `let` is assigned again, so `let x = map.get(k); if
 instead (`const found = ...; if (found !== null) return found`). Conversions
 are the type names (`i64(x)`); `int(x)` does not exist. A release build of
 the compiler takes minutes, so the harness builds it in debug mode.
+
+## Building without clang
+
+`ore-next build` calls LLVM through its C API (`llvm/object.ore`) instead of
+running clang on the IR, and links with lld (`driver/link.ore`). A C compiler
+is needed only for the C sources of packages (`"ore": { "sources": [...] }`).
+It needs LLVM 19 or newer (`libLLVM`, found through `llvm-config --libdir`,
+Homebrew's `opt/llvm/lib` or `"libDirs"` in package.json) and lld
+(`ld64.lld` or `ld.lld`, in PATH, beside `llvm-config`, in Homebrew's or
+Debian's `/usr/lib/llvm-N/bin`, or `$ORE_LD`). On macOS the SDK comes from
+`$SDKROOT` or `xcrun --show-sdk-path`, and the minimum version is the running
+system's or `$MACOSX_DEPLOYMENT_TARGET`; on Linux, executables are PIE with
+glibc's start files and dynamic linker.
+
+Instruction selection never uses GlobalISel, which AArch64 picks at -O0: it
+computes the address of a thread-local variable once per function, but a task
+can resume on another OS thread after a call (see the comment in
+`llvm/object.ore`).
+
+On an Apple M-series Mac (busy with other work, so the numbers are rough),
+against Apple's clang on the same LLVM IR, `compiler/next` itself (66 MB of
+IR in debug, 91 MB in release):
+
+| | ore-next (LLVM 23 through its C API, ld64.lld) | `clang -c` and link (Apple clang 21) |
+|---|---|---|
+| debug: parse and verify 2.1 s, `default<O0>` 0.04 s, codegen 8.9 s, link 0.2 s | 11.2 s | 22.9 s |
+| release: parse and verify 2.3 s, `default<O2>` 106 s, codegen 25 s, link 0.2 s | 134 s | 148 s |
+
+The whole build of `compiler/next` by a release build of ore-next takes 20 s
+in debug (load 0.3 s, check 1.0 s, emit 6.3 s, then LLVM and lld) and 127 s
+in release, against 28 s and 176 s for `bun run ore build`; the compilers it
+builds print the same IR dumps.

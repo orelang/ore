@@ -90,7 +90,9 @@ const threadNext = 40
 const threadAllocated = 48
 const threadOwnBase = 56
 /** The span the thread allocates from, per size class, scanned and noscan apart. */
-const threadCache = 64
+/** The number of the last collection the thread stopped for. */
+const threadStoppedFor = 64
+const threadCache = 72
 const threadRecordSize = threadCache + maxClasses * 2 * 8
 
 let heapBase: ptr
@@ -132,8 +134,8 @@ let gcLock: ptr
 let heapLock: ptr
 /** 1 while the world is stopped; the threads wait on it. */
 let stoppingCell: ptr
-/** How many threads have stopped for the current collection. */
-let stoppedCell: ptr
+/** The number of the current (or last) collection: a thread acknowledges a stop with it. */
+let generationCell: ptr
 /** The pause between checks of a waiting thread: a timespec. */
 let pause: ptr
 /** The scheduler's hook that scans the stacks of parked tasks: a closure cell, or null. */
@@ -212,7 +214,7 @@ export function init(): void {
     switchLock = permanentRwlock()
     allocatedCell = permanent(8)
     stoppingCell = permanent(8)
-    stoppedCell = permanent(8)
+    generationCell = permanent(8)
     pause = permanent(16)
     unsafe.store<i64>(unsafe.add(pause, 8), 20000)
     heapBase = mapMemory(heapPages * pageSize)
@@ -545,8 +547,16 @@ function stopHere(t: ptr): void {
     else unsafe.asm("", "~{rbx},~{r12},~{r13},~{r14},~{r15}")
     unsafe.atomicStore<i64>(unsafe.add(t, threadStopRequested), 0)
     unsafe.atomicStore<ptr>(unsafe.add(t, threadSp), currentSp())
-    unsafe.atomicAdd<i64>(stoppedCell, 1)
-    while (unsafe.atomicLoad<i64>(stoppingCell) !== 0) nanosleep(pause, nil())
+    // A late signal, after the collection it was for, stops nothing.
+    while (unsafe.atomicLoad<i64>(stoppingCell) !== 0) {
+        // Acknowledged once per collection: one may start while the thread
+        // still waits here for the previous one, and it waits on for that one.
+        const generation = unsafe.atomicLoad<i64>(generationCell)
+        if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) {
+            unsafe.atomicStore<i64>(unsafe.add(t, threadStoppedFor), generation)
+        }
+        nanosleep(pause, nil())
+    }
 }
 
 function currentSp(): ptr {
@@ -614,7 +624,7 @@ export function collect(): void {
     const start = nowNs(clock)
     // No worker is between two stacks while the collector holds the write side.
     pthread_rwlock_wrlock(switchLock)
-    unsafe.atomicStore<i64>(stoppedCell, 0)
+    const generation = unsafe.atomicAdd<i64>(generationCell, 1) + 1
     unsafe.atomicStore<i64>(stoppingCell, 1)
     let others = 0
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
@@ -622,7 +632,11 @@ export function collect(): void {
         pthread_kill(pointerAt(t, threadId), stopSignal())
         others++
     }
-    while (unsafe.atomicLoad<i64>(stoppedCell) < others) nanosleep(pause, nil())
+    // Every other thread has stopped once it acknowledged this collection.
+    for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
+        if (t === self) continue
+        while (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) nanosleep(pause, nil())
+    }
     const stopped = nowNs(clock)
     collections++
 

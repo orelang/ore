@@ -29,6 +29,9 @@ Rewrite every package of [`compiler/`](../compiler) in Ore, in
   `process.panic`, I/O errors become values.
 - `ore fmt` gets its own printer instead of prettier; the language server its
   own JSON-RPC instead of `vscode-languageserver`.
+- The driver calls LLVM's C API instead of clang, and links with lld (done in
+  `ore-next build`): the compiler links `libLLVM`, and a C compiler is only
+  needed for the C sources of packages.
 - Bootstrap: the TypeScript compiler builds stage 1, stage 1 builds stage 2,
   stage 2 builds stage 3, and CI checks that stages 2 and 3 emit the same
   LLVM IR. Then the TypeScript compiler is removed, and the compiler builds
