@@ -18,27 +18,20 @@ Still needed for the compiler in Ore: running a process and reading its
 output, directories and paths. Hashing (`ore:crypto`) and files embedded at
 compile time (`import x from "./f" with { type: "text" }`) are done.
 
-## 2. Compiler in Ore
+## 2. Compiler in Ore (done)
 
-Rewrite every package of [`compiler/`](../compiler) in Ore, in
-[`compiler/next`](../compiler/next), whose lexer and parser are done.
+The whole toolchain is Ore, in [`compiler`](../compiler): parser, checker,
+IR, optimizer, the LLVM backend through LLVM's C API (no clang; lld links),
+build driver (debug builds compiled on every CPU), formatter, language
+server, and the `ore` command. It bootstraps (`ci/bootstrap.sh`: stages 2
+and 3 emit the same LLVM IR) from the seed, the last commit with the
+compiler in TypeScript, until it builds from its previous release; the test
+suite runs on it (`ci/test.sh`). The compiler in TypeScript, Bun and the
+oracle tests against TypeScript, prettier and Bun are gone.
 
-- The checker works on the parser's tree through typed accessors over its
-  generic nodes.
-- `try`/`finally` becomes `using`, internal `throw` becomes
-  `process.panic`, I/O errors become values.
-- `ore fmt` gets its own printer instead of prettier; the language server its
-  own JSON-RPC instead of `vscode-languageserver`.
-- The driver calls LLVM's C API instead of clang, and links with lld (done in
-  `ore-next build`): the compiler links `libLLVM`, and a C compiler is only
-  needed for the C sources of packages.
-- Bootstrap (done): `ci/bootstrap.sh` builds stage 1 with the TypeScript
-  compiler (or `$ORE`, a previous `ore`), stage 1 builds stage 2, stage 2
-  builds stage 3, and CI checks that stages 2 and 3 emit the same LLVM IR;
-  `dist/ore` is the compiler in Ore.
-- Next: the `ore` command and the test runner in Ore, then the TypeScript
-  compiler, Bun and the oracle tests against TypeScript, prettier and Bun are
-  removed, and the compiler builds from the previous release.
+Next for the toolchain: releases of `ore` (built from the previous release),
+the language server on the checker (hover, definition, completion,
+references, rename), and a build cache.
 
 This comes before the GC and async, so that both are written once, in Ore.
 

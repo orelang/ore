@@ -1,23 +1,22 @@
 # tests
 
 End-to-end tests of the language, its runner, and benchmarks. The tests of
-the compiler in Ore are in [`compiler/next/test`](../compiler/next/test).
+the compiler in Ore are in [`compiler/test`](../compiler/test).
 
 ## Running them
 
 ```sh
+ci/bootstrap.sh dist          # dist/ore, which the runner is built with
 ci/test.sh                    # everything
 ci/test.sh run/basics/ fmt/   # the cases whose names start with these
 ORE_BLESS=1 ci/test.sh run/   # rewrite the .out files from the actual output
-ci/bootstrap.sh /tmp/ore && ORE=/tmp/ore/ore ci/test.sh   # without Bun
 ```
 
-[`ci/test.sh`](../ci/test.sh) needs no Bun once `$ORE` names an Ore compiler,
-such as the `ore` that [`ci/bootstrap.sh`](../ci/bootstrap.sh) builds: it
-builds the runner, [`runner/main.ore`](runner/main.ore), with `$ORE build`
-(`bun run ore`, the TypeScript compiler, by default), keeps it in `~/.cache/ore/test` by a hash of its
+[`ci/test.sh`](../ci/test.sh) builds the runner,
+[`runner/main.ore`](runner/main.ore), with `$ORE build` (`dist/ore` by
+default, as [`ci/bootstrap.sh`](../ci/bootstrap.sh) makes it), keeps it in `~/.cache/ore/test` by a hash of its
 sources, and runs it from the root of the repository. The runner holds the
-compiler in Ore (`compiler/next/src`): it compiles the test programs in its
+compiler in Ore (`compiler/src`): it compiles the test programs in its
 own process, in one task per CPU, and runs them. Each case runs as a test of
 `"ore:test"`, so a failure, even a panic of the compiler, fails only that
 case; it prints `✓` or `✗` and the reason for each case, then the skipped
@@ -30,10 +29,9 @@ for a release build of the runner.
 |---|---|---|
 | `run/<topic>/` | Programs built and run; stdout must equal the `.out` file | `run/...` |
 | `diag/<topic>/` | Programs that must fail to check, with `// error: <message>` on the lines of the errors | `diag/...` |
-| `async/` | Async programs with the outputs Bun gave them (`bun-shim.ts`), skipped until Ore has async | `async/...` |
+| `async/` | Async programs with their expected outputs (recorded from Bun), skipped until Ore has async | `async/...` |
 | `runner/` | The runner: `main.ore`, `golden.ore` (programs), `fmt.ore` (formatting), `cases.ore` | |
 | `bench/` | Benchmarks: `bench/run.sh`, `bench/async/run.sh` | |
-| `harness/` | The Bun test suite (`bun run test`), until CI uses `ci/test.sh` | |
 
 Topics: `basics`, `types`, `collections`, `functions`, `errors`,
 `concurrency`, `library`, `runtime`, `modules`. A directory with a `main.ore`
@@ -49,11 +47,11 @@ annotation of its line, and every annotation a diagnostic.
 
 The other cases of the runner:
 
-- `unit/NAME.test.ore`: the tests of `compiler/next/test`, built and run as
+- `unit/NAME.test.ore`: the tests of `compiler/test`, built and run as
   `ore test` runs them (the checker, the optimizer, the backend's constants,
   module loading, native code, the parser, IR dumps, the language server).
-- `fmt/FILE`: every `.ore` file of `tests`, `runtime` and `compiler/next` must
-  be formatted already (but `compiler/next/test/fmt-cases.ore`, unformatted on
+- `fmt/FILE`: every `.ore` file of `tests`, `runtime` and `compiler` must
+  be formatted already (but `compiler/test/fmt-cases.ore`, unformatted on
   purpose); on the file and on unformatted variants of it (indentation
   removed, lines joined or broken, single quotes, semicolons, parentheses,
   longer and shorter names, block and line comments), the formatter must keep

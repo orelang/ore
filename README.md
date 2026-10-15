@@ -260,14 +260,14 @@ What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
 
 `ore` needs LLVM 19 or newer (its library, `libLLVM`) and lld, and a C
 compiler only for packages with C sources: `apt install llvm-22 lld-22` on
-Linux, `brew install llvm lld` on macOS. The compiler in Ore builds itself
-(`ci/bootstrap.sh` checks that it reproduces itself); until it builds from a
-previous release, stage 1 comes from the TypeScript compiler, which needs
-[Bun](https://bun.sh) and clang:
+Linux, `brew install llvm lld` on macOS. The compiler, written in Ore,
+builds itself (`ci/bootstrap.sh` checks that it reproduces itself); until a
+release of `ore` exists, the bootstrap starts from the seed, the last commit
+with the compiler in TypeScript, which it builds once with
+[Bun](https://bun.sh):
 
 ```sh
-bun install
-bun run build                        # dist/ore, the compiler in Ore
+ci/bootstrap.sh dist                 # dist/ore
 ln -sf "$PWD/dist/ore" ~/.local/bin/ore
 ```
 
@@ -287,9 +287,8 @@ A single file works too: `ore run hello.ore`. A debug build of a small
 program takes about 0.3 s (LLVM through its C API on every CPU, linked with
 lld), a release build about 1.4 s.
 
-`dist/ore` is the compiler written in Ore ([compiler/next](compiler/next)),
-built by the bootstrap compiler in TypeScript (`bun run ore ...`); it
-rebuilds itself with `ore build compiler/next/src/main.ore -o ore --release`.
+`dist/ore` is the compiler written in Ore ([compiler](compiler)); it
+rebuilds itself with `ore build compiler/src/main.ore -o ore --release`.
 
 ## Projects and packages
 
@@ -320,10 +319,9 @@ Native code is declared in package.json, also by dependencies:
 
 ## Editor support
 
-Both extensions run `ore lsp` from `PATH`. The language server of the
-bootstrap compiler (`bun run ore lsp`) provides diagnostics, hover, go to
-definition, member completion, find references and rename; that of
-`dist/ore` reports syntax errors so far.
+Both extensions run `ore lsp` from `PATH`. The language server reports
+syntax errors so far; hover, go to definition, completion, references and
+rename on the checker's results are next.
 
 **Zed.** Run `zed: install dev extension` and select `editors/zed` (requires
 Rust installed with rustup). Another binary can be set in Zed settings:
@@ -359,8 +357,8 @@ Another binary can be set with the `ore.path` setting.
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
 | 9. Runtime in Ore: no C left; only libc outside Ore | done |
-| 10. Compiler in Ore: lexer, parser, checker, backend, driver on LLVM's C API, bootstrap (done); `ore` command and tests in Ore, removing TypeScript and Bun | in progress |
-| 11. Own garbage collector: stop-the-world mark-sweep (done); parallel and concurrent marking, precise heap | in progress |
+| 10. Compiler in Ore: the whole toolchain (`ore` command, LLVM through its C API, tests), bootstrapped; no TypeScript left | done |
+| 11. Own garbage collector: mark-sweep with parallel marking (done); precise heap, concurrent marking | in progress |
 | 12. Promises and `async`/`await` | planned |
 
 ### Known limitations
@@ -378,9 +376,8 @@ Another binary can be set with the `ore.path` setting.
 ## Development
 
 ```sh
-bun test                         # unit and golden tests
-bun run typecheck
-ORE_BLESS=1 bun test tests       # regenerate expected outputs of tests/run
+ci/test.sh                       # every test, with dist/ore (see tests/README.md)
+ORE_BLESS=1 ci/test.sh run/      # regenerate expected outputs of tests/run
 tests/bench/run.sh               # time the benchmarks in tests/bench/ (release builds)
 ci/test-linux.sh                 # the tests in Linux containers (arm64 and amd64), with Docker
 ci/stress.sh                     # run the concurrent programs many times
@@ -392,21 +389,12 @@ Every directory below has a README with the details.
 
 | Path | Contents |
 |---|---|
-| `compiler/syntax` | Parsing `.ore` with the TypeScript parser, diagnostics |
-| `compiler/project` | Module resolution, package.json, loading programs |
-| `compiler/checker` | Type checker producing IR |
-| `compiler/ir` | Type model and typed IR |
-| `compiler/opt` | Optimizations on the IR: escape analysis, inlining |
-| `compiler/codegen` | IR to LLVM IR, built by clang |
-| `compiler/driver` | Compilation pipeline, clang, runtime and GC cache |
-| `compiler/lsp` | Language server |
-| `compiler/cli` | The `ore` command of the bootstrap compiler (`bun run ore`) |
-| `compiler/next` | The compiler written in Ore, `dist/ore`: the `ore` command, the checker, the LLVM backend and the build driver; it replaces the TypeScript one |
+| `compiler` | The compiler, written in Ore (`dist/ore`): the `ore` command, parser, checker, IR, optimizer, LLVM backend through LLVM's C API, build driver, formatter, language server |
 | `runtime/core` | The runtime written in Ore (`ore:runtime/...`), part of every program |
 | `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`, `ore:path`) |
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |
-| `tests/async` | Async tests, with references from Bun (waiting for Phase 8.6) |
+| `tests/async` | Async tests with their expected output, waiting for async |
 | `tests/bench` | Benchmarks |
 | `tests/harness` | The test runners: golden, async, the Ore compiler against TypeScript, Zed queries |
 | `editors/zed` | Zed extension |

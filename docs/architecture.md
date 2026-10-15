@@ -9,15 +9,15 @@ always underneath; they are in the [specification](spec).
 ## Principles
 
 1. **TS syntax as-is, no new syntax.** Only the semantics change. This reuses
-   the TS parser, tree-sitter-typescript, TextMate grammars, formatters and
-   the habits of TS developers. Where Ore needs more (attributes,
+   tree-sitter-typescript, TextMate grammars and the habits of TS developers;
+   the compiler's own parser builds TypeScript's tree. Where Ore needs more (attributes,
    thread-locals), it uses comments: `//ore:` directives.
 2. **Go-like in spirit.** One `ore` binary (`build`, `run`, `test`, `fmt`,
    `check`, `lsp`), fast compilation, static binaries, a GC, structural
    interfaces, errors as values, simplicity over expressiveness.
 3. **Own type checker.** `tsc` is not used as a checker: Ore has its own
-   types (`i64`, `u8`, …) and rules. From TypeScript it takes only the parser,
-   which accepts any text and keeps the spelling of literals (`5` vs `5.0`).
+   types (`i64`, `u8`, …) and rules. Its parser accepts the TypeScript
+   grammar and keeps the spelling of literals (`5` vs `5.0`).
 4. **Own IR between the checker and the backend**, so that a backend is one
    package: the C backend was replaced by LLVM this way.
 
@@ -29,7 +29,8 @@ always underneath; they are in the [specification](spec).
                          runtime: core (Ore, with the GC) + std (Ore)
 ```
 
-- **syntax** parses each file with `ts.createSourceFile`.
+- **syntax** parses each file into a tree in the shape of TypeScript's, with
+  the role of each child in its parent.
 - **project** resolves imports like Node (`node_modules`, package.json) and
   orders modules so that each comes after its imports; the runtime modules
   come first.
@@ -39,17 +40,16 @@ always underneath; they are in the [specification](spec).
   produces the facts the language server needs.
 - **opt** runs escape analysis (objects that never outlive their function go
   on the stack) and, in release builds, inlining of small functions.
-- **codegen** writes textual LLVM IR; **driver** builds it with clang together
-  with the runtime and the GC, cached in `~/.cache/ore`. The compiler in Ore
-  (`compiler/next`) calls LLVM directly through its C API instead: it parses
-  the IR in memory, optimizes it with LLVM's pass pipeline, writes an object
-  file and links it with lld. clang is then only needed for the C sources of
-  packages.
+- **llvm** writes textual LLVM IR, with the runtime in the same module so
+  that it inlines; **driver** hands it to LLVM through its C API (parsed in
+  memory, optimized by LLVM's pass pipeline, one module per CPU in debug
+  builds) and links the objects with lld. A C compiler is only needed for
+  the C sources of packages.
 
-The compiler is written in TypeScript on Bun, so it gets the TS parser for
-free, shares one codebase with the language server, and compiles to a single
-binary with `bun build --compile`. It is being rewritten in Ore
-(`compiler/next`); see the [roadmap](roadmap.md).
+The compiler is written in Ore ([`compiler`](../compiler)) and builds itself:
+`ci/bootstrap.sh` checks that stages 2 and 3 emit the same LLVM IR. It was
+first written in TypeScript; the last commit with that compiler, tagged
+`seed`, starts the bootstrap until a release of `ore` exists.
 
 ## Runtime
 
@@ -81,16 +81,18 @@ are the `unsafe` namespace, `//ore:` directives, variadic C declarations and
 
 - Golden tests ([`tests/`](../tests)): programs with expected output, and
   programs with expected diagnostics, grouped by topic.
-- The Ore compiler (`compiler/next`) is checked against the TypeScript
-  scanner and parser on every `.ore` file of the repository.
-- Async tests take their expected outputs from Bun running the same files.
-- CI (GitLab, x86-64 Linux) runs everything, then the concurrent programs
+- The runner ([`tests/runner`](../tests/runner), `ci/test.sh`), written in
+  Ore, compiles them in-process on every CPU, runs the compiler's own tests
+  (`compiler/test/*.test.ore`), checks that every `.ore` file is formatted
+  and that the formatter is idempotent, and that the compiler builds itself.
+- Async tests have their expected outputs, recorded from Bun.
+- CI (GitLab, x86-64 Linux) bootstraps, runs everything, then the concurrent programs
   many times with 1 and 8 threads (`ci/stress.sh`). Locally the tests run on
   macOS and, through Docker, on Linux arm64 and amd64.
 
 ## Risks
 
-- **The TS parser accepts what Ore rejects.** The checker rejects it; these
+- **The TS grammar accepts what Ore rejects.** The checker rejects it; these
   are diagnostics, with hints.
 - **Type inference grows out of control.** Inference stays local, as in Go:
   contextual typing for literals and lambdas only.

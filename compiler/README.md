@@ -1,27 +1,104 @@
 # compiler
 
-The Ore compiler, in TypeScript on Bun: one Bun workspace package per stage.
-It is the bootstrap compiler; `next/` is its replacement written in Ore.
+The Ore compiler, written in Ore: `dist/ore`. It builds itself
+(`ci/bootstrap.sh`: stages 2 and 3 must emit the same LLVM IR). The pipeline:
+the parser builds a tree in the shape of TypeScript's (`syntax/`), the
+modules of a program are loaded (`project/`), the checker lowers them to a
+typed IR (`checker/`, `ir/`), the optimizer runs escape analysis and inlining
+(`opt/`), the backend writes LLVM IR (`llvm/`), and the driver compiles it
+through LLVM's C API and links with lld (`driver/`). `fmt/` is the
+formatter, `lsp/` the language server, `cli/` the `ore` command.
 
-```
-.ore files ─ syntax ─ project ─ checker ─ ir ─ opt ─ codegen ─ driver ─ native binary
-                                   │                     (clang + runtime + GC)
-                                   └─ lsp (editor features)        cli (the `ore` command)
-```
+## The `ore` command
 
-| Package | Role |
+`cli/` holds the commands, with these exit statuses (0 on success, 1 for errors in the program or a failing
+tool, 2 for a wrong command line):
+
+| Command | |
 |---|---|
-| [`syntax`](syntax) | Parses a file with the TypeScript parser; source positions and diagnostics |
-| [`project`](project) | Resolves imports and package.json, loads a program's modules in order |
-| [`checker`](checker) | Resolves names, checks types and lowers the program to IR |
-| [`ir`](ir) | The typed IR and its type model |
-| [`opt`](opt) | Optimizations on the IR: escape analysis and inlining |
-| [`codegen`](codegen) | IR to textual LLVM IR |
-| [`driver`](driver) | Builds a binary: LLVM IR, the runtime and the GC through clang, with a cache |
-| [`lsp`](lsp) | Language server: diagnostics, hover, definitions, references, rename, completion |
-| [`cli`](cli) | The `ore` command: run, build, check, test, fmt, init, lsp |
-| [`next`](next) | The compiler written in Ore (lexer and parser so far) |
+| `ore run [file.ore] [args...]` | builds into a temporary directory and runs the program with the same stdio, with its exit status |
+| `ore build [file.ore] [-o out] [--release] [--emit-llvm f.ll] [--time]` | an executable named after the file or the package; `--time` prints the time of each step |
+| `ore check [file.ore \| paths...]` | the diagnostics of a program; given directories, of each `.ore` file in them as an entry, skipping files a program checked before has loaded, each diagnostic once |
+| `ore test [paths...]` | builds and runs every `*.test.ore` file below the paths (default `.`, without `node_modules` and hidden directories), in parallel, one task per CPU, each build in a child process of the same `ore`; prints each file's output in order, then `All N test file(s) passed.` or `F of N test file(s) failed.` (status 1) |
+| `ore fmt [--check] [--stdout] [paths...]` | formats `.ore` files in place; `--check` lists the unformatted ones (status 1), `--stdout` prints them formatted |
+| `ore init [dir]` | `package.json` (name from the directory) and `src/main.ore` |
+| `ore lsp`, `ore version`, `ore help` | |
 
-`imports.d.ts` declares the files the compiler embeds as text (`.ore`, `.c`, `.h`).
-Each package keeps its unit tests in `test/`; the end-to-end tests of the
-language are in [`tests/`](../tests).
+Without a file, `run`, `build` and `check` take the `main` of the nearest
+package.json. `ore test` prints a file's output once it is done (its stdout,
+then its stderr); the language server has no checker yet. Programs are built from the sources every time; a cache would
+go under `$ORE_CACHE` (`~/.cache/ore`), keyed by a hash of the compiler and
+the modules a program loads, in `buildCommand` of `cli/commands.ore`.
+
+| File | Contents |
+|---|---|
+| `syntax/tokens.ore` | Token kinds (named as `ts.SyntaxKind`) and keywords |
+| `syntax/lexer.ore` | Tokens of a file, with byte offsets |
+| `syntax/ast.ore` | The syntax tree: a node kind, a span and children |
+| `syntax/parser.ore` | The parser, with its syntax errors and their spans |
+| `syntax/source.ore` | A parsed file: path, text, tree; line and column of an offset |
+| `syntax/diagnostic.ore` | Diagnostics and their `path:line:col: error: message` format |
+| `syntax/imports.ore` | Module specifiers, string literal values, text imports |
+| `syntax/parse.ore` | A file parsed into a `Source`, syntax errors as diagnostics |
+| `syntax/nodes.ore` | Typed accessors of the tree for the checker (`expression(node)`, `parameters(fn)`, ...), and what TypeScript keeps in flags and token kinds: `declarationKind`, `prefixOperator`, `leadingCommentRanges` |
+| `project/resolve.ore` | The `ore:` modules embedded in the compiler, the runtime's load order, import resolution |
+| `project/load.ore` | `loadProgram`: the entry file and every module it imports |
+| `ir/types.ore` | The type model (`compiler/ir/src/types.ts`): `Type`, `types`, `sameType`, `typeToString`, `typeKey`, `unionRepr` |
+| `ir/nodes.ore` | The IR nodes (`compiler/ir/src/nodes.ts`): `Module`, `Func`, `Local`, statements and expressions |
+| `ir/dump.ore` | `dump(module)`: the canonical text of a module, the same as `dump` of `compiler/ir/src/dump.ts` |
+| `checker/bigint.ore` | Untyped integer constants, `bigint` in TypeScript: sign and magnitude in 32-bit limbs |
+| `checker/operand.ore`, `fold.ore` | Operands (`untyped-int`, `untyped-float`, `typed`, `error`) and folding of constants |
+| `checker/symbols.ore` | Value and type symbols, generics, scopes |
+| `checker/context.ore` | The types shared by the layers: `CheckResult`, `FuncContext`, `ClassInfo`, facts... |
+| `checker/helpers.ore` | Tables and pure functions: operators, string and array methods, `terminates`, `visitLocals`, `jsonProblem` |
+| `checker/builtins.ore` | The root scope, from `runtime/std/builtin.d.ore`, and the runtime modules that implement namespaces (`fs`, `process`) |
+| `checker/assigned.ore` | Definite assignment |
+| `checker/base.ore` | `Checker`: the state of a check, type resolution, unions and shapes, `coerce`, diagnostics |
+| `checker/declarations.ore` | Modules, imports and exports, directives, functions, generics and their instances, parameters |
+| `checker/classes.ore` | Classes, accessors, interfaces, conformance, itabs |
+| `checker/statements.ore` | Statements, destructuring, closures, narrowing |
+| `checker/expressions.ore` | Expressions: names, operators, assignments, literals, members |
+| `checker/calls.ore` | Calls of functions, methods, values, constructors and built-ins (`unsafe`, `JSON`), array, map, channel and string methods |
+| `checker/checker.ore` | `check(program)`: the passes over the modules of a program, into one IR module |
+| `fmt/doc.ore` | Documents (groups, indents, lines, ifBreak, fill...) and their printer, which fits groups in the width |
+| `fmt/estree.ore` | The syntax tree converted to the shape of typescript-estree's, and the comments of a file |
+| `fmt/comments.ore` | Comments attached to nodes (leading, trailing, dangling), with prettier's rules, and printed |
+| `fmt/print.ore` | The formatter: the tree printed as a document in the Ore style, as prettier prints it |
+| `ir/read.ore` | `readModule(text)`: the module of a dump, so that `dump(readModule(dump(m)))` is `dump(m)` |
+| `opt/inline.ore` | `inlineCalls(module)`: calls of small functions replaced by their bodies (`compiler/opt/src/inline.ts`) |
+| `opt/escape.ore` | `planStack(module)`: escape analysis, the allocations placed on the stack (`compiler/opt/src/escape.ts`) |
+| `llvm/*.ore` | The LLVM backend: `emitModule(module, options)` of `llvm/emit.ore`, the LLVM IR text of a module, ported file by file from `compiler/codegen/src` (`ll`, `context`, `helpers`, `base`, `functions`, `expressions`, `calls`, `collections`, `json`, `emit`) |
+| `llvm/bindings.ore` | The LLVM C API the compiler calls (contexts, the IR parser, the verifier, target machines, the new pass manager), and the registration of the host's target by `target.arch` |
+| `llvm/object.ore` | `emitObject(ir, options)`: LLVM IR text to an object file, as `clang -c -O0\|-O2` does: parsed in memory, verified, `default<O0>` or `default<O2>`, code generation for the host's CPU at -O0 or -O2; errors keep LLVM's `name:line:col` |
+| `driver/native.ore` | `nativeCode(paths)`: the libraries, C sources and library directories (`libDirs`) of a program's packages |
+| `driver/link.ore` | Linking with lld: `ld64.lld` with the macOS SDK, `ld.lld` with glibc's start files and dynamic linker; C sources compiled with `$CC` (cc); the target triple |
+| `driver/build.ore` | `compileToIr(entry, debug)` and `build(entry, options)` of `compiler/driver/src/build.ts`: load, check, emit, object, link; `buildIr` for IR already emitted |
+| `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
+| `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
+| `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
+| `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
+| `cli/main.ore` | The `ore` command: the usage, and the dispatch to the commands |
+| `cli/commands.ore` | `ore build`, `run`, `check`, `init`: the entry of a program (a file or package.json's `main`), errors and statuses |
+| `cli/test.ore`, `cli/fmt.ore`, `cli/files.ore` | `ore test`, `ore fmt`, and the `.ore` files below the paths they are given |
+| `cli/self.ore` | The path of the running executable (`/proc/self/exe`, `_NSGetExecutablePath`) |
+| `main.ore` | `process.exit(main(process.args))` |
+
+The tests of the compiler are `test/*.test.ore`, run with the rest of the
+suite by [`ci/test.sh`](../ci/test.sh) (see [tests](../tests/README.md)).
+
+## Building
+
+`ore build` calls LLVM through its C API (`llvm/object.ore`) instead of
+running clang on the IR, and links with lld (`driver/link.ore`). A C compiler
+is needed only for the C sources of packages (`"ore": { "sources": [...] }`).
+It needs LLVM 19 or newer (`libLLVM`, found through `llvm-config --libdir`,
+Homebrew's `opt/llvm/lib` or `"libDirs"` in package.json) and lld
+(`ld64.lld` or `ld.lld`, in PATH, beside `llvm-config`, in Homebrew's or
+Debian's `/usr/lib/llvm-N/bin`, or `$ORE_LD`). On macOS the SDK comes from
+`$SDKROOT` or `xcrun --show-sdk-path`, and the minimum version is the running
+system's or `$MACOSX_DEPLOYMENT_TARGET`; on Linux, executables are PIE with
+glibc's start files and dynamic linker.
+
+Debug builds split the module into one part per CPU (`llvm/split.ore`) and
+compile the parts in parallel; release builds keep one module, so that the
+runtime inlines into the program.
