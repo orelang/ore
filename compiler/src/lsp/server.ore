@@ -372,11 +372,23 @@ export class Server {
         if (p instanceof Error) return this.invalid(m, p)
         // Analyze the current text: completion is requested right after typing.
         const document = this.documents.get(p.textDocument.uri)
-        const items: { label: string; kind: int; detail: string }[] = []
+        const items: {
+            label: string
+            kind: int
+            detail: string
+            documentation: { kind: string; value: string } | null
+        }[] = []
         if (document !== null) {
             const analysis = analyze(uriToPath(document.uri), document.text)
-            for (const c of analysis.completions(p.position))
-                items.push({ label: c.label, kind: c.kind === "method" ? kindMethod : kindField, detail: c.detail })
+            for (const c of analysis.completions(p.position)) {
+                const doc = c.documentation
+                items.push({
+                    label: c.label,
+                    kind: c.kind === "method" ? kindMethod : kindField,
+                    detail: c.detail,
+                    documentation: doc === "" ? null : { kind: "markdown", value: doc },
+                })
+            }
         }
         this.connection.respond(m.id, JSON.stringify(items))
     }

@@ -54,6 +54,8 @@ export type Completion = {
     kind: "field" | "method"
     /** The member's type. */
     detail: string
+    /** The member's JSDoc comment, as Markdown. */
+    documentation: string
 }
 
 /** The signature of the function being called, its parameters (substrings of `label`), and which one is being written. */
@@ -567,8 +569,37 @@ class CheckedAnalysis {
             return found
         }
         const type = info.types.get(target)
-        if (type !== null) membersOfType(type, found)
-        return found
+        if (type === null) return found
+        membersOfType(type, found)
+        // The documentation of the members declared in source.
+        const owners: Type[] = []
+        if (type.kind === "union") for (const m of type.members) owners.push(m)
+        else owners.push(type)
+        const withDocs: Completion[] = []
+        for (const c of found)
+            withDocs.push({
+                label: c.label,
+                kind: c.kind,
+                detail: c.detail,
+                documentation: this.memberDoc(owners, c.label),
+            })
+        return withDocs
+    }
+
+    /** The JSDoc comment of the member `name` of one of the types, or "". */
+    private memberDoc(owners: Type[], name: string): string {
+        const info = this.info
+        if (info === null) return ""
+        for (const owner of owners) {
+            let decls: Map<string, Node> | null = null
+            if (owner.kind === "struct") decls = info.members.get(owner)
+            else if (owner.kind === "interface") decls = info.members.get(owner)
+            const decl = decls === null ? null : decls.get(name)
+            if (decl === null) continue
+            const source = this.sourceOf(decl)
+            if (source !== null) return this.docOf(source, decl)
+        }
+        return ""
     }
 
     definition(position: Position): Location | null {
@@ -611,7 +642,12 @@ function membersOfDeclaration(decl: Node, source: Source, out: Completion[]) {
             const name = m.child("name")
             if (name === null || !source.text.slice(m.start, name.start).includes("static")) continue
             if (source.text.slice(m.start, name.start).includes("private")) continue
-            out.push({ label: name.text, kind: m.kind === "MethodDeclaration" ? "method" : "field", detail: "" })
+            out.push({
+                label: name.text,
+                kind: m.kind === "MethodDeclaration" ? "method" : "field",
+                detail: "",
+                documentation: "",
+            })
         }
         return
     }
@@ -620,18 +656,18 @@ function membersOfDeclaration(decl: Node, source: Source, out: Completion[]) {
     for (const st of statements) {
         if (st.kind === "FunctionDeclaration") {
             const name = st.child("name")
-            if (name !== null) out.push({ label: name.text, kind: "method", detail: "" })
+            if (name !== null) out.push({ label: name.text, kind: "method", detail: "", documentation: "" })
         } else if (st.kind === "VariableStatement") {
             const list = st.child("declarationList")
             if (list === null) continue
             for (const d of list.list("declarations")) {
                 const name = d.child("name")
                 if (name !== null && name.kind === "Identifier")
-                    out.push({ label: name.text, kind: "field", detail: "" })
+                    out.push({ label: name.text, kind: "field", detail: "", documentation: "" })
             }
         } else if (st.kind === "ClassDeclaration" || st.kind === "InterfaceDeclaration") {
             const name = st.child("name")
-            if (name !== null) out.push({ label: name.text, kind: "field", detail: "" })
+            if (name !== null) out.push({ label: name.text, kind: "field", detail: "", documentation: "" })
         }
     }
 }
@@ -641,39 +677,48 @@ function membersOfType(type: Type, out: Completion[]) {
     switch (type.kind) {
         case "struct":
             for (const f of type.fields)
-                if (!f.private) out.push({ label: f.name, kind: "field", detail: typeToString(f.type) })
+                if (!f.private)
+                    out.push({ label: f.name, kind: "field", detail: typeToString(f.type), documentation: "" })
             for (const m of type.methods)
-                if (!m.private) out.push({ label: m.name, kind: "method", detail: typeToString(m.func.type) })
-            if (type.tuple) out.push({ label: "length", kind: "field", detail: "int" })
+                if (!m.private)
+                    out.push({ label: m.name, kind: "method", detail: typeToString(m.func.type), documentation: "" })
+            if (type.tuple) out.push({ label: "length", kind: "field", detail: "int", documentation: "" })
             return
         case "interface":
             for (const m of type.members)
-                out.push({ label: m.name, kind: m.k === "method" ? "method" : "field", detail: typeToString(m.type) })
+                out.push({
+                    label: m.name,
+                    kind: m.k === "method" ? "method" : "field",
+                    detail: typeToString(m.type),
+                    documentation: "",
+                })
             return
         case "array":
-            out.push({ label: "length", kind: "field", detail: "int" })
-            for (const name of ["push", "pop", "slice"]) out.push({ label: name, kind: "method", detail: "" })
-            for (const [name, _] of arrayMethods) out.push({ label: name, kind: "method", detail: "" })
+            out.push({ label: "length", kind: "field", detail: "int", documentation: "" })
+            for (const name of ["push", "pop", "slice"])
+                out.push({ label: name, kind: "method", detail: "", documentation: "" })
+            for (const [name, _] of arrayMethods)
+                out.push({ label: name, kind: "method", detail: "", documentation: "" })
             return
         case "string":
         case "literal":
-            out.push({ label: "length", kind: "field", detail: "int" })
+            out.push({ label: "length", kind: "field", detail: "int", documentation: "" })
             for (const [name, sig] of stringMethods)
-                out.push({ label: name, kind: "method", detail: typeToString(sig.result) })
+                out.push({ label: name, kind: "method", detail: typeToString(sig.result), documentation: "" })
             return
         case "map":
-            out.push({ label: "size", kind: "field", detail: "int" })
+            out.push({ label: "size", kind: "field", detail: "int", documentation: "" })
             for (const name of ["get", "set", "has", "delete", "clear", "keys", "values", "entries"])
-                out.push({ label: name, kind: "method", detail: "" })
+                out.push({ label: name, kind: "method", detail: "", documentation: "" })
             return
         case "set":
-            out.push({ label: "size", kind: "field", detail: "int" })
+            out.push({ label: "size", kind: "field", detail: "int", documentation: "" })
             for (const name of ["add", "has", "delete", "clear", "values"])
-                out.push({ label: name, kind: "method", detail: "" })
+                out.push({ label: name, kind: "method", detail: "", documentation: "" })
             return
         case "chan":
             for (const name of ["send", "receive", "close", "onReceive", "onSend"])
-                out.push({ label: name, kind: "method", detail: "" })
+                out.push({ label: name, kind: "method", detail: "", documentation: "" })
             return
         case "union": {
             // The members that every member of the union has, by name.
