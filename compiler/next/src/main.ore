@@ -11,10 +11,18 @@
 //   ore-next ir <entry.ore>       the IR of the checked program (`dump` of ir/dump.ore), or
 //                                 its diagnostics on stderr with status 1
 //   ore-next lsp                  the language server on stdin and stdout
+//   ore-next object <in.ll> [<src.c> ...] -o <out> [--release] [-c] [-l lib] [-L dir] [--time]
+//                                 an executable from LLVM IR: compiled through LLVM's C API,
+//                                 with the C sources and libraries, linked with lld; with -c,
+//                                 only the IR's object file
 
 import { check } from "./checker/checker"
+import { BuildOptions, buildIr } from "./driver/build"
+import { targetTriple } from "./driver/link"
+import { NativeCode } from "./driver/native"
 import { format } from "./fmt/print"
 import { dump as dumpModule } from "./ir/dump"
+import { emitObject, ObjectOptions } from "./llvm/object"
 import { serve } from "./lsp/server"
 import { loadProgram } from "./project/load"
 import { dump, dumpRoles } from "./syntax/ast"
@@ -25,6 +33,64 @@ import { parse } from "./syntax/parser"
 const version = "0.1.0-next"
 
 if (process.args.length === 1 && process.args[0] === "lsp") process.exit(i32(serve(version)))
+if (process.args.length > 0 && process.args[0] === "object") process.exit(objectCommand(process.args.slice(1)))
+
+/** The arguments of a build: the files, and the flags (`-o out`, `-l lib`, `-L dir`, `--release`...). */
+class BuildArgs {
+    files: string[] = []
+    output = ""
+    release = false
+    objectOnly = false
+    times = false
+    native = new NativeCode()
+}
+
+function parseBuildArgs(args: string[]): BuildArgs | Error {
+    const parsed = new BuildArgs()
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+        if (arg === "--release") parsed.release = true
+        else if (arg === "--time") parsed.times = true
+        else if (arg === "-c") parsed.objectOnly = true
+        else if (arg === "-o" || arg === "-l" || arg === "-L") {
+            if (i + 1 >= args.length) return new Error(`${arg} needs a value`)
+            i++
+            const value = args[i]
+            if (arg === "-o") parsed.output = value
+            else if (arg === "-l") parsed.native.link.push(value)
+            else parsed.native.libDirs.push(value)
+        } else if (arg.startsWith("-")) return new Error(`unknown option ${arg}`)
+        else parsed.files.push(arg)
+    }
+    if (parsed.output === "") return new Error("no output: -o <file>")
+    return parsed
+}
+
+function objectCommand(args: string[]): i32 {
+    const parsed = parseBuildArgs(args)
+    const none: string[] = []
+    const ll = parsed instanceof Error ? none : parsed.files.filter((f) => f.endsWith(".ll"))
+    if (parsed instanceof Error || ll.length !== 1) {
+        if (parsed instanceof Error) console.error(parsed.message)
+        console.error("usage: ore-next object <in.ll> [<src.c> ...] -o <out> [--release] [-c] [-l lib] [-L dir] [--time]")
+        return 2
+    }
+    for (const file of parsed.files) if (!file.endsWith(".ll")) parsed.native.sources.push(file)
+    const ir = fs.readFile(ll[0])
+    if (ir instanceof Error) {
+        console.error(ir.message)
+        return 1
+    }
+    const options = new BuildOptions(parsed.output, parsed.release, "", parsed.times)
+    const error = parsed.objectOnly
+        ? emitObject(ir, new ObjectOptions(parsed.output, parsed.release, targetTriple(), ll[0]))
+        : buildIr(ir, ll[0], parsed.native, options)
+    if (error instanceof Error) {
+        console.error(error.message)
+        return 1
+    }
+    return 0
+}
 
 const mode = process.args.length === 2 ? process.args[0] : ""
 if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "fmt" && mode !== "ir") {

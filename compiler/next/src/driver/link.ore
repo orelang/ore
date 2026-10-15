@@ -1,0 +1,196 @@
+// Linking object files into an executable with lld, without a C compiler:
+// ld64.lld on macOS, ld.lld on Linux, with the system's C library. C sources
+// of packages are the only thing that still needs a C compiler (`$CC`, or cc).
+
+import { basename, dirname, join } from "ore:path"
+import { NativeCode } from "./native"
+
+declare function sysctlbyname(name: string, value: ptr, length: ptr, newValue: ptr, newLength: u64): i32
+
+/**
+ * The target triple to compile for: the host. On macOS it names the running
+ * system's version, the oldest the program runs on, as clang does by default
+ * (`$MACOSX_DEPLOYMENT_TARGET` overrides it); elsewhere "" for LLVM's default.
+ */
+export function targetTriple(): string {
+    if (target.os === "darwin") return `${target.arch}-apple-macosx${macosVersion()}`
+    return ""
+}
+
+/** `$MACOSX_DEPLOYMENT_TARGET`, or the version of the running macOS, such as "26.1". */
+function macosVersion(): string {
+    const deployment = process.getenv("MACOSX_DEPLOYMENT_TARGET")
+    if (deployment !== null && deployment !== "") return deployment
+    const buffer = unsafe.allocBytes(64)
+    const length = unsafe.allocBytes(8)
+    unsafe.store<u64>(length, 64)
+    if (sysctlbyname("kern.osproductversion", buffer, length, unsafe.fromInt(0), 0) !== 0) return "11.0"
+    const n = i64(unsafe.load<u64>(length))
+    // The length counts the terminating NUL.
+    return unsafe.makeString(buffer, n > 0 && unsafe.load<u8>(unsafe.add(buffer, n - 1)) === 0 ? n - 1 : n)
+}
+
+/** Runs a tool, with an Error that has its output when it fails. */
+function run(program: string, args: string[]): Error | null {
+    const out = process.output(program, args)
+    if (out instanceof Error) return out
+    if (!out.ok) return new Error(`${basename(program)} failed (exit ${out.code}):\n${out.stderr}${out.stdout}`.trimEnd())
+    return null
+}
+
+/** The trimmed standard output of a command, or null when it cannot run or fails. */
+function outputOf(program: string, args: string[]): string | null {
+    const out = process.output(program, args)
+    if (out instanceof Error || !out.ok) return null
+    return out.stdout.trim()
+}
+
+/** The first of these directories with an executable file `name`. */
+function findIn(name: string, dirs: string[]): string | null {
+    for (const dir of dirs) {
+        const path = join(dir, name)
+        if (dir !== "" && fs.isFile(path)) return path
+    }
+    return null
+}
+
+/**
+ * The linker, `$ORE_LD` or `name` (ld64.lld or ld.lld): in PATH, beside
+ * llvm-config, then where Homebrew and Debian's versioned LLVM packages put it
+ * (/usr/lib/llvm-N/bin, the newest first).
+ */
+export function findLinker(): string | Error {
+    const given = process.getenv("ORE_LD")
+    if (given !== null && given !== "") return given
+    const name = target.os === "darwin" ? "ld64.lld" : "ld.lld"
+    const dirs = (process.getenv("PATH") ?? "/usr/bin:/bin").split(":")
+    const inPath = findIn(name, dirs)
+    if (inPath !== null) return inPath
+    const bindir = outputOf("llvm-config", ["--bindir"])
+    if (bindir !== null) dirs.push(bindir)
+    for (const prefix of ["/opt/homebrew/opt", "/usr/local/opt"]) {
+        dirs.push(`${prefix}/lld/bin`)
+        dirs.push(`${prefix}/llvm/bin`)
+    }
+    const versions = fs.readDir("/usr/lib")
+    if (!(versions instanceof Error)) {
+        const numbers: int[] = []
+        for (const entry of versions) {
+            if (!entry.startsWith("llvm-")) continue
+            const n = Number.parseInt(entry.slice(5))
+            if (n !== null) numbers.push(n)
+        }
+        numbers.sort((a, b) => b - a)
+        for (const n of numbers) dirs.push(`/usr/lib/llvm-${n}/bin`)
+    }
+    const found = findIn(name, dirs)
+    if (found !== null) return found
+    return new Error(`linker ${name} not found: install lld (Homebrew: brew install lld; Debian: apt install lld) or set $ORE_LD`)
+}
+
+/** Compiles a C source of a package into an object file with `$CC` (default cc). */
+export function compileC(source: string, object: string, release: bool): Error | null {
+    const cc = process.getenv("CC") ?? "cc"
+    const args = ["-c", "-std=c11", "-fwrapv", "-fno-strict-aliasing", "-w", "-fPIC"]
+    if (release) args.push("-O2")
+    else args.push("-O0", "-g")
+    args.push(source, "-o", object)
+    const out = process.output(cc, args)
+    if (out instanceof Error) return new Error(`C compiler '${cc}' not found: install one or set $CC (${out.message})`)
+    if (!out.ok) return new Error(`${cc} failed (exit ${out.code}):\n${out.stderr}${out.stdout}`.trimEnd())
+    return null
+}
+
+/** Links object files and the libraries of the native code into an executable. */
+export function link(objects: string[], native: NativeCode, output: string): Error | null {
+    const linker = findLinker()
+    if (linker instanceof Error) return linker
+    const searchDirs: string[] = native.libDirs.slice()
+    // As the C compiler did: $LIBRARY_PATH is searched too.
+    const libraryPath = process.getenv("LIBRARY_PATH")
+    if (libraryPath !== null) for (const dir of libraryPath.split(":")) if (dir !== "" && !searchDirs.includes(dir)) searchDirs.push(dir)
+    const args = target.os === "darwin" ? darwinArgs(output) : linuxArgs(output)
+    if (args instanceof Error) return args
+    for (const object of objects) args.push(object)
+    for (const dir of searchDirs) args.push(`-L${dir}`)
+    for (const lib of native.link) args.push(`-l${lib}`)
+    if (target.os === "darwin") args.push("-lSystem")
+    else {
+        const crt = crtDir()
+        if (crt instanceof Error) return crt
+        for (const dir of linuxLibDirs()) args.push(`-L${dir}`)
+        args.push("-lm", "-lpthread", "-lc", join(crt, "crtn.o"))
+    }
+    return run(linker, args)
+}
+
+/** `ld64.lld` for the running macOS, with the SDK of `$SDKROOT` or `xcrun`. */
+function darwinArgs(output: string): string[] | Error {
+    let sdk = process.getenv("SDKROOT") ?? ""
+    if (sdk === "") {
+        const found = outputOf("xcrun", ["--show-sdk-path"])
+        if (found === null) return new Error("no macOS SDK: install the Command Line Tools (xcode-select --install) or set $SDKROOT")
+        sdk = found
+    }
+    const arch = target.arch === "arm64" ? "arm64" : "x86_64"
+    return ["-arch", arch, "-platform_version", "macos", macosVersion(), sdkVersion(sdk), "-syslibroot", sdk, "-o", output]
+}
+
+class SdkSettings {
+    Version: string | null = null
+}
+
+/** The version of a macOS SDK, from its SDKSettings.json; "0.0" when unknown, as the linker allows. */
+function sdkVersion(sdk: string): string {
+    const text = fs.readFile(join(sdk, "SDKSettings.json"))
+    if (text instanceof Error) return "0.0"
+    const settings = JSON.parse<SdkSettings>(text)
+    if (settings instanceof Error) return "0.0"
+    return settings.Version ?? "0.0"
+}
+
+/** The Debian-style multiarch name of the target: "aarch64-linux-gnu", "x86_64-linux-gnu". */
+function multiarch(): string {
+    return target.arch === "arm64" ? "aarch64-linux-gnu" : "x86_64-linux-gnu"
+}
+
+/** The system library directories that exist. */
+function linuxLibDirs(): string[] {
+    const dirs: string[] = []
+    const m = multiarch()
+    for (const dir of [`/usr/lib/${m}`, `/lib/${m}`, "/usr/lib64", "/lib64", "/usr/lib", "/lib"]) if (fs.isDir(dir)) dirs.push(dir)
+    return dirs
+}
+
+/**
+ * The directory of the C runtime's start files (Scrt1.o, crti.o, crtn.o): a
+ * system library directory, else where the C compiler finds them.
+ */
+function crtDir(): string | Error {
+    for (const dir of linuxLibDirs()) if (fs.isFile(join(dir, "Scrt1.o"))) return dir
+    const cc = process.getenv("CC") ?? "cc"
+    const found = outputOf(cc, ["-print-file-name=Scrt1.o"])
+    if (found !== null && found.startsWith("/") && fs.isFile(found)) return dirname(found)
+    return new Error("the C runtime (Scrt1.o) is not found: install the C library's development files (Debian: libc6-dev)")
+}
+
+/** `ld.lld` for a position-independent executable with glibc's dynamic linker. */
+function linuxArgs(output: string): string[] | Error {
+    const crt = crtDir()
+    if (crt instanceof Error) return crt
+    const loader = target.arch === "arm64" ? "/lib/ld-linux-aarch64.so.1" : "/lib64/ld-linux-x86-64.so.2"
+    return [
+        "-pie",
+        "--eh-frame-hdr",
+        "--hash-style=gnu",
+        "--build-id",
+        "-z",
+        "relro",
+        "-dynamic-linker",
+        loader,
+        "-o",
+        output,
+        join(crt, "Scrt1.o"),
+        join(crt, "crti.o"),
+    ]
+}
