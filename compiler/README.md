@@ -17,9 +17,10 @@ tool, 2 for a wrong command line):
 | Command | |
 |---|---|
 | `ore run [file.ore] [args...]` | builds into a temporary directory and runs the program with the same stdio, with its exit status |
-| `ore build [file.ore] [-o out] [--release] [--emit-llvm f.ll] [--time]` | an executable named after the file or the package; `--time` prints the time of each step |
+| `ore run --watch [file.ore] [args...]` | the same, and again after each change of a file of the program (below), until interrupted |
+| `ore build [file.ore] [-o out] [--release] [--emit-llvm f.ll] [--time] [--watch]` | an executable named after the file or the package; `--time` prints the time of each step; `--watch` builds again after each change |
 | `ore check [file.ore \| paths...]` | the diagnostics of a program; given directories, of each `.ore` file in them as an entry, skipping files a program checked before has loaded, each diagnostic once |
-| `ore test [paths...]` | builds and runs every `*.test.ore` file below the paths (default `.`, without `node_modules` and hidden directories), in parallel, one task per CPU, each build in a child process of the same `ore`; prints each file's output in order, then `All N test file(s) passed.` or `F of N test file(s) failed.` (status 1) |
+| `ore test [--watch] [paths...]` | builds and runs every `*.test.ore` file below the paths (default `.`, without `node_modules` and hidden directories), in parallel, one task per CPU, each build in a child process of the same `ore`; prints each file's output in order, then `All N test file(s) passed.` or `F of N test file(s) failed.` (status 1) |
 | `ore fmt [--check] [--stdout] [paths...]` | formats `.ore` files in place; `--check` lists the unformatted ones (status 1), `--stdout` prints them formatted |
 | `ore init [dir]` | `package.json` (name from the directory) and `src/main.ore` |
 | `ore cache [clean]` | where the build cache is, its object files and their size; `clean` removes them |
@@ -29,6 +30,20 @@ Without a file, `run`, `build` and `check` take the `main` of the nearest
 package.json. `ore test` prints a file's output once it is done (its stdout,
 then its stderr). The language server checks the program of each open
 document with its unsaved text.
+
+With `--watch` (`-w`; for `run`, before the file), `cli/watch.ore` watches
+the files the program is made of: its modules but the embedded `ore:` ones,
+the files they import as text, the package.json of their packages and the
+C sources of the packages, taken again from each build. It looks at their
+modification times and sizes every 100 ms; once a change is followed by
+50 ms without another, it prints `[ore] restarting: src/main.ore changed`
+on stderr, stops the program (SIGTERM, then SIGKILL after 1 s), builds it
+again, with the objects of the unchanged files from the build cache, and
+runs it with the terminal's stdin, stdout and stderr and the arguments
+after the file. A build error is printed and the next change builds again;
+a program that ends with a failing status is told of (`[ore] exited with
+status 1`). Ctrl-C stops the watcher and the program. `ore test --watch`
+watches the files of the test programs and runs them all again.
 
 Every diagnostic has a code (`error[ORE2033]`), found by its message in
 `syntax/codes.ore`, and a page in [`docs/errors`](../docs/errors); the
@@ -93,6 +108,7 @@ object files come from the build cache when it has them (see below).
 | `cli/main.ore` | The `ore` command: the usage, and the dispatch to the commands |
 | `cli/commands.ore` | `ore build`, `run`, `check`, `init`: the entry of a program (a file or package.json's `main`), errors and statuses |
 | `cli/test.ore`, `cli/fmt.ore`, `cli/files.ore` | `ore test`, `ore fmt`, and the `.ore` files below the paths they are given |
+| `cli/watch.ore`, `cli/background.ore` | `--watch`: the files of a program, polled for changes; the program run in the background and stopped |
 | `cli/cache.ore` | `ore cache [clean]` |
 | `cli/self.ore` | The path of the running executable (`/proc/self/exe`, `_NSGetExecutablePath`) |
 | `main.ore` | `process.exit(main(process.args))` |

@@ -1,11 +1,11 @@
 // Loading a program: the entry file and every module it imports, parsed.
 
-import { dirname, resolve } from "ore:path"
+import { dirname, join, resolve } from "ore:path"
 import { Diagnostic } from "../syntax/diagnostic"
 import { importsText, moduleSpecifier, stringValue } from "../syntax/imports"
 import { parse } from "../syntax/parse"
 import { type Source } from "../syntax/source"
-import { isFile, resolveImport, runtimeModules, stdModules } from "./resolve"
+import { findPackageRoot, isFile, resolveImport, runtimeModules, stdModules } from "./resolve"
 
 export class Program {
     constructor(
@@ -21,6 +21,33 @@ export class Program {
         /** Whether any module has syntax errors, so that it cannot be checked. */
         readonly syntaxErrors: bool,
     ) {}
+
+    /** The absolute paths of the files imported as text, found or not. */
+    textFiles: string[] = []
+}
+
+/**
+ * The files a program is made of, as absolute paths, each once: its modules
+ * but the embedded "ore:" ones, the files they import as text (also those
+ * not found), and the package.json of the package of each module.
+ */
+export function programFiles(program: Program): string[] {
+    const files: string[] = []
+    const seen = new Set<string>()
+    const add = (path: string) => {
+        if (seen.has(path)) return
+        seen.add(path)
+        files.push(path)
+    }
+    for (const source of program.modules) {
+        if (source.path.startsWith("ore:")) continue
+        const path = resolve(source.path)
+        add(path)
+        const root = findPackageRoot(dirname(path))
+        if (root !== null) add(join(root, "package.json"))
+    }
+    for (const file of program.textFiles) add(file)
+    return files
 }
 
 export class LoadOptions {
@@ -46,7 +73,16 @@ export function loadProgram(entryPath: string, given?: LoadOptions): Program | E
     }
     const entry = loader.visit(resolve(entryPath), options.absolutePaths ? resolve(entryPath) : entryPath)
     if (entry instanceof Error) return entry
-    return new Program(loader.order, entry, loader.imports, loader.texts, loader.diagnostics, loader.syntaxErrors)
+    const program = new Program(
+        loader.order,
+        entry,
+        loader.imports,
+        loader.texts,
+        loader.diagnostics,
+        loader.syntaxErrors,
+    )
+    program.textFiles = loader.textFiles
+    return program
 }
 
 class Loader {
@@ -55,6 +91,7 @@ class Loader {
     texts = new Map<Source, Map<string, string>>()
     diagnostics: Diagnostic[] = []
     order: Source[] = []
+    textFiles: string[] = []
     syntaxErrors = false
 
     constructor(readonly options: LoadOptions) {}
@@ -89,6 +126,7 @@ class Loader {
             // A file imported as text is embedded in the program, not loaded as a module.
             if (stmt.kind === "ImportDeclaration" && importsText(stmt)) {
                 const file = resolve(dirname(path), name)
+                if (!this.textFiles.includes(file)) this.textFiles.push(file)
                 let contents = this.options.overrides.get(file)
                 if (contents === null && isFile(file)) {
                     const read = fs.readFile(file)

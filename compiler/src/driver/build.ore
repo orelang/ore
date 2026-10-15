@@ -9,7 +9,7 @@ import { check } from "../checker/checker"
 import { emitModule, EmitOptions } from "../llvm/emit"
 import { emitObject, initializeLLVM, objectTarget, ObjectOptions, ObjectTimes } from "../llvm/object"
 import { splitModule } from "../llvm/split"
-import { loadProgram } from "../project/load"
+import { loadProgram, programFiles } from "../project/load"
 import { type Diagnostic } from "../syntax/diagnostic"
 import { cacheRoot, ObjectCache, openCache } from "./cache"
 import { compileC, link, targetTriple } from "./link"
@@ -22,6 +22,8 @@ export class CompileResult {
         readonly diagnostics: Diagnostic[],
         /** The native code of the program's packages, with the IR. */
         readonly native: NativeCode | null = null,
+        /** The files the program is made of (`programFiles`), and the C sources of its packages. */
+        readonly files: string[] = [],
     ) {}
 }
 
@@ -48,6 +50,8 @@ export class BuildResult {
     objects = 0
     /** How many of them came from the build cache. */
     cached = 0
+    /** The files the program is made of, as `CompileResult.files`: what `ore run --watch` watches. */
+    files: string[] = []
 
     constructor(
         readonly ok: bool,
@@ -66,22 +70,24 @@ export function compileToIr(entry: string, debug: bool, options: BuildOptions | 
     const program = loadProgram(entry)
     if (program instanceof Error) return program
     report(timed, "load", Date.now() - started)
-    if (program.syntaxErrors) return new CompileResult(null, program.diagnostics)
+    const files = programFiles(program)
+    if (program.syntaxErrors) return new CompileResult(null, program.diagnostics, null, files)
     started = Date.now()
     const checked = check(program)
     report(timed, "check", Date.now() - started)
     const diagnostics = program.diagnostics.slice()
     for (const d of checked.diagnostics) diagnostics.push(d)
     const module = checked.module
-    if (module === null || program.diagnostics.length > 0) return new CompileResult(null, diagnostics)
+    if (module === null || program.diagnostics.length > 0) return new CompileResult(null, diagnostics, null, files)
     const paths: string[] = []
     for (const source of program.modules) paths.push(source.path)
     const native = nativeCode(paths)
     if (native instanceof Error) return native
+    for (const source of native.sources) if (!files.includes(source)) files.push(source)
     started = Date.now()
     const ir = emitModule(module, new EmitOptions(debug))
     report(timed, "emit", Date.now() - started)
-    return new CompileResult(ir, diagnostics, native)
+    return new CompileResult(ir, diagnostics, native, files)
 }
 
 /**
@@ -95,13 +101,18 @@ export function build(entry: string, options: BuildOptions): BuildResult | Error
     if (compiled instanceof Error) return compiled
     const ir = compiled.ir
     const native = compiled.native
-    if (ir === null || native === null) return new BuildResult(false, compiled.diagnostics)
+    if (ir === null || native === null) {
+        const failed = new BuildResult(false, compiled.diagnostics)
+        failed.files = compiled.files
+        return failed
+    }
     if (options.emitLlvm !== "") {
         const written = fs.writeFile(options.emitLlvm, ir)
         if (written !== null) return written
     }
     const name = options.emitLlvm !== "" ? options.emitLlvm : `${basename(entry, ".ore")}.ll`
     const result = new BuildResult(true, compiled.diagnostics)
+    result.files = compiled.files
     const error = buildCounted(ir, name, native, options, result)
     if (error !== null) return error
     return result

@@ -1,0 +1,95 @@
+// The program that `ore run --watch` runs, alongside the watcher, which
+// stops it when a file changes: SIGTERM, then SIGKILL if it does not end in
+// time.
+//
+// TODO: process.Command.spawn and process.Child once stage 0 has them (the
+// first release after 0.1.1). The compiler is built by a stage 0 whose
+// runtime can only run a program and wait for it (process.run), without
+// telling its pid. Until then the program runs with process.run in a task
+// of its own, through `sh`, which writes its pid to a file and execs the
+// program: the pid is then the program's.
+
+declare function kill(pid: i32, signal: i32): i32
+
+const sigterm: i32 = 15
+const sigkill: i32 = 9
+
+/** A program running in the background with this process's stdin, stdout and stderr. */
+export class Background {
+    /** Its exit status when it ends, as `process.run` returns it, or -1 if it could not run. */
+    readonly exits = new Chan<int>(1)
+    /** Whether it ended, once its status was received from `exits`. */
+    ended = false
+    /** Its exit status once it ended. */
+    status = 0
+
+    constructor(
+        /** The file its pid is written to. */
+        readonly pidFile: string,
+    ) {}
+}
+
+/** Starts a program with arguments in the background; its pid is written to `pidFile`. */
+export function startBackground(program: string, args: string[], pidFile: string): Background {
+    if (fs.exists(pidFile)) fs.remove(pidFile)
+    const words = ["-c", 'echo $$ >"$0" && exec "$@"', pidFile, program]
+    for (const arg of args) words.push(arg)
+    const running = new Background(pidFile)
+    task.spawn(() => {
+        const status = process.run("/bin/sh", words)
+        if (status instanceof Error) {
+            console.error(`ore: ${status.message}`)
+            running.exits.send(-1)
+        } else running.exits.send(status)
+    })
+    return running
+}
+
+/** Whether the program ended, without waiting. */
+export function hasEnded(running: Background): bool {
+    if (!running.ended) task.select([received(running)], () => {})
+    return running.ended
+}
+
+/** The case of `task.select` that receives the program's exit status. */
+function received(running: Background): SelectCase {
+    return running.exits.onReceive((status) => {
+        running.ended = true
+        running.status = status ?? -1
+    })
+}
+
+/** Waits until the program ends, or `ms` milliseconds; returns whether it ended. */
+function waitEnded(running: Background, ms: int): bool {
+    if (!running.ended) task.select([received(running), task.after(ms, () => {})])
+    return running.ended
+}
+
+/** The pid of the program, once `sh` has written it; 0 if the program ends first. */
+function pidOf(running: Background): int {
+    while (!hasEnded(running)) {
+        const text = fs.readFile(running.pidFile)
+        if (!(text instanceof Error) && text.endsWith("\n")) {
+            const pid = Number.parseInt(text.trim())
+            if (pid !== null && pid > 0) return pid
+        }
+        task.sleep(5)
+    }
+    return 0
+}
+
+/**
+ * Stops the program and waits until it ended: SIGTERM, then SIGKILL if it
+ * still runs after `grace` milliseconds.
+ */
+export function stopBackground(running: Background, grace: int): void {
+    const pid = pidOf(running)
+    if (pid > 0 && !running.ended) {
+        kill(i32(pid), sigterm)
+        if (!waitEnded(running, grace)) {
+            kill(i32(pid), sigkill)
+            while (!waitEnded(running, 1000)) {}
+        }
+    }
+    if (fs.exists(running.pidFile)) fs.remove(running.pidFile)
+}

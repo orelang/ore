@@ -1,0 +1,160 @@
+// The cases of `ore run --watch` (compiler/src/cli/watch.ore): the runner
+// runs itself as `ore` (`runner --ore ...`) in a directory of the case, with
+// its output in a file, edits the program's files and waits for what the
+// watcher and the program print. Each wait fails the case after a timeout,
+// and the watcher is stopped whatever happens. The programs end by
+// themselves, so that none is left running when the watcher is stopped.
+
+import { join } from "ore:path"
+import { fail } from "ore:test"
+import { Case, quote, read } from "./cases"
+import { Settings } from "./golden"
+
+/** How long to wait for an output, in milliseconds: a build of the runner's cases can be slow. */
+const patience = 60000
+
+/** `ore run --watch` running in a directory, its stdout and stderr in a file. */
+class Watcher {
+    /** Where its output has been read up to. */
+    seen = 0
+
+    constructor(
+        readonly child: process.Child,
+        readonly dir: string,
+        readonly output: string,
+    ) {}
+}
+
+/** A directory of its own for a case, with files. */
+function directory(settings: Settings, name: string): string {
+    const dir = join(settings.work, name)
+    const made = fs.mkdir(dir, true)
+    if (made !== null) fail(made.message)
+    return dir
+}
+
+function write(path: string, text: string): void {
+    const error = fs.writeFile(path, text)
+    if (error !== null) fail(error.message)
+}
+
+/** Starts `ore run --watch main.ore` in a directory, as the runner itself (`runner --ore`). */
+function startWatcher(self: string, settings: Settings, dir: string): Watcher {
+    const output = join(dir, "output.txt")
+    const command = new process.Command("sh", [
+        "-c",
+        'exec "$@" >"$0" 2>&1',
+        output,
+        self,
+        "--ore",
+        "run",
+        "--watch",
+        "main.ore",
+    ])
+    command.cwd = dir
+    command.env.set("ORE_CACHE", settings.cache)
+    const child = command.spawn()
+    if (child instanceof Error) fail(child.message)
+    return new Watcher(child, dir, output)
+}
+
+/** Stops the watcher. */
+function stop(watcher: Watcher): void {
+    watcher.child.kill()
+    watcher.child.wait()
+}
+
+/** Fails, after stopping the watcher, with what it printed. */
+function failWith(watcher: Watcher, message: string): never {
+    stop(watcher)
+    const text = fs.readFile(watcher.output)
+    fail(`${message}\n      output: ${quote(text instanceof Error ? text.message : text)}`)
+}
+
+/** Waits until the watcher prints `text` after what was seen before; fails after a while. */
+function expect(watcher: Watcher, text: string): void {
+    const deadline = Date.now() + patience
+    while (Date.now() < deadline) {
+        const output = fs.readFile(watcher.output)
+        if (!(output instanceof Error)) {
+            const at = output.indexOf(text, watcher.seen)
+            if (at >= 0) {
+                watcher.seen = at + text.length
+                return
+            }
+        }
+        task.sleep(20)
+    }
+    failWith(watcher, `no ${quote(text)} after ${patience / 1000} s`)
+}
+
+export function watchCases(settings: Settings, self: string): Case[] {
+    const skip = self === "" ? "the runner's own path is not known (ORE_TEST_RUNNER)" : ""
+    const imported = new Case(
+        "watch/a program runs again when a module or a text it imports changes",
+        () => {
+            const dir = directory(settings, "watch-imports")
+            write(
+                join(dir, "main.ore"),
+                'import { greet } from "./lib"\nimport note from "./note.txt" with { type: "text" }\n\nconsole.log(greet("main"), note.trim())\n',
+            )
+            write(
+                join(dir, "lib.ore"),
+                "export function greet(name: string): string {\n    return `hello, ${name}`\n}\n",
+            )
+            write(join(dir, "note.txt"), "one\n")
+            const watcher = startWatcher(self, settings, dir)
+            expect(watcher, "hello, main one\n")
+            write(join(dir, "lib.ore"), "export function greet(name: string): string {\n    return `hi, ${name}`\n}\n")
+            expect(watcher, "[ore] restarting: lib.ore changed\n")
+            expect(watcher, "hi, main one\n")
+            write(join(dir, "note.txt"), "three\n")
+            expect(watcher, "[ore] restarting: note.txt changed\n")
+            expect(watcher, "hi, main three\n")
+            stop(watcher)
+        },
+        skip,
+    )
+    const fixed = new Case(
+        "watch/a build error is reported, and the program runs once it is fixed",
+        () => {
+            const dir = directory(settings, "watch-error")
+            write(join(dir, "main.ore"), 'const n: int = "one"\nconsole.log(n)\n')
+            const watcher = startWatcher(self, settings, dir)
+            expect(watcher, "main.ore:1:")
+            expect(watcher, "error[")
+            write(join(dir, "main.ore"), "const n: int = 1\nconsole.log(`fixed ${n}`)\n")
+            expect(watcher, "[ore] restarting: main.ore changed\n")
+            expect(watcher, "fixed 1\n")
+            const output = read(watcher.output)
+            if (output.indexOf("error[", watcher.seen) >= 0) failWith(watcher, "an error after the fix")
+            stop(watcher)
+        },
+        skip,
+    )
+    const stopped = new Case(
+        "watch/the running program is stopped when a file changes",
+        () => {
+            const dir = directory(settings, "watch-stop")
+            const ticks = join(dir, "ticks.txt")
+            // It writes a tick every 10 ms, for 30 s at most.
+            write(
+                join(dir, "main.ore"),
+                'for (let i = 0; i < 3000; i++) {\n    fs.writeFile("ticks.txt", `${i}`)\n    task.sleep(10)\n}\n',
+            )
+            const watcher = startWatcher(self, settings, dir)
+            const deadline = Date.now() + patience
+            while (!fs.exists(ticks) && Date.now() < deadline) task.sleep(20)
+            if (!fs.exists(ticks)) failWith(watcher, "the program does not run")
+            write(join(dir, "main.ore"), 'console.log("second")\n')
+            expect(watcher, "[ore] restarting: main.ore changed\n")
+            expect(watcher, "second\n")
+            const first = read(ticks)
+            task.sleep(200)
+            if (read(ticks) !== first) failWith(watcher, "the first program still runs")
+            stop(watcher)
+        },
+        skip,
+    )
+    return [imported, fixed, stopped]
+}

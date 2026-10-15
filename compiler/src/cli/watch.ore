@@ -1,0 +1,129 @@
+// `ore run --watch` and `ore build --watch`: build (and run) the program,
+// then watch the files it is made of (driver/build.ore: its modules, the
+// files they import as text, the package.json of their packages, the C
+// sources of the packages) and, when one changes, stop the program and
+// build (and run) it again. The files are watched by polling their
+// modification times and sizes; a burst of writes, as editors save, is one
+// change once the files are quiet for a moment. The files are taken again
+// from each build, as imports change; a file that disappears stays watched,
+// so that it is seen when it comes back. A build error is printed, and the
+// next change builds again. Rebuilds take LLVM's objects of the unchanged
+// files from the build cache.
+
+import { resolve } from "ore:path"
+import { build, BuildOptions } from "../driver/build"
+import { formatDiagnostic } from "../syntax/diagnostic"
+import { Background, hasEnded, startBackground, stopBackground } from "./background"
+
+/** How often the files are looked at, in milliseconds. */
+const pollInterval = 100
+/** How long the files must stay unchanged after a change before the build, in milliseconds. */
+const quietTime = 50
+/** How long a program has to end after SIGTERM before SIGKILL, in milliseconds. */
+const stopGrace = 1000
+
+/**
+ * Builds the program of `entry` with these options, and runs the
+ * executable with `args` when `run`, again after each change of its files,
+ * until this process is interrupted.
+ */
+export function watch(entry: string, options: BuildOptions, args: string[], run: bool): i32 {
+    let files = [resolve(entry)]
+    while (true) {
+        // The files as they were before the build: a change made while it
+        // reads them is seen afterwards.
+        const before = stamps(files)
+        const result = build(entry, options)
+        let ok = false
+        if (result instanceof Error) console.error(`ore: ${result.message}`)
+        else {
+            for (const d of result.diagnostics) console.error(formatDiagnostic(d))
+            ok = result.ok
+            files = watched(result.files, files)
+        }
+        const baseline = baselineOf(files, before)
+        if (ok && !run) console.error(`[ore] built ${options.output}`)
+        const program = ok && run ? startBackground(options.output, args, `${options.output}.pid`) : null
+        const changed = waitForChange(baseline, program)
+        console.error(`[ore] ${run ? "restarting" : "rebuilding"}: ${describe(changed)} changed`)
+        if (program !== null) stopBackground(program, stopGrace)
+    }
+}
+
+/** The files to watch after a build: those of the program, and those watched before that no longer exist. */
+export function watched(program: string[], before: string[]): string[] {
+    const files = program.slice()
+    for (const file of before) if (!files.includes(file) && !fs.exists(file)) files.push(file)
+    return files
+}
+
+/** What tells a file's contents apart: its modification time and size, or "" when it does not exist. */
+function stamp(file: string): string {
+    const info = fs.stat(file)
+    if (info instanceof Error) return ""
+    return `${info.mtime} ${info.size}`
+}
+
+/** The stamps of files. */
+export function stamps(files: string[]): Map<string, string> {
+    const map = new Map<string, string>()
+    for (const file of files) map.set(file, stamp(file))
+    return map
+}
+
+/** The stamps to compare files with: as they were `before` a build that read them, or now for the files new to it. */
+export function baselineOf(files: string[], before: Map<string, string>): Map<string, string> {
+    const baseline = new Map<string, string>()
+    for (const file of files) baseline.set(file, before.get(file) ?? stamp(file))
+    return baseline
+}
+
+/** The files whose stamps differ from `baseline`. */
+function changedFiles(baseline: Map<string, string>): string[] {
+    const changed: string[] = []
+    for (const [file, old] of baseline) if (stamp(file) !== old) changed.push(file)
+    return changed
+}
+
+/**
+ * Waits until files change, and then until they are quiet for a moment;
+ * returns the files that changed. Meanwhile, tells when the program ends
+ * with a failing status.
+ */
+export function waitForChange(baseline: Map<string, string>, program: Background | null): string[] {
+    // What `console.log` printed is written out, as `fs.write` writes after it.
+    fs.write(1, "")
+    let reported = false
+    while (true) {
+        task.sleep(pollInterval)
+        if (program !== null && !reported && hasEnded(program)) {
+            reported = true
+            if (program.status !== 0) console.error(`[ore] exited with status ${program.status}`)
+        }
+        if (changedFiles(baseline).length === 0) continue
+        const files: string[] = []
+        for (const [file, _] of baseline) files.push(file)
+        let last = new Map<string, string>()
+        let current = stamps(files)
+        while (!same(last, current)) {
+            task.sleep(quietTime)
+            last = current
+            current = stamps(files)
+        }
+        return changedFiles(baseline)
+    }
+}
+
+function same(a: Map<string, string>, b: Map<string, string>): bool {
+    if (a.size !== b.size) return false
+    for (const [key, value] of a) if (b.get(key) !== value) return false
+    return true
+}
+
+/** The changed files for the status line: the first, relative to the working directory, and how many more. */
+export function describe(changed: string[]): string {
+    if (changed.length === 0) return "a file"
+    const cwd = process.cwd()
+    const first = changed[0].startsWith(`${cwd}/`) ? changed[0].slice(cwd.length + 1) : changed[0]
+    return changed.length === 1 ? first : `${first} and ${changed.length - 1} more`
+}

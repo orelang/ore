@@ -10,6 +10,7 @@ import { loadProgram } from "../project/load"
 import { findPackageRoot, readPackageJson } from "../project/resolve"
 import { type Diagnostic, formatDiagnostic } from "../syntax/diagnostic"
 import { oreFiles } from "./files"
+import { watch } from "./watch"
 
 /** The program to build: its entry file, the name of its executable, and the arguments for it. */
 export class Entry {
@@ -64,16 +65,18 @@ export function toolError(error: Error): i32 {
     return 1
 }
 
-/** `ore build [file.ore] [-o out] [--release] [--emit-llvm file.ll] [--time]` */
+/** `ore build [file.ore] [-o out] [--release] [--emit-llvm file.ll] [--time] [--watch]` */
 export function buildCommand(args: string[]): i32 {
     let output = ""
     let release = false
     let emitLlvm = ""
     let times = false
+    let watching = false
     const positionals: string[] = []
     for (let i = 0; i < args.length; i++) {
         const arg = args[i]
         if (arg === "--release") release = true
+        else if (arg === "--watch" || arg === "-w") watching = true
         else if (arg === "--time") times = true
         else if (arg.startsWith("--output=")) output = arg.slice(9)
         else if (arg.startsWith("--emit-llvm=")) emitLlvm = arg.slice(12)
@@ -91,18 +94,26 @@ export function buildCommand(args: string[]): i32 {
     const target = entry(positionals)
     if (target === null) return 2
     if (target.args.length > 0) return usageError(`unexpected arguments: ${target.args.join(" ")}`)
-    const result = build(target.file, new BuildOptions(output !== "" ? output : target.name, release, emitLlvm, times))
+    const options = new BuildOptions(output !== "" ? output : target.name, release, emitLlvm, times)
+    if (watching) return watch(target.file, options, [], false)
+    const result = build(target.file, options)
     if (result instanceof Error) return toolError(result)
     report(result.diagnostics)
     return result.ok ? 0 : 1
 }
 
-/** `ore run [file.ore] [args...]`: builds into a temporary directory and runs the program with this process's stdio. */
+/**
+ * `ore run [--watch] [file.ore] [args...]`: builds into a temporary
+ * directory and runs the program with this process's stdio; with `--watch`
+ * (before the file), again after each change of its files.
+ */
 export function runCommand(args: string[]): i32 {
-    const target = entry(args)
+    const watching = args.length > 0 && (args[0] === "--watch" || args[0] === "-w")
+    const target = entry(watching ? args.slice(1) : args)
     if (target === null) return 2
     const dir = fs.mkdtemp("ore-run-")
     if (dir instanceof Error) return toolError(dir)
+    if (watching) return watch(target.file, new BuildOptions(join(dir, target.name)), target.args, true)
     const status = buildAndRun(target, join(dir, target.name))
     fs.remove(dir, true)
     return status

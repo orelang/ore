@@ -1,8 +1,8 @@
 // The namespace `process` in Ore: running other programs, and the
 // environment. Its exports are members of `process` (see `namespaceModule`
 // in compiler/src/checker/builtins.ore): `process.run`, `process.output`,
-// `process.Command`, `process.env`. args, getenv, panic and exit are runtime
-// functions of other files.
+// `process.Command`, `process.Child`, `process.env`. args, getenv, panic and
+// exit are runtime functions of other files.
 //
 // A child is started with posix_spawn, after its program is looked up in
 // PATH here. Its output comes through pipes whose ends in this process are
@@ -54,6 +54,7 @@ declare function write(fd: i32, buffer: ptr, size: u64): i64
 declare function close(fd: i32): i32
 declare function strerror(code: i32): ptr
 declare function signal(signal: i32, handler: ptr): ptr
+declare function kill(pid: i32, signal: i32): i32
 declare function access(path: string, mode: i32): i32
 
 // ---------------------------------------------------------------------------
@@ -67,6 +68,7 @@ const fSetfd: i32 = 2
 const fdCloexec = 1
 const wnohang: i32 = 1
 const sigpipe: i32 = 13
+const sigterm = 15
 
 // posix_spawnattr flags.
 const spawnSetsigdef: i16 = 0x04
@@ -158,7 +160,7 @@ export class Output {
 
 /**
  * A program to run, found in PATH unless its name has a slash, with its
- * arguments. Set the fields, then call `run()` or `output()`; a command can
+ * arguments. Set the fields, then call `run()`, `output()` or `spawn()`; a command can
  * run several times.
  *
  *   const cmd = new process.Command("git", ["status", "--short"])
@@ -186,13 +188,23 @@ export class Command {
      * status, 128 plus the signal's number if a signal killed it.
      */
     run(): int | Error {
+        const child = this.spawn()
+        if (child instanceof Error) return child
+        return child.wait()
+    }
+
+    /**
+     * Starts the command as `run()` does, with this process's standard
+     * output and error (and input, unless `stdin` is set), and returns at
+     * once: the child runs alongside this process until `wait()` collects
+     * it.
+     */
+    spawn(): Child | Error {
         flushOutput()
         const child = start(this, false)
         if (child instanceof Error) return child
         feed(child, this.stdin)
-        const status = waitExit(child.pid)
-        if (status instanceof Error) return status
-        return codeOf(status)
+        return new Child(i64(child.pid))
     }
 
     /**
@@ -216,6 +228,52 @@ export class Command {
     }
 }
 
+/**
+ * A program started by `Command.spawn()`, running alongside this process.
+ * Wait for it once it is started, or it stays a zombie until this process
+ * ends.
+ *
+ *   const server = new process.Command("./server").spawn()
+ *   ...
+ *   server.kill()
+ *   const status = server.wait()
+ */
+export class Child {
+    /** The wait status once `wait()` has collected the child; -1 before. */
+    private collected = -1
+
+    constructor(
+        /** The process id of the child. */
+        readonly pid: int,
+    ) {}
+
+    /**
+     * Waits for the child to end, and returns its exit status: 128 plus the
+     * signal's number if a signal killed it. Called again, it returns the
+     * same status. Waiting parks the task, not an OS thread; to wait with a
+     * timeout, wait in another task and `task.select` on a channel and
+     * `task.after`.
+     */
+    wait(): int | Error {
+        if (this.collected >= 0) return codeOf(this.collected)
+        const status = waitExit(i32(this.pid))
+        if (status instanceof Error) return status
+        this.collected = status
+        return codeOf(status)
+    }
+
+    /**
+     * Sends a signal to the child: SIGTERM (15) by default; 9 is SIGKILL
+     * and 2 SIGINT, on macOS and Linux alike. Nothing is sent once `wait()`
+     * has collected the child, whose process id may then be another's.
+     */
+    kill(signal: int = sigterm): Error | null {
+        if (this.collected >= 0) return null
+        if (kill(i32(this.pid), i32(signal)) === 0) return null
+        return new Error(`cannot signal process ${this.pid}: ${reason(errno())}`)
+    }
+}
+
 /** Runs a program with this process's standard input and output and waits for it; returns its exit status. */
 export function run(program: string, args: string[] = []): int | Error {
     return new Command(program, args).run()
@@ -230,7 +288,7 @@ export function output(program: string, args: string[] = []): Output | Error {
 // Starting a child
 
 /** A started child: its pid, and this process's ends of its pipes, or -1. */
-class Child {
+class Started {
     constructor(
         readonly pid: i32,
         readonly input: i32,
@@ -321,7 +379,7 @@ let sigpipeIgnored: bool
  * `capture`, else with this process's; with a pipe for standard input when
  * the command has `stdin`, else /dev/null when capturing.
  */
-function start(command: Command, capture: bool): Child | Error {
+function start(command: Command, capture: bool): Started | Error {
     blockingEnter()
     const file = locate(command)
     blockingExit()
@@ -403,7 +461,7 @@ function start(command: Command, capture: bool): Child | Error {
     for (const end of [1, 2, 4]) {
         if (fd(end) >= 0) setNonblocking(fd(end))
     }
-    return new Child(unsafe.load<i32>(pid), fd(1), fd(2), fd(4))
+    return new Started(unsafe.load<i32>(pid), fd(1), fd(2), fd(4))
 }
 
 function slot(call: ptr, i: int): ptr {
@@ -422,7 +480,7 @@ function spawnLocked(call: ptr): void {
 // Pipes
 
 /** Writes `data` to the child's standard input in another task, then closes it. */
-function feed(child: Child, data: string | null): void {
+function feed(child: Started, data: string | null): void {
     const fd = child.input
     if (fd < 0 || data === null) return
     const text: string = data

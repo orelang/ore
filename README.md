@@ -308,6 +308,7 @@ Then:
 ore init my-app          # package.json and src/main.ore
 cd my-app
 ore run                  # build and run
+ore run --watch          # and again whenever a file of the program changes
 ore build --release      # an optimized binary named after the package
 ore check                # report errors without building
 ore test                 # run the tests in *.test.ore files
