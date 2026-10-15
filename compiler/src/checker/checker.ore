@@ -4,7 +4,7 @@
 import { Block, Func } from "../ir/nodes"
 import { type Type, FuncType, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
-import { hasModifier, members } from "../syntax/nodes"
+import { hasModifier, members, nameNode } from "../syntax/nodes"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
 import { builtinScope, namespaceModule, namespaceNames } from "./builtins"
@@ -115,6 +115,9 @@ export function check(program: Program): CheckResult {
         const func = declareFunction(c, stmt, m.scope)
         if (func !== null) bodies.push(new Body(stmt, func, m.scope))
     })
+    // Overload signatures without an implementation after them.
+    for (const [_, decls] of c.overloadDecls)
+        for (const d of decls) c.error(nameNode(d), "This overload signature has no implementation after it.")
     for (const info of c.classes) declareClassMembers(c, info, info.scope)
     checkExports(c, modules)
 

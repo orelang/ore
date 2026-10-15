@@ -56,7 +56,8 @@ exports, type assertions (Ore converts: `i32(x)`).
     (done), optional properties of object types (done);
   - optional, default and rest parameters of closures (done);
   - `**` and `satisfies` (done), `bigint` literals (`10n`);
-  - overloads (several signatures of one function);
+  - overloads (several signatures of one function; done for top-level
+    functions);
   - generic closures, nested generic functions, default type arguments
     (`<T = X>`).
 - Types:

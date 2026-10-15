@@ -260,6 +260,11 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
         case "func":
             if (symbol.func.extern)
                 return c.fail(node, `External function '${symbol.func.name}' cannot be used as a value.`)
+            if (symbol.overloads !== null)
+                return c.fail(
+                    node,
+                    `Function '${symbol.func.sourceName}' has overload signatures and cannot be used as a value.`,
+                )
             return typed(new FuncRef(symbol.func.type, symbol.func))
         default:
             return c.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)

@@ -1,8 +1,19 @@
 // Modules, directives, declarations of functions and types, generics, classes
 // and interfaces.
 
-import { bindAround, type Expanded, expandArgs } from "./calls"
-import { type Expr, type Stmt, Block, Func, FuncAttributes, Local, LocalRef } from "../ir/nodes"
+import { bindAround, callFunc, type Expanded, expandArgs } from "./calls"
+import {
+    type Expr,
+    type Stmt,
+    Block,
+    ExprStmt,
+    Func,
+    FuncAttributes,
+    Local,
+    LocalRef,
+    Recast,
+    ReturnStmt,
+} from "../ir/nodes"
 import {
     type InterfaceType,
     type Type,
@@ -443,6 +454,11 @@ function addExport(c: Checker, module: ModuleInfo, name: string, local: string, 
 }
 
 /** Records the names a top-level statement exports. */
+/** A function declaration without a body, not `declare`d: an overload signature, exported with its implementation. */
+function isOverloadSignature(stmt: Node): bool {
+    return stmt.kind === "FunctionDeclaration" && body(stmt) === null && !hasModifier(stmt, "DeclareKeyword")
+}
+
 export function declareExports(c: Checker, stmt: Node, module: ModuleInfo) {
     const exported = hasModifier(stmt, "ExportKeyword")
     if (exported && hasModifier(stmt, "DefaultKeyword")) {
@@ -460,7 +476,8 @@ export function declareExports(c: Checker, stmt: Node, module: ModuleInfo) {
             stmt.kind === "ClassDeclaration" ||
             stmt.kind === "InterfaceDeclaration" ||
             stmt.kind === "TypeAliasDeclaration") &&
-        optionalName(stmt) !== null
+        optionalName(stmt) !== null &&
+        !isOverloadSignature(stmt)
     ) {
         const name = nameNode(stmt)
         addExport(c, module, name.text, name.text, name, null)
@@ -639,9 +656,22 @@ export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | nu
         declareExtern(c, decl, scope)
         return null
     }
+    const key = `${c.prefix}${name.text}`
     if (body(decl) === null) {
-        c.error(name, "A function declaration must have a body.")
+        // An overload signature, for the implementation that follows.
+        if (typeParameters(decl).length > 0) {
+            c.error(name, "Generic overload signatures are not supported yet.")
+            return null
+        }
+        const list = c.overloadDecls.get(key)
+        if (list !== null) list.push(decl)
+        else c.overloadDecls.set(key, [decl])
         return null
+    }
+    const signatures = c.overloadDecls.get(key)
+    if (signatures !== null) {
+        c.overloadDecls.delete(key)
+        return declareOverloaded(c, decl, scope, signatures)
     }
     if (typeParameters(decl).length > 0) {
         declareGeneric(c, decl, scope)
@@ -663,6 +693,65 @@ export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | nu
         return null
     }
     return func
+}
+
+/**
+ * A function with overload signatures: the implementation, hidden, and for
+ * each signature a function that calls it with its arguments and returns
+ * its result converted to the signature's result type (checked at run time
+ * when narrower). Its name calls the signatures.
+ */
+function declareOverloaded(c: Checker, decl: Node, scope: Scope, signatures: Node[]): Func | null {
+    const name = nameNode(decl)
+    if (typeParameters(decl).length > 0) {
+        c.error(name, "A generic function cannot have overload signatures yet.")
+        return null
+    }
+    const exported = hasModifier(decl, "ExportKeyword")
+    const impl = makeFunc(c, decl, scope, name.text, c.prefix + cIdent(name.text) + "_impl", false)
+    applyFuncDirectives(c, decl, impl)
+    const overloads: Func[] = []
+    for (let i = 0; i < signatures.length; i++) {
+        const sig = signatures[i]
+        if (hasModifier(sig, "ExportKeyword") !== exported)
+            c.error(nameNode(sig), "Overload signatures must all be exported or not, as the implementation.")
+        const func = makeFunc(c, sig, scope, name.text, `${c.prefix}${cIdent(name.text)}_${i}`, exported)
+        // The body: `return impl(params)`, its defaults filled in as for any call.
+        const args: Node[] = []
+        const operands: Operand[] = []
+        const sigParams = parameters(sig)
+        for (let k = 0; k < func.params.length; k++) {
+            const p = func.params[k]
+            args.push(k < sigParams.length ? nameNode(sigParams[k]) : nameNode(sig))
+            operands.push(typed(new LocalRef(p.type, p)))
+        }
+        const before = c.diagnostics.length
+        const call = callFunc(c, impl, args, sig, scope, `The implementation of '${name.text}'`, null, operands)
+        if (call.k !== "typed") continue
+        if (c.diagnostics.length > before) continue
+        const result = func.type.result
+        let value: Expr = call.expr
+        if (result.kind !== "void" && !sameType(value.type, result)) {
+            if (narrows(value.type, result)) value = new Recast(result, value)
+            else value = c.coerce(call, result, typeNode(sig) ?? nameNode(sig))
+        }
+        func.body = new Block([result.kind === "void" ? new ExprStmt(value) : new ReturnStmt(value)])
+        overloads.push(func)
+    }
+    const symbol = new FuncSymbol(impl, decl)
+    symbol.overloads = overloads
+    if (!scope.declareValue(name.text, symbol)) {
+        c.error(name, `Duplicate declaration '${name.text}'.`)
+        return null
+    }
+    return impl
+}
+
+/** Whether `to` is a narrower union than `from`, or one of its members: a value of `from` converts to it by a check at run time. */
+function narrows(from: Type, to: Type): bool {
+    if (from.kind !== "union") return false
+    const members = from.members
+    return membersOf(to).every((m) => members.some((f) => sameType(f, m)))
 }
 
 /** C can exchange numbers, booleans, strings and pointers. */

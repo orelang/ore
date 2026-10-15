@@ -30,6 +30,15 @@
   receives the extra arguments as an array, where `...array` spreads in an
   array's elements (`f(1, ...xs, 2)`; `f(...xs)` alone passes `xs` itself).
   A [tuple](02-types.md#tuples) spreads into any parameters: `f(...t)`.
+- A top-level function may have overload signatures, declarations without a
+  body before its implementation: `function parse(s: string): int`,
+  `function parse(s: string[]): int[]`, then
+  `function parse(s: string | string[]): int | int[] { ... }`. A call takes
+  the first signature whose parameters take its arguments, and has that
+  signature's result type: the implementation's result converts to it,
+  checked at run time when it is narrower. The implementation must take
+  every signature's arguments. Such a function cannot be used as a value;
+  generic signatures and overloaded methods are not supported yet.
 - Closures can have optional (`b?: T`), default (`b = 1`) and rest
   parameters, and so can function types (`(a: int, b?: int) => int`,
   `(...xs: string[]) => void`): a call of a function value passes null for

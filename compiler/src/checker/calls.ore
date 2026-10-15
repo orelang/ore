@@ -60,6 +60,7 @@ import {
     isNumeric,
     isStringLike,
     membersOf,
+    paramsToString,
     sameType,
     types,
     typeToString,
@@ -272,13 +273,29 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
             const call = new BuiltinCall(types.void, found.name, values, null, null, spreads ? spread : null)
             return bindAround(locals, typed(call))
         }
-        case "func":
+        case "func": {
+            const overloads = found.overloads
+            if (overloads !== null) return overloadedCall(c, name, overloads, args, node, scope)
             return callFunc(c, found.func, args, node, scope, `Function '${found.func.sourceName}'`)
+        }
         case "class":
             return c.fail(nameAt, `Class '${name}' must be instantiated with 'new ${name}(...)'.`)
         default:
             return c.fail(nameAt, `'${name}' is not a function.`)
     }
+}
+
+/** A call of a function with overload signatures: the first signature whose parameters take the arguments. */
+function overloadedCall(c: Checker, name: string, overloads: Func[], args: Node[], node: Node, scope: Scope): Operand {
+    const before = c.diagnostics.length
+    for (const func of overloads) {
+        const call = callFunc(c, func, args, node, scope, `Function '${name}'`)
+        if (call.k === "typed" && c.diagnostics.length === before) return call
+        c.truncateDiagnostics(before)
+    }
+    const signatures: string[] = []
+    for (const func of overloads) signatures.push(`(${paramsToString(func.type)}) => ${typeToString(func.type.result)}`)
+    return c.fail(node, `No overload of '${name}' takes these arguments. Its signatures: ${signatures.join("; ")}.`)
 }
 
 /** A checked callback: the function value, how many arguments it takes, and its result. */
