@@ -150,15 +150,18 @@ export class Emitter {
 
     unionType(u: UnionType): string {
         const name = `%U.${u.id}`
-        if (!this.defs.has(name)) {
-            let words = 1
-            for (const m of u.members) {
-                const ty = this.lt(m)
-                if (ty === STR || ty === FN || ty === IFACE) words = 2
-            }
-            this.defs.set(name, `${name} = type { i32, [${words} x i64] }`)
-        }
+        if (!this.defs.has(name)) this.defs.set(name, `${name} = type { i32, [${this.unionWords(u)} x i64] }`)
         return name
+    }
+
+    /** The number of 64-bit words of the payload of a tagged union: two for strings, functions and interfaces. */
+    unionWords(u: UnionType): int {
+        let words = 1
+        for (const m of u.members) {
+            const ty = this.lt(m)
+            if (ty === STR || ty === FN || ty === IFACE) words = 2
+        }
+        return words
     }
 
     envType(func: Func): string {

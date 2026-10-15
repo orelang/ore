@@ -148,27 +148,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
   }
 
   protected toStr(v: V, t: Type): V {
-    if (t.kind === "union") {
-      let result = this.str("")
-      // Members are tested in order; the first that matches wins.
-      const ty = STR
-      const slot = this.b.alloca(ty)
-      this.b.emit(`store ${ty} ${result.v}, ptr ${slot}`)
-      const end = this.b.label("tostr")
-      t.members.forEach((m, i) => {
-        const here = this.b.label("smember")
-        const next = this.b.label("snext")
-        this.b.condBr(this.slotTest(t, v, i), here, next)
-        this.b.start(here)
-        const s = m.kind === "null" ? this.str("null") : this.toStr(this.payload(t, v, i), m)
-        this.b.emit(`store ${ty} ${s.v}, ptr ${slot}`)
-        this.b.br(end)
-        this.b.start(next)
-      })
-      this.b.start(end)
-      result = this.b.value(ty, `load ${ty}, ptr ${slot}`)
-      return result
-    }
+    if (t.kind === "union") return this.b.value(STR, `call ${STR} ${this.unionToStr(t)}(${v.ty} ${v.v})`)
     switch (t.kind) {
       case "string":
       case "literal":
@@ -184,20 +164,33 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
   }
 
+  /** The function formatting a value of a union, the first member that matches: `@ore.tostr.<union>`. */
+  protected unionToStr(t: UnionType): string {
+    const name = globalName(`ore.tostr.${t.id}`)
+    if (this.helpers.has(name)) return name
+    this.helpers.set(name, "")
+    const uty = this.lt(t)
+    this.helper(name, `define internal ${STR} ${name}(${uty} %v)`, (e) => {
+      const v: V = { ty: uty, v: "%v" }
+      const end = e.b.label("tostr")
+      t.members.forEach((m, i) => {
+        const here = e.b.label("smember")
+        const next = e.b.label("snext")
+        e.b.condBr(e.slotTest(t, v, i), here, next)
+        e.b.start(here)
+        const s = m.kind === "null" ? e.str("null") : e.toStr(e.payload(t, v, i), m)
+        e.b.terminate(`ret ${STR} ${s.v}`)
+        e.b.start(next)
+      })
+      e.b.start(end)
+      e.b.terminate(`ret ${STR} ${e.str("").v}`)
+    })
+    return name
+  }
+
   protected print(v: V, t: Type) {
     if (t.kind === "union") {
-      const end = this.b.label("printed")
-      t.members.forEach((m, i) => {
-        const here = this.b.label("pmember")
-        const next = this.b.label("pnext")
-        this.b.condBr(this.slotTest(t, v, i), here, next)
-        this.b.start(here)
-        if (m.kind === "null") this.rt("ore_rt_print_string", [this.str("null")])
-        else this.print(this.payload(t, v, i), m)
-        this.b.br(end)
-        this.b.start(next)
-      })
-      this.b.start(end)
+      this.b.emit(`call void ${this.unionPrinter(t)}(${v.ty} ${v.v})`)
       return
     }
     switch (t.kind) {
@@ -218,6 +211,31 @@ export abstract class CallEmitter extends ExpressionEmitter {
       default:
         throw new Error(`cannot print ${t.kind}`)
     }
+  }
+
+  /** The function printing a value of a union: `@ore.print.<union>`. */
+  protected unionPrinter(t: UnionType): string {
+    const name = globalName(`ore.print.${t.id}`)
+    if (this.helpers.has(name)) return name
+    this.helpers.set(name, "")
+    const uty = this.lt(t)
+    this.helper(name, `define internal void ${name}(${uty} %v)`, (e) => {
+      const v: V = { ty: uty, v: "%v" }
+      const end = e.b.label("printed")
+      t.members.forEach((m, i) => {
+        const here = e.b.label("pmember")
+        const next = e.b.label("pnext")
+        e.b.condBr(e.slotTest(t, v, i), here, next)
+        e.b.start(here)
+        if (m.kind === "null") e.rt("ore_rt_print_string", [e.str("null")])
+        else e.print(e.payload(t, v, i), m)
+        e.b.br(end)
+        e.b.start(next)
+      })
+      e.b.start(end)
+      e.b.terminate("ret void")
+    })
+    return name
   }
 
   protected builtin(e: ir.BuiltinCall): V {
