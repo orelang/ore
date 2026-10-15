@@ -874,12 +874,32 @@ export function callValue(c: Checker, callee: Operand, node: Node, scope: Scope)
         locals = expanded.locals
         fn = expanded.receiver!
     }
-    if (args.length !== type.params.length)
-        return c.fail(node, `This function expects ${type.params.length} argument(s), got ${args.length}.`)
+    // Optional parameters left out are null; the extra arguments form the rest array.
+    const params = type.params
+    const fixed = type.rest ? params.length - 1 : params.length
+    const required = type.required >= 0 ? type.required : fixed
+    if (args.length < required || (!type.rest && args.length > fixed)) {
+        const count = type.rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
+        return c.fail(node, `This function expects ${count} argument(s), got ${args.length}.`)
+    }
     const values: Expr[] = []
-    for (let i = 0; i < args.length; i++) {
+    for (let i = 0; i < args.length && i < fixed; i++) {
         const o = i < operands.length ? operands[i] : null
-        values.push(c.coerce(o ?? checkExpr(c, args[i], scope, type.params[i]), type.params[i], args[i]))
+        values.push(c.coerce(o ?? checkExpr(c, args[i], scope, params[i]), params[i], args[i]))
+    }
+    for (let i = args.length; i < fixed; i++) {
+        const p = params[i]
+        values.push(new NullLit(p.kind === "union" ? p : types.null))
+    }
+    if (type.rest) {
+        const array = params[fixed]
+        if (array.kind !== "array") return errorOperand
+        const elems: Expr[] = []
+        for (let i = fixed; i < args.length; i++) {
+            const o = i < operands.length ? operands[i] : null
+            elems.push(c.coerce(o ?? checkExpr(c, args[i], scope, array.elem), array.elem, args[i]))
+        }
+        values.push(new ArrayLit(array, elems))
     }
     return bindAround(locals, typed(new CallValue(type.result, fn, values)))
 }

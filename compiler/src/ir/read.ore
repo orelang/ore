@@ -457,17 +457,13 @@ class Reader {
     /** `(` ... `)`: a function type, a union `(A | B)%id`, or a parenthesized type (a function in a union or an array). */
     group(c: Cursor): Type {
         c.expect("(")
-        if (c.eat(")")) {
-            c.expect(" => ")
-            return new FuncType([], this.type(c))
-        }
+        if (c.eat(")")) return this.funcRest(c, [])
         const first = this.type(c)
         if (c.startsWith(", ")) {
             const params: Type[] = [first]
             while (c.eat(", ")) params.push(this.type(c))
             c.expect(")")
-            c.expect(" => ")
-            return new FuncType(params, this.type(c))
+            return this.funcRest(c, params)
         }
         if (c.startsWith(" | ")) {
             const members: Type[] = [first]
@@ -477,9 +473,21 @@ class Reader {
             return this.unionOf(c.int(), members)
         }
         c.expect(")")
-        if (c.eat(" => ")) return new FuncType([first], this.type(c))
+        if (c.startsWith(" => ") || c.startsWith(" ?") || c.startsWith(" ...")) return this.funcRest(c, [first])
         if (c.eat("%")) return this.unionOf(c.int(), [first])
         return first
+    }
+
+    /** After the parameters of a function type: ` ?<required>`, ` ...` for a rest parameter, then ` => <result>`. */
+    funcRest(c: Cursor, params: Type[]): FuncType {
+        let required = -1
+        if (c.eat(" ?")) required = c.int()
+        const rest = c.eat(" ...")
+        c.expect(" => ")
+        const type = new FuncType(params, this.type(c))
+        type.required = required
+        type.rest = rest
+        return type
     }
 
     intType(t: Type): IntType {

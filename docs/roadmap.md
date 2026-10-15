@@ -53,7 +53,7 @@ exports, type assertions (Ore converts: `i32(x)`).
   - `static` members of classes (done; not of generic classes);
   - default values in destructuring, and `...rest` in object destructuring
     (done), optional properties of object types (done);
-  - optional, default and rest parameters of closures;
+  - optional, default and rest parameters of closures (done);
   - `**` and `satisfies` (done), `bigint` literals (`10n`);
   - overloads (several signatures of one function);
   - generic closures, nested generic functions, default type arguments

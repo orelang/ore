@@ -29,8 +29,14 @@
   inferred from the arguments). A last rest parameter `...xs: T[]`
   receives the extra arguments as an array, where `...array` spreads in an
   array's elements (`f(1, ...xs, 2)`; `f(...xs)` alone passes `xs` itself).
-  A [tuple](02-types.md#tuples) spreads into any parameters: `f(...t)`. As values, such functions take all their parameters, and
-  closures cannot have optional or rest parameters.
+  A [tuple](02-types.md#tuples) spreads into any parameters: `f(...t)`.
+- Closures can have optional (`b?: T`), default (`b = 1`) and rest
+  parameters, and so can function types (`(a: int, b?: int) => int`,
+  `(...xs: string[]) => void`): a call of a function value passes null for
+  an optional argument left out and packs the extra arguments into the rest
+  array; a closure computes its default values itself, when the argument
+  is null. As values, top-level functions and methods take all their
+  parameters.
 
 ## Array methods
 

@@ -1236,31 +1236,67 @@ export function checkClosure(
             `This function takes ${params_.length} parameter(s), but ${want.params.length} are expected.`,
         )
     }
+    // The parameters, and the locals their names bind: those differ for a
+    // parameter with a default value, which is passed as `T | null` and
+    // replaced by its default when null, in the prologue.
     const params: Local[] = []
+    const named: Local[] = []
+    const defaultNodes: Node[] = []
+    const defaultLocals: Local[] = []
+    const defaultNamed: Local[] = []
+    let required = -1
+    let rest = false
     for (let i = 0; i < params_.length; i++) {
         const p = params_[i]
-        if (dotDotDotToken(p) !== null || questionToken(p) !== null || initializer(p) !== null)
-            return c.fail(
-                p,
-                "Optional, default and rest parameters are not supported in closures, which are called as values.",
-            )
+        const isRest = dotDotDotToken(p) !== null
+        const init = initializer(p)
+        const optional = questionToken(p) !== null || init !== null
         const annotation = typeNode(p)
-        const type =
-            annotation !== null
-                ? c.resolveValueType(annotation, outer)
-                : want !== null && i < want.params.length
-                  ? want.params[i]
-                  : null
+        const expectedType = want !== null && i < want.params.length ? want.params[i] : null
+        let type: Type | null = null
+        if (annotation !== null) type = c.resolveValueType(annotation, outer)
+        else if (expectedType !== null) type = optional ? c.withoutNull(expectedType) : expectedType
+        else if (init !== null) {
+            // The type of the default value, which is checked again in the closure.
+            const before = c.diagnostics.length
+            const value = checkExpr(c, init, outer)
+            if (value.k !== "error") type = c.toDefault(value, init).type
+            c.truncateDiagnostics(before)
+        }
         if (type === null)
             return c.fail(nameNode(p), `Parameter '${c.text(nameNode(p))}' needs a type annotation here.`)
-        if (annotation !== null && want !== null && !sameType(type, want.params[i])) {
+        if (isRest && (i !== params_.length - 1 || type.kind !== "array"))
+            return c.fail(p, "A rest parameter must be the last parameter, of an array type.")
+        if (optional && required === -1) required = i
+        if (!optional && !isRest && required !== -1)
+            return c.fail(p, "A required parameter cannot follow an optional parameter.")
+        rest = rest || isRest
+        const passed = optional ? c.unionOf([type, types.null]) : type
+        if (annotation !== null && expectedType !== null && !sameType(passed, expectedType)) {
             return c.fail(
                 annotation,
-                `Parameter type '${typeToString(type)}' does not match the expected '${typeToString(want.params[i])}'.`,
+                `Parameter type '${typeToString(passed)}' does not match the expected '${typeToString(expectedType)}'.`,
             )
         }
-        c.info.types.set(nameNode(p), type)
-        params.push(c.newLocal(paramName(p, i), type, true))
+        c.info.types.set(nameNode(p), init !== null ? type : passed)
+        if (init !== null) {
+            const arg = c.newLocal(`arg${i}`, passed, false)
+            const local = c.newLocal(paramName(p, i), type, true)
+            params.push(arg)
+            named.push(local)
+            defaultNodes.push(init)
+            defaultLocals.push(arg)
+            defaultNamed.push(local)
+        } else {
+            const local = c.newLocal(paramName(p, i), passed, true)
+            params.push(local)
+            named.push(local)
+        }
+    }
+    // Without markers of its own, a closure takes the optional and rest parameters of its context.
+    if (want !== null && required === -1 && !rest) {
+        required = want.required
+        rest = want.rest
     }
     // An unused trailing parameter of the expected type is still passed.
     if (want !== null)
@@ -1291,9 +1327,11 @@ export function checkClosure(
         null,
         noLocals,
     )
+    func.type.required = required
+    func.type.rest = rest
     c.module.functions.push(func)
     const prologue: Stmt[] = []
-    const scope = paramScope(c, params_, params, new Scope(outer, func), prologue)
+    const scope = paramScope(c, params_, named, new Scope(outer, func), prologue)
 
     // Arrow functions keep the `this` of the enclosing method; function expressions have none.
     const isArrow = node.kind === "ArrowFunction"
@@ -1327,7 +1365,18 @@ export function checkClosure(
         isArrow && outerFn !== null ? outerFn.thisLocal : null,
         isArrow && outerFn !== null ? outerFn.cls : null,
     )
-    const ok = closureBody(c, node, func, scope, prologue, resultNode)
+    // Default values, computed in the closure when their arguments are null, before the patterns.
+    const start: Stmt[] = []
+    for (let k = 0; k < defaultNodes.length; k++) {
+        const local = defaultNamed[k]
+        const arg = defaultLocals[k]
+        const value = checkExpr(c, defaultNodes[k], scope, local.type)
+        if (value.k === "error") continue
+        const fallback = c.coerce(value, local.type, defaultNodes[k])
+        start.push(new LetStmt(local, new Coalesce(local.type, new LocalRef(arg.type, arg), fallback)))
+    }
+    for (const s of prologue) start.push(s)
+    const ok = closureBody(c, node, func, scope, start, resultNode)
     c.fn = savedFn
     c.facts = savedFacts
     if (!ok) return errorOperand
@@ -1363,7 +1412,10 @@ function closureBody(
         }
     }
     func.body.body = prepend(prologue, func.body.body)
-    func.type = new FuncTypeClass(func.type.params, fn.result ?? types.void)
+    const done = new FuncTypeClass(func.type.params, fn.result ?? types.void)
+    done.required = func.type.required
+    done.rest = func.type.rest
+    func.type = done
     checkReturns(c, func, resultNode ?? node)
     return true
 }

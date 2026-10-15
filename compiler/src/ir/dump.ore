@@ -599,7 +599,8 @@ class Dumper {
             case "func": {
                 const params: string[] = []
                 for (const p of t.params) params.push(this.type(p))
-                return `(${params.join(", ")}) => ${this.type(t.result)}`
+                const optional = t.required >= 0 ? ` ?${t.required}` : ""
+                return `(${params.join(", ")})${optional}${t.rest ? " ..." : ""} => ${this.type(t.result)}`
             }
             case "array":
                 return t.elem.kind === "func" ? `(${this.type(t.elem)})[]` : `${this.type(t.elem)}[]`

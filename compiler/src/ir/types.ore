@@ -50,6 +50,28 @@ export class FuncType {
         readonly params: Type[],
         readonly result: Type,
     ) {}
+
+    /**
+     * How many parameters a call must give, when fewer than all: the others
+     * are optional, `T | null`, and null when left out. -1: all.
+     */
+    public required = -1
+
+    /** The last parameter is a rest parameter, an array, which receives the extra arguments. */
+    public rest = false
+}
+
+/** The parameters of a function type, as written: `i64, i64?, ...string[]`. */
+export function paramsToString(t: FuncType): string {
+    const params: string[] = []
+    for (let i = 0; i < t.params.length; i++) {
+        const p = t.params[i]
+        const text = p.kind === "func" ? `(${typeToString(p)})` : typeToString(p)
+        if (t.rest && i === t.params.length - 1) params.push(`...${text}`)
+        else if (t.required >= 0 && i >= t.required && p.kind === "union") params.push(`${withoutNullMembers(p)}?`)
+        else params.push(text)
+    }
+    return params.join(", ")
 }
 
 /** `T[]`: a reference to a growable array. */
@@ -390,6 +412,7 @@ function sameIn(a: Type, b: Type, assumed: Assumed | null): bool {
     if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b, assumed)
     if (a.kind === "union" && b.kind === "union") return sameTypes(a.members, b.members, assumed)
     if (a.kind !== "func" || b.kind !== "func") return false
+    if (a.required !== b.required || a.rest !== b.rest) return false
     return sameTypes(a.params, b.params, assumed) && sameIn(a.result, b.result, assumed)
 }
 
@@ -408,7 +431,7 @@ export function typeToString(t: Type): string {
         case "float":
             return t.name
         case "func":
-            return `(${t.params.map(typeToString).join(", ")}) => ${typeToString(t.result)}`
+            return `(${paramsToString(t)}) => ${typeToString(t.result)}`
         case "array":
             return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
         case "struct": {
@@ -485,7 +508,7 @@ export function typeKey(type: Type): string {
         case "chan":
             return `Chan<${typeKey(type.elem)}>`
         case "func":
-            return `(${type.params.map(typeKey).join(",")})=>${typeKey(type.result)}`
+            return `(${type.params.map(typeKey).join(",")}${type.required >= 0 ? `?${type.required}` : ""}${type.rest ? "..." : ""})=>${typeKey(type.result)}`
         default:
             return typeToString(type)
     }

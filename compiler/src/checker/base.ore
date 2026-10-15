@@ -359,19 +359,44 @@ export class Checker {
                 this.error(typeParams[0], "Generic function types are not supported.")
                 return null
             }
+            // Optional parameters (`b?: T`, which is `T | null`) after the required ones, and a last rest parameter.
             const params: Type[] = []
-            for (const p of parameters(node)) {
+            const list = parameters(node)
+            let required = -1
+            let rest = false
+            for (let i = 0; i < list.length; i++) {
+                const p = list[i]
                 const annotation = typeNode(p)
-                if (annotation === null || dotDotDotToken(p) !== null || questionToken(p) !== null) {
-                    this.error(p, "Parameters of function types need a type and cannot be optional or rest parameters.")
+                if (annotation === null) {
+                    this.error(p, "Parameters of function types need a type.")
                     return null
                 }
                 const t = this.resolveValueType(annotation, scope)
                 if (t === null) return null
-                params.push(t)
+                if (dotDotDotToken(p) !== null) {
+                    if (i !== list.length - 1 || t.kind !== "array") {
+                        this.error(p, "A rest parameter must be the last parameter, of an array type.")
+                        return null
+                    }
+                    rest = true
+                    params.push(t)
+                } else if (questionToken(p) !== null) {
+                    if (required === -1) required = i
+                    params.push(this.unionOf([t, types.null]))
+                } else {
+                    if (required !== -1) {
+                        this.error(p, "A required parameter cannot follow an optional parameter.")
+                        return null
+                    }
+                    params.push(t)
+                }
             }
             const result = this.resolveType(typeNode(node)!, scope)
-            return result === null ? null : new FuncType(params, result)
+            if (result === null) return null
+            const type = new FuncType(params, result)
+            if (required !== -1) type.required = required
+            type.rest = rest
+            return type
         }
         this.error(node, "This kind of type is not supported yet.")
         return null
