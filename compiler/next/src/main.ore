@@ -7,8 +7,12 @@
 //   ore-next modules <entry.ore>  the modules of the program in load order, each with its
 //                                 imports ("import <specifier> <module>") and text imports
 //                                 ("text <specifier> <bytes>"), then the diagnostics
+//   ore-next ir <entry.ore>       the IR of the checked program (`dump` of ir/dump.ore), or
+//                                 its diagnostics on stderr with status 1
 //   ore-next lsp                  the language server on stdin and stdout
 
+import { check } from "./checker/checker"
+import { dump as dumpModule } from "./ir/dump"
 import { serve } from "./lsp/server"
 import { loadProgram } from "./project/load"
 import { dump, dumpRoles } from "./syntax/ast"
@@ -21,9 +25,27 @@ const version = "0.1.0-next"
 if (process.args.length === 1 && process.args[0] === "lsp") process.exit(i32(serve(version)))
 
 const mode = process.args.length === 2 ? process.args[0] : ""
-if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules") {
-    console.error("usage: ore-next tokens|tree|roles|modules <file.ore> | ore-next lsp")
+if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "ir") {
+    console.error("usage: ore-next tokens|tree|roles|modules|ir <file.ore> | ore-next lsp")
     process.exit(2)
+}
+if (mode === "ir") {
+    const program = loadProgram(process.args[1])
+    if (program instanceof Error) {
+        console.error(program.message)
+        process.exit(1)
+    }
+    // As the driver does: the loader's diagnostics, then the checker's.
+    const diagnostics = program.diagnostics.slice()
+    const checked = program.syntaxErrors ? null : check(program)
+    if (checked !== null) for (const d of checked.diagnostics) diagnostics.push(d)
+    const module = checked !== null ? checked.module : null
+    if (module === null || program.diagnostics.length > 0) {
+        for (const d of diagnostics) console.error(formatDiagnostic(d))
+        process.exit(1)
+    }
+    console.write(dumpModule(module))
+    process.exit(0)
 }
 if (mode === "modules") {
     const program = loadProgram(process.args[1])

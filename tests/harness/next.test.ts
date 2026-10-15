@@ -17,7 +17,12 @@
  * Ore compiler itself, the modules loaded in order, their imports and text
  * imports must equal those of @ore/project, and so must the formatted
  * diagnostics when there is no syntax error.
+ *
+ * IR: for the same programs, `ore-next ir` must print the dump of the IR
+ * module that @ore/checker builds (`dump` of compiler/ir/src/dump.ts), or,
+ * for a program that does not check, the same formatted diagnostics.
  */
+import { check } from "@ore/checker"
 import { build } from "@ore/driver"
 import { loadProgram } from "@ore/project"
 import { formatDiagnostic } from "@ore/syntax"
@@ -26,6 +31,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "no
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import ts from "typescript"
+import { dump } from "../../compiler/ir/src/dump"
 
 const root = join(import.meta.dir, "../..")
 const binary = join(mkdtempSync(join(tmpdir(), "ore-next-")), "ore-next")
@@ -149,7 +155,8 @@ async function run(...args: string[]): Promise<{ code: number; stdout: string; s
 }
 
 beforeAll(async () => {
-  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary, release: true })
+  // A debug build: with the checker, a release build of the compiler takes minutes, and runs no faster here.
+  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
   expect(result.diagnostics.map((d) => d.message)).toEqual([])
 }, 120_000)
 
@@ -205,6 +212,38 @@ describe("next modules", () => {
       expect(lines.slice(0, count)).toEqual(expected.modules)
       if (expected.diagnostics !== null) expect(lines.slice(count)).toEqual(expected.diagnostics)
     })
+  }
+})
+
+/** What `ore-next ir` prints for a program, from @ore/checker: the dump on stdout, or the diagnostics on stderr. */
+function typescriptIr(entry: string): { code: number; stdout: string; stderr: string } {
+  const program = loadProgram(entry)
+  const checked = program.syntaxErrors ? undefined : check(program)
+  const diagnostics = [...program.diagnostics, ...(checked?.diagnostics ?? [])]
+  if (!checked?.module || program.diagnostics.length > 0) {
+    return { code: 1, stdout: "", stderr: diagnostics.map((d) => `${formatDiagnostic(d)}\n`).join("") }
+  }
+  return { code: 0, stdout: dump(checked.module), stderr: "" }
+}
+
+describe("next ir", () => {
+  const programs = [...entries(join(root, "tests/run")), ...entries(join(root, "tests/diag")), join(root, "compiler/next/src/main.ore")]
+  // Programs whose IR or diagnostics still differ, with the reason. None so far.
+  const skipped = new Set<string>([])
+  for (const file of programs) {
+    const entry = relative(process.cwd(), file)
+    const name = relative(root, file)
+    if (skipped.has(name)) {
+      test.skip(name, () => {})
+      continue
+    }
+    test(name, async () => {
+      const expected = typescriptIr(entry)
+      const actual = await run("ir", entry)
+      expect(actual.stderr).toBe(expected.stderr)
+      expect(actual.code).toBe(expected.code)
+      expect(actual.stdout).toBe(expected.stdout)
+    }, 60_000)
   }
 })
 
