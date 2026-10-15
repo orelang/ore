@@ -16,8 +16,8 @@
 ## Classes
 
 - A class declares a nominal type: two classes are different types even with
-  the same members. There is no inheritance (`extends`); use composition and
-  interfaces.
+  the same members. A class may extend one other class (see
+  [Inheritance](#inheritance)).
 - Members: fields (with a type annotation, an initializer, or both), one
   constructor, and methods. Constructor parameters with `public`, `private`
   or `readonly` declare fields. Static members are not supported yet.
@@ -33,11 +33,75 @@
 - A field without an initializer starts at its zero value. A field of a type
   without a zero value (class, object or interface) must be assigned at the
   top level of the constructor.
-- `private` members are accessible only inside the class. `readonly` fields
-  can be assigned only by the constructor of the class.
+- `private` members are accessible only inside the class that declares them,
+  `protected` members inside that class and its subclasses. Neither counts
+  for interfaces. `readonly` fields can be assigned only by the constructor
+  of the class that declares them.
 - Methods are called on instances; `obj.method` without a call is a
   function value bound to `obj`.
 - `class C implements I` checks that `C` has the members of `I`.
+
+## Inheritance
+
+- `class B extends A` makes `B` a subclass of the class `A` (a generic
+  instance such as `A<T>` too; not an interface or object type). A class has
+  at most one base class, and cannot extend itself through others.
+- `B` has the fields of `A`, first and in the same order, then its own; it
+  cannot declare a field, accessor or method with the name of a field of
+  `A`, nor any member with the name of a private member of `A`.
+- `B` inherits the methods, accessors and generic methods of `A`. A method of
+  `B` with the name of a method of `A` overrides it: it must have the same
+  parameter and result types, and cannot be private, nor protected if the
+  method of `A` is public. The `override` modifier is optional; on a member
+  that overrides nothing it is an error. Accessors and generic methods cannot
+  be overridden.
+- Methods are virtual, as in JavaScript: calling `m` on a value of type `A`
+  that holds a `B` runs `B`'s `m`, also through an interface or a bound
+  method value. `super.m(...)` in a method of `B` runs `A`'s `m` (or the one
+  `A` inherits); `super` is only allowed in calls `super(...)` and
+  `super.m(...)`.
+- Subtyping: a `B` converts implicitly, without a change of representation,
+  to `A` and to the base classes of `A`, to a union with one of them as a
+  member, and to an interface whose members it has (inherited ones
+  included). Other types built from classes are not covariant: `B[]` is not
+  an `A[]`. `===` compares instances of related classes by identity.
+- A union that contains a class and a subclass of it is normalized to the
+  base class: `A | B` is `A`.
+- Constructors: the constructor of a class with a base class must call
+  `super(args)` exactly once, as a statement at the top level of its body;
+  statements before it cannot use `this` or `super`. `super(args)` runs the
+  initialization of `A` (its parameter properties, field initializers and
+  constructor body) on the new instance, then the parameter properties and
+  field initializers of `B`. A class without a constructor takes the
+  parameters of its base class's constructor and passes them on. Fields of
+  `B` without a zero value must be assigned by `B`'s constructor, as for any
+  class.
+- `abstract class A` cannot be instantiated with `new`. It may declare
+  abstract methods without a body, `abstract area(): f64`, which a class
+  that is not abstract must override (directly or through a base class).
+  `super.m(...)` cannot call an abstract method.
+- `x instanceof B` checks the class of the instance at run time when `x` has
+  type `A`, a union with a member related to `B`, or an interface type; it
+  narrows `x` to `B`. On a union, `instanceof A` is also true for members
+  that are subclasses of `A`, which the true branch keeps
+  (`B | C | string` narrows to `B | C`), and the false branch removes them.
+
+Representation. Every class that has a base class or a subclass in the
+program starts with a pointer to its class table: the class's type id
+followed by its methods in slot order, where a class keeps its base class's
+slots and appends its new methods. The base class's fields follow at the
+same offsets, so a `B` is passed where an `A` is expected unchanged. Classes
+without a base class or subclass have no table pointer, as before. Whether a
+method is overridden is decided over the whole program: a call is direct
+unless the receiver's class has a subclass that overrides the method, in
+which case the method is loaded from the table of the instance. An interface
+table built for `A` points, for a method that a subclass overrides, to a stub
+that dispatches through the class table. `instanceof B` compares the table
+pointer with the tables of `B` and of its subclasses; for an interface value,
+entry 0 of the interface table names the class it was converted from, and
+the class table is checked when that class is related to `B`. A tagged union
+holds a `B` converted to it in the slot of its member `A`, so `instanceof B`
+on that slot reads the class table.
 
 ## Interfaces
 
@@ -81,8 +145,8 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
   unions);
 - `typeof x === "string" | "number" | "boolean" | "object"`;
 - `x instanceof C` for a class `C` (also on interface values, which then
-  narrow to the class) and `x instanceof I` for an interface member of a
-  union.
+  narrow to the class, and on instances of a base class of `C`) and
+  `x instanceof I` for an interface member of a union.
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
 of `&&`, `||` and `?:`, `switch` clauses on a literal (clauses reached by
