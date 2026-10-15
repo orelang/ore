@@ -6,13 +6,15 @@
 //
 // Positions are zero-based UTF-16 offsets, as in LSP (see ./text).
 
-import { isAbsolute, resolve } from "ore:path"
+import { basename, dirname, isAbsolute, resolve } from "ore:path"
 import { check } from "../checker/checker"
 import { type CheckInfo } from "../checker/context"
 import { arrayMethods, stringMethods } from "../checker/helpers"
 import { typeToString, type Type } from "../ir/types"
 import { LoadOptions, loadProgram } from "../project/load"
+import { stdModules } from "../project/resolve"
 import { type Node } from "../syntax/ast"
+import { parse as parseFile } from "../syntax/parse"
 import { parse } from "../syntax/parser"
 import { type Source } from "../syntax/source"
 import { offsetAt, rangeOf, type Position, type Range } from "./text"
@@ -137,17 +139,39 @@ class CheckedAnalysis {
         readonly text: string,
     ) {
         const absolute = isAbsolute(path) ? path : resolve(path)
+        // The declarations of the built-in names are not a module of a
+        // program: the checker reads them itself; only their syntax is checked.
+        if (absolute.endsWith("/runtime/std/builtin.d.ore")) {
+            // As the checker parses it.
+            for (const d of parseFile("runtime/std/builtin.d.ore", text).diagnostics)
+                this.errors.push({ message: d.message, severity: d.severity, start: d.start, end: d.start + d.length })
+            return
+        }
         const options = new LoadOptions()
-        options.overrides.set(absolute, text)
         options.absolutePaths = true
-        const loaded = loadProgram(absolute, options)
+        // A module of the runtime or the standard library is checked as the
+        // module it is, `ore:...`, which every program loads or may import.
+        const module = moduleName(absolute)
+        let entryPath = absolute
+        if (module !== "") {
+            options.overrides.set(module, text)
+            entryPath = `${dirname(absolute)}/.ore-lsp-entry.ore`
+            options.overrides.set(
+                entryPath,
+                module.startsWith("ore:runtime/") ? "" : `import * as m from "${module}"\n`,
+            )
+        } else {
+            options.overrides.set(absolute, text)
+        }
+        const loaded = loadProgram(entryPath, options)
         if (loaded instanceof Error) {
             const parser = parse(text)
             for (const e of parser.diagnostics)
                 this.errors.push({ message: e.message, severity: "error", start: e.start, end: e.end })
             return
         }
-        const entry = loaded.entry
+        let entry = loaded.entry
+        if (module !== "") for (const m of loaded.modules) if (m.path === module) entry = m
         this.source = entry
         for (const d of loaded.diagnostics)
             if (d.source === entry)
@@ -206,6 +230,12 @@ class CheckedAnalysis {
         return decl.child("name") ?? decl
     }
 
+    /** The path of a module: the document's file for the document, even when it is an `ore:` module. */
+    private pathOf(source: Source): string {
+        if (source === this.source) return isAbsolute(this.path) ? this.path : resolve(this.path)
+        return source.path
+    }
+
     private sourceOf(node: Node): Source | null {
         const info = this.info
         return info === null ? null : info.sources.get(node)
@@ -220,10 +250,10 @@ class CheckedAnalysis {
         const source = this.sourceOf(name)
         if (source === null) return null
         return {
-            key: `${source.path}:${name.start}`,
+            key: `${this.pathOf(source)}:${name.start}`,
             name: identifier.text,
             range: this.range(identifier.start, identifier.end),
-            builtin: !isAbsolute(source.path),
+            builtin: !isAbsolute(this.pathOf(source)),
         }
     }
 
@@ -240,7 +270,7 @@ class CheckedAnalysis {
             if (decl === null) continue
             const name = this.nameOf(decl)
             const declSource = this.sourceOf(name)
-            if (declSource === null || `${declSource.path}:${name.start}` !== key) continue
+            if (declSource === null || `${this.pathOf(declSource)}:${name.start}` !== key) continue
             // A shorthand property `{ x }` keeps its key or its value when renamed.
             const parent = parents.of.get(identifier)
             let prefix = ""
@@ -250,7 +280,7 @@ class CheckedAnalysis {
                 else prefix = `${identifier.text}: `
             }
             found.push({
-                path: source.path,
+                path: this.pathOf(source),
                 range: this.range(identifier.start, identifier.end),
                 prefix,
                 suffix,
@@ -277,7 +307,7 @@ class CheckedAnalysis {
         }
         if (code === "" && type !== null) code = `${identifier.text}: ${typeToString(type)}`
         if (code === "") return null
-        const contents = doc === "" ? "```ore\n" + code + "\n```" : "```ore\n" + code + "\n```\n\n---\n\n" + doc
+        const contents = doc === "" ? "```ore\n" + code + "\n```" : "```ore\n" + code + "\n```\n\n" + doc
         return { contents, range: this.range(identifier.start, identifier.end) }
     }
 
@@ -291,7 +321,11 @@ class CheckedAnalysis {
                 const open = source.text.indexOf("{", decl.start)
                 if (open >= 0 && open < decl.end) end = open
             }
-            return collapse(source.text.slice(decl.start, end))
+            // As TypeScript shows them: without `export` and `declare`.
+            let header = collapse(source.text.slice(decl.start, end))
+            if (header.startsWith("export ")) header = header.slice(7)
+            if (header.startsWith("declare ")) header = header.slice(8)
+            return header
         }
         const parents = this.parentsOf(source)
         let what = ""
@@ -377,9 +411,10 @@ class CheckedAnalysis {
         const name = this.nameOf(decl)
         const source = this.sourceOf(name)
         if (source === null) return null
-        const onDisk = isAbsolute(source.path)
+        const path = this.pathOf(source)
+        const onDisk = isAbsolute(path)
         return {
-            path: source.path,
+            path,
             text: onDisk ? null : source.text,
             range: rangeOf(source.text, name.start, name.end),
         }
@@ -488,6 +523,20 @@ function membersOfType(type: Type, out: Completion[]) {
         default:
             return
     }
+}
+
+/**
+ * The name of the module of the runtime (`runtime/core/NAME.ore`, which is
+ * `ore:runtime/NAME`) or of the standard library (`runtime/std/NAME.ore`,
+ * `ore:NAME`) that a file is, or "".
+ */
+function moduleName(path: string): string {
+    const name = basename(path, ".ore")
+    const dir = dirname(path)
+    let module = ""
+    if (dir.endsWith("/runtime/core")) module = `ore:runtime/${name}`
+    else if (dir.endsWith("/runtime/std")) module = `ore:${name}`
+    return module !== "" && stdModules.has(module) ? module : ""
 }
 
 /** The innermost identifier at a byte offset, or ending there. */
