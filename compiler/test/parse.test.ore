@@ -2,6 +2,7 @@
 // (syntax/diagnostic.ore).
 
 import { test, expect, fail } from "ore:test"
+import { docsUrl } from "../src/syntax/codes"
 import { formatDiagnostic } from "../src/syntax/diagnostic"
 import { tokenize } from "../src/syntax/lexer"
 import { parse } from "../src/syntax/parse"
@@ -16,7 +17,9 @@ test("reports syntax errors with positions", () => {
     const { diagnostics } = parse("bad.ore", "let x = \n")
     expect(diagnostics.length).toBe(1)
     // TypeScript reports "Expression expected." at 1:8, after the "=".
-    const want = ["bad.ore:2:1: error: Identifier expected.", "  ", "  ^"].join("\n")
+    const want = ["bad.ore:2:1: error[ORE1001]: Identifier expected.", "  ", "  ^", `  see ${docsUrl("ORE1001")}`].join(
+        "\n",
+    )
     const got = formatDiagnostic(diagnostics[0])
     if (got !== want) fail(`expected:\n${want}\ngot:\n${got}`)
 })
