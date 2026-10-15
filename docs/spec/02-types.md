@@ -94,8 +94,10 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
   `...rest` is a copy of the remaining elements, or elements of
   [tuples](#tuples), where `...rest` is a tuple of the elements left. An
   array literal destructured by an array pattern without a rest element is
-  a tuple: `const [n, s] = [1, "one"]`. Default values and rest elements in
-  object patterns are not supported.
+  a tuple: `const [n, s] = [1, "one"]`. `...rest` in an object pattern is a
+  new object of the other public fields. A default value (`{ size = 1 }`,
+  `[x = 0]`) replaces null, and an element past the end of an array; it is
+  computed only then, and can use the names bound before it.
 
 ## Built-in namespaces
 

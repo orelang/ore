@@ -1,0 +1,53 @@
+// Default values in destructuring replace null, and elements past the end of
+// an array; they are computed only when used, and can use earlier names.
+type Opts = { name?: string; size?: int }
+const o: Opts = { name: "n" }
+const { name = "anon", size = 10 } = o
+console.log(name, size)
+const { name: alias = "x", size: big = name.length } = o
+console.log(alias, big)
+
+const xs = [1, 2]
+const [a = 0, b = 0, c = 99] = xs
+console.log(a, b, c)
+
+function f({ name = "default", size = 1 }: Opts): string {
+    return `${name}:${size}`
+}
+console.log(f({}), f({ size: 5 }))
+
+const t: [string | null, int] = [null, 1]
+const [s = "t", n] = t
+console.log(s, n)
+
+const pairs: [string, int | null][] = [
+    ["a", null],
+    ["b", 2],
+]
+for (const [key, value = -1] of pairs) console.log(key, value)
+
+let calls = 0
+function fallback(): int {
+    calls++
+    return 7
+}
+const [first = fallback(), second = fallback(), third = fallback()] = [5, 6]
+console.log(first, second, third, calls)
+
+// In assignments too.
+let p = 0
+let q = 0
+;[p, q = 4] = [1]
+console.log(p, q)
+let label = ""
+let width = 0
+const sized: Opts = { size: 8 }
+;({ name: label = "none", size: width = 2 } = sized)
+console.log(label, width)
+let size2 = 0
+const o2: Opts = {}
+;({ size: size2 = 3 } = o2)
+console.log(size2)
+let nm: string = ""
+;({ name: nm = "shorthand" } = o2)
+console.log(nm)

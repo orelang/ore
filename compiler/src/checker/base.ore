@@ -445,8 +445,7 @@ export class Checker {
             }
             const name = this.memberName(nameNode(member))
             if (name === null) continue
-            const question = questionToken(member)
-            if (question !== null) this.error(question, "Optional properties are not supported yet.")
+            const optional = questionToken(member) !== null
             const annotation = typeNode(member)
             if (annotation === null) {
                 this.error(nameNode(member), `Property '${name}' must have a type annotation.`)
@@ -455,10 +454,15 @@ export class Checker {
             let duplicate = false
             for (const f of fields) if (f.name === name) duplicate = true
             if (duplicate) this.error(nameNode(member), `Duplicate property '${name}'.`)
-            const type = this.resolveValueType(annotation, scope)
+            const resolved = this.resolveValueType(annotation, scope)
             const isReadonly = hasModifier(member, "ReadonlyKeyword")
-            if (type !== null) fields.push(new Field(name, type, isReadonly))
-            if (type !== null) this.info.types.set(nameNode(member), type)
+            if (resolved !== null) {
+                const type = optional ? this.unionOf([resolved, types.null]) : resolved
+                const field = new Field(name, type, isReadonly)
+                field.optional = optional
+                fields.push(field)
+                this.info.types.set(nameNode(member), type)
+            }
         }
         const shape = this.shape(fields)
         // The first declaration of a shape is where its fields are defined.
@@ -553,7 +557,9 @@ export class Checker {
     /** The interned anonymous struct type with these fields. */
     shape(fields: Field[]): StructType {
         const sorted = fields.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-        const key = sorted.map((f) => `${f.readonly ? "readonly " : ""}${f.name}:${typeKey(f.type)}`).join(";")
+        const key = sorted
+            .map((f) => `${f.readonly ? "readonly " : ""}${f.name}${f.optional ? "?" : ""}:${typeKey(f.type)}`)
+            .join(";")
         let struct = this.shapes.get(key)
         if (struct === null) {
             struct = new StructType(this.nextStructId++, null, false, sorted, [])

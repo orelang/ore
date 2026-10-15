@@ -38,6 +38,7 @@ import {
     SetOp,
     MethodCall,
     Not,
+    NullLit,
     ObjectLit,
     Optional,
     Recast,
@@ -1185,8 +1186,6 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
             if (name !== null) props.push(new Prop(name, nameNode(prop), initializer(prop)!))
         } else if (prop.kind === "ShorthandPropertyAssignment") {
             props.push(new Prop(nameNode(prop).text, nameNode(prop), nameNode(prop)))
-        } else if (prop.kind === "SpreadAssignment") {
-            return c.fail(prop, "Object spread is not supported yet.")
         } else {
             return c.fail(prop, "Methods and accessors in object literals are not supported yet.")
         }
@@ -1243,7 +1242,8 @@ function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, p
             }
         }
         const missing: string[] = []
-        for (const f of expected.fields) if (!props.some((p) => p.name === f.name)) missing.push(`'${f.name}'`)
+        for (const f of expected.fields)
+            if (!f.optional && !props.some((p) => p.name === f.name)) missing.push(`'${f.name}'`)
         if (missing.length > 0) {
             c.error(
                 node,
@@ -1256,6 +1256,12 @@ function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, p
             const field = findField(expected, p.name)
             const type = field !== null ? field.type : types.i64
             fields.push(new FieldInit(p.name, c.coerce(valueOf(p, type), type, p.value)))
+        }
+        // Optional fields left out are null.
+        for (const f of expected.fields) {
+            const ft = f.type
+            if (f.optional && ft.kind === "union" && !props.some((p) => p.name === f.name))
+                fields.push(new FieldInit(f.name, new NullLit(ft)))
         }
         return ok ? typed(new ObjectLit(expected, fields)) : errorOperand
     }

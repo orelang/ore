@@ -1151,6 +1151,14 @@ export class Converter {
     private assignmentTarget(node: Node): ENode {
         if (node.kind === "ArrayLiteralExpression") return this.arrayLiteral(node, true)
         if (node.kind === "ObjectLiteralExpression") return this.objectLiteral(node, true)
+        // `target = value` in a pattern: a default value.
+        const op = node.kind === "BinaryExpression" ? node.child("operatorToken") : null
+        if (op !== null && op.kind === "EqualsToken") {
+            const pattern = this.make("AssignmentPattern", node)
+            return pattern
+                .set("left", this.assignmentTarget(must(node.child("left"))))
+                .set("right", this.req(node.child("right")))
+        }
         return this.req(node)
     }
 

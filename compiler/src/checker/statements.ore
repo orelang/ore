@@ -10,6 +10,9 @@ import {
     Block,
     BreakStmt,
     Closure,
+    Coalesce,
+    Compare,
+    Conditional,
     ContinueStmt,
     Downcast,
     ExprStmt,
@@ -18,10 +21,12 @@ import {
     ForOfStmt,
     Func,
     IfaceCall,
+    IfaceField,
     IfStmt,
     Index,
     IntLit,
     IsNull,
+    Len,
     LetStmt,
     Local,
     LocalLValue,
@@ -30,6 +35,7 @@ import {
     MethodCall,
     ObjectLit,
     Not,
+    NullLit,
     Recast,
     ReturnStmt,
     Seq,
@@ -43,6 +49,7 @@ import {
     type FuncType,
     type StructType,
     type Type,
+    Field,
     FuncType as FuncTypeClass,
     findMethod,
     isNumeric,
@@ -107,6 +114,7 @@ import {
 import { assignTarget, checkExpr, compare, interfaceFor, member, narrowTo, settle, writeAccessor } from "./expressions"
 import {
     disposeName,
+    canBeNull,
     exits,
     fieldType,
     hasZeroValue,
@@ -593,20 +601,27 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
         whole = new LocalRef(value.type, local)
     }
     if (name.kind === "ObjectBindingPattern") {
+        const taken: string[] = []
+        for (const e of elements(name)) {
+            const key = propertyName(e) ?? nameNode(e)
+            if (dotDotDotToken(e) === null && isIdentifier(key)) taken.push(key.text)
+            else if (dotDotDotToken(e) === null && key.kind === "StringLiteral") taken.push(stringText(key))
+        }
         for (const e of elements(name)) {
             if (dotDotDotToken(e) !== null) {
-                c.error(e, "Rest elements are not supported in object destructuring.")
+                const rest = restOf(c, whole, taken, e)
+                if (rest !== null) bindPattern(c, nameNode(e), rest, mutable, scope, out)
                 continue
             }
-            const init = initializer(e)
-            if (init !== null) c.error(init, "Default values in destructuring are not supported.")
             const key = propertyName(e) ?? nameNode(e)
             if (!isIdentifier(key) && key.kind !== "StringLiteral") {
                 c.error(key, "Destructure a property by its name.")
                 continue
             }
             const part = member(c, whole, key, isIdentifier(key) ? key.text : stringText(key))
-            if (part.k === "typed") bindPattern(c, nameNode(e), part.expr, mutable, scope, out)
+            if (part.k !== "typed") continue
+            const value = withDefault(c, part.expr, initializer(e), scope, null)
+            if (value !== null) bindPattern(c, nameNode(e), value, mutable, scope, out)
         }
         return
     }
@@ -618,9 +633,8 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
             const part = parts[i]
             const e = elems[i]
             if (part === null || e.kind === "OmittedExpression") continue
-            const init = initializer(e)
-            if (init !== null) c.error(init, "Default values in destructuring are not supported.")
-            bindPattern(c, nameNode(e), part, mutable, scope, out)
+            const value = withDefault(c, part, initializer(e), scope, null)
+            if (value !== null) bindPattern(c, nameNode(e), value, mutable, scope, out)
         }
         return
     }
@@ -631,13 +645,71 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
     for (let i = 0; i < elems.length; i++) {
         const e = elems[i]
         if (e.kind === "OmittedExpression") continue
-        const init = initializer(e)
-        if (init !== null) c.error(init, "Default values in destructuring are not supported.")
         const index: Expr = new IntLit(types.i64, i)
-        const part: Expr =
-            dotDotDotToken(e) !== null ? new Slice(array, whole, index) : new Index(array.elem, whole, index)
-        bindPattern(c, nameNode(e), part, mutable, scope, out)
+        if (dotDotDotToken(e) !== null) {
+            bindPattern(c, nameNode(e), new Slice(array, whole, index), mutable, scope, out)
+            continue
+        }
+        const value = withDefault(c, new Index(array.elem, whole, index), initializer(e), scope, whole)
+        if (value !== null) bindPattern(c, nameNode(e), value, mutable, scope, out)
     }
+}
+
+/**
+ * `...rest` in an object pattern: a new object of the public fields of a
+ * class or object type, or the fields of an interface, but those `taken`.
+ */
+function restOf(c: Checker, whole: Expr, taken: string[], at: Node): Expr | null {
+    const type = whole.type
+    const fields: FieldInit[] = []
+    if (type.kind === "struct" && !type.tuple) {
+        for (const f of type.fields)
+            if (!f.private && !taken.includes(f.name))
+                fields.push(new FieldInit(f.name, new FieldGet(f.type, whole, f.name)))
+    } else if (type.kind === "interface") {
+        for (let i = 0; i < type.members.length; i++) {
+            const m = type.members[i]
+            if (m.k === "field" && !taken.includes(m.name))
+                fields.push(new FieldInit(m.name, new IfaceField(m.type, whole, i)))
+        }
+    } else {
+        c.error(at, `Type '${typeToString(type)}' cannot be destructured as an object.`)
+        return null
+    }
+    const shape = c.shape(fields.map((f) => new Field(f.name, f.value.type, false)))
+    return new ObjectLit(shape, fields)
+}
+
+/**
+ * A part of a destructured value, or its default value `init` when it is
+ * null; for the element at an index of `array`, also when the array is too
+ * short. The default is computed only when used, and can use the names
+ * bound before it.
+ */
+function withDefault(c: Checker, part: Expr, init: Node | null, scope: Scope, array: Expr | null): Expr | null {
+    if (init === null) return part
+    let value = part
+    if (array !== null && value.k === "index") {
+        // Past the end of the array: null, then the default.
+        const nullable = c.unionOf([value.type, types.null])
+        const inBounds: Expr = new Compare(types.bool, "<", value.index, new Len(types.i64, array))
+        value = new Conditional(
+            nullable,
+            inBounds,
+            c.coerce(typed(value), nullable, init),
+            new NullLit(nullable.kind === "union" ? nullable : types.null),
+        )
+    }
+    if (!canBeNull(value.type)) {
+        // Never used, as in TypeScript; it is still checked.
+        const unused = checkExpr(c, init, scope, value.type)
+        if (unused.k !== "error") c.coerce(unused, value.type, init)
+        return part
+    }
+    const type = c.withoutNull(value.type)
+    const fallback = checkExpr(c, init, scope, type)
+    if (fallback.k === "error") return null
+    return new Coalesce(type, value, c.coerce(fallback, type, init))
 }
 
 /**
@@ -710,7 +782,8 @@ function patternTuple(pattern: Node, value: Node): bool {
     for (const e of elements(pattern))
         if (e.kind === "SpreadElement" || (e.kind === "BindingElement" && dotDotDotToken(e) !== null)) return false
     for (const e of elements(value)) if (e.kind === "SpreadElement" || e.kind === "OmittedExpression") return false
-    return true
+    // A longer pattern takes default values past the end, as of an array.
+    return elements(pattern).length <= elements(value).length
 }
 
 /** An array literal as a tuple of the default types of its elements. */
@@ -746,6 +819,30 @@ export function checkDestructuringAssign(c: Checker, node: Node, scope: Scope): 
     return typed(new Bind(value.type, state.locals, new Seq(value.type, exprs)))
 }
 
+/** `target = init` in a destructuring assignment: the default value `init` of `target`. */
+function defaultOf(target: Node): Node | null {
+    if (target.kind !== "BinaryExpression" || operatorToken(target).kind !== "EqualsToken") return null
+    return right(target)
+}
+
+/** A target of a destructuring assignment with its default value applied to `part`. */
+function destructureDefault(
+    c: Checker,
+    state: Destructuring,
+    target: Node,
+    part: Expr,
+    scope: Scope,
+    array: Expr | null,
+) {
+    const init = defaultOf(target)
+    if (init === null) {
+        destructure(c, state, target, part, scope)
+        return
+    }
+    const value = withDefault(c, part, init, scope, array)
+    if (value !== null) destructure(c, state, left(target), value, scope)
+}
+
 function destructure(c: Checker, state: Destructuring, target: Node, part: Expr, scope: Scope) {
     if (target.kind === "ArrayLiteralExpression") {
         const whole = state.hold(c, part)
@@ -757,7 +854,8 @@ function destructure(c: Checker, state: Destructuring, target: Node, part: Expr,
                 const p = parts[i]
                 const e = elems[i]
                 if (p === null || e.kind === "OmittedExpression") continue
-                destructure(c, state, e.kind === "SpreadElement" ? expression(e) : e, p, scope)
+                if (e.kind === "SpreadElement") destructure(c, state, expression(e), p, scope)
+                else destructureDefault(c, state, e, p, scope, null)
             }
             return
         }
@@ -771,24 +869,38 @@ function destructure(c: Checker, state: Destructuring, target: Node, part: Expr,
             if (e.kind === "OmittedExpression") continue
             const index: Expr = new IntLit(types.i64, i)
             if (e.kind === "SpreadElement") destructure(c, state, expression(e), new Slice(array, whole, index), scope)
-            else destructure(c, state, e, new Index(array.elem, whole, index), scope)
+            else destructureDefault(c, state, e, new Index(array.elem, whole, index), scope, whole)
         }
         return
     }
     if (target.kind === "ObjectLiteralExpression") {
         const whole = state.hold(c, part)
+        const taken: string[] = []
         for (const p of properties(target)) {
             const pname = p.child("name")
+            if (pname !== null && isIdentifier(pname)) taken.push(pname.text)
+            else if (pname !== null && pname.kind === "StringLiteral") taken.push(stringText(pname))
+        }
+        for (const p of properties(target)) {
+            const pname = p.child("name")
+            if (p.kind === "SpreadAssignment") {
+                const rest = restOf(c, whole, taken, p)
+                if (rest !== null) destructure(c, state, expression(p), rest, scope)
+                continue
+            }
             if (p.kind === "ShorthandPropertyAssignment") {
                 const field = member(c, whole, pname!, pname!.text)
-                if (field.k === "typed") destructure(c, state, pname!, field.expr, scope)
+                if (field.k !== "typed") continue
+                const init = p.child("objectAssignmentInitializer")
+                const value = init !== null ? withDefault(c, field.expr, init, scope, null) : field.expr
+                if (value !== null) destructure(c, state, pname!, value, scope)
             } else if (
                 p.kind === "PropertyAssignment" &&
                 pname !== null &&
                 (isIdentifier(pname) || pname.kind === "StringLiteral")
             ) {
                 const field = member(c, whole, pname, isIdentifier(pname) ? pname.text : stringText(pname))
-                if (field.k === "typed") destructure(c, state, initializer(p)!, field.expr, scope)
+                if (field.k === "typed") destructureDefault(c, state, initializer(p)!, field.expr, scope, null)
             } else {
                 c.error(p, "Destructure a property by its name.")
             }

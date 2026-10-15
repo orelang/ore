@@ -242,6 +242,35 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
                 return
             }
             putc(g, b, "{")
+            if (type.fields.some((f) => f.optional)) {
+                // Optional fields that are null are left out, as JavaScript leaves out undefined.
+                const written = g.b.alloca("i64")
+                g.b.emit(`store i64 0, ptr ${written}`)
+                for (const f of type.fields) {
+                    const x = g.load(fieldPtr(g, v.v, type, f.name), f.type)
+                    const ft = f.type
+                    const skip = g.b.label("absent")
+                    if (f.optional && ft.kind === "union") {
+                        let at = -1
+                        for (let i = 0; i < ft.members.length; i++) if (ft.members[i].kind === "null") at = i
+                        const present = g.b.label("present")
+                        g.b.condBr(slotTest(g, ft, x, at), skip, present)
+                        g.b.start(present)
+                    }
+                    const count = g.b.value("i64", `load i64, ptr ${written}`)
+                    commaAfterFirst(g, b, count)
+                    g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${count.v}, 1`).v}, ptr ${written}`)
+                    newline(deeper)
+                    put(g, b, `${JSON.stringify(f.name)}:`)
+                    spaceIfIndented()
+                    encode(f.type, x)
+                    g.b.br(skip)
+                    g.b.start(skip)
+                }
+                ifNonZero(g, g.b.value("i64", `load i64, ptr ${written}`), () => newline(depth))
+                putc(g, b, "}")
+                return
+            }
             for (let i = 0; i < type.fields.length; i++) {
                 const f = type.fields[i]
                 if (i > 0) putc(g, b, ",")
