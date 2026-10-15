@@ -1,0 +1,46 @@
+// `...object` in an object literal copies the fields of an object: a later
+// property replaces an earlier one.
+type Point = { x: int; y: int }
+const p: Point = { x: 1, y: 2 }
+const moved = { ...p, y: 5 }
+console.log(moved.x, moved.y, p.y)
+const kept: Point = { y: 9, ...p }
+console.log(kept.x, kept.y)
+const labeled = { ...p, label: "p" }
+console.log(labeled.x, labeled.label)
+
+// A class gives its public fields, and no methods.
+class User {
+    constructor(
+        readonly name: string,
+        private secret: string,
+        public age: int,
+    ) {}
+    greet(): string {
+        return `hi ${this.name} ${this.secret}`
+    }
+}
+const user = new User("ann", "s", 30)
+const plain = { ...user, admin: true }
+console.log(plain.name, plain.age, plain.admin)
+
+// An interface gives its fields.
+interface Named {
+    readonly name: string
+}
+const named: Named = user
+const copy = { ...named, id: 1 }
+console.log(copy.name, copy.id)
+
+// Values are evaluated once, in order.
+let order = ""
+function point(s: string): Point {
+    order += s
+    return { x: 3, y: 4 }
+}
+function value(s: string): int {
+    order += s
+    return 0
+}
+const o = { a: value("a"), ...point("b"), c: value("c") }
+console.log(order, o.a, o.x, o.c)

@@ -1078,16 +1078,106 @@ export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected
     return typed(new ArrayLit(arrayOf(elemType), exprs))
 }
 
-/** A property of an object literal: its name, the node to report at, and its value. */
+/**
+ * A property of an object literal: its name, the node to report at, and its
+ * value; with spreads, the value already checked (see `spreadProps`).
+ */
 class Prop {
     constructor(
         readonly name: string,
         readonly node: Node,
         readonly value: Node,
+        readonly operand: Operand | null = null,
     ) {}
 }
 
+/**
+ * The properties of an object literal with `...object` spreads: each value is
+ * checked and held in order (with the expected type's field type as its
+ * context), and a spread gives the public fields of a class or object type,
+ * or the fields of an interface; a later property replaces an earlier one.
+ */
+function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null, locals: BindLocal[]): Prop[] | null {
+    const hold = (value: Expr): Expr => {
+        const local = c.newLocal("prop", value.type, false)
+        locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    const context = expected !== null && (expected.kind === "struct" || expected.kind === "interface") ? expected : null
+    const props: Prop[] = []
+    const put = (prop: Prop) => {
+        // Moved to the end: the fields of the object come in the order of their last property.
+        let at = -1
+        for (let i = 0; i < props.length; i++) if (at === -1 && props[i].name === prop.name) at = i
+        if (at !== -1) {
+            for (let i = at; i + 1 < props.length; i++) props[i] = props[i + 1]
+            props.pop()
+        }
+        props.push(prop)
+    }
+    for (const prop of properties(node)) {
+        if (prop.kind === "SpreadAssignment") {
+            const inner = expression(prop)
+            const value = checkExpr(c, inner, scope)
+            if (value.k === "error") return null
+            const object = c.toDefault(value, inner)
+            const type = object.type
+            if (type.kind === "struct" && !type.tuple) {
+                const held = hold(object)
+                for (const f of type.fields)
+                    if (!f.private) put(new Prop(f.name, prop, inner, typed(new FieldGet(f.type, held, f.name))))
+                continue
+            }
+            if (type.kind === "interface") {
+                const held = hold(object)
+                for (let i = 0; i < type.members.length; i++) {
+                    const m = type.members[i]
+                    if (m.k === "field") put(new Prop(m.name, prop, inner, typed(new IfaceField(m.type, held, i))))
+                }
+                continue
+            }
+            c.error(inner, `Only an object can be spread into an object literal, got '${typeToString(type)}'.`)
+            return null
+        }
+        let name: string | null = null
+        let at = prop
+        let valueNode = prop
+        if (prop.kind === "PropertyAssignment") {
+            name = c.memberName(nameNode(prop))
+            at = nameNode(prop)
+            valueNode = initializer(prop)!
+        } else if (prop.kind === "ShorthandPropertyAssignment") {
+            name = nameNode(prop).text
+            at = nameNode(prop)
+            valueNode = nameNode(prop)
+        } else {
+            c.error(prop, "Methods and accessors in object literals are not supported yet.")
+            return null
+        }
+        if (name === null) return null
+        const hint = context !== null ? fieldType(context, name) : null
+        const value = checkExpr(c, valueNode, scope, hint)
+        if (value.k === "error") return null
+        const expr = hint !== null ? c.coerce(value, hint, valueNode) : c.toDefault(value, valueNode)
+        for (const p of props)
+            if (p.name === name && p.node.kind !== "SpreadAssignment") {
+                c.error(at, `Duplicate property '${name}'.`)
+                return null
+            }
+        put(new Prop(name, at, valueNode, typed(hold(expr))))
+    }
+    return props
+}
+
 export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    if (properties(node).some((p) => p.kind === "SpreadAssignment")) {
+        const locals: BindLocal[] = []
+        const props = spreadProps(c, node, scope, expected, locals)
+        if (props === null) return errorOperand
+        const literal = objectOf(c, node, scope, expected, props)
+        if (literal.k !== "typed" || locals.length === 0) return literal
+        return typed(new Bind(literal.expr.type, locals, literal.expr))
+    }
     const props: Prop[] = []
     for (const prop of properties(node)) {
         if (prop.kind === "PropertyAssignment") {
@@ -1106,6 +1196,16 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         for (let j = 0; j < props.length && first === -1; j++) if (props[j].name === props[i].name) first = j
         if (first !== i) return c.fail(props[i].node, `Duplicate property '${props[i].name}'.`)
     }
+    return objectOf(c, node, scope, expected, props)
+}
+
+/** The object of an object literal with these properties, of the expected type or of their shape. */
+function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, props: Prop[]): Operand {
+    // The value of a property, checked against a type unless it already was.
+    const valueOf = (p: Prop, type: Type | null): Operand => {
+        const o = p.operand
+        return o !== null ? o : checkExpr(c, p.value, scope, type)
+    }
 
     if (expected !== null && expected.kind === "union") {
         // Pick the object member whose literal-typed fields match the literal, as in a tagged union.
@@ -1119,11 +1219,11 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
                 return membersOf(type).some((t) => t.kind === "string" || (t.kind === "literal" && t.value === lit))
             }),
         )
-        if (matching.length === 1) return checkObjectLiteral(c, node, scope, matching[0])
+        if (matching.length === 1) return objectOf(c, node, scope, matching[0], props)
         // Otherwise the member with these property names, to report what does not match.
         const byNames = candidates.filter((m) => props.every((p) => fieldType(m, p.name) !== null))
-        if (byNames.length === 1 && matching.length === 0) return checkObjectLiteral(c, node, scope, byNames[0])
-        if (candidates.length === 1) return checkObjectLiteral(c, node, scope, candidates[0])
+        if (byNames.length === 1 && matching.length === 0) return objectOf(c, node, scope, byNames[0], props)
+        if (candidates.length === 1) return objectOf(c, node, scope, candidates[0], props)
         if (candidates.length > 1) {
             return c.fail(
                 node,
@@ -1155,7 +1255,7 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         for (const p of props) {
             const field = findField(expected, p.name)
             const type = field !== null ? field.type : types.i64
-            fields.push(new FieldInit(p.name, c.coerce(checkExpr(c, p.value, scope, type), type, p.value)))
+            fields.push(new FieldInit(p.name, c.coerce(valueOf(p, type), type, p.value)))
         }
         return ok ? typed(new ObjectLit(expected, fields)) : errorOperand
     }
@@ -1177,7 +1277,7 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         let hint: Type | null = null
         if (hints !== null)
             for (const m of hints.members) if (hint === null && m.k === "field" && m.name === p.name) hint = m.type
-        const value = checkExpr(c, p.value, scope, hint)
+        const value = valueOf(p, hint)
         if (value.k === "error") return errorOperand
         const expr = hint !== null ? c.coerce(value, hint, p.value) : c.toDefault(value, p.value)
         if (expr.type.kind === "void" || expr.type.kind === "never")
