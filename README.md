@@ -232,6 +232,16 @@ if (config instanceof Error) console.log(config.message)   // JSON: expected an 
 console.log(JSON.stringify({ name: "api", port: 80, tags: ["v1"] }))   // {"name":"api","port":80,"tags":["v1"]}
 ```
 
+**Regular expressions.** JavaScript's syntax and semantics, with an engine
+written in Ore; a bad literal is a compile-time error.
+
+```ts
+const date = /(?<year>\d{4})-(?<month>\d{2})/
+const m = date.exec("released 2026-10")
+if (m !== null) console.log(m.groups.get("year"), m.index)   // 2026 9
+console.log("a-b_c".replace(/[-_]/g, " "), "x1y22z".split(/\d+/).join(","))   // a b c x,y,z
+```
+
 **Green threads and channels.** Tasks run in parallel on all CPUs and talk
 through channels and `select`; waiting parks the task, not the OS thread.
 `ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP, `ore:crypto` SHA-256, `ore:path` paths.
@@ -340,9 +350,10 @@ Native code is declared in package.json, also by dependencies:
 
 ## Editor support
 
-Both extensions run `ore lsp` from `PATH`. The language server reports
-syntax errors so far; hover, go to definition, completion, references and
-rename on the checker's results are next.
+Both extensions run `ore lsp` from `PATH`. The language server checks each
+open document as you type: errors with their codes and a link to their page
+in [`docs/errors`](docs/errors), hover with the signature and the JSDoc
+comment, go to definition, completion after `.`, references and rename.
 
 **Zed.** Run `zed: install dev extension` and select `editors/zed` (requires
 Rust installed with rustup). Another binary can be set in Zed settings:
@@ -380,6 +391,7 @@ Another binary can be set with the `ore.path` setting.
 | 9. Runtime in Ore: no C left; only libc outside Ore | done |
 | 10. Compiler in Ore: the whole toolchain (`ore` command, LLVM through its C API, tests), bootstrapped; no TypeScript left | done |
 | 11. Own garbage collector: mark-sweep with parallel marking (done); precise heap, concurrent marking | in progress |
+| 11.5. TypeScript gaps: tuples, spreads, `static`, overloads, optional properties, regular expressions, … ([roadmap](docs/roadmap.md)) | in progress |
 | 12. Promises and `async`/`await` | planned |
 
 ### Known limitations
@@ -390,8 +402,8 @@ Another binary can be set with the `ore.path` setting.
   not).
 - A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
   recursion in a task can overflow it.
-- No numeric literal types (`1 | 2`) or static members;
-  case mapping of strings covers ASCII only.
+- No numeric literal types (`1 | 2`); case mapping of strings covers ASCII
+  only.
 - A generic function or class that is never used is parsed but not checked.
 
 ## Development
