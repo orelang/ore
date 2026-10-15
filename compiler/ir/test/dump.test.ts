@@ -64,6 +64,7 @@ function sample(): Module {
   ]
   point.methods = [{ name: "norm", func: norm, private: false }, { name: "hidden", func: norm, private: true }]
   point.ctor = ctor
+  const point3: StructType = { kind: "struct", id: 10, name: "Point3", nominal: true, fields: point.fields, methods: point.methods, base: point }
   const itab = { id: 0, struct: point, iface: shape }
 
   const puts: Func = {
@@ -149,6 +150,7 @@ function sample(): Module {
     { k: "pop", type: i64, array: ref(xs) },
     { k: "object", type: anon, fields: [{ name: "a", value: { k: "string", type: string, value: "x" } }] },
     { k: "method-call", type: f64, func: norm, receiver: ref(p), args: [] },
+    { k: "method-call", type: f64, func: norm, receiver: ref(p), args: [], virtual: true },
     { k: "to-iface", type: shape, value: ref(p), itab },
     { k: "to-iface", type: shape, value: ref(s), indices: [1, 0] },
     { k: "iface-field", type: f64, value: ref(s), index: 0 },
@@ -169,6 +171,7 @@ function sample(): Module {
     { k: "closure", type: fn([i64], voidType), func: closure },
     { k: "call-value", type: voidType, callee: ref(f), args: [int(1n)] },
     { k: "bound-method", type: fn([], f64), receiver: ref(p), func: norm },
+    { k: "bound-method", type: fn([], f64), receiver: ref(p), func: norm, virtual: true },
     { k: "bound-method", type: fn([f64], other), receiver: ref(s), index: 1 },
     { k: "array-method", method: "map", type: arrayOf(i64), array: ref(xs), args: [ref(f)], arity: 1 },
     { k: "array-method", method: "join", type: string, array: ref(xs), args: [] },
@@ -246,7 +249,7 @@ function sample(): Module {
     file: "test.ore",
     functions: [norm, ctor, puts, putsPtr, closure, main],
     inits: [init],
-    structs: [point, anon, pair],
+    structs: [point, anon, pair, point3],
     itabs: [itab],
     unions: [maybe, mixed],
   }

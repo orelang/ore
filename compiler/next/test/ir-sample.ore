@@ -134,6 +134,16 @@ function withLine(s: Stmt, line: int): Stmt {
 }
 
 /** The module with every node and type kind and every field, built by hand. */
+function virtualCall(call: MethodCall): Expr {
+    call.virtual = true
+    return call
+}
+
+function virtualBound(bound: BoundMethod): Expr {
+    bound.virtual = true
+    return bound
+}
+
 export function sample(): Module {
     const tI64 = types.i64
     const tF64 = types.f64
@@ -157,6 +167,8 @@ export function sample(): Module {
     point.fields = [new Field("x", tF64, true), new Field("secret", tI64, false, true)]
     point.methods = [new Method("norm", norm, false), new Method("hidden", norm, true)]
     point.ctor = ctor
+    const point3 = new StructType(10, "Point3", true, point.fields, point.methods)
+    point3.base = point
     const itab = new Itab(0, point, shape)
 
     const puts = new Func("puts", "puts", 1, fn([tString], types.i32), [new Local(2, "s", tString, false)], block([]), false, "c.ore", true, types.ptr)
@@ -222,6 +234,7 @@ export function sample(): Module {
         new Pop(tI64, ref(xs)),
         new ObjectLit(anon, [new FieldInit("a", str("x"))]),
         new MethodCall(tF64, norm, ref(p), []),
+        virtualCall(new MethodCall(tF64, norm, ref(p), [])),
         new ToIface(shape, ref(p), itab),
         new ToIface(shape, ref(s), null, [1, 0]),
         new IfaceField(tF64, ref(s), 0),
@@ -242,6 +255,7 @@ export function sample(): Module {
         new Closure(fn([tI64], voidType), closure),
         new CallValue(voidType, ref(f), [int(1)]),
         new BoundMethod(fn([], tF64), ref(p), norm),
+        virtualBound(new BoundMethod(fn([], tF64), ref(p), norm)),
         new BoundMethod(fn([tF64], other), ref(s), null, 1),
         new ArrayMethod("map", arrayOf(tI64), ref(xs), [ref(f)], 1),
         new ArrayMethod("join", tString, ref(xs), []),
@@ -286,5 +300,5 @@ export function sample(): Module {
     main.attributes = new FuncAttributes(true, true, true, "ore_main", "main", true)
     const init = new Func("init_test", "<init>", 1, fn([], voidType), [], block([withLine(new LetStmt(g, int(1)), 1)]), false)
     init.attributes = new FuncAttributes()
-    return new Module("test.ore", [norm, ctor, puts, putsPtr, closure, main], [init], [point, anon, pair], [itab], [maybe, mixed])
+    return new Module("test.ore", [norm, ctor, puts, putsPtr, closure, main], [init], [point, anon, pair, point3], [itab], [maybe, mixed])
 }
