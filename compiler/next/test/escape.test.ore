@@ -1,0 +1,118 @@
+// Escape analysis (opt/escape.ore): the allocations `main` places on the
+// stack, with and without inlining (opt/inline.ore). Ported from
+// compiler/opt/test/escape.test.ts.
+
+import { test, expect, fail } from "ore:test"
+import { check } from "../src/checker/checker"
+import { visitLocals } from "../src/checker/helpers"
+import { Call, Closure, Local, ObjectLit, type Module } from "../src/ir/nodes"
+import { planStack } from "../src/opt/escape"
+import { inlineCalls } from "../src/opt/inline"
+import { LoadOptions, loadProgram } from "../src/project/load"
+
+const vec = `
+class Vec {
+    constructor(readonly x: int, readonly y: int) {}
+    len(): int { return this.x + this.y }
+    me(): Vec { return this }
+    plus(o: Vec): Vec { return new Vec(this.x + o.x, this.y + o.y) }
+}
+function sum(v: Vec): int { return v.x + v.y }
+function keep(v: Vec): Vec { return v }
+`
+
+/** The checked module of a program of one file, whose text is an override, never on disk. */
+function checked(text: string): Module {
+    const path = "/ore-escape-test/test.ore"
+    const options = new LoadOptions()
+    options.overrides.set(path, text)
+    const program = loadProgram(path, options)
+    if (program instanceof Error) fail(program.message)
+    for (const d of program.diagnostics) fail(`unexpected diagnostic: ${d.message}`)
+    const { module, diagnostics } = check(program)
+    for (const d of diagnostics) fail(`unexpected diagnostic: ${d.message}`)
+    if (module === null) fail("no module")
+    return module
+}
+
+/** What `main` places on the stack: "Vec" for instances, "object" for literals, "closure", or the name of a boxed local. */
+function stack(body: string, inline = false): string {
+    const module = checked(`${vec}\nexport function main() {\n${body}\n}\n`)
+    if (inline) inlineCalls(module)
+    // The program's main, not the runtime's.
+    const main = module.functions.find((f) => f.sourceName === "main" && f.exported)
+    if (main === null) fail("no main")
+    const slots = planStack(module).slots.get(main) ?? []
+    const names: string[] = []
+    for (const n of slots) {
+        if (n instanceof Local) names.push(n.name)
+        else if (n instanceof Call) {
+            const result = n.func.type.result
+            names.push(result.kind === "struct" ? (result.name ?? "") : "call")
+        } else if (n instanceof ObjectLit) names.push("object")
+        else if (n instanceof Closure) names.push("closure")
+    }
+    return names.join(" ")
+}
+
+function placed(body: string, want: string, inline = false) {
+    const got = stack(body, inline)
+    if (got !== want) fail(`${body}${inline ? " (inlined)" : ""}: expected [${want}] on the stack, got [${got}]`)
+}
+
+test("objects used in place live on the stack", () => {
+    placed("const v = new Vec(1, 2); console.log(v.x + sum(v) + v.len())", "Vec")
+    placed("const v = new Vec(1, 2); const o = { v, n: 1 }; console.log(o.v.x)", "Vec object")
+    placed("console.log(sum(new Vec(1, 2)))", "Vec")
+})
+
+test("objects that may outlive the call stay on the heap", () => {
+    placed("const v = new Vec(1, 2); const a = [v]", "")
+    placed("const v = new Vec(1, 2); keep(v)", "")
+    placed("const v = new Vec(1, 2); v.me()", "")
+    placed("const v = new Vec(1, 2); const o = { v }; keep(o.v)", "")
+    placed("const o = { v: new Vec(1, 2) }; const w = new Vec(3, 4); o.v = w", "object Vec")
+    placed("let v = new Vec(1, 2); v = new Vec(3, 4); console.log(v.x)", "")
+    placed("const v = new Vec(1, 2); const f = () => v.x; console.log(f())", "closure")
+})
+
+test("closures called in place keep captured locals on the stack", () => {
+    placed("let n = 0; [1, 2].forEach((x) => (n += x)); console.log(n)", "closure n")
+    placed("let n = 0; const f = () => n++; f(); console.log(n)", "closure n")
+    placed("let n = 0; task.spawn(() => n++)", "")
+    placed("let n = 0; const fs = [() => n++]", "")
+})
+
+test("values are followed through locals and field reads", () => {
+    placed("const v = new Vec(1, 2); const w = v; console.log(w.x)", "Vec")
+    placed("const v = new Vec(1, 2); const w = v; keep(w)", "")
+    placed("const o = { v: new Vec(1, 2) }; const w = o.v; console.log(w.x)", "object Vec")
+    placed("const o = { v: new Vec(1, 2) }; const w = o.v; keep(w)", "")
+    placed("const a = new Vec(1, 2); const b = new Vec(3, 4); const c = a.x > 1 ? a : b; keep(c)", "")
+})
+
+test("inlining keeps objects created by small callees on the stack", () => {
+    const body = "const a = new Vec(1, 2); const b = a.plus(new Vec(3, 4)); console.log(sum(b))"
+    placed(body, "Vec Vec")
+    placed(body, "Vec Vec Vec", true)
+    placed("const a = new Vec(1, 2); const all = [a.plus(a)]", "Vec", true)
+})
+
+test("inlining keeps references to globals", () => {
+    const module = checked(
+        'const names = ["a", "b"]\nfunction known(n: string): bool { return names.includes(n) }\nconsole.log(known("a"))\n',
+    )
+    inlineCalls(module)
+    const init = module.inits[module.inits.length - 1]
+    const globals: Local[] = []
+    let uses = 0
+    visitLocals(init.body, (local) => {
+        if (local.name !== "names") return
+        uses++
+        if (!globals.includes(local)) globals.push(local)
+    })
+    // The declaration and the inlined use refer to one global.
+    expect(uses > 1).toBe(true)
+    expect(globals.length).toBe(1)
+    expect(globals[0].global).toBe(true)
+})

@@ -150,19 +150,44 @@ export function sample(): Module {
     const voidType = types.void
 
     const other = new InterfaceType(6, "Other<i64>", [])
-    const shape = new InterfaceType(3, "Shape", [new InterfaceField("area", tF64, true), new InterfaceMethod("scale", fn([tF64], other))])
+    const shape = new InterfaceType(3, "Shape", [
+        new InterfaceField("area", tF64, true),
+        new InterfaceMethod("scale", fn([tF64], other)),
+    ])
     const point = new StructType(1, "Point", true, [], [])
     const anon = new StructType(2, null, false, [new Field("a", tString, false)], [])
-    const pair = new StructType(9, "Pair<i64, string>", false, [new Field("a", tI64, true), new Field("b", tString, false)], [])
+    const pair = new StructType(
+        9,
+        "Pair<i64, string>",
+        false,
+        [new Field("a", tI64, true), new Field("b", tString, false)],
+        [],
+    )
     const maybe = new UnionType(7, [tI64, types.null], "MaybeInt")
-    const mixed = new UnionType(8, [new LiteralType("a\"b"), fn([tI64], voidType), point, types.null])
+    const mixed = new UnionType(8, [new LiteralType('a"b'), fn([tI64], voidType), point, types.null])
     const map = new MapType(tString, tI64)
     const chan = new ChanType(tI64)
 
     const self = new Local(0, "this", point, false)
-    const norm = new Func("Point_norm", "norm", 3, fn([], tF64), [], block([new ReturnStmt(new FieldGet(tF64, ref(self), "x"))]), false)
+    const norm = new Func(
+        "Point_norm",
+        "norm",
+        3,
+        fn([], tF64),
+        [],
+        block([new ReturnStmt(new FieldGet(tF64, ref(self), "x"))]),
+        false,
+    )
     norm.receiver = self
-    const ctor = new Func("Point_new", "constructor", 2, fn([tF64], point), [new Local(1, "x", tF64, false)], block([new ReturnStmt(new Alloc(point))]), false)
+    const ctor = new Func(
+        "Point_new",
+        "constructor",
+        2,
+        fn([tF64], point),
+        [new Local(1, "x", tF64, false)],
+        block([new ReturnStmt(new Alloc(point))]),
+        false,
+    )
     point.fields = [new Field("x", tF64, true), new Field("secret", tI64, false, true)]
     point.methods = [new Method("norm", norm, false), new Method("hidden", norm, true)]
     point.ctor = ctor
@@ -170,9 +195,30 @@ export function sample(): Module {
     point3.base = point
     const itab = new Itab(0, point, shape)
 
-    const puts = new Func("puts", "puts", 1, fn([tString], types.i32), [new Local(2, "s", tString, false)], block([]), false, "c.ore", true, types.ptr)
+    const puts = new Func(
+        "puts",
+        "puts",
+        1,
+        fn([tString], types.i32),
+        [new Local(2, "s", tString, false)],
+        block([]),
+        false,
+        "c.ore",
+        true,
+        types.ptr,
+    )
     // Another declaration of the C function, as another module may make: references say which one.
-    const putsPtr = new Func("puts", "puts", 2, fn([types.ptr], types.i32), [new Local(3, "p", types.ptr, false)], block([]), false, "d.ore", true)
+    const putsPtr = new Func(
+        "puts",
+        "puts",
+        2,
+        fn([types.ptr], types.i32),
+        [new Local(3, "p", types.ptr, false)],
+        block([]),
+        false,
+        "d.ore",
+        true,
+    )
 
     const n = new Local(10, "n", tI64, true, true, true)
     const xs = new Local(11, "xs", arrayOf(tI64), false)
@@ -205,7 +251,7 @@ export function sample(): Module {
         float(-0.0 * 1.0),
         new FloatLit(types.f32, 1e21),
         bool(true),
-        str("tab\tquote\"back\\slash\nnul\u0001é"),
+        str('tab\tquote"back\\slash\nnul\u0001é'),
         new StringLit(new LiteralType("lit"), "lit"),
         new Assign(tI64, new LocalLValue(n), int(1), "+"),
         new Assign(tI64, new ElementLValue(ref(xs), int(0)), int(2)),
@@ -282,7 +328,10 @@ export function sample(): Module {
         new LoopStmt(2, false, true, block([])),
         new ForOfStmt(3, false, v, ref(xs), block([])),
         new ForOfStmt(4, true, k, ref(k), block([]), v),
-        new SwitchStmt(5, false, true, k, str("a"), [new SwitchClause([new BreakStmt()], str("a")), new SwitchClause([])]),
+        new SwitchStmt(5, false, true, k, str("a"), [
+            new SwitchClause([new BreakStmt()], str("a")),
+            new SwitchClause([]),
+        ]),
         new UsingStmt(s, ref(s), new ExprStmt(new Call(voidType, norm, [])), [new ReturnStmt(int(1))]),
     ]
     for (const e of exprs) body.push(new ExprStmt(e))
@@ -297,7 +346,22 @@ export function sample(): Module {
         true,
     )
     main.attributes = new FuncAttributes(true, true, true, "ore_main", "main", true)
-    const init = new Func("init_test", "<init>", 1, fn([], voidType), [], block([withLine(new LetStmt(g, int(1)), 1)]), false)
+    const init = new Func(
+        "init_test",
+        "<init>",
+        1,
+        fn([], voidType),
+        [],
+        block([withLine(new LetStmt(g, int(1)), 1)]),
+        false,
+    )
     init.attributes = new FuncAttributes()
-    return new Module("test.ore", [norm, ctor, puts, putsPtr, closure, main], [init], [point, anon, pair, point3], [itab], [maybe, mixed])
+    return new Module(
+        "test.ore",
+        [norm, ctor, puts, putsPtr, closure, main],
+        [init],
+        [point, anon, pair, point3],
+        [itab],
+        [maybe, mixed],
+    )
 }

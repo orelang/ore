@@ -1,0 +1,297 @@
+// The cases of programs: built by the compiler in Ore in this process, run,
+// and checked against their expected output (tests/run, tests/async, the
+// tests of the compiler), or checked for the errors they are annotated with
+// (tests/diag); and what the runtime and the driver must do beyond that
+// (the watchdog, an executable from LLVM IR).
+
+import { basename, join } from "ore:path"
+import { fail } from "ore:test"
+import { check } from "../../compiler/next/src/checker/checker"
+import { build, BuildOptions, buildIr, compileToIr } from "../../compiler/next/src/driver/build"
+import { NativeCode } from "../../compiler/next/src/driver/native"
+import { loadProgram } from "../../compiler/next/src/project/load"
+import { formatDiagnostic } from "../../compiler/next/src/syntax/diagnostic"
+import { Case, difference, entries, expectRun, filesBelow, header, quote, read, runProgram } from "./cases"
+
+/** Whether Ore implements async yet; until then the async programs are skipped. */
+const asyncImplemented = false
+
+/** Where the cases write executables and other files. */
+export class Settings {
+    constructor(
+        readonly work: string,
+        /** ORE_BLESS=1: write the actual output of run tests to their .out files. */
+        readonly bless: bool,
+    ) {}
+}
+
+/** Builds a program into `output` with the compiler in Ore; fails on diagnostics. */
+function buildProgram(entry: string, output: string): void {
+    const result = build(entry, new BuildOptions(output))
+    if (result instanceof Error) fail(`${entry} does not build: ${result.message}`)
+    if (result.diagnostics.length > 0 || !result.ok) {
+        const shown: string[] = []
+        for (const d of result.diagnostics) shown.push(formatDiagnostic(d))
+        fail(`${entry} does not build:\n${shown.join("\n")}`)
+    }
+}
+
+/** An executable's path in the work directory for a test file. */
+function executable(settings: Settings, group: string, file: string): string {
+    return join(settings.work, `${group}_${file.replace(".ore", "").replaceAll("/", "_")}`)
+}
+
+/** A program built and run, checked against its .out file and its header comments. */
+function runCase(settings: Settings, group: string, dir: string, file: string): void {
+    const path = join(dir, file)
+    const source = read(path)
+    const output = executable(settings, group, file)
+    buildProgram(path, output)
+    const env = new Map<string, string>()
+    env.set("ORE_THREADS", header(source, "threads", "1"))
+    const run = runProgram(output, env)
+    const out = `${path.slice(0, path.length - 4)}.out`
+    if (settings.bless) {
+        const written = fs.writeFile(out, run.stdout)
+        if (written !== null) fail(written.message)
+    }
+    expectRun(source, out, fs.exists(out) ? read(out) : "", run)
+}
+
+/** tests/run: every program built and run; stdout must equal NAME.out. */
+export function runCases(settings: Settings): Case[] {
+    const cases: Case[] = []
+    for (const file of entries("tests/run"))
+        cases.push(new Case(`run/${file}`, () => runCase(settings, "run", "tests/run", file)))
+    return cases
+}
+
+/**
+ * tests/async: programs whose expected output is Bun's (tests/async/bun-shim.ts
+ * provided Ore's `time` and `task.microtask`): the order of microtasks and
+ * timers must be JavaScript's. Skipped until Ore has async.
+ */
+export function asyncCases(settings: Settings): Case[] {
+    const cases: Case[] = []
+    for (const name of filesBelow("tests/async", ".ore")) {
+        const file = name.slice("tests/async/".length)
+        const skip = asyncImplemented ? "" : "Ore has no async yet"
+        cases.push(new Case(`async/${file}`, () => runCase(settings, "async", "tests/async", file), skip))
+    }
+    return cases
+}
+
+/**
+ * tests/diag: every program must fail to check, with each diagnostic on a
+ * line annotated `// error: <part of the message>` and every annotation
+ * matched. An annotation alone on its line belongs to the nearest line above
+ * with code or an `//ore:` directive, as `ore fmt` moves comments after `{`
+ * into the block. Annotations can be in any module of the program.
+ */
+function diagCase(file: string): void {
+    const path = join("tests/diag", file)
+    const program = loadProgram(path)
+    if (program instanceof Error) fail(program.message)
+    const diagnostics = program.diagnostics.slice()
+    if (!program.syntaxErrors) for (const d of check(program).diagnostics) diagnostics.push(d)
+
+    // Annotations by module and line.
+    const expected = new Map<string, string[]>()
+    let count = 0
+    for (const source of program.modules) {
+        const lines = source.text.split("\n")
+        let code = 0
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i]
+            const trimmed = line.trimStart()
+            // An `//ore:` directive counts as code: its errors are reported on it.
+            const alone = trimmed.startsWith("//") && !trimmed.startsWith("//ore:")
+            if (!alone && line.trim() !== "") code = i
+            const at = line.indexOf("// error: ")
+            if (at < 0) continue
+            const key = `${source.path}:${alone ? code : i}`
+            const list = expected.get(key) ?? []
+            list.push(line.slice(at + "// error: ".length).trim())
+            expected.set(key, list)
+            count++
+        }
+    }
+    if (count === 0) fail(`${path} has no '// error: ' annotations`)
+
+    const unexpected: string[] = []
+    for (const d of diagnostics) {
+        const line = d.source.position(d.start).line
+        const key = `${d.source.path}:${line}`
+        const annotations = expected.get(key) ?? []
+        let index = -1
+        for (let i = 0; i < annotations.length && index < 0; i++) if (d.message.includes(annotations[i])) index = i
+        if (index < 0) unexpected.push(`${basename(d.source.path)}:${line + 1}: ${d.message}`)
+        else
+            expected.set(
+                key,
+                annotations.filter((_, i) => i !== index),
+            )
+    }
+    const missing: string[] = []
+    for (const [key, rest] of expected) for (const a of rest) missing.push(`${basename(key)}: ${a}`)
+    if (unexpected.length > 0 || missing.length > 0) {
+        const parts: string[] = []
+        if (unexpected.length > 0) parts.push(`unexpected diagnostics:\n        ${unexpected.join("\n        ")}`)
+        if (missing.length > 0) parts.push(`annotations without a diagnostic:\n        ${missing.join("\n        ")}`)
+        fail(parts.join("\n      "))
+    }
+}
+
+export function diagCases(): Case[] {
+    const cases: Case[] = []
+    for (const file of entries("tests/diag")) cases.push(new Case(`diag/${file}`, () => diagCase(file)))
+    return cases
+}
+
+/** The tests of the compiler in Ore (`*.test.ore` with "ore:test"), built and run as `ore test` runs them. */
+export function unitCases(settings: Settings): Case[] {
+    const cases: Case[] = []
+    for (const path of filesBelow("compiler/next/test", ".test.ore")) {
+        const name = path.slice("compiler/next/test/".length)
+        cases.push(
+            new Case(`unit/${name}`, () => {
+                const output = executable(settings, "unit", name)
+                buildProgram(path, output)
+                const run = runProgram(output, new Map<string, string>())
+                if (run.code !== 0 || run.stderr !== "" || !run.stdout.includes(" 0 failed")) {
+                    fail(`exit status ${run.code}\n${run.stdout}\n      stderr: ${quote(run.stderr)}`)
+                }
+            }),
+        )
+    }
+    return cases
+}
+
+/** Builds a program from its text in a directory of its own. */
+function buildText(settings: Settings, name: string, text: string): string {
+    const dir = join(settings.work, name)
+    const made = fs.mkdir(dir, true)
+    if (made !== null) fail(made.message)
+    const written = fs.writeFile(join(dir, "main.ore"), text)
+    if (written !== null) fail(written.message)
+    const output = join(dir, "main")
+    buildProgram(join(dir, "main.ore"), output)
+    return output
+}
+
+/**
+ * ORE_WATCHDOG: a program that makes no progress is reported, with the
+ * scheduler's state and the stacks of its threads, and ends with status 3;
+ * one that ends in time ends normally.
+ */
+export function watchdogCases(settings: Settings): Case[] {
+    const blocked = new Case("watchdog/a program blocked on its standard input is reported", () => {
+        const program = buildText(
+            settings,
+            "watchdog-blocked",
+            'console.log("waiting")\nconst data = fs.read(0, 1)\nconsole.log(data instanceof Error)\n',
+        )
+        // Standard input is a pipe that nobody writes to or closes while the program runs.
+        const command = new process.Command("sh", ["-c", 'sleep 4 | "$0"', program])
+        command.env.set("ORE_WATCHDOG", "1")
+        command.env.set("ORE_THREADS", "2")
+        const run = command.output()
+        if (run instanceof Error) fail(run.message)
+        const problems: string[] = []
+        if (run.code !== 3) problems.push(`exit status ${run.code}, expected 3`)
+        // Output printed before the program got stuck is flushed.
+        if (run.stdout !== "waiting\n") problems.push(`stdout ${quote(run.stdout)}`)
+        const parts = [
+            "watchdog: no task ran and nothing was allocated for 1 s",
+            "in blocking calls 1",
+            "native stacks:",
+            "fdRead",
+        ]
+        for (const part of parts)
+            if (!run.stderr.includes(part)) problems.push(`stderr does not contain ${quote(part)}`)
+        if (problems.length > 0) fail(`${problems.join("\n      ")}\n      stderr: ${quote(run.stderr)}`)
+    })
+    const inTime = new Case("watchdog/a program that ends in time ends", () => {
+        const program = buildText(settings, "watchdog-in-time", 'task.sleep(1500)\nconsole.log("done")\n')
+        const env = new Map<string, string>()
+        env.set("ORE_WATCHDOG", "3")
+        const run = runProgram(program, env)
+        if (run.code !== 0 || run.stdout !== "done\n") fail(`exit status ${run.code}, stdout ${quote(run.stdout)}`)
+    })
+    return [blocked, inTime]
+}
+
+/**
+ * An executable from LLVM IR, as `ore-next object` builds it: the IR of a
+ * program with C sources, compiled in release with the sources and a
+ * library given separately; and IR that does not verify, an error with
+ * LLVM's position.
+ */
+export function objectCases(settings: Settings): Case[] {
+    const ffi = new Case("object/an executable from LLVM IR and C sources", () => {
+        const path = "tests/run/modules/ffi/main.ore"
+        const compiled = compileToIr(path, true)
+        if (compiled instanceof Error) fail(compiled.message)
+        const ir = compiled.ir
+        const native = compiled.native
+        if (ir === null || native === null) fail(`${path} does not compile`)
+        const output = join(settings.work, "object-ffi")
+        const given = new NativeCode()
+        for (const source of native.sources) given.sources.push(source)
+        given.link.push("m")
+        given.libDirs.push("/usr/lib")
+        const error = buildIr(ir, `${output}.ll`, given, new BuildOptions(output, true))
+        if (error !== null) fail(error.message)
+        expectRun(
+            read(path),
+            "tests/run/modules/ffi/main.out",
+            read("tests/run/modules/ffi/main.out"),
+            runProgram(output, new Map<string, string>()),
+        )
+    })
+    const invalid = new Case("object/LLVM IR that does not verify is an error at its position", () => {
+        const output = join(settings.work, "object-bad")
+        const name = `${output}-bad.ll`
+        const error = buildIr(
+            "define i32 @main() {\n  ret i64 0\n}\n",
+            name,
+            new NativeCode(),
+            new BuildOptions(output),
+        )
+        if (error === null) fail("no error")
+        if (!error.message.includes(`invalid LLVM IR: ${name}:2:7: error:`))
+            fail(`the error is ${quote(error.message)}`)
+    })
+    return [ffi, invalid]
+}
+
+/** Runs a program with arguments; fails unless it succeeds without writing to stderr. */
+function succeed(program: string, args: string[]): string {
+    const run = new process.Command(program, args).output()
+    if (run instanceof Error) fail(run.message)
+    if (run.code !== 0 || run.stderr !== "") {
+        fail(`${program} ${args.join(" ")}: exit status ${run.code}, stderr ${quote(run.stderr)}`)
+    }
+    return run.stdout
+}
+
+/**
+ * The compiler in Ore built by itself, from compiler/next/src/main.ore, and
+ * run as `ore`: it formats a file as the formatter in this process does, and
+ * builds a program that runs.
+ */
+export function selfhostCases(settings: Settings): Case[] {
+    const selfhost = new Case("selfhost/compiler/next/src/main.ore builds and runs", () => {
+        const ore = join(settings.work, "ore")
+        buildProgram("compiler/next/src/main.ore", ore)
+        const file = "compiler/next/src/driver/build.ore"
+        const formatted = succeed(ore, ["fmt", "--stdout", file])
+        if (formatted !== read(file)) fail(difference("the output of ore fmt --stdout", read(file), formatted))
+        const hello = join(settings.work, "selfhost-hello")
+        succeed(ore, ["build", "tests/run/basics/hello.ore", "-o", hello])
+        const out = succeed(hello, [])
+        if (out !== read("tests/run/basics/hello.out"))
+            fail(difference("stdout", read("tests/run/basics/hello.out"), out))
+    })
+    return [selfhost]
+}

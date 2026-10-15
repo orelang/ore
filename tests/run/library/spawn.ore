@@ -22,7 +22,7 @@ const dir = fs.mkdtemp("ore-spawn-")
 if (dir instanceof Error) process.panic(dir.message)
 const real = fs.realpath(dir)
 if (real instanceof Error) process.panic(real.message)
-const cmd = new process.Command("sh", ["-c", "pwd; echo \"$GREETING $NAME\"; test -n \"$HOME\" && echo home"])
+const cmd = new process.Command("sh", ["-c", 'pwd; echo "$GREETING $NAME"; test -n "$HOME" && echo home'])
 cmd.cwd = dir
 cmd.env.set("GREETING", "hi")
 cmd.env.set("NAME", "ore")
@@ -50,9 +50,16 @@ console.log(JSON.stringify(must(head.output()).stdout))
 
 // More than a pipe holds, on both pipes at once, in both orders: reading one
 // pipe to its end before the other would deadlock.
-const big = must(process.output("sh", ["-c", "head -c 3000000 /dev/zero | tr '\\0' a >&2; head -c 2000000 /dev/zero | tr '\\0' b"]))
+const big = must(
+    process.output("sh", ["-c", "head -c 3000000 /dev/zero | tr '\\0' a >&2; head -c 2000000 /dev/zero | tr '\\0' b"]),
+)
 console.log(big.stdout.length, big.stderr.length, big.stdout[0] === 0x62, big.stderr[2999999] === 0x61)
-const mixed = must(process.output("sh", ["-c", "for i in 1 2 3 4 5 6 7 8; do head -c 300000 /dev/zero >&2; head -c 300000 /dev/zero; done"]))
+const mixed = must(
+    process.output("sh", [
+        "-c",
+        "for i in 1 2 3 4 5 6 7 8; do head -c 300000 /dev/zero >&2; head -c 300000 /dev/zero; done",
+    ]),
+)
 console.log(mixed.stdout.length, mixed.stderr.length)
 // A large input echoed back: written and read at the same time.
 const echoBack = new process.Command("cat")

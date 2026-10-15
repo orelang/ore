@@ -27,7 +27,11 @@ type ContentChange = { range: Range | null; text: string }
 type DidChangeParams = { textDocument: { uri: string; version: int | null }; contentChanges: ContentChange[] }
 type DidCloseParams = { textDocument: TextDocumentIdentifier }
 type PositionParams = { textDocument: TextDocumentIdentifier; position: Position }
-type ReferenceParams = { textDocument: TextDocumentIdentifier; position: Position; context: { includeDeclaration: bool } }
+type ReferenceParams = {
+    textDocument: TextDocumentIdentifier
+    position: Position
+    context: { includeDeclaration: bool }
+}
 type RenameParams = { textDocument: TextDocumentIdentifier; position: Position; newName: string }
 
 type LspDiagnostic = { range: Range; severity: int; source: string; message: string }
@@ -276,7 +280,8 @@ export class Server {
         for (const file of files) {
             const analysis = this.fresh(pathToUri(file))
             if (analysis === null) continue
-            for (const r of analysis.references(key)) found.set(`${r.path}:${r.range.start.line}:${r.range.start.character}`, r)
+            for (const r of analysis.references(key))
+                found.set(`${r.path}:${r.range.start.line}:${r.range.start.character}`, r)
         }
         return found.values()
     }
@@ -305,7 +310,8 @@ export class Server {
         const items: { label: string; kind: int; detail: string }[] = []
         if (document !== null) {
             const analysis = analyze(uriToPath(document.uri), document.text)
-            for (const c of analysis.completions(p.position)) items.push({ label: c.label, kind: c.kind === "method" ? kindMethod : kindField, detail: c.detail })
+            for (const c of analysis.completions(p.position))
+                items.push({ label: c.label, kind: c.kind === "method" ? kindMethod : kindField, detail: c.detail })
         }
         this.connection.respond(m.id, JSON.stringify(items))
     }
@@ -328,7 +334,8 @@ export class Server {
         const symbol = analysis === null ? null : analysis.symbolAt(p.position)
         if (symbol !== null) {
             for (const r of this.workspaceReferences(p.textDocument.uri, symbol.key)) {
-                if (p.context.includeDeclaration || !r.declaration) locations.push({ uri: pathToUri(r.path), range: r.range })
+                if (p.context.includeDeclaration || !r.declaration)
+                    locations.push({ uri: pathToUri(r.path), range: r.range })
             }
         }
         this.connection.respond(m.id, JSON.stringify(locations))

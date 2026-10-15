@@ -98,7 +98,23 @@ import { checkCall, checkNew } from "./calls"
 import { accessor, checkAccess, conformance, declaringClass, dispatch, genericMethod } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
 import { foldBinary, foldUnary } from "./fold"
-import { arithOps, numericType, poison, canBeNull, compareOps, compoundOps, fieldType, isNull, memberField, isString, nullOperand, numericLiteral, typed, typeOf, unknownName } from "./helpers"
+import {
+    arithOps,
+    numericType,
+    poison,
+    canBeNull,
+    compareOps,
+    compoundOps,
+    fieldType,
+    isNull,
+    memberField,
+    isString,
+    nullOperand,
+    numericLiteral,
+    typed,
+    typeOf,
+    unknownName,
+} from "./helpers"
 import { type Operand, errorOperand, Typed, untypedOf } from "./operand"
 import {
     addFacts,
@@ -136,17 +152,28 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
     if (k === "ObjectLiteralExpression") return checkObjectLiteral(c, node, scope, expected)
     // The source spelling decides int vs float.
     if (k === "NumericLiteral") return numericLiteral(c.text(node))
-    if (k === "StringLiteral" || k === "NoSubstitutionTemplateLiteral") return typed(new StringLit(types.string, literalText(node)))
+    if (k === "StringLiteral" || k === "NoSubstitutionTemplateLiteral")
+        return typed(new StringLit(types.string, literalText(node)))
     if (k === "TrueKeyword" || k === "FalseKeyword") return typed(new BoolLit(types.bool, k === "TrueKeyword"))
     if (isIdentifier(node)) return checkIdentifier(c, node, scope)
     if (k === "ThisKeyword") {
         const fn = c.fn
         const self = fn !== null ? fn.thisLocal : null
-        if (self === null) return c.fail(node, fn !== null && fn.fieldInit ? "Field initializers cannot use 'this'." : "'this' can only be used inside a class.")
+        if (self === null)
+            return c.fail(
+                node,
+                fn !== null && fn.fieldInit
+                    ? "Field initializers cannot use 'this'."
+                    : "'this' can only be used inside a class.",
+            )
         capture(self, fn!.thisCaptures ?? [])
         return typed(new LocalRef(self.type, self))
     }
-    if (k === "SuperKeyword") return c.fail(node, "'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'.")
+    if (k === "SuperKeyword")
+        return c.fail(
+            node,
+            "'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'.",
+        )
     if (k === "NewExpression") return checkNew(c, node, scope, expected)
     if (k === "BinaryExpression") {
         const op = operatorToken(node).kind
@@ -154,10 +181,12 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         return checkBinary(c, node, scope)
     }
     if (k === "PrefixUnaryExpression") return checkPrefixUnary(c, node, scope)
-    if (k === "PostfixUnaryExpression") return checkIncDec(c, operand(node), postfixOperator(node, c.sourceOf(node).text), false, scope)
+    if (k === "PostfixUnaryExpression")
+        return checkIncDec(c, operand(node), postfixOperator(node, c.sourceOf(node).text), false, scope)
     if (k === "CallExpression") return checkCall(c, node, scope)
     if (k === "ConditionalExpression") return checkConditional(c, node, scope, expected)
-    if (k === "AsExpression") return c.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
+    if (k === "AsExpression")
+        return c.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
     if (k === "TemplateExpression") return checkTemplate(c, node, scope)
     if (k === "PropertyAccessExpression") return checkProperty(c, node, scope)
     if (k === "ElementAccessExpression") return checkElement(c, node, scope)
@@ -218,7 +247,8 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
         case "module":
             return c.fail(node, `'${node.text}' is a module; use its exports, e.g. '${node.text}.name'.`)
         case "func":
-            if (symbol.func.extern) return c.fail(node, `External function '${symbol.func.name}' cannot be used as a value.`)
+            if (symbol.func.extern)
+                return c.fail(node, `External function '${symbol.func.name}' cannot be used as a value.`)
             return typed(new FuncRef(symbol.func.type, symbol.func))
         default:
             return c.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)
@@ -236,16 +266,27 @@ export function checkBinary(c: Checker, node: Node, scope: Scope): Operand {
         const strict = op === "EqualsEqualsToken" ? "===" : "!=="
         return c.fail(opNode, `'${c.text(opNode)}' is not supported in Ore. Use '${strict}'.`)
     }
-    if (op === "GreaterThanGreaterThanGreaterThanToken") return c.fail(opNode, "'>>>' is not supported in Ore. Use '>>' on an unsigned type.")
+    if (op === "GreaterThanGreaterThanGreaterThanToken")
+        return c.fail(opNode, "'>>>' is not supported in Ore. Use '>>' on an unsigned type.")
     if (op === "AmpersandAmpersandToken" || op === "BarBarToken") {
         const l = checkCondition(c, left(node), scope)
         const r = checkCondition(c, right(node), scope)
         return typed(new Logical(types.bool, op === "AmpersandAmpersandToken" ? "&&" : "||", l, r))
     }
     const arithOp = arithOps.get(op)
-    if (arithOp !== null) return arith(c, arithOp, checkExpr(c, left(node), scope), checkExpr(c, right(node), scope), node)
+    if (arithOp !== null)
+        return arith(c, arithOp, checkExpr(c, left(node), scope), checkExpr(c, right(node), scope), node)
     const compareOp = compareOps.get(op)
-    if (compareOp !== null) return compare(c, compareOp, checkExpr(c, left(node), scope), checkExpr(c, right(node), scope), opNode, left(node), right(node))
+    if (compareOp !== null)
+        return compare(
+            c,
+            compareOp,
+            checkExpr(c, left(node), scope),
+            checkExpr(c, right(node), scope),
+            opNode,
+            left(node),
+            right(node),
+        )
     if (op === "CommaToken") return c.fail(opNode, "The comma operator is not supported in Ore.")
     if (op === "QuestionQuestionToken") return checkCoalesce(c, node, scope)
     if (op === "AsteriskAsteriskToken") return c.fail(opNode, "'**' is not supported yet.")
@@ -273,13 +314,17 @@ export function arith(c: Checker, op: ArithOp, l: Operand, r: Operand, node: Nod
         const lt = typeOf(le)
         const rt = typeOf(re)
         if (lt.kind !== "int" || rt.kind !== "int") {
-            return c.fail(opNode, `Operator '${op}' requires integer operands, got '${typeToString(lt)}' and '${typeToString(rt)}'.`)
+            return c.fail(
+                opNode,
+                `Operator '${op}' requires integer operands, got '${typeToString(lt)}' and '${typeToString(rt)}'.`,
+            )
         }
         return typed(new Arith(lt, op, le, re))
     }
 
     if (op === "+" && (isString(l) || isString(r))) {
-        if (!isString(l) || !isString(r)) return c.fail(opNode, "Only strings can be concatenated with '+'. Use a template literal: `${a}${b}`.")
+        if (!isString(l) || !isString(r))
+            return c.fail(opNode, "Only strings can be concatenated with '+'. Use a template literal: `${a}${b}`.")
         return typed(new Concat(types.string, [typedExpr(l), typedExpr(r)]))
     }
     const unified = c.unify(l, r, left(node), right(node))
@@ -288,12 +333,16 @@ export function arith(c: Checker, op: ArithOp, l: Operand, r: Operand, node: Nod
     if (le === null || re === null) return errorOperand
     const type = typeOf(le)
     if (!sameType(type, typeOf(re))) {
-        return c.fail(opNode, `Operator '${op}' cannot be applied to types '${typeToString(type)}' and '${typeToString(typeOf(re))}'. Convert one side explicitly, e.g. '${typeToString(type)}(x)'.`)
+        return c.fail(
+            opNode,
+            `Operator '${op}' cannot be applied to types '${typeToString(type)}' and '${typeToString(typeOf(re))}'. Convert one side explicitly, e.g. '${typeToString(type)}(x)'.`,
+        )
     }
     if (type.kind === "string" && op === "+") return typed(new Concat(types.string, [le, re]))
     if (type.kind === "int") return typed(new Arith(type, op, le, re))
     if (type.kind === "float") {
-        if (op === "&" || op === "|" || op === "^") return c.fail(opNode, `Operator '${op}' requires integer operands, got '${type.name}'.`)
+        if (op === "&" || op === "|" || op === "^")
+            return c.fail(opNode, `Operator '${op}' requires integer operands, got '${type.name}'.`)
         return typed(new Arith(type, op, le, re))
     }
     return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
@@ -308,10 +357,31 @@ function typedExpr(value: Operand): Expr {
 function isEquatable(type: Type): bool {
     if (isNumeric(type)) return true
     const k = type.kind
-    return k === "bool" || k === "string" || k === "array" || k === "struct" || k === "interface" || k === "union" || k === "map" || k === "set" || k === "literal" || k === "func" || k === "ptr" || k === "chan"
+    return (
+        k === "bool" ||
+        k === "string" ||
+        k === "array" ||
+        k === "struct" ||
+        k === "interface" ||
+        k === "union" ||
+        k === "map" ||
+        k === "set" ||
+        k === "literal" ||
+        k === "func" ||
+        k === "ptr" ||
+        k === "chan"
+    )
 }
 
-export function compare(c: Checker, op: CompareOp, l: Operand, r: Operand, opNode: Node, leftNode: Node, rightNode: Node): Operand {
+export function compare(
+    c: Checker,
+    op: CompareOp,
+    l: Operand,
+    r: Operand,
+    opNode: Node,
+    leftNode: Node,
+    rightNode: Node,
+): Operand {
     if (l.k === "error" || r.k === "error") return errorOperand
     const ul = untypedOf(l)
     const ur = untypedOf(r)
@@ -328,7 +398,10 @@ export function compare(c: Checker, op: CompareOp, l: Operand, r: Operand, opNod
         const oe = other.expr
         const value = oe.k === "recast" && canBeNull(oe.value.type) ? oe.value : oe
         if (!canBeNull(value.type)) {
-            return c.fail(opNode, `Type '${typeToString(value.type)}' cannot be null, so this comparison is always ${op === "!=="}.`)
+            return c.fail(
+                opNode,
+                `Type '${typeToString(value.type)}' cannot be null, so this comparison is always ${op === "!=="}.`,
+            )
         }
         const test: Expr = new IsNull(types.bool, value)
         return typed(op === "===" ? test : new Not(types.bool, test))
@@ -351,7 +424,8 @@ export function compare(c: Checker, op: CompareOp, l: Operand, r: Operand, opNod
     const lt = le.type
     const rt = re.type
     const related = lt.kind === "struct" && rt.kind === "struct" && (isSubclass(lt, rt) || isSubclass(rt, lt))
-    if (!sameType(type, typeOf(re)) && !related) return c.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(re))}'.`)
+    if (!sameType(type, typeOf(re)) && !related)
+        return c.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(re))}'.`)
     const ordered = op !== "===" && op !== "!=="
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !isEquatable(type)) {
         return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
@@ -387,7 +461,14 @@ class Holder {
  * value from the old one (read by the getter, when `usesOld`), calls the
  * setter, and evaluates to the new value, or the old one for `x++`.
  */
-export function writeAccessor(c: Checker, target: AssignTarget, node: Node, next: (old: () => Expr) => Expr | null, yieldOld: bool, usesOld: bool): Operand {
+export function writeAccessor(
+    c: Checker,
+    target: AssignTarget,
+    node: Node,
+    next: (old: () => Expr) => Expr | null,
+    yieldOld: bool,
+    usesOld: bool,
+): Operand {
     const access = target.accessor!
     const property = access.property
     const type = property.type
@@ -398,7 +479,8 @@ export function writeAccessor(c: Checker, target: AssignTarget, node: Node, next
         if (old === null) old = holder.hold(c, new MethodCall(type, property.get!, self, []))
         return old
     }
-    if ((yieldOld || usesOld) && property.get === null) return c.fail(node, `Property '${access.name}' has a setter but no getter.`)
+    if ((yieldOld || usesOld) && property.get === null)
+        return c.fail(node, `Property '${access.name}' has a setter but no getter.`)
     if (yieldOld) getOld()
     const value = next(getOld)
     if (value === null) return errorOperand
@@ -412,7 +494,10 @@ export function settle(c: Checker, local: Local, value: Operand, node: Node): bo
     if (value.k === "error") return false
     const type = typeOf(c.toDefault(value, node))
     if (type.kind === "void" || type.kind === "never" || type.kind === "null") {
-        c.error(node, `Cannot infer the type of '${local.name}' from this value. Add a type annotation, e.g. 'let ${local.name}: T'.`)
+        c.error(
+            node,
+            `Cannot infer the type of '${local.name}' from this value. Add a type annotation, e.g. 'let ${local.name}: T'.`,
+        )
         c.readEarly.add(local)
         return false
     }
@@ -432,7 +517,8 @@ export function narrowTo(c: Checker, key: string, declared: Type, actual: Type) 
 
 function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Scope): Operand {
     const target_ = left(node)
-    if (op === null && (target_.kind === "ArrayLiteralExpression" || target_.kind === "ObjectLiteralExpression")) return checkDestructuringAssign(c, node, scope)
+    if (op === null && (target_.kind === "ArrayLiteralExpression" || target_.kind === "ObjectLiteralExpression"))
+        return checkDestructuringAssign(c, node, scope)
     const target = assignTarget(c, target_, scope)
     // The first assignment of a variable declared without a type gives its type.
     const place = target !== null ? target.lvalue : null
@@ -441,7 +527,12 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
         c.readEarly.add(untyped)
         return c.fail(target_, `Variable '${untyped.name}' is used before being assigned.`)
     }
-    const value = checkExpr(c, right(node), scope, op !== null || untyped !== null || target === null ? null : target.type)
+    const value = checkExpr(
+        c,
+        right(node),
+        scope,
+        op !== null || untyped !== null || target === null ? null : target.type,
+    )
     if (target === null) return errorOperand
     if (untyped !== null) {
         if (!settle(c, untyped, value, right(node))) return errorOperand
@@ -449,7 +540,8 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     }
     if (target.accessor !== null) {
         if (value.k === "error") return value
-        if (op === null) return writeAccessor(c, target, node, (old) => c.coerce(value, target.type, right(node)), false, false)
+        if (op === null)
+            return writeAccessor(c, target, node, (old) => c.coerce(value, target.type, right(node)), false, false)
         const compoundOp = op
         return writeAccessor(
             c,
@@ -498,7 +590,14 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
     if (type === null) return c.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(target.type)}'.`)
     if (target.accessor !== null) {
         const one: Expr = type.kind === "int" ? new IntLit(type, 1) : new FloatLit(type, 1.0)
-        return writeAccessor(c, target, node, (old) => new Arith(type, op === "++" ? "+" : "-", old(), one), !prefix, true)
+        return writeAccessor(
+            c,
+            target,
+            node,
+            (old) => new Arith(type, op === "++" ? "+" : "-", old(), one),
+            !prefix,
+            true,
+        )
     }
     return typed(new IncDec(type, place!, op, prefix))
 }
@@ -568,7 +667,13 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         if (!checkAccess(c, struct, field.private, name, nameId)) return null
         // A constructor may initialize the read-only fields of its own instance.
         const fn = c.fn
-        const initializing = fn !== null && fn.ctor && fn.cls === struct && declaringClass(c, struct, name) === struct && object.k === "local" && object.local === fn.thisLocal
+        const initializing =
+            fn !== null &&
+            fn.ctor &&
+            fn.cls === struct &&
+            declaringClass(c, struct, name) === struct &&
+            object.k === "local" &&
+            object.local === fn.thisLocal
         if (field.readonly && !initializing) {
             c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
             return null
@@ -674,9 +779,17 @@ export function checkConditional(c: Checker, node: Node, scope: Scope, expected:
     const type = typeOf(then)
     if (sameType(type, typeOf(otherwise))) return typed(new Conditional(type, cond.expr, then, otherwise))
     // Branches of different types give their union, as in TypeScript.
-    if (type.kind === "void" || otherwise.type.kind === "void") return c.fail(node, "Branches of '?:' cannot be 'void'.")
+    if (type.kind === "void" || otherwise.type.kind === "void")
+        return c.fail(node, "Branches of '?:' cannot be 'void'.")
     const union = c.unionOf([type, otherwise.type])
-    return typed(new Conditional(union, cond.expr, c.coerce(typed(then), union, whenTrue(node)), c.coerce(typed(otherwise), union, whenFalse(node))))
+    return typed(
+        new Conditional(
+            union,
+            cond.expr,
+            c.coerce(typed(then), union, whenTrue(node)),
+            c.coerce(typed(otherwise), union, whenFalse(node)),
+        ),
+    )
 }
 
 export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
@@ -701,11 +814,16 @@ export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected
     let elem: Type | null = null
     for (const v of values) if (elem === null && v.k === "typed") elem = v.expr.type
     if (elem === null) {
-        if (values.length === 0) return c.fail(node, "Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'.")
+        if (values.length === 0)
+            return c.fail(
+                node,
+                "Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'.",
+            )
         elem = values.some((v) => v.k === "untyped-float") ? types.f64 : types.i64
     }
     const elemType = elem!
-    if (elemType.kind === "void" || elemType.kind === "never") return c.fail(node, `An array cannot contain values of type '${elemType.kind}'.`)
+    if (elemType.kind === "void" || elemType.kind === "never")
+        return c.fail(node, `An array cannot contain values of type '${elemType.kind}'.`)
     const exprs: Expr[] = []
     for (let i = 0; i < values.length; i++) exprs.push(c.coerce(values[i], elemType, elems[i]))
     return typed(new ArrayLit(arrayOf(elemType), exprs))
@@ -778,7 +896,10 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         const missing: string[] = []
         for (const f of expected.fields) if (!props.some((p) => p.name === f.name)) missing.push(`'${f.name}'`)
         if (missing.length > 0) {
-            c.error(node, `Missing ${missing.length === 1 ? "property" : "properties"} ${missing.join(", ")} of type '${typeToString(expected)}'.`)
+            c.error(
+                node,
+                `Missing ${missing.length === 1 ? "property" : "properties"} ${missing.join(", ")} of type '${typeToString(expected)}'.`,
+            )
             ok = false
         }
         const fields: FieldInit[] = []
@@ -795,18 +916,23 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
     if (hints !== null) {
         for (const p of props) {
             if (!hints.members.some((m) => m.k === "field" && m.name === p.name)) {
-                return c.fail(p.node, `Object literal may only specify known properties, and '${p.name}' does not exist in type '${hints.name}'.`)
+                return c.fail(
+                    p.node,
+                    `Object literal may only specify known properties, and '${p.name}' does not exist in type '${hints.name}'.`,
+                )
             }
         }
     }
     const fields: FieldInit[] = []
     for (const p of props) {
         let hint: Type | null = null
-        if (hints !== null) for (const m of hints.members) if (hint === null && m.k === "field" && m.name === p.name) hint = m.type
+        if (hints !== null)
+            for (const m of hints.members) if (hint === null && m.k === "field" && m.name === p.name) hint = m.type
         const value = checkExpr(c, p.value, scope, hint)
         if (value.k === "error") return errorOperand
         const expr = hint !== null ? c.coerce(value, hint, p.value) : c.toDefault(value, p.value)
-        if (expr.type.kind === "void" || expr.type.kind === "never") return c.fail(p.value, `A property cannot have type '${expr.type.kind}'.`)
+        if (expr.type.kind === "void" || expr.type.kind === "never")
+            return c.fail(p.value, `A property cannot have type '${expr.type.kind}'.`)
         fields.push(new FieldInit(p.name, expr))
     }
     const type = c.shape(fields.map((f) => new Field(f.name, f.value.type, false)))
@@ -833,7 +959,8 @@ export function checkTemplate(c: Checker, node: Node, scope: Scope): Operand {
 /** Whether a value can be printed or interpolated; reports an error if not. */
 export function printable(c: Checker, expr: Expr, node: Node): bool {
     const type = expr.type
-    if (membersOf(type).every((t) => isNumeric(t) || t.kind === "bool" || isStringLike(t) || t.kind === "null")) return true
+    if (membersOf(type).every((t) => isNumeric(t) || t.kind === "bool" || isStringLike(t) || t.kind === "null"))
+        return true
     c.error(node, `Cannot format a value of type '${typeToString(type)}'.`)
     return false
 }
@@ -894,7 +1021,8 @@ export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
 export function member(c: Checker, value: Expr, nameNode_: Node, name: string): Operand {
     const type = value.type
     if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
-    if (name === "length" && membersOf(type).every(isStringLike)) return typed(new Len(types.i64, new Recast(types.string, value)))
+    if (name === "length" && membersOf(type).every(isStringLike))
+        return typed(new Len(types.i64, new Recast(types.string, value)))
     if (name === "size" && type.kind === "map") return typed(new MapOp("size", types.i64, type, value))
     if (name === "size" && type.kind === "set") return typed(new SetOp("size", types.i64, type, value))
     const property = accessor(c, type, name)
@@ -919,7 +1047,8 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
             dispatch(c, bound, name)
             return typed(bound)
         }
-        if (genericMethod(c, type, name) !== null) return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
+        if (genericMethod(c, type, name) !== null)
+            return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
     }
     if (type.kind === "interface") {
         defineMember(c, nameNode_, type, name)
@@ -976,7 +1105,10 @@ export function checkInstanceOf(c: Checker, node: Node, scope: Scope): Operand {
     if (target === null) return errorOperand
     const test = instanceTest(c, value, target)
     if (test !== null) return typed(test)
-    return c.fail(node, `A value of type '${typeToString(value.type)}' is never an instance of '${typeToString(target)}'.`)
+    return c.fail(
+        node,
+        `A value of type '${typeToString(value.type)}' is never an instance of '${typeToString(target)}'.`,
+    )
 }
 
 /** The `is` test of `value instanceof target`, or null if it can never be true. */
@@ -984,12 +1116,16 @@ export function instanceTest(c: Checker, value: Expr, target: StructType | Inter
     const type = value.type
     if (sameType(type, target)) return new BoolLit(types.bool, true)
     // An instance of a class is an instance of its base classes; one of a base class may be of a subclass.
-    const related = (m: Type): bool => m.kind === "struct" && target.kind === "struct" && (isSubclass(m, target) || isSubclass(target, m))
-    if (type.kind === "struct" && target.kind === "struct" && isSubclass(type, target)) return new BoolLit(types.bool, true)
+    const related = (m: Type): bool =>
+        m.kind === "struct" && target.kind === "struct" && (isSubclass(m, target) || isSubclass(target, m))
+    if (type.kind === "struct" && target.kind === "struct" && isSubclass(type, target))
+        return new BoolLit(types.bool, true)
     if (type.kind === "struct" && related(type)) return new Is(types.bool, value, target)
-    if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m))) return new Is(types.bool, value, target)
+    if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m)))
+        return new Is(types.bool, value, target)
     if (target.kind !== "struct") return null
-    if (type.kind === "interface" && conformance(c, target, type).reason === null) return new Is(types.bool, value, target)
+    if (type.kind === "interface" && conformance(c, target, type).reason === null)
+        return new Is(types.bool, value, target)
     const via = interfaceFor(c, type, target)
     return via !== null ? new Is(types.bool, value, target, via) : null
 }
@@ -1016,15 +1152,18 @@ export function checkNonNull(c: Checker, node: Node, scope: Scope): Operand {
     const value_ = checkExpr(c, expression(node), scope)
     if (value_.k !== "typed") return value_
     const value = value_.expr
-    if (!canBeNull(value.type)) return c.fail(node, `Type '${typeToString(value.type)}' cannot be null; '!' is not needed.`)
+    if (!canBeNull(value.type))
+        return c.fail(node, `Type '${typeToString(value.type)}' cannot be null; '!' is not needed.`)
     return typed(new Recast(c.withoutNull(value.type), value))
 }
 
 export function checkCoalesce(c: Checker, node: Node, scope: Scope): Operand {
     const value_ = checkExpr(c, left(node), scope)
-    if (value_.k !== "typed") return value_.k === "error" ? value_ : c.fail(left(node), "The left side of '??' cannot be null.")
+    if (value_.k !== "typed")
+        return value_.k === "error" ? value_ : c.fail(left(node), "The left side of '??' cannot be null.")
     const value = value_.expr
-    if (!canBeNull(value.type)) return c.fail(left(node), `Type '${typeToString(value.type)}' cannot be null; '??' is not needed.`)
+    if (!canBeNull(value.type))
+        return c.fail(left(node), `Type '${typeToString(value.type)}' cannot be null; '??' is not needed.`)
     const type = c.withoutNull(value.type)
     const fallback = c.coerce(checkExpr(c, right(node), scope, type), type, right(node))
     return typed(new Coalesce(type, value, fallback))

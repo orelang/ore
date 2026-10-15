@@ -1,22 +1,70 @@
 # tests
 
-End-to-end tests of the language, and benchmarks. The unit tests of each
-compiler package are in its own `test/` directory. `bun test` runs all.
+End-to-end tests of the language, its runner, and benchmarks. The tests of
+the compiler in Ore are in [`compiler/next/test`](../compiler/next/test).
 
-| Directory | Contents |
-|---|---|
-| `run/<topic>/` | Programs built and run; stdout must equal the `.out` file |
-| `diag/<topic>/` | Programs that must fail to check, with `// error: <message>` on the lines of the errors |
-| `async/` | Async programs with outputs from Bun (`bun-shim.ts`), until Ore has async |
-| `bench/` | Benchmarks: `bench/run.sh`, `bench/async/run.sh` |
-| `harness/` | The runners: `golden.test.ts` (run and diag), `async.test.ts`, `next.test.ts` (the Ore compiler against TypeScript), `lsp-next.test.ts` (its language server over stdio), `zed-queries.test.ts` |
+## Running them
+
+```sh
+ci/test.sh                    # everything
+ci/test.sh run/basics/ fmt/   # the cases whose names start with these
+ORE_BLESS=1 ci/test.sh run/   # rewrite the .out files from the actual output
+ci/bootstrap.sh /tmp/ore && ORE=/tmp/ore/ore ci/test.sh   # without Bun
+```
+
+[`ci/test.sh`](../ci/test.sh) needs no Bun once `$ORE` names an Ore compiler,
+such as the `ore` that [`ci/bootstrap.sh`](../ci/bootstrap.sh) builds: it
+builds the runner, [`runner/main.ore`](runner/main.ore), with `$ORE build`
+(`bun run ore`, the TypeScript compiler, by default), keeps it in `~/.cache/ore/test` by a hash of its
+sources, and runs it from the root of the repository. The runner holds the
+compiler in Ore (`compiler/next/src`): it compiles the test programs in its
+own process, in one task per CPU, and runs them. Each case runs as a test of
+`"ore:test"`, so a failure, even a panic of the compiler, fails only that
+case; it prints `✓` or `✗` and the reason for each case, then the skipped
+groups, the failed cases and the counts, and exits with 1 if a case failed.
+Options: `--jobs N` (`ORE_TEST_JOBS`), `--timeout SECONDS` (`ORE_TEST_TIMEOUT`,
+300 by default: a case that runs longer stops the suite), `ORE_RELEASE=1`
+for a release build of the runner.
+
+| Directory | Contents | Cases |
+|---|---|---|
+| `run/<topic>/` | Programs built and run; stdout must equal the `.out` file | `run/...` |
+| `diag/<topic>/` | Programs that must fail to check, with `// error: <message>` on the lines of the errors | `diag/...` |
+| `async/` | Async programs with the outputs Bun gave them (`bun-shim.ts`), skipped until Ore has async | `async/...` |
+| `runner/` | The runner: `main.ore`, `golden.ore` (programs), `fmt.ore` (formatting), `cases.ore` | |
+| `bench/` | Benchmarks: `bench/run.sh`, `bench/async/run.sh` | |
+| `harness/` | The Bun test suite (`bun run test`), until CI uses `ci/test.sh` | |
 
 Topics: `basics`, `types`, `collections`, `functions`, `errors`,
 `concurrency`, `library`, `runtime`, `modules`. A directory with a `main.ore`
-is one program of several modules.
+is one program of several modules; its output is `main.out`, its
+annotations can be in any of its modules.
 
-Header comments of a run test: `// exit: N`, `// stderr: <substring>`,
-`// threads: N` (OS threads for tasks; 1 by default, for a stable order).
+Header comments of a run test: `// exit: N`, `// stderr: <substring>`
+(repeatable), `// threads: N` (OS threads for tasks; 1 by default, for a
+stable order). In a diag test, an annotation alone on its line belongs to the
+nearest line above with code or an `//ore:` directive, as `ore fmt` moves
+comments after `{` into the block; every diagnostic must match an
+annotation of its line, and every annotation a diagnostic.
 
-`ORE_BLESS=1 bun test tests` rewrites the `.out` files from the actual output.
+The other cases of the runner:
+
+- `unit/NAME.test.ore`: the tests of `compiler/next/test`, built and run as
+  `ore test` runs them (the checker, the optimizer, the backend's constants,
+  module loading, native code, the parser, IR dumps, the language server).
+- `fmt/FILE`: every `.ore` file of `tests`, `runtime` and `compiler/next` must
+  be formatted already (but `compiler/next/test/fmt-cases.ore`, unformatted on
+  purpose); on the file and on unformatted variants of it (indentation
+  removed, lines joined or broken, single quotes, semicolons, parentheses,
+  longer and shorter names, block and line comments), the formatter must keep
+  the code and the comments and give the same text when run on its own
+  output. `runner --variant NAME FILE` prints a variant. Each file is checked
+  in a process of its own (`runner --fmt FILE`): threads that allocate much
+  in one process wait for each other's collections.
+- `selfhost/`: the compiler in Ore builds itself, and the `ore` it builds
+  formats a file and builds a program that runs.
+- `watchdog/`: `ORE_WATCHDOG` reports a program blocked on its input.
+- `object/`: an executable from LLVM IR and C sources, and IR that does not
+  verify.
+
 [`ci/stress.sh`](../ci/stress.sh) runs the concurrent programs many times.

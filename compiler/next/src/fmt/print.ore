@@ -8,8 +8,10 @@ import { parse } from "../syntax/parser"
 import {
     attachComments,
     commentsOf,
+    Context,
     ctx,
     DANGLING,
+    enter,
     hasComment,
     hasDangling,
     hasNewline,
@@ -19,6 +21,7 @@ import {
     isPreviousLineEmpty,
     isTypeCastComment,
     LEADING,
+    leave,
     LINE,
     literalText,
     nextLineEmptyAfter,
@@ -74,15 +77,19 @@ export function format(source: string): string | Error {
         return new Error(parser.errors.length > 0 ? parser.errors[0] : "no syntax tree")
     const tokens = tokenize(source)
     const comments = extractComments(source, tokens)
-    ctx.text = source
-    ctx.comments = comments
-    ctx.blank = blankComments(source, comments)
-    const converter = new Converter(source, tokens, ctx.blank)
+    const context = new Context()
+    context.text = source
+    context.comments = comments
+    context.blank = blankComments(source, comments)
+    const previous = enter(context)
+    const converter = new Converter(source, tokens, context.blank)
     const program = converter.file(file)
     attachComments(program, comments)
-    printedCache.clear()
-    bailout = false
-    return printDoc(pr(program), 120)
+    const formatted = printDoc(pr(program), 120)
+    // The context stays referenced from this frame until the end.
+    if (ctx() !== context) process.panic("fmt: the formatting context changed")
+    leave(previous)
+    return formatted
 }
 
 // -----------------------------------------------------------------------------
@@ -114,11 +121,6 @@ function layoutArgs(layout: string): Args {
     return a
 }
 
-/** Set when printing parameters for an expanded argument finds that they break, as prettier's ArgExpansionBailout. */
-let bailout = false
-
-const printedCache = new Map<ENode, Doc>()
-
 function t(s: string): Doc {
     return text(s)
 }
@@ -145,10 +147,10 @@ function isEmptyDoc(d: Doc): bool {
 /** Prints a node with its comments and parentheses. */
 function pr(n: ENode | null): Doc {
     if (n === null) return empty
-    const cached = printedCache.get(n)
+    const cached = ctx().printed.get(n)
     if (cached !== null) return cached
     const doc = printWith(n, noArgs)
-    printedCache.set(n, doc)
+    ctx().printed.set(n, doc)
     return doc
 }
 
@@ -297,7 +299,7 @@ function isTemplateOnItsOwnLine(n: ENode): bool {
     if (n.type !== "TemplateLiteral") return false
     let multiline = false
     for (const q of n.all("quasis")) if (q.raw.includes("\n")) multiline = true
-    return multiline && !hasNewline(ctx.text, locStart(n), true)
+    return multiline && !hasNewline(ctx().text, locStart(n), true)
 }
 
 /** The expression inside chain and non-null wrappers. */
@@ -321,7 +323,7 @@ function last<T>(xs: T[]): T {
 
 /** Whether a node has a leading comment followed by a line break. */
 function hasLeadingOwnLineComment(n: ENode): bool {
-    for (const cm of n.comments) if (cm.leading && hasNewline(ctx.text, cm.end, false)) return true
+    for (const cm of n.comments) if (cm.leading && hasNewline(ctx().text, cm.end, false)) return true
     return false
 }
 
@@ -384,7 +386,7 @@ function startsWith(n: ENode, pred: (e: ENode) => bool): bool {
 
 function returnArgumentHasLeadingComment(n: ENode): bool {
     if (hasLeadingOwnLineComment(n)) return true
-    for (const cm of n.comments) if (cm.leading && hasNewlineInRange(ctx.text, cm.start, cm.end)) return true
+    for (const cm of n.comments) if (cm.leading && hasNewlineInRange(ctx().text, cm.start, cm.end)) return true
     if (hasNakedLeftSide(n)) {
         let e: ENode | null = n
         while (e !== null) {
@@ -1016,7 +1018,15 @@ function printNode(n: ENode, args: Args): Doc {
             const inClass = parent !== null && parent.type === "ClassBody"
             const list = g(
                 c([
-                    indent(c([softline, join(c([t(", "), softline]), parameters.map((p) => pr(p)))])),
+                    indent(
+                        c([
+                            softline,
+                            join(
+                                c([t(", "), softline]),
+                                parameters.map((p) => pr(p)),
+                            ),
+                        ]),
+                    ),
                     parameters.length > 1 ? ifBreak(t(","), empty) : empty,
                     softline,
                 ]),
@@ -1218,7 +1228,7 @@ function adjustClause(n: ENode, role: string): Doc {
     const leading = commentsOf(body, LEADING)
     if (leading.length > 0) {
         const first = leading[0]
-        if (hasNewlineInRange(ctx.text, first.start, first.end) || hasNewline(ctx.text, first.start, true))
+        if (hasNewlineInRange(ctx().text, first.start, first.end) || hasNewline(ctx().text, first.start, true))
             return isBlock ? c([hardline, printed]) : indent(c([hardline, printed]))
     }
     if (isBlock || (body.type === "IfStatement" && n.type === "IfStatement" && role === "alternate"))
@@ -1252,14 +1262,14 @@ function printIf(n: ENode): Doc {
     const dangling = commentsOf(n, DANGLING)
     if (dangling.length > 0) {
         const first = dangling[0]
-        if (isPreviousLineEmpty(ctx.text, first.start))
+        if (isPreviousLineEmpty(ctx().text, first.start))
             parts.push(consequentIsBlock ? c([hardline, hardline]) : hardline)
-        else if (hasNewline(ctx.text, first.start, true)) parts.push(consequentIsBlock ? hardline : empty)
+        else if (hasNewline(ctx().text, first.start, true)) parts.push(consequentIsBlock ? hardline : empty)
         else parts.push(space)
         const lastComment = last(dangling)
         parts.push(
             printDangling(n, false),
-            !lastComment.block || hasNewline(ctx.text, lastComment.end, false) ? hardline : space,
+            !lastComment.block || hasNewline(ctx().text, lastComment.end, false) ? hardline : space,
         )
         spaceBeforeElse = false
     }
@@ -1323,8 +1333,8 @@ function printCatch(n: ENode): Doc {
     for (const cm of param.comments)
         if (
             !cm.block ||
-            (cm.leading && hasNewline(ctx.text, cm.end, false)) ||
-            (cm.trailing && hasNewline(ctx.text, cm.start, true))
+            (cm.leading && hasNewline(ctx().text, cm.end, false)) ||
+            (cm.trailing && hasNewline(ctx().text, cm.start, true))
         )
             breaks = true
     const printed = pr(param)
@@ -1948,7 +1958,7 @@ function printParams(n: ENode, expandArg: bool, printTypeParams: bool): Doc {
         }
     }
     if (expandArg && !isReactHookArrow(n)) {
-        if (willBreak(typeParams) || willBreak(c(printed))) bailout = true
+        if (willBreak(typeParams) || willBreak(c(printed))) ctx().bailout = true
         return g(c([removeLines(typeParams), t("("), removeLines(c(printed)), t(")")]))
     }
     if (hug || hugged) return c([typeParams, t("("), c(printed), t(")")])
@@ -2105,7 +2115,7 @@ function printArrowSignature(n: ENode, a: Args): Doc {
     const expand = a.expandLastArg || a.expandFirstArg
     let returnType = printReturnType(n)
     if (expand) {
-        if (willBreak(returnType)) bailout = true
+        if (willBreak(returnType)) ctx().bailout = true
         returnType = g(removeLines(returnType))
     }
     parts.push(g(c([printParams(n, expand, true), returnType])))
@@ -2336,11 +2346,11 @@ function printCallArguments(n: ENode): Doc {
     if (shouldGroupFirst(a)) {
         const rest = printed.slice(1)
         for (const r of rest) if (willBreak(r)) return allBroken()
-        const saved = bailout
-        bailout = false
+        const saved = ctx().bailout
+        ctx().bailout = false
         const first = pra(a[0], expandFirst())
-        const failed = bailout
-        bailout = saved
+        const failed = ctx().bailout
+        ctx().bailout = saved
         if (failed) return allBroken()
         if (willBreak(first))
             return c([
@@ -2356,11 +2366,11 @@ function printCallArguments(n: ENode): Doc {
     if (shouldGroupLast(a, printed)) {
         const head = printed.slice(0, lastIndex)
         for (const h of head) if (willBreak(h)) return allBroken()
-        const saved = bailout
-        bailout = false
+        const saved = ctx().bailout
+        ctx().bailout = false
         const lastDoc = pra(a[lastIndex], expandLast())
-        const failed = bailout
-        bailout = saved
+        const failed = ctx().bailout
+        ctx().bailout = saved
         if (failed) return allBroken()
         if (willBreak(lastDoc))
             return c([breakParent, conditionalGroup([c([t("("), c(head), group(lastDoc, true), t(")")]), allBroken()])])
@@ -2508,7 +2518,8 @@ function isConciselyPrintedArray(n: ENode): bool {
     if (elements.length === 0) return false
     for (const e of elements) {
         if (!(isNumericLiteral(e) || (isSignedNumericLiteral(e) && !hasComment(e.get("argument"))))) return false
-        for (const cm of e.comments) if (cm.trailing && !cm.block && !hasNewline(ctx.text, cm.start, true)) return false
+        for (const cm of e.comments)
+            if (cm.trailing && !cm.block && !hasNewline(ctx().text, cm.start, true)) return false
     }
     return true
 }
@@ -2522,7 +2533,7 @@ class ChainItem {
 }
 
 function shouldInsertEmptyLineAfter(node: ENode): bool {
-    const s = ctx.text
+    const s = ctx().text
     const next = nextNonSpaceIndex(s, locEnd(node))
     if (next < s.length && s[next] === 41) return isNextLineEmpty(s, next + 1)
     return nextLineEmptyAfter(node)
@@ -2726,8 +2737,8 @@ function printObject(n: ENode): Doc {
     }
     if (!shouldBreak && n.type !== "ObjectPattern" && items.length > 0) {
         let start = locStart(n)
-        if (n.type === "ImportDeclaration") start = lastIndexBefore(ctx.blank, "{", locStart(items[0]))
-        shouldBreak = hasNewlineInRange(ctx.text, start, locStart(items[0]))
+        if (n.type === "ImportDeclaration") start = lastIndexBefore(ctx().blank, "{", locStart(items[0]))
+        shouldBreak = hasNewlineInRange(ctx().text, start, locStart(items[0]))
     }
     const printed: Doc[] = []
     let separator: Doc[] = []
@@ -2879,7 +2890,7 @@ function printArray(n: ENode): Doc {
 function isNextLineEmptyAfterElement(n: ENode): bool {
     let end = locEnd(n)
     if (end === locStart(n)) return false
-    const s = ctx.text
+    const s = ctx().text
     while (end < s.length && s[end] !== 44) {
         let next = end + 1
         if (next + 1 < s.length && s[next] === 47 && s[next + 1] === 47) {
@@ -3063,7 +3074,7 @@ function printTemplateLiteral(n: ENode): Doc {
 
 function printTemplateExpression(e: ENode, before: ENode, after: ENode, indentSize: int): Doc {
     let printed = pr(e)
-    let hasNewlineInside = hasNewlineInRange(ctx.text, locEnd(before), locStart(after))
+    let hasNewlineInside = hasNewlineInRange(ctx().text, locEnd(before), locStart(after))
     if (!hasNewlineInside) {
         const flat = printDoc(printed, -1)
         if (flat.includes("\n")) hasNewlineInside = true
@@ -3106,8 +3117,8 @@ function printImport(n: ENode): Doc {
 
 function hasModuleSpecifiersSyntax(n: ENode): bool {
     if (n.type !== "ImportDeclaration" || n.all("specifiers").length > 0 || n.importKind === "type") return true
-    return ctx.blank
-        .slice(locStart(n), locStart(n.at("source")))
+    return ctx()
+        .blank.slice(locStart(n), locStart(n.at("source")))
         .trimEnd()
         .endsWith("from")
 }
@@ -3150,8 +3161,8 @@ function printImportAttributes(n: ENode): Doc {
     const source = n.get("source")
     if (source === null) return empty
     const attributes = n.all("attributes")
-    const after = ctx.blank
-        .slice(locEnd(source), attributes.length > 0 ? locStart(attributes[0]) : locEnd(n))
+    const after = ctx()
+        .blank.slice(locEnd(source), attributes.length > 0 ? locStart(attributes[0]) : locEnd(n))
         .trimStart()
     let keyword = ""
     if (after.startsWith("assert")) keyword = "assert"
@@ -3356,7 +3367,7 @@ function printClassBody(n: ENode): Doc {
     if (isTypeLiteral) {
         const shouldBreak =
             hasComment(n, DANGLING | LINE) ||
-            (members.length > 0 && hasNewlineInRange(ctx.text, locStart(n), locStart(members[0])))
+            (members.length > 0 && hasNewlineInRange(ctx().text, locStart(n), locStart(members[0])))
         let doc: Doc
         if (parts.length === 0) doc = t("{}")
         else doc = c([t("{"), indent(c([line, c(parts)])), line, t("}")])
@@ -3460,7 +3471,7 @@ function printTypeParameters(n: ENode): Doc {
         let commentBreaks = false
         for (const p of ps)
             for (const cm of p.comments)
-                if ((cm.leading || cm.trailing) && (!cm.block || hasNewline(ctx.text, cm.end, false)))
+                if ((cm.leading || cm.trailing) && (!cm.block || hasNewline(ctx().text, cm.end, false)))
                     commentBreaks = true
         if (!commentBreaks) return c([t("<"), join(t(", "), printed), t(">")])
     }

@@ -38,7 +38,8 @@ function macosVersion(): string {
 function run(program: string, args: string[]): Error | null {
     const out = process.output(program, args)
     if (out instanceof Error) return out
-    if (!out.ok) return new Error(`${basename(program)} failed (exit ${out.code}):\n${out.stderr}${out.stdout}`.trimEnd())
+    if (!out.ok)
+        return new Error(`${basename(program)} failed (exit ${out.code}):\n${out.stderr}${out.stdout}`.trimEnd())
     return null
 }
 
@@ -89,7 +90,9 @@ export function findLinker(): string | Error {
     }
     const found = findIn(name, dirs)
     if (found !== null) return found
-    return new Error(`linker ${name} not found: install lld (Homebrew: brew install lld; Debian: apt install lld) or set $ORE_LD`)
+    return new Error(
+        `linker ${name} not found: install lld (Homebrew: brew install lld; Debian: apt install lld) or set $ORE_LD`,
+    )
 }
 
 /** Compiles a C source of a package into an object file with `$CC` (default cc). */
@@ -112,7 +115,8 @@ export function link(objects: string[], native: NativeCode, output: string): Err
     const searchDirs: string[] = native.libDirs.slice()
     // As the C compiler did: $LIBRARY_PATH is searched too.
     const libraryPath = process.getenv("LIBRARY_PATH")
-    if (libraryPath !== null) for (const dir of libraryPath.split(":")) if (dir !== "" && !searchDirs.includes(dir)) searchDirs.push(dir)
+    if (libraryPath !== null)
+        for (const dir of libraryPath.split(":")) if (dir !== "" && !searchDirs.includes(dir)) searchDirs.push(dir)
     const args = target.os === "darwin" ? darwinArgs(output) : linuxArgs(output)
     if (args instanceof Error) return args
     for (const object of objects) args.push(object)
@@ -133,11 +137,23 @@ function darwinArgs(output: string): string[] | Error {
     let sdk = process.getenv("SDKROOT") ?? ""
     if (sdk === "") {
         const found = outputOf("xcrun", ["--show-sdk-path"])
-        if (found === null) return new Error("no macOS SDK: install the Command Line Tools (xcode-select --install) or set $SDKROOT")
+        if (found === null)
+            return new Error("no macOS SDK: install the Command Line Tools (xcode-select --install) or set $SDKROOT")
         sdk = found
     }
     const arch = target.arch === "arm64" ? "arm64" : "x86_64"
-    return ["-arch", arch, "-platform_version", "macos", macosVersion(), sdkVersion(sdk), "-syslibroot", sdk, "-o", output]
+    return [
+        "-arch",
+        arch,
+        "-platform_version",
+        "macos",
+        macosVersion(),
+        sdkVersion(sdk),
+        "-syslibroot",
+        sdk,
+        "-o",
+        output,
+    ]
 }
 
 class SdkSettings {
@@ -162,7 +178,8 @@ function multiarch(): string {
 function linuxLibDirs(): string[] {
     const dirs: string[] = []
     const m = multiarch()
-    for (const dir of [`/usr/lib/${m}`, `/lib/${m}`, "/usr/lib64", "/lib64", "/usr/lib", "/lib"]) if (fs.isDir(dir)) dirs.push(dir)
+    for (const dir of [`/usr/lib/${m}`, `/lib/${m}`, "/usr/lib64", "/lib64", "/usr/lib", "/lib"])
+        if (fs.isDir(dir)) dirs.push(dir)
     return dirs
 }
 
@@ -175,7 +192,9 @@ function crtDir(): string | Error {
     const cc = process.getenv("CC") ?? "cc"
     const found = outputOf(cc, ["-print-file-name=Scrt1.o"])
     if (found !== null && found.startsWith("/") && fs.isFile(found)) return dirname(found)
-    return new Error("the C runtime (Scrt1.o) is not found: install the C library's development files (Debian: libc6-dev)")
+    return new Error(
+        "the C runtime (Scrt1.o) is not found: install the C library's development files (Debian: libc6-dev)",
+    )
 }
 
 /** `ld.lld` for a position-independent executable with glibc's dynamic linker. */

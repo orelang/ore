@@ -1,0 +1,201 @@
+// The test suite of Ore, written in Ore: run from the root of the repository,
+//
+//   runner [--jobs N] [--timeout SECONDS] [FILTER...]
+//
+// it compiles the programs of tests/ with the compiler in Ore, in this
+// process, in parallel tasks (one per CPU unless --jobs or ORE_TEST_JOBS),
+// runs them and checks them as the cases of golden.ore and fmt.ore say; the
+// tests of the compiler (compiler/next/test/*.test.ore) are built and run as
+// `ore test` runs them. A FILTER keeps the cases whose names start with it,
+// with or without their group: `run/basics/`, `basics/fib`, `fmt/`. ORE_BLESS=1 rewrites the .out files of
+// tests/run from the actual output. Each case runs as a test of "ore:test",
+// so that a failure, even a panic of the compiler, fails only that case; the
+// status is 1 if any case fails. A case that takes longer than the timeout
+// (ORE_TEST_TIMEOUT, 300 s by default) stops the suite.
+//
+// ci/test.sh builds the runner and runs it.
+
+import { Mutex } from "ore:sync"
+import { test } from "ore:test"
+import { initializeLLVM } from "../../compiler/next/src/llvm/object"
+import { Case, read } from "./cases"
+import { fmtCases, fmtProblems, variantOf } from "./fmt"
+import {
+    asyncCases,
+    diagCases,
+    objectCases,
+    runCases,
+    selfhostCases,
+    Settings,
+    unitCases,
+    watchdogCases,
+} from "./golden"
+
+function usage(message: string): never {
+    console.error(message)
+    console.error("usage: runner [--jobs N] [--timeout SECONDS] [FILTER...], from the root of the repository")
+    process.exit(2)
+}
+
+function positive(value: string | null, what: string): int {
+    if (value === null) usage(`${what} needs a value`)
+    const n = Number.parseInt(value)
+    if (n === null || n <= 0) usage(`${what}: not a positive number: ${value}`)
+    return n
+}
+
+// `runner --variant NAME FILE`: a variant of a file that the formatting cases check, such as "with block comments".
+if (process.args.length === 3 && process.args[0] === "--variant") {
+    const variant = variantOf(process.args[1], read(process.args[2]))
+    if (variant === null) usage(`no variant ${process.args[1]}`)
+    console.write(variant)
+    process.exit(0)
+}
+
+// `runner --fmt FILE...`: checks the formatting of files, for the formatting cases.
+if (process.args.length > 0 && process.args[0] === "--fmt") {
+    let status: i32 = 0
+    for (const file of process.args.slice(1)) {
+        const problems = fmtProblems(file)
+        if (problems.length > 0) {
+            console.log(`${file}: ${problems.join("\n      ")}`)
+            status = 1
+        }
+    }
+    process.exit(status)
+}
+
+let jobs = process.cpus()
+let timeout = 300
+const env = process.env()
+const jobsVariable = env.get("ORE_TEST_JOBS")
+if (jobsVariable !== null) jobs = positive(jobsVariable, "ORE_TEST_JOBS")
+const timeoutVariable = env.get("ORE_TEST_TIMEOUT")
+if (timeoutVariable !== null) timeout = positive(timeoutVariable, "ORE_TEST_TIMEOUT")
+const filters: string[] = []
+for (let i = 0; i < process.args.length; i++) {
+    const arg = process.args[i]
+    if (arg === "--jobs" || arg === "--timeout") {
+        const value = i + 1 < process.args.length ? process.args[i + 1] : null
+        i++
+        if (arg === "--jobs") jobs = positive(value, arg)
+        else timeout = positive(value, arg)
+    } else if (arg.startsWith("-")) usage(`unknown option ${arg}`)
+    else filters.push(arg)
+}
+if (!fs.isDir("tests/run") || !fs.isDir("compiler/next/src")) usage("tests/run not found")
+
+const work = fs.mkdtemp("ore-tests-")
+if (work instanceof Error) usage(work.message)
+const settings = new Settings(work, env.get("ORE_BLESS") === "1")
+// The runner's own executable, which ci/test.sh gives, to check formatting in processes of their own.
+const self = env.get("ORE_TEST_RUNNER") ?? ""
+
+// The longest cases first: the tests of the compiler (which check many
+// programs in a debug build), the compiler built by itself, then the
+// formatting of the largest files.
+const all: Case[] = []
+const groups = [
+    unitCases(settings),
+    selfhostCases(settings),
+    fmtCases(self),
+    runCases(settings),
+    diagCases(),
+    watchdogCases(settings),
+    objectCases(settings),
+    asyncCases(settings),
+]
+for (const group of groups) for (const c of group) all.push(c)
+const cases: Case[] = []
+for (const c of all) {
+    let wanted = filters.length === 0
+    // A filter is the start of a name, with or without its group: `run/basics/`, `basics/`.
+    const rest = c.name.slice(c.name.indexOf("/") + 1)
+    for (const f of filters) if (c.name.startsWith(f) || rest.startsWith(f)) wanted = true
+    if (wanted) cases.push(c)
+}
+if (cases.length === 0) usage(`no case matches ${filters.join(" ")}`)
+
+/** What the workers report, under a lock: the cases that failed, those that were skipped, and those running. */
+class Results {
+    readonly lock = new Mutex()
+    failed: string[] = []
+    passed = 0
+    skipped = new Map<string, int>()
+    running = new Map<string, int>()
+    /** How long each case that ran took, in ms. */
+    times = new Map<string, int>()
+}
+
+const results = new Results()
+const started = Date.now()
+const queue = new Chan<Case>(cases.length)
+for (const c of cases) queue.send(c)
+queue.close()
+
+// LLVM registers the host's target once, before tasks compile in parallel.
+initializeLLVM()
+const done = new Chan<bool>(jobs)
+for (let w = 0; w < jobs; w++) {
+    task.spawn(() => {
+        for (const c of queue) {
+            if (c.skip !== "") {
+                using guard = results.lock.acquire()
+                const reason = `${c.name.slice(0, c.name.indexOf("/") + 1)} (${c.skip})`
+                results.skipped.set(reason, (results.skipped.get(reason) ?? 0) + 1)
+                continue
+            }
+            results.lock.lock()
+            results.running.set(c.name, Date.now())
+            results.lock.unlock()
+            let finished = false
+            test(c.name, () => {
+                c.body()
+                finished = true
+            })
+            using guard = results.lock.acquire()
+            const since = results.running.get(c.name) ?? 0
+            results.times.set(c.name, Date.now() - since)
+            results.running.delete(c.name)
+            if (finished) results.passed++
+            else results.failed.push(c.name)
+        }
+        done.send(true)
+    })
+}
+
+// A case that runs too long stops the suite: its program may wait forever.
+task.spawn(() => {
+    while (true) {
+        task.sleep(1000)
+        const now = Date.now()
+        const late: string[] = []
+        results.lock.lock()
+        for (const [name, since] of results.running) if (now - since > timeout * 1000) late.push(name)
+        results.lock.unlock()
+        if (late.length > 0) {
+            console.log(`\ntimed out after ${timeout} s: ${late.join(", ")}`)
+            process.exit(1)
+        }
+    }
+})
+
+for (let w = 0; w < jobs; w++) done.receive()
+fs.remove(work, true)
+
+const seconds = Math.round(f64(Date.now() - started) / 100) / 10
+console.log("")
+const slowest: string[] = []
+for (const [name, _] of results.times) slowest.push(name)
+slowest.sort((a, b) => (results.times.get(b) ?? 0) - (results.times.get(a) ?? 0))
+const shown: string[] = []
+for (const name of slowest.slice(0, 5))
+    shown.push(`${name} ${Math.round(f64(results.times.get(name) ?? 0) / 100) / 10} s`)
+console.log(`slowest: ${shown.join(", ")}`)
+for (const [reason, count] of results.skipped) console.log(`skipped: ${count} ${reason}`)
+if (results.failed.length > 0) {
+    results.failed.sort()
+    console.log(`failed:\n  ${results.failed.join("\n  ")}`)
+}
+console.log(`${cases.length} cases in ${seconds} s on ${jobs} tasks`)
+process.exit(results.failed.length > 0 ? 1 : 0)

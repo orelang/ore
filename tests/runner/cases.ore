@@ -1,0 +1,114 @@
+// What the runner's cases share: the case itself, finding test files, the
+// header comments of test programs, running programs, and messages that show
+// where two texts differ.
+
+import { join } from "ore:path"
+
+/** A test of the suite: a name to report and filter on, and a body that panics (`fail`) when the test fails. */
+export class Case {
+    constructor(
+        readonly name: string,
+        readonly body: () => void,
+        /** Why the case does not run; "" when it runs. */
+        readonly skip: string = "",
+    ) {}
+}
+
+/** The names in a directory, or a failure. */
+export function names(dir: string): string[] {
+    const found = fs.readDir(dir)
+    if (found instanceof Error) process.panic(`cannot read ${dir}: ${found.message}`)
+    return found
+}
+
+/**
+ * Program entries below a directory, relative to it and sorted: NAME.ore, or
+ * NAME/main.ore for a program of several modules. Other directories group
+ * programs by topic.
+ */
+export function entries(root: string, prefix: string = ""): string[] {
+    const out: string[] = []
+    const dir = prefix === "" ? root : join(root, prefix)
+    for (const name of names(dir)) {
+        const relative = prefix === "" ? name : join(prefix, name)
+        if (name.endsWith(".ore")) out.push(relative)
+        else if (fs.isDir(join(dir, name))) {
+            if (fs.isFile(join(dir, name, "main.ore"))) out.push(join(relative, "main.ore"))
+            else for (const e of entries(root, relative)) out.push(e)
+        }
+    }
+    return out
+}
+
+/** Every file below a directory whose name ends with `suffix`, skipping hidden directories and node_modules. */
+export function filesBelow(dir: string, suffix: string): string[] {
+    const out: string[] = []
+    for (const name of names(dir)) {
+        if (name.startsWith(".") || name === "node_modules") continue
+        const path = join(dir, name)
+        if (fs.isDir(path)) for (const f of filesBelow(path, suffix)) out.push(f)
+        else if (name.endsWith(suffix)) out.push(path)
+    }
+    return out
+}
+
+export function read(path: string): string {
+    const text = fs.readFile(path)
+    if (text instanceof Error) process.panic(`cannot read ${path}: ${text.message}`)
+    return text
+}
+
+/** The values of the header comments `// key: value` of a test program, each at the start of a line. */
+export function headers(text: string, key: string): string[] {
+    const prefix = `// ${key}: `
+    const out: string[] = []
+    for (const line of text.split("\n")) if (line.startsWith(prefix)) out.push(line.slice(prefix.length).trim())
+    return out
+}
+
+/** The first header comment `// key: value`, or `fallback`. */
+export function header(text: string, key: string, fallback: string): string {
+    const found = headers(text, key)
+    return found.length > 0 ? found[0] : fallback
+}
+
+/** Runs a program with variables added to the environment, collecting its output. */
+export function runProgram(path: string, env: Map<string, string>): process.Output {
+    const command = new process.Command(path)
+    command.env = env
+    const output = command.output()
+    if (output instanceof Error) process.panic(`cannot run ${path}: ${output.message}`)
+    return output
+}
+
+/** A text quoted as a JSON string, so that spaces and line ends show. */
+export function quote(s: string): string {
+    return JSON.stringify(s)
+}
+
+/** Where two texts differ: the first line that differs, with its number. */
+export function difference(what: string, expected: string, actual: string): string {
+    const want = expected.split("\n")
+    const got = actual.split("\n")
+    for (let i = 0; i < want.length || i < got.length; i++) {
+        const a = i < want.length ? quote(want[i]) : "<end>"
+        const b = i < got.length ? quote(got[i]) : "<end>"
+        if (a !== b) return `${what} differs at line ${i + 1}:\n        expected ${a}\n        actual   ${b}`
+    }
+    return `${what} differs`
+}
+
+/** Fails unless a program's stdout, exit status and stderr match the header comments of its source and its .out file. */
+export function expectRun(source: string, out: string, expected: string, run: process.Output): void {
+    const problems: string[] = []
+    if (run.stdout !== expected) problems.push(difference("stdout", expected, run.stdout))
+    const code = Number.parseInt(header(source, "exit", "0")) ?? 0
+    if (run.code !== code) problems.push(`exit status ${run.code}, expected ${code}`)
+    for (const part of headers(source, "stderr")) {
+        if (!run.stderr.includes(part)) problems.push(`stderr does not contain ${quote(part)}`)
+    }
+    if (problems.length > 0) {
+        const stderr = run.stderr.length > 2000 ? `${run.stderr.slice(0, 2000)}...` : run.stderr
+        process.panic(`${out}: ${problems.join("\n      ")}\n      stderr: ${quote(stderr)}`)
+    }
+}

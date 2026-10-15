@@ -1,6 +1,15 @@
 // Functions and statements. Ported from compiler/codegen/src/functions.ts.
 
-import { Call, Closure, ObjectLit, type Func, type ForOfStmt, type LoopStmt, type Stmt, type SwitchStmt } from "../ir/nodes"
+import {
+    Call,
+    Closure,
+    ObjectLit,
+    type Func,
+    type ForOfStmt,
+    type LoopStmt,
+    type Stmt,
+    type SwitchStmt,
+} from "../ir/nodes"
 import { type Type } from "../ir/types"
 import { type SlotNode } from "../opt/escape"
 import { ARRAY, FRAME, MAP, type Breakable, type Disposal } from "./context"
@@ -123,7 +132,7 @@ export function top(g: Emitter): string {
     if (!g.helpers.has(name)) {
         g.helpers.set(name, "")
         helper(g, name, `define internal ptr ${name}() noinline`, (e) => {
-            e.b.emit("call void asm sideeffect \"\", \"\"()")
+            e.b.emit('call void asm sideeffect "", ""()')
             const address = e.b.value("ptr", "call ptr @llvm.threadlocal.address.p0(ptr @ore_rt_top)")
             e.b.terminate(`ret ptr ${address.v}`)
         })
@@ -247,7 +256,9 @@ export function stmt(g: Emitter, s: Stmt) {
             const target = s.target
             let index = -1
             if (target !== null) index = findBreakable(g, target)
-            else for (let i = g.breakables.length - 1; i >= 0 && index === -1; i--) if (!g.breakables[i].isSwitch) index = i
+            else
+                for (let i = g.breakables.length - 1; i >= 0 && index === -1; i--)
+                    if (!g.breakables[i].isSwitch) index = i
             const b = g.breakables[index]
             disposeFrom(g, index)
             g.b.br(b.continueLabel)

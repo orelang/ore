@@ -20,14 +20,41 @@ import {
 } from "./doc"
 import { type Comment, ENode, locEnd, locStart } from "./estree"
 
-/** The text being formatted, and the same with comments blanked out. */
+/** The text being formatted, the same with comments blanked out, and the state of its printing. */
 export class Context {
     text = ""
     blank = ""
     comments: Comment[] = []
+    /** The nodes that can take comments below each node, by position (`sortedChildren`). */
+    sorted = new Map<ENode, ENode[]>()
+    /** The document of each node printed. */
+    printed = new Map<ENode, Doc>()
+    /** Set when printing parameters for an expanded argument finds that they break, as prettier's ArgExpansionBailout. */
+    bailout = false
 }
 
-export const ctx = new Context()
+// The context of the formatting that runs on this OS thread. A formatting
+// never waits, so it runs on one thread from start to end, and several
+// threads can format at the same time. The collector does not scan
+// thread-local storage: `format` holds the context while it runs.
+//ore:threadlocal
+let current: ptr
+
+/** The context of the formatting that runs. */
+export function ctx(): Context {
+    return unsafe.fromAddress<Context>(current)
+}
+
+/** Makes a context the current one; returns the previous one, for `leave`. */
+export function enter(context: Context): ptr {
+    const previous = current
+    current = unsafe.addressOf(context)
+    return previous
+}
+
+export function leave(previous: ptr): void {
+    current = previous
+}
 
 // -----------------------------------------------------------------------------
 // Text
@@ -164,8 +191,8 @@ export function isPreviousLineEmpty(s: string, i: int): bool {
 /** Whether an empty line follows a node. */
 export function nextLineEmptyAfter(node: ENode): bool {
     const end = locEnd(node)
-    if (isNextLineEmpty(ctx.text, end)) return true
-    return node.end !== end && isNextLineEmpty(ctx.text, node.end)
+    if (isNextLineEmpty(ctx().text, end)) return true
+    return node.end !== end && isNextLineEmpty(ctx().text, node.end)
 }
 
 // -----------------------------------------------------------------------------
@@ -214,7 +241,7 @@ export function isBlockComment(c: Comment): bool {
 
 /** A line comment, or a block comment on one line. */
 export function isLineOrSingleLineBlock(c: Comment): bool {
-    return !c.block || !hasNewlineInRange(ctx.text, c.start, c.end)
+    return !c.block || !hasNewlineInRange(ctx().text, c.start, c.end)
 }
 
 /** Whether a comment is a JSDoc type cast, `/** @type {T} *\/`. */
@@ -318,11 +345,9 @@ export function isStatementBody(n: ENode): bool {
     return false
 }
 
-const sortedCache = new Map<ENode, ENode[]>()
-
 /** The descendants of a node that can take comments and have no such ancestor below it, by position. */
 function sortedChildren(node: ENode): ENode[] {
-    const cached = sortedCache.get(node)
+    const cached = ctx().sorted.get(node)
     if (cached !== null) return cached
     const out: ENode[] = []
     for (const child of node.kids) {
@@ -333,7 +358,7 @@ function sortedChildren(node: ENode): ENode[] {
         const s = locStart(a) - locStart(b)
         return s !== 0 ? s : locEnd(a) - locEnd(b)
     })
-    sortedCache.set(node, out)
+    ctx().sorted.set(node, out)
     return out
 }
 
@@ -393,10 +418,8 @@ function isInlineSpace(s: string): bool {
 
 /** Attaches the comments of a file to its nodes. */
 export function attachComments(ast: ENode, comments: Comment[]) {
-    // The nodes of the files formatted before are of no more use.
-    sortedCache.clear()
     for (const c of comments) decorate(ast, c, null)
-    const s = ctx.text
+    const s = ctx().text
     let ties: Comment[] = []
     for (let i = 0; i < comments.length; i++) {
         const c = comments[i]
@@ -460,7 +483,7 @@ function breakTies(ties: Comment[]) {
     let i = count
     for (; i > 0; --i) {
         const c = ties[i - 1]
-        const gap = ctx.text.slice(c.end, gapEnd)
+        const gap = ctx().text.slice(c.end, gapEnd)
         let ok = true
         for (let k = 0; k < gap.length; k++) {
             const ch = gap[k]
@@ -534,7 +557,7 @@ function addBlockOrNot(n: ENode, c: Comment) {
 }
 
 function nextChar(pos: int): string {
-    return nextNonSpaceChar(ctx.text, pos)
+    return nextNonSpaceChar(ctx().text, pos)
 }
 
 /** Comments in empty parentheses: `f(/* c *\/)`, `function f(/* c *\/) {}`. */
@@ -559,14 +582,14 @@ function handleEmptyParens(c: Comment): bool {
 
 function inEmptyParens(n: ENode, c: Comment): bool {
     if (c.start >= locEnd(n) || c.end <= locStart(n)) return false
-    const b = ctx.blank
+    const b = ctx().blank
     return b.slice(0, c.start).trimEnd().endsWith("(") && b.slice(c.end).trimStart().startsWith(")")
 }
 
 function handleConditional(c: Comment): bool {
     const preceding = c.preceding
     const enclosing = c.enclosing
-    const sameLine = preceding !== null && !hasNewlineInRange(ctx.text, locEnd(preceding), c.start)
+    const sameLine = preceding !== null && !hasNewlineInRange(ctx().text, locEnd(preceding), c.start)
     if (
         (preceding === null || !sameLine) &&
         enclosing !== null &&
@@ -607,7 +630,7 @@ function handleLastFunctionArg(c: Comment): bool {
             enclosing.type === "FunctionExpression" ||
             enclosing.type === "MethodDefinition"
         const body = enclosing.type === "MethodDefinition" ? enclosing.at("value").get("body") : enclosing.get("body")
-        if (fn && body === following && nextNonSpaceIndex(ctx.text, c.end) === locStart(following)) {
+        if (fn && body === following && nextNonSpaceIndex(ctx().text, c.end) === locStart(following)) {
             addBlockFirst(following, c)
             return true
         }
@@ -645,12 +668,12 @@ function handleIf(c: Comment): bool {
     }
     if (preceding === enclosing.get("consequent") && following === enclosing.get("alternate")) {
         const consequent = enclosing.at("consequent")
-        const elseAt = ctx.blank.indexOf("else", locEnd(consequent))
+        const elseAt = ctx().blank.indexOf("else", locEnd(consequent))
         if (c.start >= elseAt) addLeading(following, c)
         else if (
             preceding!.type !== "BlockStatement" &&
             isLineOrSingleLineBlock(c) &&
-            !hasNewlineInRange(ctx.text, locEnd(preceding!), c.start)
+            !hasNewlineInRange(ctx().text, locEnd(preceding!), c.start)
         )
             addTrailing(preceding!, c)
         else addDangling(enclosing, c)
@@ -749,7 +772,7 @@ function handleFor(c: Comment): bool {
         (t === "ForInStatement" || t === "ForOfStatement" || t === "ForStatement") &&
         following === enclosing.get("body")
     ) {
-        const paren = lastIndexBefore(ctx.blank, ")", locStart(following))
+        const paren = lastIndexBefore(ctx().blank, ")", locStart(following))
         if (c.start > paren) {
             addLeading(following, c)
             return true
@@ -792,7 +815,7 @@ function handleImportSpecifier(c: Comment): bool {
     if (preceding !== null && enclosing !== null) {
         const isImport = preceding.type === "ImportSpecifier" && enclosing.type === "ImportDeclaration"
         const isExport = preceding.type === "ExportSpecifier" && enclosing.type === "ExportNamedDeclaration"
-        if ((isImport || isExport) && hasNewline(ctx.text, c.end, false)) {
+        if ((isImport || isExport) && hasNewline(ctx().text, c.end, false)) {
             addTrailing(preceding, c)
             return true
         }
@@ -872,8 +895,8 @@ function handleAs(c: Comment): bool {
 
 /** A one-line block comment just before a union (in a type annotation) leads its first type. */
 function unionLeading(n: ENode | null, c: Comment): bool {
-    if (!isUnion(n) || !c.block || hasNewlineInRange(ctx.text, c.start, c.end)) return false
-    const between = ctx.blank.slice(c.end, locStart(n!))
+    if (!isUnion(n) || !c.block || hasNewlineInRange(ctx().text, c.start, c.end)) return false
+    const between = ctx().blank.slice(c.end, locStart(n!))
     for (let i = 0; i < between.length; i++) if (between[i] !== SPACE && between[i] !== TAB) return false
     return true
 }
@@ -907,9 +930,9 @@ function handleCallArguments(c: Comment): bool {
     const args = call.all("arguments")
     if (call.get("callee") !== c.preceding || args.length === 0) return false
     const close = locEnd(call) - 1
-    if (ctx.text[close] !== 41 || c.end > close) return false
+    if (ctx().text[close] !== 41 || c.end > close) return false
     const typeArguments = call.get("typeArguments")
-    const open = ctx.blank.indexOf("(", locEnd(typeArguments !== null ? typeArguments : call.at("callee")))
+    const open = ctx().blank.indexOf("(", locEnd(typeArguments !== null ? typeArguments : call.at("callee")))
     if (open < 0 || c.start <= open) return false
     addLeading(args[0], c)
     return true
@@ -944,7 +967,7 @@ function handleVariableDeclarator(c: Comment): bool {
             return leadUnionOrNode(following, c)
     }
     if (t === "TSTypeAliasDeclaration") {
-        const equals = ctx.blank.indexOf("=", locEnd(enclosing.at("id")))
+        const equals = ctx().blank.indexOf("=", locEnd(enclosing.at("id")))
         if (c.start >= equals) return leadUnionOrNode(following, c)
     }
     return false
@@ -989,7 +1012,7 @@ function handleArrowBody(c: Comment): bool {
         c.preceding === null
     )
         return false
-    const arrow = lastIndexBefore(ctx.blank, "=>", locStart(enclosing.at("body")))
+    const arrow = lastIndexBefore(ctx().blank, "=>", locStart(enclosing.at("body")))
     if (c.end < arrow) return false
     addBlockOrNot(following, c)
     return true
@@ -1039,8 +1062,8 @@ function handlePropertySignatureUnion(c: Comment): bool {
 function handleBeforeArrow(c: Comment): bool {
     const enclosing = c.enclosing
     if (enclosing === null || enclosing.type !== "ArrowFunctionExpression") return false
-    const i = nextNonSpaceIndex(ctx.text, c.end)
-    if (ctx.text.slice(i, i + 2) === "=>") {
+    const i = nextNonSpaceIndex(ctx().text, c.end)
+    if (ctx().text.slice(i, i + 2) === "=>") {
         addDangling(enclosing, c, "commentBeforeArrow")
         return true
     }
@@ -1092,7 +1115,7 @@ function handleOwnLine(c: Comment, ast: ENode): bool {
         handleClass(c) ||
         handleFor(c) ||
         handleUnion(c) ||
-        handleOnlyComments(c, ast, c === ctx.comments[ctx.comments.length - 1]) ||
+        handleOnlyComments(c, ast, c === ctx().comments[ctx().comments.length - 1]) ||
         handleImportSpecifier(c) ||
         handleAssignmentPattern(c) ||
         handleMethodName(c) ||
@@ -1118,7 +1141,7 @@ function handleEndOfLine(c: Comment, ast: ENode): bool {
         handleLabeled(c) ||
         handleCallArguments(c) ||
         handleProperty(c) ||
-        handleOnlyComments(c, ast, c === ctx.comments[ctx.comments.length - 1]) ||
+        handleOnlyComments(c, ast, c === ctx().comments[ctx().comments.length - 1]) ||
         handleVariableDeclarator(c) ||
         handleSwitchDefault(c) ||
         handleUnionInArray(c) ||
@@ -1136,7 +1159,7 @@ function handleRemaining(c: Comment, ast: ENode): bool {
         handleWhile(c) ||
         handleFor(c) ||
         handleMethodName(c) ||
-        handleOnlyComments(c, ast, c === ctx.comments[ctx.comments.length - 1]) ||
+        handleOnlyComments(c, ast, c === ctx().comments[ctx().comments.length - 1]) ||
         handleVariableDeclarator(c) ||
         handleBeforeArrow(c) ||
         handleFunctionName(c) ||
@@ -1176,7 +1199,7 @@ export function literalText(s: string): Doc {
 
 export function printComment(c: Comment): Doc {
     c.printed = true
-    if (!c.block) return text(ctx.text.slice(c.start, c.end).trimEnd())
+    if (!c.block) return text(ctx().text.slice(c.start, c.end).trimEnd())
     const lines = jsdocLines(c)
     if (lines.length > 0) {
         const doubleSpaces = c.value[0] === STAR && c.value.length > 1 && c.value[1] !== STAR
@@ -1200,7 +1223,7 @@ export function printComment(c: Comment): Doc {
 
 function printLeadingComment(c: Comment): Doc {
     const parts: Doc[] = [printComment(c)]
-    const s = ctx.text
+    const s = ctx().text
     if (c.block) {
         if (hasNewline(s, c.end, false)) parts.push(hasNewline(s, c.start, true) ? hardline : line)
         else parts.push(text(" "))
@@ -1220,7 +1243,7 @@ class TrailingState {
 
 function printTrailingComment(c: Comment, previous: TrailingState | null): TrailingState {
     const printed = printComment(c)
-    const s = ctx.text
+    const s = ctx().text
     if ((previous !== null && previous.hasLineSuffix && !previous.isBlock) || hasNewline(s, c.start, true)) {
         const emptyBefore = isPreviousLineEmpty(s, c.start)
         return new TrailingState(lineSuffix(concat([hardline, emptyBefore ? hardline : empty, printed])), c.block, true)

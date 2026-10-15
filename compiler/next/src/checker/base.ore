@@ -79,7 +79,16 @@ import {
     CheckInfo,
 } from "./context"
 import { instantiate } from "./declarations"
-import { disposeName, floatLit, hashable, indexSignatureMessage, isSymbolDispose, memberOf, poison, typeOf } from "./helpers"
+import {
+    disposeName,
+    floatLit,
+    hashable,
+    indexSignatureMessage,
+    isSymbolDispose,
+    memberOf,
+    poison,
+    typeOf,
+} from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
 import { type Generic, type TypeSymbol, Scope } from "./symbols"
 
@@ -368,11 +377,28 @@ export class Checker {
             this.info.definitions.set(name, symbol.decl)
             return symbol
         }
-        const left = name.kind === "QualifiedName" ? name.child("left") : name.kind === "PropertyAccessExpression" ? name.child("expression") : null
-        const right = name.kind === "QualifiedName" ? name.child("right") : name.kind === "PropertyAccessExpression" ? name.child("name") : null
+        const left =
+            name.kind === "QualifiedName"
+                ? name.child("left")
+                : name.kind === "PropertyAccessExpression"
+                  ? name.child("expression")
+                  : null
+        const right =
+            name.kind === "QualifiedName"
+                ? name.child("right")
+                : name.kind === "PropertyAccessExpression"
+                  ? name.child("name")
+                  : null
         const module = left !== null && isIdentifier(left) ? scope.lookupValue(left.text) : null
         // A type of a built-in namespace implemented in Ore, such as `fs.FileInfo`.
-        const exports = module === null ? null : module.k === "module" ? module.exports : module.k === "namespace" ? module.module : null
+        const exports =
+            module === null
+                ? null
+                : module.k === "module"
+                  ? module.exports
+                  : module.k === "namespace"
+                    ? module.module
+                    : null
         if (module === null || exports === null || right === null || !isIdentifier(right)) {
             this.error(name, "Only types of modules imported with '* as' can be qualified.")
             return null
@@ -382,7 +408,12 @@ export class Checker {
         const symbol = exported === null ? null : exported.type
         if (symbol === null) {
             const moduleName = module.k === "namespace" ? module.name : module.k === "module" ? module.name : ""
-            this.error(right, module.k === "namespace" ? `'${moduleName}' has no type '${right.text}'.` : `Module '${moduleName}' has no exported type '${right.text}'.`)
+            this.error(
+                right,
+                module.k === "namespace"
+                    ? `'${moduleName}' has no type '${right.text}'.`
+                    : `Module '${moduleName}' has no exported type '${right.text}'.`,
+            )
             return null
         }
         this.info.definitions.set(right, symbol.decl)
@@ -395,9 +426,11 @@ export class Checker {
             if (member.kind !== "PropertySignature") {
                 this.error(
                     member,
-                    member.kind === "MethodSignature" ? "Methods in object types are not supported yet. Use an interface."
-                    : member.kind === "IndexSignature" ? indexSignatureMessage
-                    : "Only properties are supported in object types.",
+                    member.kind === "MethodSignature"
+                        ? "Methods in object types are not supported yet. Use an interface."
+                        : member.kind === "IndexSignature"
+                          ? indexSignatureMessage
+                          : "Only properties are supported in object types.",
                 )
                 continue
             }
@@ -526,7 +559,8 @@ export class Checker {
         if (isIdentifier(name)) return name.text
         if (name.kind === "StringLiteral") return stringText(name)
         if (name.kind === "ComputedPropertyName" && isSymbolDispose(name.child("expression")!)) return disposeName
-        if (name.kind === "PrivateIdentifier") this.error(name, "'#' private names are not supported. Use the 'private' modifier.")
+        if (name.kind === "PrivateIdentifier")
+            this.error(name, "'#' private names are not supported. Use the 'private' modifier.")
         else this.error(name, "Computed property names are not supported.")
         return null
     }
@@ -572,12 +606,19 @@ export class Checker {
                     return poison(target)
                 }
                 // A member, or a union of members, converts to a union containing them.
-                if (target.kind === "union" && membersOf(from).every((f) => targetMembers.some((m) => memberOf(f, m)))) {
+                if (
+                    target.kind === "union" &&
+                    membersOf(from).every((f) => targetMembers.some((m) => memberOf(f, m)))
+                ) {
                     return new Recast(target, expr)
                 }
                 // A union of subclasses converts to their base class.
                 const base = target.kind === "struct" ? target : null
-                if (base !== null && from.kind === "union" && from.members.every((m) => m.kind === "struct" && isSubclass(m, base))) {
+                if (
+                    base !== null &&
+                    from.kind === "union" &&
+                    from.members.every((m) => m.kind === "struct" && isSubclass(m, base))
+                ) {
                     return new Recast(target, expr)
                 }
                 if (target.kind === "union") {
@@ -591,8 +632,15 @@ export class Checker {
                     }
                     if (ifaces.length === 1) return new Recast(target, this.coerce(value, ifaces[0], node))
                 }
-                if (from.kind === "union" && from.members.some((m) => m.kind === "null") && sameType(this.withoutNull(from), target)) {
-                    this.error(node, `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}': the value may be null. Check it with '!== null' first, or use '??' or '!'.`)
+                if (
+                    from.kind === "union" &&
+                    from.members.some((m) => m.kind === "null") &&
+                    sameType(this.withoutNull(from), target)
+                ) {
+                    this.error(
+                        node,
+                        `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}': the value may be null. Check it with '!== null' first, or use '??' or '!'.`,
+                    )
                     return poison(target)
                 }
                 if (target.kind === "interface") {
@@ -603,12 +651,16 @@ export class Checker {
                             if (source.kind === "interface") return new ToIface(target, expr, null, result.indices)
                             return new ToIface(target, expr, itab(this, source, target))
                         }
-                        this.error(node, `Type '${typeToString(from)}' is not assignable to type '${target.name}': ${result.reason}.`)
+                        this.error(
+                            node,
+                            `Type '${typeToString(from)}' is not assignable to type '${target.name}': ${result.reason}.`,
+                        )
                         return poison(target)
                     }
                 }
                 let message = `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}'.`
-                if (isNumeric(from) && isNumeric(target)) message += ` Use an explicit conversion: '${typeToString(target)}(...)'.`
+                if (isNumeric(from) && isNumeric(target))
+                    message += ` Use an explicit conversion: '${typeToString(target)}(...)'.`
                 this.error(node, message)
                 return poison(target)
             }
@@ -617,7 +669,10 @@ export class Checker {
                 if (target.kind === "int") {
                     const range = intRange(target)
                     if (bigLt(value.value, bigOf(range.min)) || bigGt(value.value, bigOfU64(range.max))) {
-                        this.error(node, `Constant ${bigText(value.value)} overflows '${target.name}' (range ${range.min}..${range.max}).`)
+                        this.error(
+                            node,
+                            `Constant ${bigText(value.value)} overflows '${target.name}' (range ${range.min}..${range.max}).`,
+                        )
                         return poison(target)
                     }
                     return new IntLit(target, bigToI64(value.value))
@@ -629,7 +684,11 @@ export class Checker {
             case "untyped-float": {
                 if (target.kind === "union") return this.coerceToUnion(value, target, node)
                 if (target.kind === "float") return floatLit(target, value.value)
-                if (target.kind === "int") this.error(node, `A floating-point constant is not assignable to integer type '${target.name}'. Use '${target.name}(...)' to truncate.`)
+                if (target.kind === "int")
+                    this.error(
+                        node,
+                        `A floating-point constant is not assignable to integer type '${target.name}'. Use '${target.name}(...)' to truncate.`,
+                    )
                 else this.error(node, `A floating-point constant is not assignable to type '${typeToString(target)}'.`)
                 return poison(target)
             }
@@ -645,7 +704,12 @@ export class Checker {
         for (const m of numeric) if (preferred === null && sameType(m, fallback)) preferred = m
         if (preferred === null && numeric.length === 1) preferred = numeric[0]
         if (preferred === null) {
-            this.error(node, numeric.length === 0 ? `A numeric constant is not assignable to type '${typeToString(target)}'.` : `Ambiguous constant for type '${typeToString(target)}'. Convert it explicitly, e.g. '${typeToString(numeric[0])}(...)'.`)
+            this.error(
+                node,
+                numeric.length === 0
+                    ? `A numeric constant is not assignable to type '${typeToString(target)}'.`
+                    : `Ambiguous constant for type '${typeToString(target)}'. Convert it explicitly, e.g. '${typeToString(numeric[0])}(...)'.`,
+            )
             return poison(target)
         }
         return new Recast(target, this.coerce(value, preferred, node))

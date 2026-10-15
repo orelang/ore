@@ -92,6 +92,16 @@ the modules a program loads, in `buildCommand` of `cli/commands.ore`.
 | `cli/oracles.ore` | The modes the harness compares with the TypeScript compiler: `ore tokens\|tree\|roles\|modules\|ir <file>`, `ore read <dump.txt>`, `ore llvm <dump.txt> [--debug]`, `ore object <in.ll> [<src.c>...] -o <out> [-c] [-l lib] [-L dir]` |
 | `main.ore` | `process.exit(main(process.args))` |
 
+[`ci/test.sh`](../../ci/test.sh) tests it without Bun (see
+[`tests/README.md`](../../tests/README.md)): the runner of `tests/runner`
+holds this compiler, builds and runs every program of `tests/run` with it
+and checks every one of `tests/diag`, in its own process; runs the tests of
+`test/*.test.ore` (ported from the unit tests of the TypeScript packages,
+and the language server over pipes); checks that every `.ore` file is
+formatted and that the formatter keeps code and comments and is idempotent
+on unformatted variants; and builds this compiler with itself.
+
+Until CI switches to it, the Bun suite also runs:
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
 equal those of the TypeScript scanner and parser; on every program of

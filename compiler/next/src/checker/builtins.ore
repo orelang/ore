@@ -5,11 +5,28 @@ import builtinText from "../../../../runtime/std/builtin.d.ore" with { type: "te
 import { type Expr, BuiltinCall, FloatLit, StringLit } from "../ir/nodes"
 import { type Type, arrayOf, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
-import { body, declarationList, declarations, isIdentifier, nameNode, optionalName, statements, typeNode } from "../syntax/nodes"
+import {
+    body,
+    declarationList,
+    declarations,
+    isIdentifier,
+    nameNode,
+    optionalName,
+    statements,
+    typeNode,
+} from "../syntax/nodes"
 import { parse } from "../syntax/parse"
 import { type Source } from "../syntax/source"
 import { Typed } from "./operand"
-import { type ValueSymbol, BuiltinSymbol, ConstSymbol, ConversionSymbol, NamespaceSymbol, Scope, TypeSymbol } from "./symbols"
+import {
+    type ValueSymbol,
+    BuiltinSymbol,
+    ConstSymbol,
+    ConversionSymbol,
+    NamespaceSymbol,
+    Scope,
+    TypeSymbol,
+} from "./symbols"
 
 /** Values of built-in constants, declared without values in builtin.d.ore. */
 function constant(name: string): f64 | null {
@@ -66,7 +83,12 @@ export function builtinScope(): Builtins {
             const found = scope.lookupType(name)
             if (found === null) process.panic(`unknown builtin function ${name}`)
             scope.declareValue(name, new ConversionSymbol(found.type, stmt))
-        } else if (stmt.kind === "ModuleDeclaration" && isIdentifier(nameNode(stmt)) && body(stmt) !== null && body(stmt)!.kind === "ModuleBlock") {
+        } else if (
+            stmt.kind === "ModuleDeclaration" &&
+            isIdentifier(nameNode(stmt)) &&
+            body(stmt) !== null &&
+            body(stmt)!.kind === "ModuleBlock"
+        ) {
             const ns = nameNode(stmt).text
             const members = new Map<string, ValueSymbol>()
             for (const member of statements(body(stmt)!)) {
@@ -83,7 +105,8 @@ export function builtinScope(): Builtins {
                         if (value !== null) expr = new FloatLit(types.f64, value)
                         else if (text !== null) expr = new StringLit(types.string, text)
                         else expr = new BuiltinCall(arrayOf(types.string), name, [])
-                        if (value === null && text === null && name !== "process.args") process.panic(`unknown builtin constant ${name}`)
+                        if (value === null && text === null && name !== "process.args")
+                            process.panic(`unknown builtin constant ${name}`)
                         members.set(short, new ConstSymbol(new Typed(expr), expr.type, d))
                     }
                 }

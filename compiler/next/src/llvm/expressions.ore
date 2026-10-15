@@ -14,12 +14,40 @@ import {
     type UnionField,
     type UnionFieldLValue,
 } from "../ir/nodes"
-import { findField, isStringLike, isSubclass, sameType, typeKey, typeofName, typeToString, types, unionRepr, type FloatType, type IntType, type StructType, type Type, type UnionType } from "../ir/types"
+import {
+    findField,
+    isStringLike,
+    isSubclass,
+    sameType,
+    typeKey,
+    typeofName,
+    typeToString,
+    types,
+    unionRepr,
+    type FloatType,
+    type IntType,
+    type StructType,
+    type Type,
+    type UnionType,
+} from "../ir/types"
 import { arrayMethod, chanOp, mapOp, setOp } from "./collections"
 import { ARRAY, DIVIDE_BY_ZERO, FN, IFACE, STR } from "./context"
 import { Emitter } from "./base"
 import { body } from "./functions"
-import { bound, builtin, call, callClosure, callDirect, callIndirect, closure, concat, helper, stringMethod, thunk, type Part } from "./calls"
+import {
+    bound,
+    builtin,
+    call,
+    callClosure,
+    callDirect,
+    callIndirect,
+    closure,
+    concat,
+    helper,
+    stringMethod,
+    thunk,
+    type Part,
+} from "./calls"
 import { memberIndex, typeId } from "./helpers"
 import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
 import { slot } from "./functions"
@@ -101,7 +129,13 @@ export function expr(g: Emitter, e: Expr): V {
             if (known.k === "bool") return expr(g, known.value ? e.then : e.else)
             const then = e.then
             const otherwise = e.else
-            return choose(g, expr(g, e.cond), () => expr(g, then), () => expr(g, otherwise), g.lt(e.type))
+            return choose(
+                g,
+                expr(g, e.cond),
+                () => expr(g, then),
+                () => expr(g, otherwise),
+                g.lt(e.type),
+            )
         }
         case "concat": {
             const parts: Part[] = []
@@ -138,7 +172,8 @@ export function expr(g: Emitter, e: Expr): V {
             const array = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, g.i64(values.length)])
             if (values.length === 0) return array
             const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
-            for (let i = 0; i < values.length; i++) g.store(values[i], g.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${i}`).v, e.type.elem)
+            for (let i = 0; i < values.length; i++)
+                g.store(values[i], g.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${i}`).v, e.type.elem)
             return array
         }
         case "push": {
@@ -148,11 +183,15 @@ export function expr(g: Emitter, e: Expr): V {
             const array = expr(g, e.array)
             const values: V[] = []
             for (const v of e.values) values.push(expr(g, v))
-            for (const v of values) g.store(v, g.rt("ore_rt_array_push", [array, { ty: "i64", v: sizeOf(g.mt(type)) }]).v, type)
+            for (const v of values)
+                g.store(v, g.rt("ore_rt_array_push", [array, { ty: "i64", v: sizeOf(g.mt(type)) }]).v, type)
             return g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
         }
         case "pop":
-            return g.load(g.rt("ore_rt_array_pop", [expr(g, e.array), { ty: "i64", v: sizeOf(g.mt(e.type)) }]).v, e.type)
+            return g.load(
+                g.rt("ore_rt_array_pop", [expr(g, e.array), { ty: "i64", v: sizeOf(g.mt(e.type)) }]).v,
+                e.type,
+            )
         case "object": {
             const s = g.structType(e.type)
             const object = slot(g, e) ?? g.alloc(s).v
@@ -242,7 +281,13 @@ export function expr(g: Emitter, e: Expr): V {
             const via = e.via
             if (via !== null) {
                 const i = memberIndex(u, via)
-                return choose(g, slotTest(g, u, v, i), () => ifaceIs(g, payload(g, u, v, i), structOf(member)), () => ({ ty: "i1", v: "false" }), "i1")
+                return choose(
+                    g,
+                    slotTest(g, u, v, i),
+                    () => ifaceIs(g, payload(g, u, v, i), structOf(member)),
+                    () => ({ ty: "i1", v: "false" }),
+                    "i1",
+                )
             }
             if (member.kind !== "struct") return slotTest(g, u, v, memberIndex(u, member))
             return unionIs(g, u, v, member)
@@ -263,7 +308,10 @@ export function expr(g: Emitter, e: Expr): V {
         case "chan":
             return chanOp(g, e)
         case "func-ref":
-            return g.aggregate(FN, [{ ty: "ptr", v: thunk(g, e.func) }, { ty: "ptr", v: "null" }])
+            return g.aggregate(FN, [
+                { ty: "ptr", v: thunk(g, e.func) },
+                { ty: "ptr", v: "null" },
+            ])
         case "closure":
             return closure(g, e)
         case "call-value": {
@@ -346,8 +394,21 @@ export function check(g: Emitter, ok: V, message: string) {
 export function logical(g: Emitter, e: Logical): V {
     const left = expr(g, e.left)
     const right = e.right
-    if (e.op === "&&") return choose(g, left, () => expr(g, right), () => ({ ty: "i1", v: "false" }), "i1")
-    return choose(g, left, () => ({ ty: "i1", v: "true" }), () => expr(g, right), "i1")
+    if (e.op === "&&")
+        return choose(
+            g,
+            left,
+            () => expr(g, right),
+            () => ({ ty: "i1", v: "false" }),
+            "i1",
+        )
+    return choose(
+        g,
+        left,
+        () => ({ ty: "i1", v: "true" }),
+        () => expr(g, right),
+        "i1",
+    )
 }
 
 export function assign(g: Emitter, e: Assign): V {
@@ -370,7 +431,11 @@ export function assign(g: Emitter, e: Assign): V {
     const current = g.load(ptr, e.type)
     const t = e.type
     let combined: V
-    if (t.kind === "string") combined = concat(g, [{ v: current, t: types.string }, { v: value, t: types.string }])
+    if (t.kind === "string")
+        combined = concat(g, [
+            { v: current, t: types.string },
+            { v: value, t: types.string },
+        ])
     else if (t.kind === "int") combined = arith(g, op, current, value, t, e.value.type)
     else if (t.kind === "float") combined = arith(g, op, current, value, t, e.value.type)
     else process.panic(`compound assignment of ${t.kind}`)
@@ -416,7 +481,8 @@ export function incdec(g: Emitter, e: IncDec): V {
     const old = g.load(ptr, e.type)
     const t = e.type
     let next: V
-    if (t.kind === "float") next = g.b.value(old.ty, `${e.op === "++" ? "fadd" : "fsub"} ${old.ty} ${old.v}, ${floatConstant(1, t.bits)}`)
+    if (t.kind === "float")
+        next = g.b.value(old.ty, `${e.op === "++" ? "fadd" : "fsub"} ${old.ty} ${old.v}, ${floatConstant(1, t.bits)}`)
     else next = g.b.value(old.ty, `${e.op === "++" ? "add" : "sub"} ${old.ty} ${old.v}, 1`)
     g.store(next, ptr, e.type)
     return e.prefix ? next : old
@@ -502,7 +568,8 @@ export function convert(g: Emitter, v: V, from: Type, to: Type): V {
         g.decls.set(name, `declare ${target} ${name}(${v.ty})`)
         return g.b.value(target, `call ${target} ${name}(${v.ty} ${v.v})`)
     }
-    if (to.kind === "float" && from.kind === "int") return g.b.value(target, `${from.signed ? "sitofp" : "uitofp"} ${v.ty} ${v.v} to ${target}`)
+    if (to.kind === "float" && from.kind === "int")
+        return g.b.value(target, `${from.signed ? "sitofp" : "uitofp"} ${v.ty} ${v.v} to ${target}`)
     if (to.kind === "float" && from.kind === "float") {
         if (v.ty === target) return v
         return g.b.value(target, `${to.bits > from.bits ? "fpext" : "fptrunc"} ${v.ty} ${v.v} to ${target}`)
@@ -551,7 +618,8 @@ export function compare(g: Emitter, op: CompareOp, l: V, r: V, type: Type): V {
 export function equals(g: Emitter, a: V, b: V, type: Type): V {
     if (type.kind === "union") {
         const repr = unionRepr(type)
-        if (repr.k === "tagged") return g.b.value("i1", `call i1 ${unionEquals(g, type)}(${a.ty} ${a.v}, ${b.ty} ${b.v})`)
+        if (repr.k === "tagged")
+            return g.b.value("i1", `call i1 ${unionEquals(g, type)}(${a.ty} ${a.v}, ${b.ty} ${b.v})`)
         return equals(g, a, b, repr.k === "nullable" ? repr.base : types.string)
     }
     if (isStringLike(type)) return g.rtBool("ore_rt_str_eq", [a, b])
@@ -560,7 +628,8 @@ export function equals(g: Emitter, a: V, b: V, type: Type): V {
         const env = g.b.value("i1", `icmp eq ptr ${g.extract(a, 1, "ptr").v}, ${g.extract(b, 1, "ptr").v}`)
         return g.b.value("i1", `and i1 ${fn.v}, ${env.v}`)
     }
-    if (type.kind === "interface") return g.b.value("i1", `icmp eq ptr ${g.extract(a, 0, "ptr").v}, ${g.extract(b, 0, "ptr").v}`)
+    if (type.kind === "interface")
+        return g.b.value("i1", `icmp eq ptr ${g.extract(a, 0, "ptr").v}, ${g.extract(b, 0, "ptr").v}`)
     if (type.kind === "float") return g.b.value("i1", `fcmp oeq ${a.ty} ${a.v}, ${b.v}`)
     return g.b.value("i1", `icmp eq ${a.ty} ${a.v}, ${b.v}`)
 }
@@ -663,7 +732,13 @@ export function ifaceIs(g: Emitter, value: V, s: StructType): V {
     const table = g.extract(value, 1, "ptr")
     const present = g.b.value("i1", `icmp ne ptr ${table.v}, null`)
     if (!g.tables.has(s.id)) {
-        return choose(g, present, () => g.b.value("i1", `icmp eq i64 ${g.b.value("i64", `load i64, ptr ${table.v}`).v}, ${typeId(s)}`), () => ({ ty: "i1", v: "false" }), "i1")
+        return choose(
+            g,
+            present,
+            () => g.b.value("i1", `icmp eq i64 ${g.b.value("i64", `load i64, ptr ${table.v}`).v}, ${typeId(s)}`),
+            () => ({ ty: "i1", v: "false" }),
+            "i1",
+        )
     }
     const related: StructType[] = []
     for (const t of g.module.structs) if (g.tables.has(t.id) && (isSubclass(t, s) || isSubclass(s, t))) related.push(t)
@@ -677,7 +752,13 @@ export function ifaceIs(g: Emitter, value: V, s: StructType): V {
                 const test = g.b.value("i1", `icmp eq i64 ${id.v}, ${typeId(related[i])}`)
                 known = i === 0 ? test : g.b.value("i1", `or i1 ${known.v}, ${test.v}`)
             }
-            return choose(g, known, () => g.classIs(g.extract(value, 0, "ptr"), s), () => ({ ty: "i1", v: "false" }), "i1")
+            return choose(
+                g,
+                known,
+                () => g.classIs(g.extract(value, 0, "ptr"), s),
+                () => ({ ty: "i1", v: "false" }),
+                "i1",
+            )
         },
         () => ({ ty: "i1", v: "false" }),
         "i1",
@@ -697,7 +778,14 @@ export function unionIs(g: Emitter, u: UnionType, v: V, s: StructType): V {
         if (m.kind !== "struct") continue
         let test: V
         if (isSubclass(m, s)) test = slotTest(g, u, v, i)
-        else if (isSubclass(s, m)) test = choose(g, slotTest(g, u, v, i), () => g.classIs(payload(g, u, v, i), s), () => ({ ty: "i1", v: "false" }), "i1")
+        else if (isSubclass(s, m))
+            test = choose(
+                g,
+                slotTest(g, u, v, i),
+                () => g.classIs(payload(g, u, v, i), s),
+                () => ({ ty: "i1", v: "false" }),
+                "i1",
+            )
         else continue
         result = first ? test : g.b.value("i1", `or i1 ${result.v}, ${test.v}`)
         first = false
@@ -737,7 +825,14 @@ export function recast(g: Emitter, v: V, from: Type, to: Type): V {
     if (to.kind !== "union" && unionRepr(from).k !== "tagged") return recastInline(g, v, from, to)
     // Between unions held the same way without a tag (strings, or one reference
     // and null), with every member of the source in the target, the value stays.
-    if (to.kind === "union" && unionRepr(from).k !== "tagged" && unionRepr(to).k !== "tagged" && g.lt(from) === g.lt(to) && allMapped(from, to)) return v
+    if (
+        to.kind === "union" &&
+        unionRepr(from).k !== "tagged" &&
+        unionRepr(to).k !== "tagged" &&
+        g.lt(from) === g.lt(to) &&
+        allMapped(from, to)
+    )
+        return v
     // Otherwise the conversion tests the tag, or every member of the source: a
     // function per pair of types, so that each use is a call.
     const ty = g.lt(to)
@@ -764,7 +859,10 @@ export function recastInline(g: Emitter, v: V, from: UnionType, to: Type): V {
     if (to.kind === "struct" && memberIndex(from, to) === -1) return recastToBase(g, v, from, to)
     if (to.kind !== "union") {
         const i = memberIndex(from, to)
-        const message = nullIndex(from) !== -1 && from.members.length === 2 ? "unexpected null" : `value is not of type ${typeToString(to)}`
+        const message =
+            nullIndex(from) !== -1 && from.members.length === 2
+                ? "unexpected null"
+                : `value is not of type ${typeToString(to)}`
         check(g, slotTest(g, from, v, i), message)
         return payload(g, from, v, i)
     }
@@ -867,7 +965,10 @@ export function typeofer(g: Emitter, u: UnionType): string {
         let result = e.str("object")
         for (let i = u.members.length - 1; i >= 0; i--) {
             const test = slotTest(e, u, v, i)
-            result = e.b.value(STR, `select i1 ${test.v}, ${STR} ${e.str(typeofName(u.members[i])).v}, ${STR} ${result.v}`)
+            result = e.b.value(
+                STR,
+                `select i1 ${test.v}, ${STR} ${e.str(typeofName(u.members[i])).v}, ${STR} ${result.v}`,
+            )
         }
         e.b.terminate(`ret ${STR} ${result.v}`)
     })
@@ -970,7 +1071,12 @@ export function sharedField(g: Emitter, u: UnionType, name: string, type: Type):
         if ((g.tables.has(m.id) ? 1 : 0) !== offset) return -1
         for (let i = 0; i <= index; i++) if (g.mt(m.fields[i].type) !== g.mt(first.fields[i].type)) return -1
         const t = m.fields[index].type
-        const same = sameType(t, type) || (t.kind !== "union" && type.kind === "union" && unionRepr(type).k !== "tagged" && memberIndex(type, t) !== -1)
+        const same =
+            sameType(t, type) ||
+            (t.kind !== "union" &&
+                type.kind === "union" &&
+                unionRepr(type).k !== "tagged" &&
+                memberIndex(type, t) !== -1)
         if (!same || g.mt(t) !== g.mt(type)) return -1
     }
     return index + offset

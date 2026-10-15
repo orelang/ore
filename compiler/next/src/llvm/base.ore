@@ -10,7 +10,15 @@
 // classes again.
 
 import { type Func, type Local, type Module } from "../ir/nodes"
-import { isSubclass, methodSlot, unionRepr, type IntType, type StructType, type Type, type UnionType } from "../ir/types"
+import {
+    isSubclass,
+    methodSlot,
+    unionRepr,
+    type IntType,
+    type StructType,
+    type Type,
+    type UnionType,
+} from "../ir/types"
 import { StackPlan, type SlotNode } from "../opt/escape"
 import { EmitOptions, FN, IFACE, STR, Storage, type Breakable, type Disposal } from "./context"
 import { boxed } from "./helpers"
@@ -259,7 +267,8 @@ export class Emitter {
         }
         const r = this.b.value(ty, call)
         if (result.kind === "bool") return this.b.value("i64", `zext i1 ${r.v} to i64`)
-        if (result.kind === "int" && result.bits < 64) return this.b.value("i64", `${result.signed ? "sext" : "zext"} ${ty} ${r.v} to i64`)
+        if (result.kind === "int" && result.bits < 64)
+            return this.b.value("i64", `${result.signed ? "sext" : "zext"} ${ty} ${r.v} to i64`)
         return r
     }
 
@@ -378,7 +387,10 @@ export class Emitter {
             return boxed(local) ? this.b.value("ptr", `load ptr, ptr ${ptr}`).v : ptr
         }
         const s = this.storage.get(local)
-        if (s === null) process.panic(`local ${local.name}#${local.id} has no storage in ${func !== null ? func.name : "undefined"}`)
+        if (s === null)
+            process.panic(
+                `local ${local.name}#${local.id} has no storage in ${func !== null ? func.name : "undefined"}`,
+            )
         if (!s.boxed) return s.ptr
         return this.b.value("ptr", `load ptr, ptr ${s.ptr}`).v
     }
@@ -387,7 +399,8 @@ export class Emitter {
     boxOf(local: Local): V {
         const index = this.captureIndex(local)
         const func = this.func
-        if (index !== -1 && func !== null) return this.b.value("ptr", `load ptr, ptr ${this.field("%env", this.envType(func), index)}`)
+        if (index !== -1 && func !== null)
+            return this.b.value("ptr", `load ptr, ptr ${this.field("%env", this.envType(func), index)}`)
         const s = this.storage.get(local)
         if (s === null) process.panic(`local ${local.name}#${local.id} has no box`)
         return this.b.value("ptr", `load ptr, ptr ${s.ptr}`)
@@ -430,7 +443,16 @@ export class Emitter {
 
     /** Saves the state of the function being emitted and starts an empty one, for a helper. */
     save(): Saved {
-        const saved = new Saved(this.b, this.func, this.at, this.storage, this.slots, this.breakables, this.disposals, this.frame)
+        const saved = new Saved(
+            this.b,
+            this.func,
+            this.at,
+            this.storage,
+            this.slots,
+            this.breakables,
+            this.disposals,
+            this.frame,
+        )
         this.b = new FnBuilder()
         this.func = null
         this.at = false
