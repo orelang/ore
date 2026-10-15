@@ -1,0 +1,489 @@
+// The formatter (compiler/next/src/fmt), without an external oracle: every
+// .ore file of the repository is formatted already, and on unformatted
+// variants of each file the formatter keeps the code and is idempotent.
+//
+// The variants are made with the lexer and the parser in Ore, so that they
+// still parse: indentation removed, lines joined or broken after every
+// bracket and comma, single quotes, semicolons, redundant parentheses,
+// identifiers made longer (lines too long, which must break) or shorter
+// (broken lines that must join), and comments inserted between tokens and at
+// the ends of lines. For each, the output of the formatter must have the
+// tokens of the input (but for punctuation the formatter may add or remove:
+// semicolons, commas, parentheses, the quotes of strings), the same comments,
+// and be its own formatting.
+
+import { fail } from "ore:test"
+import { format } from "../../compiler/next/src/fmt/print"
+import { type Node } from "../../compiler/next/src/syntax/ast"
+import { type Token, tokenize } from "../../compiler/next/src/syntax/lexer"
+import { parse } from "../../compiler/next/src/syntax/parser"
+import { Case, difference, filesBelow, quote, read } from "./cases"
+
+/** Files that are not formatted on purpose. */
+const unformatted = [
+    // More syntax and comments for the formatter, deliberately not formatted.
+    "compiler/next/test/fmt-cases.ore",
+]
+
+// -----------------------------------------------------------------------------
+// Variants
+
+/** Texts inserted at positions; at one position, in the order given. */
+class Edits {
+    positions: int[] = []
+    texts: string[] = []
+
+    add(position: int, text: string): void {
+        this.positions.push(position)
+        this.texts.push(text)
+    }
+
+    apply(text: string): string {
+        const order: int[] = []
+        for (let i = 0; i < this.positions.length; i++) order.push(i)
+        order.sort((a, b) => (this.positions[a] !== this.positions[b] ? this.positions[a] - this.positions[b] : a - b))
+        let out = ""
+        let pos = 0
+        for (const i of order) {
+            out += text.slice(pos, this.positions[i]) + this.texts[i]
+            pos = this.positions[i]
+        }
+        return out + text.slice(pos)
+    }
+}
+
+/** Tokens after which a line break cannot end a statement. */
+const joinAfter = [
+    "OpenParenToken",
+    "OpenBracketToken",
+    "OpenBraceToken",
+    "CommaToken",
+    "EqualsToken",
+    "EqualsGreaterThanToken",
+    "AmpersandAmpersandToken",
+    "BarBarToken",
+    "QuestionQuestionToken",
+    "QuestionToken",
+    "ColonToken",
+    "PlusToken",
+    "DotToken",
+    "BarToken",
+    "EqualsEqualsEqualsToken",
+    "ExclamationEqualsEqualsToken",
+    "LessThanToken",
+]
+const joinBefore = ["CloseParenToken", "CloseBracketToken", "CloseBraceToken", "DotToken", "QuestionDotToken"]
+
+/** Lines joined where the line break between two tokens is not significant and holds no comment. */
+function joinLines(text: string): string {
+    const tokens = tokenize(text)
+    let out = ""
+    let pos = 0
+    for (let i = 1; i < tokens.length; i++) {
+        const prev = tokens[i - 1]
+        const next = tokens[i]
+        const trivia = text.slice(prev.end, next.start)
+        if (!trivia.includes("\n") || trivia.includes("/")) continue
+        if (!joinAfter.includes(prev.kind) && !joinBefore.includes(next.kind)) continue
+        out += text.slice(pos, prev.end) + " "
+        pos = next.start
+    }
+    return out + text.slice(pos)
+}
+
+/** A line break after every `(`, `[`, `{` and `,`. */
+function explode(text: string): string {
+    const edits = new Edits()
+    for (const t of tokenize(text)) {
+        if (
+            t.kind === "OpenParenToken" ||
+            t.kind === "OpenBracketToken" ||
+            t.kind === "OpenBraceToken" ||
+            t.kind === "CommaToken"
+        ) {
+            edits.add(t.end, "\n")
+        }
+    }
+    return edits.apply(text)
+}
+
+/** Double-quoted strings without quotes inside, single-quoted. */
+function singleQuotes(text: string): string {
+    let out = ""
+    let pos = 0
+    for (const t of tokenize(text)) {
+        if (t.kind !== "StringLiteral" || text[t.start] !== 34) continue
+        const content = text.slice(t.start + 1, t.end - 1)
+        if (content.includes("'") || content.includes('"')) continue
+        out += `${text.slice(pos, t.start)}'${content}'`
+        pos = t.end
+    }
+    return out + text.slice(pos)
+}
+
+/** Edits computed on the syntax tree of a text, visiting each node with the kind of its parent. */
+function treeEdits(text: string, visit: (node: Node, parent: string, edits: Edits) => void): string {
+    const file = parse(text).file
+    if (file === null) return text
+    const edits = new Edits()
+    walk(file, "", visit, edits)
+    return edits.apply(text)
+}
+
+function walk(
+    node: Node,
+    parent: string,
+    visit: (node: Node, parent: string, edits: Edits) => void,
+    edits: Edits,
+): void {
+    visit(node, parent, edits)
+    for (const child of node.children) walk(child, node.kind, visit, edits)
+}
+
+const statements = [
+    "ExpressionStatement",
+    "VariableStatement",
+    "ReturnStatement",
+    "ThrowStatement",
+    "BreakStatement",
+    "ContinueStatement",
+    "ImportDeclaration",
+    "ExportDeclaration",
+    "TypeAliasDeclaration",
+    "PropertyDeclaration",
+    "DoStatement",
+]
+
+/** A `;` after every statement and class field that has none. */
+function semicolons(text: string): string {
+    return treeEdits(text, (node, _, edits) => {
+        if (statements.includes(node.kind) && !text.slice(node.start, node.end).trimEnd().endsWith(";"))
+            edits.add(node.end, ";")
+    })
+}
+
+const assignments = [
+    "EqualsToken",
+    "PlusEqualsToken",
+    "MinusEqualsToken",
+    "AsteriskEqualsToken",
+    "AsteriskAsteriskEqualsToken",
+    "SlashEqualsToken",
+    "PercentEqualsToken",
+    "LessThanLessThanEqualsToken",
+    "GreaterThanGreaterThanEqualsToken",
+    "GreaterThanGreaterThanGreaterThanEqualsToken",
+    "AmpersandEqualsToken",
+    "BarEqualsToken",
+    "CaretEqualsToken",
+    "AmpersandAmpersandEqualsToken",
+    "BarBarEqualsToken",
+    "QuestionQuestionEqualsToken",
+]
+
+/** Redundant parentheses around binary, conditional, prefix and await expressions. */
+function parentheses(text: string): string {
+    return treeEdits(text, (node, parent, edits) => {
+        let wrap =
+            node.kind === "ConditionalExpression" ||
+            node.kind === "PrefixUnaryExpression" ||
+            node.kind === "AwaitExpression"
+        if (node.kind === "BinaryExpression") {
+            const operator = node.child("operatorToken")
+            wrap = operator !== null && operator.kind !== "CommaToken" && !assignments.includes(operator.kind)
+        }
+        if (wrap && parent !== "ParenthesizedExpression" && parent !== "ExpressionStatement") {
+            edits.add(node.start, "(")
+            edits.add(node.end, ")")
+        }
+    })
+}
+
+/** Every identifier renamed. */
+function rename(text: string, f: (name: string) => string): string {
+    let out = ""
+    let pos = 0
+    for (const t of tokenize(text)) {
+        if (t.kind !== "Identifier") continue
+        out += text.slice(pos, t.start) + f(text.slice(t.start, t.end))
+        pos = t.end
+    }
+    return out + text.slice(pos)
+}
+
+function longer(name: string): string {
+    return `${name}Xxxxxxxxxxx`
+}
+
+function shorter(name: string): string {
+    return `${name.slice(0, 1)}q`
+}
+
+/** A block comment before every `stride`-th token. */
+function blockComments(text: string, stride: int): string {
+    const tokens = tokenize(text)
+    const edits = new Edits()
+    for (let i = 3; i < tokens.length - 1; i += stride) {
+        // `>=`, `>>` and `>>=` are `>` tokens and the next, which the parser joins when nothing separates them.
+        const prev = tokens[i - 1]
+        if (prev.kind === "GreaterThanToken" && prev.end === tokens[i].start) continue
+        // Not before a non-null assertion: prettier moves such a comment before the `!`, which then starts a line.
+        if (tokens[i].kind === "ExclamationToken" && prev.end === tokens[i].start) continue
+        // Not next to a parenthesis: prettier moves such a comment across it, one parenthesis per formatting.
+        const kind = tokens[i].kind
+        if (kind === "OpenParenToken" || kind === "CloseParenToken" || prev.kind === "OpenParenToken") continue
+        edits.add(tokens[i].start, `/* c${i} */ `)
+    }
+    return edits.apply(text)
+}
+
+/** A line comment at the end of every `stride`-th line that ends between two tokens. */
+function lineComments(text: string, stride: int): string {
+    const tokens = tokenize(text)
+    const edits = new Edits()
+    let count = 0
+    for (let i = 1; i < tokens.length; i++) {
+        const trivia = text.slice(tokens[i - 1].end, tokens[i].start)
+        const newline = trivia.indexOf("\n")
+        if (newline < 0 || trivia.slice(0, newline).includes("/")) continue
+        if (count % stride === 0) edits.add(tokens[i - 1].end, ` // l${i}`)
+        count++
+    }
+    return edits.apply(text)
+}
+
+/** A way to make a text unformatted. */
+class Variant {
+    constructor(
+        readonly name: string,
+        readonly make: (text: string) => string,
+        /**
+         * Whether the output may change once more when formatted again, and
+         * then no more: a block comment next to a parenthesis can move across
+         * it, as with prettier.
+         */
+        readonly settles: bool = false,
+    ) {}
+}
+
+const variants = [
+    new Variant("without indentation", (s) => {
+        const lines = s.split("\n")
+        for (let i = 0; i < lines.length; i++) lines[i] = lines[i].trimStart()
+        return lines.join("\n")
+    }),
+    new Variant("with lines joined", joinLines),
+    new Variant("with lines broken", explode),
+    new Variant("with single quotes", singleQuotes),
+    new Variant("with semicolons", (s) => joinLines(semicolons(s))),
+    new Variant("with parentheses", parentheses),
+    new Variant("with long names, lines joined", (s) => joinLines(rename(s, longer))),
+    new Variant("with long names, lines broken", (s) => explode(rename(s, longer))),
+    new Variant("with short names, lines joined", (s) => joinLines(rename(s, shorter))),
+    new Variant("with block comments", (s) => blockComments(s, 7), true),
+    new Variant("with line comments", (s) => lineComments(s, 2)),
+]
+
+// -----------------------------------------------------------------------------
+// Checks
+
+/**
+ * The tokens of a text as the formatter must keep them: kind and text, but
+ * for semicolons, commas and parentheses, which it adds and removes, and with
+ * strings by their contents, whatever their quotes.
+ */
+function significant(text: string, tokens: Token[]): string[] {
+    const out: string[] = []
+    let previous = ""
+    for (const t of tokens) {
+        const kind = t.kind
+        const after = previous
+        previous = kind
+        if (
+            kind === "SemicolonToken" ||
+            kind === "CommaToken" ||
+            kind === "OpenParenToken" ||
+            kind === "CloseParenToken"
+        )
+            continue
+        // The `|` before the first member of a union type broken over lines.
+        if (kind === "BarToken" && (after === "EqualsToken" || after === "ColonToken" || after === "OpenParenToken"))
+            continue
+        let value = text.slice(t.start, t.end)
+        let name = kind
+        if (kind === "StringLiteral") {
+            value = unquote(value)
+            // A property name in quotes, which prettier unquotes, and the same name without them are alike.
+            if (isName(value)) name = "Identifier"
+        }
+        if (kind === "NumericLiteral") value = numberValue(value)
+        out.push(`${name} ${value}`)
+    }
+    return out
+}
+
+/** Whether a text is an identifier of ASCII letters, digits, `_` and `$`. */
+function isName(s: string): bool {
+    if (s.length === 0 || (s[0] >= 48 && s[0] <= 57)) return false
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i]
+        const letter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+        if (!letter && !(c >= 48 && c <= 57) && c !== 95 && c !== 36) return false
+    }
+    return true
+}
+
+/** A number as prettier may write it: lowercase (`0xff`, `1e5`), decimals by their value (`.5` is `0.5`, `1.50` is `1.5`). */
+function numberValue(literal: string): string {
+    const lower = literal.toLowerCase()
+    if (lower.startsWith("0x") || lower.startsWith("0b") || lower.startsWith("0o")) return lower
+    const value = Number.parseFloat(lower.replaceAll("_", ""))
+    return value === null ? lower : `${value}`
+}
+
+/** The contents of a string literal with its quotes escaped or not, as they need not be in the other quotes. */
+function unquote(literal: string): string {
+    let out = ""
+    let i = 1
+    while (i < literal.length - 1) {
+        // A backslash before a quote is dropped; before anything else it stays, with the character it escapes.
+        if (literal[i] === 92 && i + 2 < literal.length && (literal[i + 1] === 34 || literal[i + 1] === 39)) i++
+        else if (literal[i] === 92 && i + 2 < literal.length) {
+            out += literal.slice(i, i + 2)
+            i += 2
+            continue
+        }
+        out += literal.slice(i, i + 1)
+        i++
+    }
+    return out
+}
+
+/** The comments of a text, between its tokens, without white space, which the formatter may change in them. */
+function comments(text: string, tokens: Token[]): string[] {
+    const out: string[] = []
+    let pos = 0
+    for (const t of tokens) {
+        const gap = text.slice(pos, t.start)
+        pos = t.end
+        let i = 0
+        while (i < gap.length) {
+            if (gap[i] === 47 && i + 1 < gap.length && gap[i + 1] === 47) {
+                let end = gap.indexOf("\n", i)
+                if (end < 0) end = gap.length
+                out.push(squeeze(gap.slice(i, end)))
+                i = end
+            } else if (gap[i] === 47 && i + 1 < gap.length && gap[i + 1] === 42) {
+                let end = gap.indexOf("*/", i + 2)
+                end = end < 0 ? gap.length : end + 2
+                out.push(squeeze(gap.slice(i, end)))
+                i = end
+            } else i++
+        }
+    }
+    out.sort()
+    return out
+}
+
+function squeeze(s: string): string {
+    let out = ""
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i]
+        if (c !== 32 && c !== 9 && c !== 10 && c !== 13) out += s.slice(i, i + 1)
+    }
+    return out
+}
+
+/** The first difference of two lists of lines, or "". */
+function listDifference(what: string, expected: string[], actual: string[]): string {
+    for (let i = 0; i < expected.length || i < actual.length; i++) {
+        const a = i < expected.length ? expected[i] : "<end>"
+        const b = i < actual.length ? actual[i] : "<end>"
+        if (a !== b) return `${what} ${i}: expected ${quote(a)}, got ${quote(b)}`
+    }
+    return ""
+}
+
+/** Problems with the formatting of a text: it does not format, loses code or comments, or formats differently again. */
+function checkFormatting(input: string, settles: bool): string {
+    const formatted = format(input)
+    if (formatted instanceof Error) return `does not format: ${formatted.message}`
+    const before = tokenize(input)
+    const after = tokenize(formatted)
+    const tokens = listDifference("token", significant(input, before), significant(formatted, after))
+    if (tokens !== "") return `the code changes: ${tokens}`
+    const kept = listDifference("comment", comments(input, before), comments(formatted, after))
+    if (kept !== "") return `the comments change: ${kept}`
+    const again = format(formatted)
+    if (again instanceof Error) return `the output does not format: ${again.message}`
+    if (again === formatted) return ""
+    if (!settles) return `formatting is not idempotent: ${difference("the second formatting", formatted, again)}`
+    const third = format(again)
+    if (third instanceof Error) return `the second output does not format: ${third.message}`
+    if (third !== again) return `formatting does not settle: ${difference("the third formatting", again, third)}`
+    return ""
+}
+
+/** A variant of a text by the name of the variant, or null for an unknown name. */
+export function variantOf(name: string, text: string): string | null {
+    for (const variant of variants) if (variant.name === name) return variant.make(text)
+    return null
+}
+
+/** The problems with the formatting of a file and of its variants; none for a file that does not parse. */
+export function fmtProblems(file: string): string[] {
+    const text = read(file)
+    const problems: string[] = []
+    const formatted = format(text)
+    if (formatted instanceof Error) return [`does not format: ${formatted.message}`]
+    if (formatted !== text && !unformatted.includes(file)) {
+        problems.push(`is not formatted: ${difference("the formatted text", text, formatted)}`)
+    }
+    const asWritten = checkFormatting(text, false)
+    if (asWritten !== "") problems.push(`as written: ${asWritten}`)
+    for (const variant of variants) {
+        const problem = checkFormatting(variant.make(text), variant.settles)
+        if (problem !== "") problems.push(`${variant.name}: ${problem}`)
+    }
+    return problems
+}
+
+/**
+ * The formatting cases: one per .ore file of tests, runtime and compiler/next,
+ * the largest first. With the path of the runner itself (`self`), each case
+ * checks its file in a process of its own (`runner --fmt FILE`): formatting
+ * allocates much, and threads that allocate in one process wait for each
+ * other's collections, which makes formatting on several threads at once
+ * slower than on one. Without it, the cases format in this process.
+ */
+export function fmtCases(self: string): Case[] {
+    const files: string[] = []
+    for (const dir of ["tests", "runtime", "compiler/next"]) for (const f of filesBelow(dir, ".ore")) files.push(f)
+    const sizes = new Map<string, int>()
+    for (const f of files) {
+        const info = fs.stat(f)
+        sizes.set(f, info instanceof Error ? 0 : info.size)
+    }
+    files.sort((a, b) => (sizes.get(b) ?? 0) - (sizes.get(a) ?? 0))
+    const cases: Case[] = []
+    for (const file of files) {
+        // Tests of syntax errors and the lexer's cases do not parse, so they do not format.
+        if (parse(read(file)).errors.length > 0) {
+            cases.push(new Case(`fmt/${file}`, () => {}, "does not parse"))
+            continue
+        }
+        cases.push(
+            new Case(`fmt/${file}`, () => {
+                if (self === "") {
+                    const problems = fmtProblems(file)
+                    if (problems.length > 0) fail(problems.join("\n      "))
+                    return
+                }
+                const run = new process.Command(self, ["--fmt", file]).output()
+                if (run instanceof Error) fail(run.message)
+                if (run.code !== 0 || run.stderr !== "") fail(`${run.stdout}${run.stderr}`.trimEnd())
+            }),
+        )
+    }
+    return cases
+}
