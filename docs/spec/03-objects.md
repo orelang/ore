@@ -172,7 +172,8 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
 of `&&`, `||` and `?:`, and `switch` clauses on a literal (clauses reached by
 falling through code are not narrowed). An assignment narrows to the assigned
-value's type until the next assignment.
+value's type until the next assignment; a `?:` keeps the union of its
+branches' types (`u = t !== null ? t : "none"` makes `u` a string).
 
 Narrowing follows the flow of the code: after an `if`, a reference is
 narrowed to the union of its types at the ends of the branches that do not

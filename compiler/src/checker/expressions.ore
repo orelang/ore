@@ -770,6 +770,21 @@ export function checkConditional(c: Checker, node: Node, scope: Scope, expected:
     c.pushFacts(cond.whenFalse)
     const no = checkExpr(c, whenFalse(node), scope, expected)
     c.popFacts()
+    // Typed branches whose types are members of an expected union keep their
+    // own types, which are narrower: after `u = t !== null ? t : "d"`, u is a string.
+    if (expected !== null && expected.kind === "union" && yes.k === "typed" && no.k === "typed") {
+        const yt = yes.expr.type
+        const nt = no.expr.type
+        if (yt.kind !== "void" && nt.kind !== "void") {
+            const natural = sameType(yt, nt) ? yt : c.unionOf([yt, nt])
+            const members_ = expected.members
+            if (!sameType(natural, expected) && membersOf(natural).every((m) => members_.some((e) => sameType(e, m)))) {
+                const then = c.coerce(yes, natural, whenTrue(node))
+                const otherwise = c.coerce(no, natural, whenFalse(node))
+                return typed(new Conditional(natural, cond.expr, then, otherwise))
+            }
+        }
+    }
     // Branches that both fit the expected type take it, such as literals of a literal union.
     if (expected !== null && yes.k !== "error" && no.k !== "error") {
         const before = c.diagnostics.length
@@ -955,18 +970,24 @@ export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected
     const values: Operand[] = []
     for (const e of elems) values.push(checkExpr(c, e, scope))
     if (values.some((v) => v.k === "error")) return errorOperand
-    // The element type is the type of the first typed element, else the default type of the constants.
-    let elem: Type | null = null
-    for (const v of values) if (elem === null && v.k === "typed") elem = v.expr.type
-    if (elem === null) {
+    // The element type is the type of the first typed element, else the default type of the constants;
+    // a flag rather than null, as stage 0 of the bootstrap narrows differently.
+    let elemType: Type = types.i64
+    let found = false
+    for (const v of values) {
+        if (!found && v.k === "typed") {
+            elemType = v.expr.type
+            found = true
+        }
+    }
+    if (!found) {
         if (values.length === 0)
             return c.fail(
                 node,
                 "Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'.",
             )
-        elem = values.some((v) => v.k === "untyped-float") ? types.f64 : types.i64
+        if (values.some((v) => v.k === "untyped-float")) elemType = types.f64
     }
-    const elemType = elem!
     if (elemType.kind === "void" || elemType.kind === "never")
         return c.fail(node, `An array cannot contain values of type '${elemType.kind}'.`)
     const exprs: Expr[] = []
