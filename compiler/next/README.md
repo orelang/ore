@@ -116,14 +116,14 @@ equivalent in Ore:
 | `T \| undefined` results (`findField`) | `T \| null` |
 | `readonly T[]` | `T[]` |
 | `try` / `finally` | explicit cleanup on every path |
-| a class hierarchy of layers (`CheckerBase` ... `CallChecker`) with `protected` methods | functions of each layer's module taking the `Checker` (`c`) first; modules import each other in a cycle |
+| a class hierarchy of layers (`CheckerBase` ... `CallChecker`) with `protected` methods | functions of each layer's module taking the `Checker` (`c`) first; modules import each other in a cycle. Written before Ore had inheritance; `class B extends A` with `protected` and abstract methods now exists, so the layers can become classes again |
 | `ts.isX(node)`, `node.x` of the TypeScript AST | `node.kind === "X"` and the accessors of `syntax/nodes.ore`; `node.getText()` is `c.text(node)`, the source of a node is `c.sourceOf(node)` (nodes have no parent) |
 | node flags (`NodeFlags.Const`), operator token kinds of unary expressions, `heritageClause.token` | read back from the source text: `declarationKind`, `prefixOperator`, `heritageToken` |
 | `ts.getLeadingCommentRanges(text, stmt.pos)` | `leadingCommentRanges(text, c.fullStart(stmt))` |
 | `WeakMap` / `Set` of objects | `Map<K, bool>`; maps of struct and interface types are keyed by their id |
 | `withFacts(facts, () => ...)` | `c.pushFacts(facts)` ... `c.popFacts()` |
 | a function's `.length` (`writeAccessor`'s `next`) | an explicit `usesOld` flag |
-| a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `llvm/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names |
+| a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `llvm/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names; also from before inheritance, and possible as classes now |
 | `Map` keyed by a union (`Map<ir.Expr \| ir.Local, string>`) | one map per class of key (`SlotMap`, `NodeIds`) |
 
 Ore limitations to keep in mind: an array literal passed where `T[] | null` is
