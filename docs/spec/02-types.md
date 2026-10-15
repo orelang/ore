@@ -103,6 +103,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.getenv(name)` | an environment variable, or `null` |
 | `process.cwd()` | the working directory, as an absolute path |
 | `process.env()` | the environment variables, as a `Map<string, string>` |
+| `process.cpus()` | the number of CPUs online |
 | `process.run(program, args?)`, `process.output(program, args?)`, `new process.Command(program, args?)` | other programs (below) |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
 | `Math.abs(x)`, `Math.min(a, b)`, `Math.max(a, b)` | for any numeric type, keeping it |
