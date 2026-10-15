@@ -21,6 +21,15 @@ const roundConstants: u32[] = [
     0xc67178f2,
 ]
 
+/** The round constants as 64 native-endian words, read by `compress` without bounds checks. */
+const roundTable = wordTable(roundConstants)
+
+function wordTable(words: u32[]): string {
+    const bytes = unsafe.allocBytes(4 * words.length)
+    for (let i = 0; i < words.length; i++) unsafe.store<u32>(unsafe.add(bytes, 4 * i), words[i])
+    return unsafe.makeString(bytes, 4 * words.length)
+}
+
 const hexDigits = "0123456789abcdef"
 
 // Layout of the scratch memory of a hasher: the eight state words, the
@@ -120,32 +129,32 @@ export class Sha256 {
     }
 }
 
-function loadBigEndian(p: ptr): u32 {
-    return (
-        (u32(unsafe.load<u8>(p)) << 24) |
-        (u32(unsafe.load<u8>(unsafe.add(p, 1))) << 16) |
-        (u32(unsafe.load<u8>(unsafe.add(p, 2))) << 8) |
-        u32(unsafe.load<u8>(unsafe.add(p, 3)))
-    )
-}
-
-function rotr(x: u32, n: u32): u32 {
-    return (x >> n) | (x << (32 - n))
-}
-
-/** Hashes the 64 bytes at `block` into the state in the scratch memory at `base`. */
+/**
+ * Hashes the 64 bytes at `block` into the state in the scratch memory at
+ * `base`. The rotations are written out, and the round constants read
+ * without bounds checks, so that a debug build is not much slower.
+ */
 function compress(base: ptr, block: ptr): void {
     const w = unsafe.add(base, scheduleAt)
-    for (let i = 0; i < 16; i++) unsafe.store<u32>(unsafe.add(w, 4 * i), loadBigEndian(unsafe.add(block, 4 * i)))
+    for (let i = 0; i < 16; i++) {
+        const p = unsafe.add(block, 4 * i)
+        const word =
+            (u32(unsafe.load<u8>(p)) << 24) |
+            (u32(unsafe.load<u8>(unsafe.add(p, 1))) << 16) |
+            (u32(unsafe.load<u8>(unsafe.add(p, 2))) << 8) |
+            u32(unsafe.load<u8>(unsafe.add(p, 3)))
+        unsafe.store<u32>(unsafe.add(w, 4 * i), word)
+    }
     for (let i = 16; i < 64; i++) {
         const w15 = unsafe.load<u32>(unsafe.add(w, 4 * (i - 15)))
         const w2 = unsafe.load<u32>(unsafe.add(w, 4 * (i - 2)))
-        const s0 = rotr(w15, 7) ^ rotr(w15, 18) ^ (w15 >> 3)
-        const s1 = rotr(w2, 17) ^ rotr(w2, 19) ^ (w2 >> 10)
+        const s0 = ((w15 >> 7) | (w15 << 25)) ^ ((w15 >> 18) | (w15 << 14)) ^ (w15 >> 3)
+        const s1 = ((w2 >> 17) | (w2 << 15)) ^ ((w2 >> 19) | (w2 << 13)) ^ (w2 >> 10)
         const sum =
             unsafe.load<u32>(unsafe.add(w, 4 * (i - 16))) + s0 + unsafe.load<u32>(unsafe.add(w, 4 * (i - 7))) + s1
         unsafe.store<u32>(unsafe.add(w, 4 * i), sum)
     }
+    const k = unsafe.stringData(roundTable)
     const state = unsafe.add(base, stateAt)
     let a = unsafe.load<u32>(state)
     let b = unsafe.load<u32>(unsafe.add(state, 4))
@@ -156,10 +165,10 @@ function compress(base: ptr, block: ptr): void {
     let g = unsafe.load<u32>(unsafe.add(state, 24))
     let h = unsafe.load<u32>(unsafe.add(state, 28))
     for (let i = 0; i < 64; i++) {
-        const s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
+        const s1 = ((e >> 6) | (e << 26)) ^ ((e >> 11) | (e << 21)) ^ ((e >> 25) | (e << 7))
         const choose = (e & f) ^ (~e & g)
-        const t1 = h + s1 + choose + roundConstants[i] + unsafe.load<u32>(unsafe.add(w, 4 * i))
-        const s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
+        const t1 = h + s1 + choose + unsafe.load<u32>(unsafe.add(k, 4 * i)) + unsafe.load<u32>(unsafe.add(w, 4 * i))
+        const s0 = ((a >> 2) | (a << 30)) ^ ((a >> 13) | (a << 19)) ^ ((a >> 22) | (a << 10))
         const majority = (a & b) ^ (a & c) ^ (b & c)
         const t2 = s0 + majority
         h = g
