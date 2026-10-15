@@ -19,6 +19,16 @@
   but optional ones.
   Without a context type, the literal's type is inferred from its values;
   shorthand properties (`{ name }`) are allowed.
+- An object literal can have methods: `{ count: 0, add(n: int) { this.count
+  += n } }`. A method is a field holding a closure whose `this` is the
+  object; it can use the variables around it, as any closure. Its parameter
+  and result types come from its annotations or from the type the literal is
+  written for (a method that returns a value needs one or the other).
+  Accessors and spreads are not supported in such a literal yet.
+- An object type with methods, `{ count: int; add(n: int): void }`, is a
+  structural interface, as in TypeScript: classes with those members, and
+  object literals with those fields and methods, fit it. An interface's
+  method can be a field of a function type in the class or object.
 - `...object` in an object literal copies the fields of an object: the
   public fields of a class instance (not its methods), the fields of an
   object type or an interface. A later property replaces an earlier one

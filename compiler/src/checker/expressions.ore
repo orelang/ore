@@ -2,6 +2,7 @@
 // conversions between them.
 
 import {
+    Alloc,
     type Expr,
     type LValue,
     ArrayLit,
@@ -57,6 +58,7 @@ import {
     type Type,
     type UnionType,
     Field,
+    FuncType,
     arrayOf,
     findField,
     findMethod,
@@ -70,6 +72,9 @@ import {
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
+    typeNode,
+    parameters,
+    body,
     argumentExpression,
     elements,
     expression,
@@ -1198,7 +1203,7 @@ function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null
             at = nameNode(prop)
             valueNode = nameNode(prop)
         } else {
-            c.error(prop, "Methods and accessors in object literals are not supported yet.")
+            c.error(prop, "Accessors in object literals are not supported yet.")
             return null
         }
         if (name === null) return null
@@ -1216,7 +1221,127 @@ function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null
     return props
 }
 
+/**
+ * An object literal with methods: `{ count: 0, add(n: int) { this.count += n } }`.
+ * A method is a field holding a closure whose `this` is the object; the
+ * object is allocated first and its fields assigned in order, so that the
+ * closures can refer to it. The types of a method come from its annotations,
+ * or from the expected type.
+ */
+function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    let hints: StructType | InterfaceType | null = null
+    if (expected !== null && expected.kind === "struct") hints = expected
+    else if (expected !== null && expected.kind === "interface") hints = expected
+    // The fields, in order: their names, nodes, and types (of methods, before their bodies are checked).
+    const names: string[] = []
+    const nodes: Node[] = []
+    const values: Expr[] = []
+    const methods: Node[] = []
+    const fields: Field[] = []
+    for (const prop of properties(node)) {
+        const k = prop.kind
+        if (k === "SpreadAssignment" || k === "GetAccessor" || k === "SetAccessor")
+            return c.fail(prop, "Spreads and accessors are not supported in an object literal with methods yet.")
+        const nameAt = prop.child("name")
+        const name = nameAt !== null ? c.memberName(nameAt) : null
+        if (nameAt === null || name === null) return errorOperand
+        if (names.includes(name)) return c.fail(nameAt, `Duplicate property '${name}'.`)
+        if (k === "MethodDeclaration") {
+            const type = methodType(c, prop, scope, hints !== null ? memberHint(hints, name) : null)
+            if (type === null) return errorOperand
+            names.push(name)
+            nodes.push(prop)
+            methods.push(prop)
+            values.push(new NullLit(types.null))
+            fields.push(new Field(name, type, false))
+            continue
+        }
+        const valueNode = k === "ShorthandPropertyAssignment" ? nameAt : initializer(prop)!
+        const hint = hints !== null ? memberHint(hints, name) : null
+        const value = checkExpr(c, valueNode, scope, hint)
+        if (value.k === "error") return errorOperand
+        const expr = hint !== null ? c.coerce(value, hint, valueNode) : c.toDefault(value, valueNode)
+        names.push(name)
+        nodes.push(prop)
+        methods.push(prop)
+        values.push(expr)
+        fields.push(new Field(name, expr.type, false))
+    }
+    const struct = expected !== null && expected.kind === "struct" && !expected.nominal ? expected : c.shape(fields)
+    const self = c.newLocal("this", struct, false)
+    const selfRef: Expr = new LocalRef(struct, self)
+    const assigns: Expr[] = []
+    for (let i = 0; i < names.length; i++) {
+        const field = findField(struct, names[i])
+        if (field === null)
+            return c.fail(nodes[i], `Property '${names[i]}' does not exist in type '${typeToString(struct)}'.`)
+        let value = values[i]
+        if (nodes[i].kind === "MethodDeclaration") {
+            const closure = checkClosure(c, nodes[i], scope, field.type, false, self)
+            if (closure.k === "error") return errorOperand
+            value = c.coerce(closure, field.type, nodes[i])
+        }
+        assigns.push(new Assign(field.type, new FieldLValue(selfRef, names[i]), value))
+    }
+    assigns.push(selfRef)
+    return typed(new Bind(struct, [new BindLocal(self, new Alloc(struct))], new Seq(struct, assigns)))
+}
+
+/** The type the expected struct or interface gives a member, or null. */
+function memberHint(hints: StructType | InterfaceType, name: string): Type | null {
+    if (hints.kind === "struct") {
+        const f = findField(hints, name)
+        return f !== null ? f.type : null
+    }
+    for (const m of hints.members) if (m.name === name) return m.type
+    return null
+}
+
+/** The function type of a method of an object literal, from its annotations or the expected type. */
+function methodType(c: Checker, method: Node, scope: Scope, hint: Type | null): FuncType | null {
+    const want = hint !== null && hint.kind === "func" ? hint : null
+    const params: Type[] = []
+    const list = parameters(method)
+    for (let i = 0; i < list.length; i++) {
+        const annotation = typeNode(list[i])
+        let type: Type | null = null
+        if (annotation !== null) type = c.resolveValueType(annotation, scope)
+        else if (want !== null && i < want.params.length) type = want.params[i]
+        if (type === null) {
+            c.error(list[i], `Parameter '${c.text(nameNode(list[i]))}' needs a type annotation here.`)
+            return null
+        }
+        params.push(type)
+    }
+    const annotation = typeNode(method)
+    let result: Type | null = annotation !== null ? c.resolveType(annotation, scope) : null
+    if (result === null && want !== null) result = want.result
+    if (result === null) {
+        if (returnsValue(body(method))) {
+            c.error(
+                method.child("name")!,
+                "A method of an object literal needs a return type annotation, or a type to fit.",
+            )
+            return null
+        }
+        result = types.void
+    }
+    return new FuncType(params, result)
+}
+
+/** Whether a function body returns a value somewhere (not counting nested functions). */
+function returnsValue(node: Node | null): bool {
+    if (node === null) return false
+    if (node.kind === "ReturnStatement" && node.child("expression") !== null) return true
+    const k = node.kind
+    if (k === "FunctionDeclaration" || k === "FunctionExpression" || k === "ArrowFunction" || k === "MethodDeclaration")
+        return false
+    for (const child of node.children) if (returnsValue(child)) return true
+    return false
+}
+
 export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    if (properties(node).some((p) => p.kind === "MethodDeclaration")) return objectWithMethods(c, node, scope, expected)
     if (properties(node).some((p) => p.kind === "SpreadAssignment")) {
         const locals: BindLocal[] = []
         const props = spreadProps(c, node, scope, expected, locals)
@@ -1233,7 +1358,7 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         } else if (prop.kind === "ShorthandPropertyAssignment") {
             props.push(new Prop(nameNode(prop).text, nameNode(prop), nameNode(prop)))
         } else {
-            return c.fail(prop, "Methods and accessors in object literals are not supported yet.")
+            return c.fail(prop, "Accessors in object literals are not supported yet.")
         }
     }
     for (let i = 0; i < props.length; i++) {

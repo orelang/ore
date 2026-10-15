@@ -1004,6 +1004,34 @@ export function checkImplements(c: Checker, info: ClassInfo, scope: Scope) {
     }
 }
 
+/** The interface of an object type with methods, `{ area(): f64; label: string }`, named by its text. */
+export function objectInterface(c: Checker, node: Node, scope: Scope): InterfaceType {
+    const name = collapseSpaces(c.text(node))
+    const type = new InterfaceTypeClass(c.nextStructId++, name, [])
+    const info = new InterfaceInfoClass(node, type, scope, "declared")
+    c.interfaces.set(type, info)
+    c.memberDecls.set(type, new Map<string, Node>())
+    fillInterface(c, info, scope)
+    return type
+}
+
+/** Text on one line, runs of white space as one space. */
+function collapseSpaces(text: string): string {
+    let out = ""
+    let space = false
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i]
+        if (ch === 32 || ch === 9 || ch === 10 || ch === 13) {
+            space = true
+            continue
+        }
+        if (space && out.length > 0) out += " "
+        space = false
+        out += text.slice(i, i + 1)
+    }
+    return out
+}
+
 export function declareInterface(c: Checker, decl: Node, scope: Scope) {
     const name = nameNode(decl).text
     if (typeParameters(decl).length > 0) {
@@ -1173,6 +1201,9 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
             if (field.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null)
         } else {
             const method = findMethod(from, member.name)
+            // A field holding a function of the method's type serves as the method (object literals' methods).
+            const field = method === null ? findField(from, member.name) : null
+            if (field !== null && !field.private && sameType(field.type, member.type)) continue
             if (method === null || method.private) return new Conformance(`${what} is missing`, null)
             if (!sameType(method.func.type, member.type))
                 return new Conformance(

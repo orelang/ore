@@ -155,7 +155,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3050](ORE3050.md) | Array holes are not supported. |
 | [ORE3051](ORE3051.md) | Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'. |
 | [ORE3052](ORE3052.md) | Only an object can be spread into an object literal, got '…'. |
-| [ORE3053](ORE3053.md) | Methods and accessors in object literals are not supported yet. |
+| [ORE3053](ORE3053.md) | Accessors in object literals are not supported yet. |
 | [ORE3054](ORE3054.md) | Cannot tell which member of '…' this object literal is. Give its discriminant field a literal value. |
 | [ORE3055](ORE3055.md) | No member of '…' matches this object literal. |
 | [ORE3056](ORE3056.md) | Property '…' does not exist in type '…'. |
@@ -178,6 +178,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE3073](ORE3073.md) | Tuple type '…' of length … has no element at index …. |
 | [ORE3074](ORE3074.md) | Index … must not be negative. |
 | [ORE3075](ORE3075.md) | An index must be an integer, got '…'. |
+| [ORE3076](ORE3076.md) | Spreads and accessors are not supported in an object literal with methods yet. |
+| [ORE3077](ORE3077.md) | A method of an object literal needs a return type annotation, or a type to fit. |
 
 ## ORE4xxx: Calls and built-in functions
 

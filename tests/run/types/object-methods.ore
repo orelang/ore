@@ -1,0 +1,74 @@
+// Object literals with methods: a method is a closure whose this is the object;
+// object types with methods are structural interfaces, which literals and classes fit.
+let calls = 0
+const counter = {
+    count: 0,
+    add(n: int): void {
+        this.count += n
+        calls++
+    },
+    get(): int {
+        return this.count
+    },
+}
+counter.add(2)
+counter.add(3)
+console.log(counter.get(), counter.count, calls)
+type Greeter = { name: string; greet: (to: string) => string }
+const g: Greeter = {
+    name: "ann",
+    greet(to) {
+        const prefix = "hi"
+        return `${prefix} ${to}, I am ${this.name}`
+    },
+}
+console.log(g.greet("bob"))
+interface Shape {
+    readonly label: string
+    area(): f64
+    scale(by: f64): void
+}
+function describe(s: Shape): string {
+    return `${s.label}: ${s.area()}`
+}
+const square: Shape = {
+    label: "square",
+    side: 2.0,
+    area() {
+        return this.side * this.side
+    },
+    scale(by) {
+        this.side *= by
+    },
+}
+console.log(describe(square))
+square.scale(3)
+console.log(describe(square))
+type Counter = { count: int; add(n: int): void }
+function make(): Counter {
+    return {
+        count: 0,
+        add(n) {
+            this.count += n
+        },
+    }
+}
+const made = make()
+made.add(4)
+made.add(1)
+console.log(made.count)
+class Real {
+    count = 10
+    add(n: int): void {
+        this.count -= n
+    }
+}
+const r: Counter = new Real()
+r.add(3)
+console.log(r.count)
+function useIt(x: { add(n: int): void }) {
+    x.add(1)
+}
+useIt(made)
+useIt(r)
+console.log(made.count, r.count)

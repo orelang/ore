@@ -1220,6 +1220,8 @@ export function checkClosure(
     outer: Scope,
     expected: Type | null = null,
     inferResult: bool = false,
+    /** For a method of an object literal: the object, its `this`. */
+    self: Local | null = null,
 ): Operand {
     const typeParams = typeParameters(node)
     if (typeParams.length > 0) return c.fail(typeParams[0], "Generic closures are not supported.")
@@ -1363,9 +1365,9 @@ export function checkClosure(
         [],
         0,
         func,
-        isArrow ? captures : noCaptures.slice(),
-        isArrow && outerFn !== null ? outerFn.thisLocal : null,
-        isArrow && outerFn !== null ? outerFn.cls : null,
+        self !== null ? [func] : isArrow ? captures : noCaptures.slice(),
+        self !== null ? self : isArrow && outerFn !== null ? outerFn.thisLocal : null,
+        self !== null ? null : isArrow && outerFn !== null ? outerFn.cls : null,
     )
     // Default values, computed in the closure when their arguments are null, before the patterns.
     const start: Stmt[] = []

@@ -50,7 +50,7 @@ exports, type assertions (Ore converts: `i32(x)`).
     functions are not supported);
   - narrowing through `||` and by assigning with `?:`;
   - object spread `{ ...o }` (done);
-  - methods and accessors in object literals;
+  - methods in object literals (done; accessors in them not yet);
   - `static` members of classes (done; not of generic classes);
   - default values in destructuring, and `...rest` in object destructuring
     (done), optional properties of object types (done);
@@ -64,7 +64,7 @@ exports, type assertions (Ore converts: `i32(x)`).
 - Types:
   - `unknown`;
   - intersections `A & B`;
-  - methods in object types (`{ f(): void }`), optional members of
+  - methods in object types (`{ f(): void }`, done), optional members of
     interfaces (done; not methods), generic methods in interfaces;
   - `keyof`, `typeof x` as a type, indexed access `T["k"]`;
   - conditional types, mapped types and template literal types, and with

@@ -622,6 +622,24 @@ export function receiveDispatch(g: Emitter, elem: Type, handler: FuncType): stri
     return name
 }
 
+/** A method of an interface table that calls the closure in a field of the receiver. */
+function fieldThunk(g: Emitter, struct: StructType, name: string, type: FuncType): string {
+    const thunk = globalName(`field.${g.names.key(struct)}.${name}`)
+    if (g.helpers.has(thunk)) return thunk
+    g.helpers.set(thunk, "")
+    const params: string[] = ["ptr %this"]
+    for (let i = 0; i < type.params.length; i++) params.push(`${g.lt(type.params[i])} %a${i}`)
+    const ret = g.lt(type.result)
+    helper(g, thunk, `define internal ${ret} ${thunk}(${params.join(", ")})`, (e) => {
+        const f = e.load(fieldPtr(e, "%this", struct, name), type)
+        const args: V[] = []
+        for (let i = 0; i < type.params.length; i++) args.push({ ty: e.lt(type.params[i]), v: `%a${i}` })
+        const r = callClosure(e, f, type, args)
+        e.b.terminate(ret === "void" ? "ret void" : `ret ${ret} ${r.v}`)
+    })
+    return thunk
+}
+
 export function itab(g: Emitter, t: Itab): string {
     const s = g.structType(t.struct)
     const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${g.names.typeId(t.struct)})`]
@@ -633,7 +651,11 @@ export function itab(g: Emitter, t: Itab): string {
             else all.push(`ptr getelementptr (${s}, ptr null, i32 0, i32 ${g.fieldIndex(t.struct, m.name)})`)
         } else {
             const method = findMethod(t.struct, m.name)
-            if (method === null) process.panic(`no method ${m.name} for an itab`)
+            if (method === null) {
+                // A field holding a closure of the method's type: a thunk calls it.
+                all.push(`ptr ${fieldThunk(g, t.struct, m.name, m.type)}`)
+                continue
+            }
             // A method that a subclass overrides is called through the class table of the instance.
             if (g.tables.has(t.struct.id) && overridden(g.module.structs, t.struct, m.name))
                 all.push(`ptr ${virtualThunk(g, method.func)}`)

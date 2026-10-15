@@ -65,7 +65,7 @@ import {
 import { type Source } from "../syntax/source"
 import { type Program } from "../project/load"
 import { bigGt, bigLt, bigOf, bigOfU64, bigText, bigToF64, bigToI64 } from "./bigint"
-import { conformance, itab, resolveBase } from "./classes"
+import { conformance, itab, objectInterface, resolveBase } from "./classes"
 import {
     type Accessor,
     type ClassInfo,
@@ -460,6 +460,8 @@ export class Checker {
     }
 
     resolveTypeLiteral(node: Node, scope: Scope): Type | null {
+        // An object type with methods is a structural interface, as `interface` declares one.
+        if (members(node).some((m) => m.kind === "MethodSignature")) return objectInterface(this, node, scope)
         const shape = this.shape(this.literalFields(node, scope))
         // The first declaration of a shape is where its fields are defined.
         if (!this.memberDecls.has(shape)) this.memberDecls.set(shape, this.memberNodes(node))
@@ -483,11 +485,9 @@ export class Checker {
             if (member.kind !== "PropertySignature") {
                 this.error(
                     member,
-                    member.kind === "MethodSignature"
-                        ? "Methods in object types are not supported yet. Use an interface."
-                        : member.kind === "IndexSignature"
-                          ? indexSignatureMessage
-                          : "Only properties are supported in object types.",
+                    member.kind === "IndexSignature"
+                        ? indexSignatureMessage
+                        : "Only properties are supported in object types.",
                 )
                 continue
             }
