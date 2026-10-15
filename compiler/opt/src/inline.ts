@@ -77,7 +77,8 @@ class Inliner {
   private replace(node: unknown, depth: number): ir.Expr | undefined {
     if (depth >= maxDepth || !node || typeof node !== "object" || !("k" in node)) return
     const e = node as ir.Expr
-    if (e.k !== "call" && e.k !== "method-call") return
+    // A call through a class table may run an override.
+    if ((e.k !== "call" && e.k !== "method-call") || (e.k === "method-call" && e.virtual)) return
     if (!this.bodies.has(e.func)) this.bodies.set(e.func, inlinable(e.func))
     const body = this.bodies.get(e.func)
     if (!body) return

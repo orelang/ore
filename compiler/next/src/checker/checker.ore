@@ -7,7 +7,7 @@ import { type Node } from "../syntax/ast"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
 import { builtinScope, namespaceModule, namespaceNames } from "./builtins"
-import { checkClassBodies, checkFieldInitializers, checkImplements, declareClass, declareClassMembers, declareInterface, fillInterface } from "./classes"
+import { checkClassBodies, checkFieldInitializers, checkImplements, declareClass, declareClassMembers, declareInterface, fillInterface, finishClasses, resolveBase } from "./classes"
 import { CheckResult, ExportEntry, FuncContext, ModuleInfo } from "./context"
 import {
     checkDirectives,
@@ -92,6 +92,7 @@ export function check(program: Program): CheckResult {
         if (stmt.kind === "TypeAliasDeclaration") declareTypeAlias(c, stmt, m.scope)
     })
     for (const [_, info] of c.interfaces) fillInterface(c, info, info.scope)
+    for (const info of c.classes) resolveBase(c, info)
     each((stmt, m) => {
         if (stmt.kind !== "FunctionDeclaration") return
         const func = declareFunction(c, stmt, m.scope)
@@ -117,6 +118,7 @@ export function check(program: Program): CheckResult {
     for (const info of c.classes) checkClassBodies(c, info, info.scope)
     // In order, including the checks that these add.
     for (let i = 0; i < c.pending.length; i++) c.pending[i]()
+    finishClasses(c)
     localizeGlobals(c)
     checkUnassigned(c)
 

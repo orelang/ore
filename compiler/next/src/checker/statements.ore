@@ -37,7 +37,7 @@ import {
     UsingStmt,
     Logical,
 } from "../ir/nodes"
-import { type FuncType, type StructType, type Type, FuncType as FuncTypeClass, findMethod, isNumeric, isStringLike, membersOf, sameType, typeofName, types, typeToString } from "../ir/types"
+import { type FuncType, type StructType, type Type, FuncType as FuncTypeClass, findMethod, isNumeric, isStringLike, isSubclass, membersOf, sameType, typeofName, types, typeToString } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
     body,
@@ -77,6 +77,7 @@ import {
     asteriskToken,
 } from "../syntax/nodes"
 import { type Checker } from "./base"
+import { dispatch } from "./classes"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
 import { directives, exportVariable, paramScope, prepend, checkReturns, threadLocal, unsupportedTopLevel } from "./declarations"
 import { assignTarget, checkExpr, compare, interfaceFor, member, narrowTo, settle, writeAccessor } from "./expressions"
@@ -194,7 +195,7 @@ export function checkUsing(c: Checker, stmt: Node, rest: Node[], scope: Scope, o
     const resource = c.withoutNull(local.type)
     const ref: Expr = new LocalRef(local.type, local)
     const target: Expr = sameType(resource, local.type) ? ref : new Recast(resource, ref)
-    const call = disposeCall(target)
+    const call = disposeCall(c, target)
     if (call === null) {
         c.error(init_, `Type '${typeToString(resource)}' is not disposable: it needs a '[Symbol.dispose](): void' method.`)
         checkStatements(c, rest, scope, out)
@@ -210,11 +211,15 @@ export function checkUsing(c: Checker, stmt: Node, rest: Node[], scope: Scope, o
 }
 
 /** A call of `[Symbol.dispose]()` on a value, if its type has that method. */
-export function disposeCall(value: Expr): Expr | null {
+export function disposeCall(c: Checker, value: Expr): Expr | null {
     const type = value.type
     if (type.kind === "struct") {
         const method = findMethod(type, disposeName)
-        if (method !== null && method.func.params.length === 0) return new MethodCall(method.func.type.result, method.func, value, [])
+        if (method !== null && method.func.params.length === 0) {
+            const call: Expr = new MethodCall(method.func.type.result, method.func, value, [])
+            dispatch(c, call, disposeName)
+            return call
+        }
     }
     if (type.kind === "interface") {
         for (let index = 0; index < type.members.length; index++) {
@@ -1043,9 +1048,13 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             const found = isIdentifier(r) ? scope.lookupType(r.text) : null
             const target = found !== null ? found.type : null
             if (key === null || type === null || target === null) return new Condition(expr, [], [])
-            // Only a member of a union can be excluded when the test is false.
-            const isMember = membersOf(type).some((m) => sameType(m, target))
-            return new Condition(expr, [new Fact(key, target)], isMember ? [new Fact(key, c.without(type, (m) => sameType(m, target)))] : [])
+            // Members that are the class or its subclasses, for which the test is true: one keeps its type.
+            const inside = (m: Type): bool => sameType(m, target) || (m.kind === "struct" && target.kind === "struct" && isSubclass(m, target))
+            const matching = membersOf(type).filter(inside)
+            if (type.kind !== "union" && matching.length > 0 && !sameType(type, target)) return new Condition(expr, [], [])
+            const narrowed = type.kind === "union" && matching.length === 1 ? matching[0] : target
+            // Only members of a union can be excluded when the test is false.
+            return new Condition(expr, [new Fact(key, narrowed)], matching.length > 0 ? [new Fact(key, c.without(type, inside))] : [])
         }
     }
     return new Condition(checkCondition(c, node, scope), [], [])
@@ -1135,7 +1144,12 @@ export function narrowConvert(c: Checker, expr: Expr, type: Type): Expr {
     if (sameType(type, expr.type)) return expr
     const from = expr.type
     if (type.kind === "struct" && from.kind === "interface") return new Downcast(type, expr)
+    // An instance of a base class narrowed to a subclass, directly or in a union.
+    if (type.kind === "struct" && from.kind === "struct") return new Downcast(type, expr)
     if (type.kind === "struct" && from.kind === "union" && !from.members.some((m) => sameType(m, type))) {
+        let base: StructType | null = null
+        for (const m of from.members) if (base === null && m.kind === "struct" && isSubclass(type, m)) base = m
+        if (base !== null) return new Downcast(type, new Recast(base, expr))
         const via = interfaceFor(c, from, type)
         if (via !== null) return new Downcast(type, new Recast(via, expr))
     }

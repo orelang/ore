@@ -104,7 +104,8 @@ console.log(word.length, runes, word.slice(0, 3), word.replaceAll("l", "L"))   /
 ```
 
 **Structural interfaces, nominal classes.** Any class or object with the
-members fits an interface, fields included. Classes have no inheritance.
+members fits an interface, fields included. A class may extend one class;
+its methods are virtual.
 
 ```ts
 interface Named {
@@ -252,7 +253,7 @@ files, with no `main`. Built-ins live in namespaces: `console.log`,
 `process.args`, `Math.sqrt`, `fs.readFile`; there are no bare globals.
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
-inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
+`enum`, `namespace`, `prototype`, `eval`, `delete`. See
 [differences from TypeScript](docs/spec/10-differences.md).
 
 ## Getting started
@@ -370,7 +371,7 @@ Another binary can be set with the `ore.path` setting.
   not).
 - A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
   recursion in a task can overflow it.
-- No numeric literal types (`1 | 2`), static members or class inheritance;
+- No numeric literal types (`1 | 2`) or static members;
   case mapping of strings covers ASCII only.
 - A generic function or class that is never used is parsed but not checked.
 

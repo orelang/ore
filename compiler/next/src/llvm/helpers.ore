@@ -1,7 +1,7 @@
 // Pure functions of the emitter. Ported from compiler/codegen/src/helpers.ts.
 
 import { type Local, type Module, type Stmt } from "../ir/nodes"
-import { sameType, type Type, type UnionType } from "../ir/types"
+import { sameType, type StructType, type Type, type UnionType } from "../ir/types"
 
 /** Whether a local lives in a box: captured by a closure and assigned after its declaration. */
 export function boxed(local: Local): bool {
@@ -36,9 +36,21 @@ export function typeId(s: Type): int {
     return 0
 }
 
-/** The member of a union that holds values of a type; a string literal also fits `string`. */
+/** The member of a union that is the nearest base class of a class, or -1. */
+function baseIndex(u: UnionType, s: StructType): int {
+    const base = s.base
+    if (base === null) return -1
+    for (let i = 0; i < u.members.length; i++) {
+        const m = u.members[i]
+        if (m.kind === "struct" && m === base) return i
+    }
+    return baseIndex(u, base)
+}
+
+/** The member of a union that holds values of a type; a string literal also fits `string`, and an instance of a class its base class. */
 export function memberIndex(u: UnionType, type: Type): int {
     for (let i = 0; i < u.members.length; i++) if (sameType(u.members[i], type)) return i
+    if (type.kind === "struct") return baseIndex(u, type)
     if (type.kind !== "literal") return -1
     for (let i = 0; i < u.members.length; i++) if (u.members[i].kind === "string") return i
     return -1

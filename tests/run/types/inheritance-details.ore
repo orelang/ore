@@ -1,0 +1,138 @@
+// Details of inheritance: declaration order, three levels, generic classes
+// that refer to their subclasses, default parameters of the base
+// constructor, inherited accessors, generic methods and field initializers,
+// protected members, super in closures, and instances that stay on the stack.
+
+// A subclass declared before its base class.
+class Puppy extends Dog {
+    override speak(): string {
+        return `small ${super.speak()}`
+    }
+}
+
+class Animal {
+    count = 0
+    protected noise = "..."
+
+    constructor(
+        public name: string,
+        public legs: int = 4,
+    ) {}
+
+    speak(): string {
+        this.count++
+        return this.noise
+    }
+
+    get title(): string {
+        return `${this.name} (${this.legs} legs)`
+    }
+
+    set title(value: string) {
+        this.name = value
+    }
+
+    pick<T>(a: T, b: T): T {
+        return this.count > 0 ? a : b
+    }
+
+    protected shout(): string {
+        return this.speak().toUpperCase()
+    }
+
+    isDog(): bool {
+        return this instanceof Dog
+    }
+}
+
+class Dog extends Animal {
+    constructor(name: string) {
+        super(name)
+        this.noise = "woof"
+    }
+
+    loud(): string {
+        const later = () => `${super.speak()}!`
+        return `${this.shout()} ${later()}`
+    }
+}
+
+class Bird extends Animal {
+    constructor(name: string) {
+        super(name, 2)
+    }
+
+    override speak(): string {
+        return "tweet"
+    }
+}
+
+const zoo: Animal[] = [new Puppy("rex"), new Dog("fido"), new Bird("tweety"), new Animal("thing")]
+for (const a of zoo) console.log(a.title, a.speak(), a.count, a.isDog(), a.pick("one", "two"))
+const puppy = new Puppy("max")
+console.log(puppy.loud())
+puppy.title = "maxi"
+console.log(puppy.title)
+
+// Three levels: the middle class overrides, the last one inherits.
+class A {
+    id(): string {
+        return "A"
+    }
+    show(): string {
+        return `[${this.id()}]`
+    }
+}
+class B extends A {
+    override id(): string {
+        return "B"
+    }
+}
+class C extends B {}
+const letters: A[] = [new A(), new B(), new C()]
+for (const l of letters) console.log(l.show(), l instanceof B, l instanceof C)
+const asB: B = new C()
+console.log(asB.id())
+
+// Generic classes that refer to a subclass of themselves.
+class Tree<T> {
+    children: Leaf<T>[] = []
+    constructor(public value: T) {}
+    size(): int {
+        let n = 1
+        for (const c of this.children) n += c.size()
+        return n
+    }
+}
+class Leaf<T> extends Tree<T> {
+    override size(): int {
+        return 1
+    }
+}
+const tree = new Tree("root")
+tree.children.push(new Leaf<string>("a"), new Leaf<string>("b"))
+const asTree: Tree<string> = tree.children[0]
+console.log(tree.size(), asTree.size(), asTree.value)
+
+// An instance that does not escape.
+function area(w: int, h: int): int {
+    const r = new Rect(w, h)
+    return r.area()
+}
+class Shape {
+    area(): int {
+        return 0
+    }
+}
+class Rect extends Shape {
+    constructor(
+        public w: int,
+        public h: int,
+    ) {
+        super()
+    }
+    override area(): int {
+        return this.w * this.h
+    }
+}
+console.log(area(3, 4))

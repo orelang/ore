@@ -406,6 +406,7 @@ export abstract class JsonEmitter extends CollectionEmitter {
         expect(JSON_OBJECT, "an object")
         const s = this.structType(type)
         const o = this.alloc(s)
+        this.setTable(o, type)
         for (const f of type.fields) {
           const name = this.cstr(f.name)
           const found = this.rt("ore_rt_json_field", [v, name, this.i64(utf8(f.name).length)])

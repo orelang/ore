@@ -4,6 +4,7 @@ import {
   arrayOf,
   intRange,
   isNumeric,
+  isSubclass,
   isStringLike,
   membersOf,
   sameType,
@@ -38,6 +39,7 @@ export abstract class CheckerBase {
   protected abstract checkFieldInitializers(info: ClassInfo, scope: Scope): void
   protected abstract checkImplements(info: ClassInfo, scope: Scope): void
   protected abstract checkMethodBody(decl: ts.MethodDeclaration | ts.AccessorDeclaration, func: ir.Func, type: StructType, outer: Scope): void
+  protected abstract classInfo(decl: ts.ClassDeclaration, type: StructType, scope: Scope, cname: string): ClassInfo
   protected abstract checkNew(node: ts.NewExpression, scope: Scope, expected?: Type): Operand
   protected abstract compare(op: ir.CompareOp, left: Operand, right: Operand, opNode: ts.Node, leftNode: ts.Node, rightNode: ts.Node): Operand
   protected abstract conformance(from: StructType | InterfaceType, iface: InterfaceType): { reason?: string; indices?: number[] }
@@ -49,6 +51,7 @@ export abstract class CheckerBase {
   protected abstract makeMethod(decl: ts.MethodDeclaration | ts.AccessorDeclaration, info: ClassInfo, scope: Scope, sourceName: string, cname: string): ir.Func
   protected abstract member(value: ir.Expr, nameNode: ts.Node, name: string): Operand
   protected abstract narrowTo(key: string, declared: Type, actual: Type): void
+  protected abstract resolveBase(info: ClassInfo): void
   protected abstract settle(local: ir.Local, value: Operand, node: ts.Node): boolean
   protected abstract writeAccessor(target: AssignTarget, node: ts.Node, next: (old: () => ir.Expr) => ir.Expr | undefined, yieldOld: boolean): Operand
 
@@ -134,6 +137,15 @@ export abstract class CheckerBase {
 
   /** Getters and setters of classes by property name. */
   protected readonly accessors = new Map<StructType, Map<string, Accessor>>()
+
+  /** Every class and generic class instance, in order of declaration. */
+  protected readonly classInfos = new Map<StructType, ClassInfo>()
+
+  /** Abstract methods, by the class that declares them. */
+  protected readonly abstractMethods = new Map<ir.Func, StructType>()
+
+  /** Calls and bound values of class methods, marked `virtual` once every class is known if a subclass overrides the method. */
+  protected readonly dispatches: { node: ir.MethodCall | ir.BoundMethod; name: string }[] = []
 
   /** Generic methods of classes by name, instantiated per call like generic functions. */
   protected readonly genericMethods = new Map<StructType, Map<string, { generic: Generic; info: ClassInfo; private: boolean }>>()
@@ -333,6 +345,15 @@ export abstract class CheckerBase {
     }
     // `string` includes every string literal type.
     if (members.some((m) => m.kind === "string")) members.splice(0, members.length, ...members.filter((m) => m.kind !== "literal"))
+    // A class includes its subclasses: `A | B` is `A` when `B extends A`.
+    if (members.filter((m) => m.kind === "struct").length > 1) {
+      for (const m of members) {
+        const info = m.kind === "struct" ? this.classInfos.get(m) : undefined
+        if (info) this.resolveBase(info)
+      }
+      const subclasses = members.filter((m) => m.kind === "struct" && members.some((n) => n !== m && n.kind === "struct" && isSubclass(m, n)))
+      if (subclasses.length > 0) members.splice(0, members.length, ...members.filter((m) => !subclasses.includes(m)))
+    }
     if (members.length === 0) return types.never
     if (members.length === 1) return members[0]!
     members.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0))
@@ -391,6 +412,8 @@ export abstract class CheckerBase {
       case "typed": {
         const from = typeOf(value.expr)
         if (sameType(from, target) || from.kind === "never") return value.expr
+        // An instance of a subclass is an instance of its base classes, as it is.
+        if (from.kind === "struct" && target.kind === "struct" && isSubclass(from, target)) return value.expr
         const targetMembers = membersOf(target)
         // A string literal expression has the literal type its context asks for.
         const lit = value.expr.k === "string" ? targetMembers.find((m) => m.kind === "literal" && m.value === (value.expr as ir.StringLit).value) : undefined
@@ -407,6 +430,10 @@ export abstract class CheckerBase {
         }
         // A member, or a union of members, converts to a union containing them.
         if (target.kind === "union" && membersOf(from).every((f) => targetMembers.some((m) => memberOf(f, m)))) {
+          return { k: "recast", type: target, value: value.expr }
+        }
+        // A union of subclasses converts to their base class.
+        if (target.kind === "struct" && from.kind === "union" && from.members.every((m) => m.kind === "struct" && isSubclass(m, target))) {
           return { k: "recast", type: target, value: value.expr }
         }
         if (target.kind === "union") {

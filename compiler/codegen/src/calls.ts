@@ -90,11 +90,31 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return name
   }
 
+  /**
+   * A function with the signature of a method that calls the method in the
+   * class table of its receiver, for interface tables of a class whose
+   * method a subclass overrides.
+   */
+  protected virtualThunk(func: ir.Func): string {
+    const name = globalName(`${func.name}.virtual`)
+    if (this.helpers.has(name)) return name
+    this.helpers.set(name, "")
+    const params = func.params.map((p, i) => `${this.lt(p.type)} %a${i}`)
+    const ret = this.lt(func.type.result)
+    this.helper(name, `define internal ${ret} ${name}(${["ptr %this", ...params].join(", ")})`, (e) => {
+      const self: V = { ty: "ptr", v: "%this" }
+      const args = func.params.map((p, i): V => ({ ty: e.lt(p.type), v: `%a${i}` }))
+      const r = e.callIndirect(e.virtualMethod(self, func).v, ret, [self, ...args])
+      e.b.terminate(ret === "void" ? "ret void" : `ret ${ret} ${r.v}`)
+    })
+    return name
+  }
+
   /** A method bound to its receiver: the environment holds the receiver, a thunk calls the method. */
   protected bound(e: ir.BoundMethod): V {
     const type = e.type
     const receiverType = this.lt(e.receiver.type)
-    const name = e.func ? globalName(`${e.func.name}.bound`) : globalName(`iface.bound.${ir.typeKey(type)}.${e.index}`)
+    const name = e.func ? globalName(`${e.func.name}.${e.virtual ? "vbound" : "bound"}`) : globalName(`iface.bound.${ir.typeKey(type)}.${e.index}`)
     if (!this.helpers.has(name)) {
       this.helpers.set(name, "")
       const params = type.params.map((p, i) => `${this.lt(p)} %a${i}`)
@@ -103,7 +123,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const args = type.params.map((p, i) => ({ ty: x.lt(p), v: `%a${i}` }))
         const self = x.b.value(receiverType, `load ${receiverType}, ptr %env`)
         let r: V
-        if (e.func) r = x.callDirect(e.func.name, ret, [self, ...args])
+        if (e.func && e.virtual) r = x.callIndirect(x.virtualMethod(self, e.func).v, ret, [self, ...args])
+        else if (e.func) r = x.callDirect(e.func.name, ret, [self, ...args])
         else {
           const itab = x.extract(self, 1, "ptr")
           const fn = x.b.value("ptr", `load ptr, ptr ${x.b.value("ptr", `getelementptr ptr, ptr ${itab.v}, i64 ${e.index! + 1}`).v}`)
