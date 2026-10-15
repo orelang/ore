@@ -88,6 +88,13 @@ exports, type assertions (Ore converts: `i32(x)`).
   references and rename across the workspace, formatting, the outline,
   inlay hints of inferred types, semantic tokens, quick fixes (done);
   checking the runtime once rather than on every change.
+- Modules from GitHub: `import { x } from "https://github.com/owner/repo/..."`
+  resolves a module of a repository by its URL, without vendoring it into
+  the project: it is downloaded into the cache (`~/.cache/ore`), and
+  downloaded again when it is missing or when the head of the repository's
+  main branch has a new commit (the hash is checked). The language server
+  downloads it as soon as the import is written, showing the progress in the
+  editor's status bar (`$/progress`) and in the hover of the import.
 - Diagnostics with codes (`ORE1234`) and a page per code in the
   documentation, linked from the editor (`codeDescription`) and printed by
   the command line; messages that explain the cause and the fix, with the
