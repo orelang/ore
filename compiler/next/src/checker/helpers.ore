@@ -40,52 +40,40 @@ import { isIdentifier, nameNode, typeName } from "../syntax/nodes"
 import { bigFromF64, bigParse } from "./bigint"
 import { type Operand, Typed, UntypedFloat, UntypedInt } from "./operand"
 
-function buildArithOps(): Map<string, ArithOp> {
-    const ops = new Map<string, ArithOp>()
-    ops.set("PlusToken", "+")
-    ops.set("MinusToken", "-")
-    ops.set("AsteriskToken", "*")
-    ops.set("SlashToken", "/")
-    ops.set("PercentToken", "%")
-    ops.set("AmpersandToken", "&")
-    ops.set("BarToken", "|")
-    ops.set("CaretToken", "^")
-    ops.set("LessThanLessThanToken", "<<")
-    ops.set("GreaterThanGreaterThanToken", ">>")
-    return ops
-}
+export const arithOps = new Map<string, ArithOp>([
+    ["PlusToken", "+"],
+    ["MinusToken", "-"],
+    ["AsteriskToken", "*"],
+    ["SlashToken", "/"],
+    ["PercentToken", "%"],
+    ["AmpersandToken", "&"],
+    ["BarToken", "|"],
+    ["CaretToken", "^"],
+    ["LessThanLessThanToken", "<<"],
+    ["GreaterThanGreaterThanToken", ">>"],
+])
 
-export const arithOps = buildArithOps()
+export const compoundOps = new Map<string, ArithOp>([
+    ["PlusEqualsToken", "+"],
+    ["MinusEqualsToken", "-"],
+    ["AsteriskEqualsToken", "*"],
+    ["SlashEqualsToken", "/"],
+    ["PercentEqualsToken", "%"],
+    ["AmpersandEqualsToken", "&"],
+    ["BarEqualsToken", "|"],
+    ["CaretEqualsToken", "^"],
+    ["LessThanLessThanEqualsToken", "<<"],
+    ["GreaterThanGreaterThanEqualsToken", ">>"],
+])
 
-function buildCompoundOps(): Map<string, ArithOp> {
-    const ops = new Map<string, ArithOp>()
-    ops.set("PlusEqualsToken", "+")
-    ops.set("MinusEqualsToken", "-")
-    ops.set("AsteriskEqualsToken", "*")
-    ops.set("SlashEqualsToken", "/")
-    ops.set("PercentEqualsToken", "%")
-    ops.set("AmpersandEqualsToken", "&")
-    ops.set("BarEqualsToken", "|")
-    ops.set("CaretEqualsToken", "^")
-    ops.set("LessThanLessThanEqualsToken", "<<")
-    ops.set("GreaterThanGreaterThanEqualsToken", ">>")
-    return ops
-}
-
-export const compoundOps = buildCompoundOps()
-
-function buildCompareOps(): Map<string, CompareOp> {
-    const ops = new Map<string, CompareOp>()
-    ops.set("EqualsEqualsEqualsToken", "===")
-    ops.set("ExclamationEqualsEqualsToken", "!==")
-    ops.set("LessThanToken", "<")
-    ops.set("LessThanEqualsToken", "<=")
-    ops.set("GreaterThanToken", ">")
-    ops.set("GreaterThanEqualsToken", ">=")
-    return ops
-}
-
-export const compareOps = buildCompareOps()
+export const compareOps = new Map<string, CompareOp>([
+    ["EqualsEqualsEqualsToken", "==="],
+    ["ExclamationEqualsEqualsToken", "!=="],
+    ["LessThanToken", "<"],
+    ["LessThanEqualsToken", "<="],
+    ["GreaterThanToken", ">"],
+    ["GreaterThanEqualsToken", ">="],
+])
 
 /** A string method: parameter types, how many trailing ones are optional, and the result. */
 export class StringMethodSig {
@@ -96,32 +84,28 @@ export class StringMethodSig {
     ) {}
 }
 
-function buildStringMethods(): Map<string, StringMethodSig> {
-    const m = new Map<string, StringMethodSig>()
-    m.set("indexOf", new StringMethodSig([types.string, types.i64], 1, types.i64))
-    m.set("lastIndexOf", new StringMethodSig([types.string], 0, types.i64))
-    m.set("includes", new StringMethodSig([types.string], 0, types.bool))
-    m.set("startsWith", new StringMethodSig([types.string], 0, types.bool))
-    m.set("endsWith", new StringMethodSig([types.string], 0, types.bool))
-    m.set("split", new StringMethodSig([types.string], 0, arrayOf(types.string)))
-    m.set("trim", new StringMethodSig([], 0, types.string))
-    m.set("trimStart", new StringMethodSig([], 0, types.string))
-    m.set("trimEnd", new StringMethodSig([], 0, types.string))
-    m.set("toUpperCase", new StringMethodSig([], 0, types.string))
-    m.set("toLowerCase", new StringMethodSig([], 0, types.string))
-    m.set("replace", new StringMethodSig([types.string, types.string], 0, types.string))
-    m.set("replaceAll", new StringMethodSig([types.string, types.string], 0, types.string))
-    m.set("repeat", new StringMethodSig([types.i64], 0, types.string))
-    m.set("padStart", new StringMethodSig([types.i64, types.string], 1, types.string))
-    m.set("padEnd", new StringMethodSig([types.i64, types.string], 1, types.string))
-    m.set("substring", new StringMethodSig([types.i64, types.i64], 1, types.string))
-    // `int | null`: the checker makes the union.
-    m.set("codePointAt", new StringMethodSig([types.i64], 0, types.i64))
-    return m
-}
-
 /** String methods: parameter types, how many trailing ones are optional, and the result. */
-export const stringMethods = buildStringMethods()
+export const stringMethods = new Map<string, StringMethodSig>([
+    ["indexOf", new StringMethodSig([types.string, types.i64], 1, types.i64)],
+    ["lastIndexOf", new StringMethodSig([types.string], 0, types.i64)],
+    ["includes", new StringMethodSig([types.string], 0, types.bool)],
+    ["startsWith", new StringMethodSig([types.string], 0, types.bool)],
+    ["endsWith", new StringMethodSig([types.string], 0, types.bool)],
+    ["split", new StringMethodSig([types.string], 0, arrayOf(types.string))],
+    ["trim", new StringMethodSig([], 0, types.string)],
+    ["trimStart", new StringMethodSig([], 0, types.string)],
+    ["trimEnd", new StringMethodSig([], 0, types.string)],
+    ["toUpperCase", new StringMethodSig([], 0, types.string)],
+    ["toLowerCase", new StringMethodSig([], 0, types.string)],
+    ["replace", new StringMethodSig([types.string, types.string], 0, types.string)],
+    ["replaceAll", new StringMethodSig([types.string, types.string], 0, types.string)],
+    ["repeat", new StringMethodSig([types.i64], 0, types.string)],
+    ["padStart", new StringMethodSig([types.i64, types.string], 1, types.string)],
+    ["padEnd", new StringMethodSig([types.i64, types.string], 1, types.string)],
+    ["substring", new StringMethodSig([types.i64, types.i64], 1, types.string)],
+    // `int | null`: the checker makes the union.
+    ["codePointAt", new StringMethodSig([types.i64], 0, types.i64)],
+])
 
 /** The minimum and maximum argument counts of an array method. */
 export class Arity {
@@ -131,26 +115,22 @@ export class Arity {
     ) {}
 }
 
-function buildArrayMethods(): Map<string, Arity> {
-    const m = new Map<string, Arity>()
-    m.set("forEach", new Arity(1, 1))
-    m.set("map", new Arity(1, 1))
-    m.set("filter", new Arity(1, 1))
-    m.set("find", new Arity(1, 1))
-    m.set("findIndex", new Arity(1, 1))
-    m.set("some", new Arity(1, 1))
-    m.set("every", new Arity(1, 1))
-    m.set("reduce", new Arity(2, 2))
-    m.set("includes", new Arity(1, 1))
-    m.set("indexOf", new Arity(1, 1))
-    m.set("join", new Arity(0, 1))
-    m.set("reverse", new Arity(0, 0))
-    m.set("sort", new Arity(0, 1))
-    return m
-}
-
 /** Array methods handled by `arrayMethod`, with their minimum and maximum argument counts. */
-export const arrayMethods = buildArrayMethods()
+export const arrayMethods = new Map<string, Arity>([
+    ["forEach", new Arity(1, 1)],
+    ["map", new Arity(1, 1)],
+    ["filter", new Arity(1, 1)],
+    ["find", new Arity(1, 1)],
+    ["findIndex", new Arity(1, 1)],
+    ["some", new Arity(1, 1)],
+    ["every", new Arity(1, 1)],
+    ["reduce", new Arity(2, 2)],
+    ["includes", new Arity(1, 1)],
+    ["indexOf", new Arity(1, 1)],
+    ["join", new Arity(0, 1)],
+    ["reverse", new Arity(0, 0)],
+    ["sort", new Arity(0, 1)],
+])
 
 /** `null` before it gets a union type from the context. */
 export const nullOperand: Expr = new NullLit(types.null)
@@ -733,8 +713,8 @@ export function paramName(p: Node, index: int): string {
 }
 
 /** Why values of a type cannot be converted to or from JSON, if they cannot. */
-export function jsonProblem(type: Type, seen: Map<StructType, bool> | null = null): string | null {
-    const visited = seen ?? new Map<StructType, bool>()
+export function jsonProblem(type: Type, seen: Set<StructType> | null = null): string | null {
+    const visited = seen ?? new Set<StructType>()
     switch (type.kind) {
         case "int":
         case "float":
@@ -750,7 +730,7 @@ export function jsonProblem(type: Type, seen: Map<StructType, bool> | null = nul
             return jsonProblem(type.value, visited)
         case "struct": {
             if (visited.has(type)) return null
-            visited.set(type, true)
+            visited.add(type)
             for (const f of type.fields) {
                 const problem = jsonProblem(f.type, visited)
                 if (problem !== null) return problem

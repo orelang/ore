@@ -190,7 +190,7 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
             if (c.poisoned.has(local)) return errorOperand
             if (c.untyped.has(local)) {
                 // Its type comes from its first assignment, which has not been seen yet.
-                c.readEarly.set(local, true)
+                c.readEarly.add(local)
                 return c.fail(node, `Variable '${local.name}' is used before being assigned.`)
             }
             const ref = new LocalRef(local.type, local)
@@ -405,7 +405,7 @@ export function settle(c: Checker, local: Local, value: Operand, node: Node): bo
     const type = typeOf(c.toDefault(value, node))
     if (type.kind === "void" || type.kind === "never" || type.kind === "null") {
         c.error(node, `Cannot infer the type of '${local.name}' from this value. Add a type annotation, e.g. 'let ${local.name}: T'.`)
-        c.readEarly.set(local, true)
+        c.readEarly.add(local)
         return false
     }
     local.type = type
@@ -430,7 +430,7 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     const place = target !== null ? target.lvalue : null
     const untyped = place !== null && place.k === "local" && c.untyped.has(place.local) ? place.local : null
     if (untyped !== null && op !== null) {
-        c.readEarly.set(untyped, true)
+        c.readEarly.add(untyped)
         return c.fail(target_, `Variable '${untyped.name}' is used before being assigned.`)
     }
     const value = checkExpr(c, right(node), scope, op !== null || untyped !== null || target === null ? null : target.type)
@@ -482,7 +482,7 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
     if (target === null) return errorOperand
     const place = target.lvalue
     if (place !== null && place.k === "local" && c.untyped.has(place.local)) {
-        c.readEarly.set(place.local, true)
+        c.readEarly.add(place.local)
         return c.fail(node, `Variable '${place.local.name}' is used before being assigned.`)
     }
     const op: "++" | "--" = operator === "++" ? "++" : "--"

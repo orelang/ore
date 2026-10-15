@@ -103,10 +103,10 @@ export function check(program: Program): CheckResult {
     // Pass 3: constants in module and source order, field initializers, the
     // top-level code of each module, which declares its global variables, then
     // bodies, which can use the globals.
-    const constants = new Map<Node, bool>()
+    const constants = new Set<Node>()
     each((stmt, m) => {
         if (stmt.kind === "EnumDeclaration" || stmt.kind === "ModuleDeclaration") c.error(stmt, unsupportedTopLevel(stmt))
-        else if (stmt.kind === "VariableStatement" && isConstantStatement(c, stmt, m.scope) && checkTopLevelConstants(c, stmt, m.scope)) constants.set(stmt, true)
+        else if (stmt.kind === "VariableStatement" && isConstantStatement(c, stmt, m.scope) && checkTopLevelConstants(c, stmt, m.scope)) constants.add(stmt)
     })
     for (const info of c.classes) checkFieldInitializers(c, info, info.scope)
     for (const info of c.classes) checkImplements(c, info, info.scope)

@@ -59,16 +59,14 @@ export class ArrayType {
 }
 
 export class Field {
-    readonly readonly: bool
-    /** Accessible only inside the class that declares it. */
+    /** Accessible only inside the class that declares it; a parameter cannot be named `private`. */
     readonly private: bool
     constructor(
         readonly name: string,
         readonly type: Type,
-        isReadonly: bool,
+        readonly readonly: bool,
         isPrivate: bool = false,
     ) {
-        this.readonly = isReadonly
         this.private = isPrivate
     }
 }
@@ -105,21 +103,18 @@ export class StructType {
         /** Methods of a class; empty for object types. */
         public methods: Method[],
         /** The constructor of a class: returns a new instance. */
-        public ctor: Func | null = null,
+        public ctor?: Func,
     ) {}
 }
 
 /** A field member of an interface: `{ k: "field", ... }` in TypeScript. */
 export class InterfaceField {
     readonly k: "field" = "field"
-    readonly readonly: bool
     constructor(
         readonly name: string,
         readonly type: Type,
-        isReadonly: bool,
-    ) {
-        this.readonly = isReadonly
-    }
+        readonly readonly: bool,
+    ) {}
 }
 
 /** A method member of an interface: `{ k: "method", ... }` in TypeScript. */
@@ -186,7 +181,7 @@ export class UnionType {
         readonly id: int,
         readonly members: Type[],
         /** The type alias that first named this union, for messages; not part of its identity. */
-        public name: string | null = null,
+        public name?: string,
     ) {}
 }
 

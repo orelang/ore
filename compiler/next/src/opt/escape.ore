@@ -47,7 +47,7 @@ export class StackPlan {
     /** Allocations and boxed locals placed on the stack, by the function owning their slot. */
     slots = new Map<Func, SlotNode[]>()
     /** Constructors called with a slot to initialize instead of allocating. */
-    ctorsAt = new Map<Func, bool>()
+    ctorsAt = new Set<Func>()
 }
 
 /** Largest object placed on the stack, and the most stack slots one call may use, in bytes (estimated). */
@@ -97,7 +97,7 @@ export function planStack(module: Module): StackPlan {
     }
 
     const plan = new StackPlan()
-    const stackClosures = new Map<Closure, bool>()
+    const stackClosures = new Set<Closure>()
     const closuresOf = new Map<Local, Closure[]>()
     const boxFuncs: Func[] = []
     const boxes = new Map<Func, Local[]>()
@@ -112,8 +112,8 @@ export function planStack(module: Module): StackPlan {
             if (size > maxObject || frame + size > maxFrame) continue
             frame += size
             placed.push(site)
-            if (site instanceof Closure) stackClosures.set(site, true)
-            if (site instanceof Call) plan.ctorsAt.set(site.func, true)
+            if (site instanceof Closure) stackClosures.add(site)
+            if (site instanceof Call) plan.ctorsAt.add(site.func)
         }
         plan.slots.set(func, placed)
         for (const site of analysis.closures) {

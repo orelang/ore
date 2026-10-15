@@ -99,7 +99,7 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
     checkStatements(c, all.filter((s) => s.kind !== "FunctionDeclaration"), inner, stmts)
 
     const creations: Stmt[] = []
-    const captured = new Map<Local, bool>()
+    const captured = new Set<Local>()
     for (let i = 0; i < nested.length; i++) {
         const local = locals[i]
         if (local === null) continue
@@ -109,7 +109,7 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
         const expr = closure.expr
         if (expr.k === "closure") {
             const captures = expr.func.captures
-            if (captures !== null) for (const x of captures) captured.set(x, true)
+            if (captures !== null) for (const x of captures) captured.add(x)
         }
         const creation = new ExprStmt(new Assign(local.type, new LocalLValue(local), expr))
         creation.line = c.line(decl)
@@ -445,7 +445,7 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
             }
             const local = c.newLocal(name, type, !isConst)
             // Its type is unknown: uses of it report nothing more.
-            if (declared === null && value !== null && value.k === "error") c.poisoned.set(local, true)
+            if (declared === null && value !== null && value.k === "error") c.poisoned.add(local)
             if (scope === c.globals) local.global = true
             if (scope === c.globals && stmt !== null) {
                 const found = directives(c, stmt)
@@ -460,10 +460,10 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
                 }
             }
             symbol = new LocalSymbol(local, decl)
-            if (declared === null && value === null) c.untyped.set(local, true)
+            if (declared === null && value === null) c.untyped.add(local)
             else c.info.types.set(nameId, type)
             if (unassigned) {
-                c.unassigned.set(local, true)
+                c.unassigned.add(local)
                 c.declNodes.set(local, nameId)
                 out.push(new LetStmt(local))
             } else if (local.global && value === null && (isNumeric(type) || type.kind === "bool" || type.kind === "ptr")) {
@@ -745,16 +745,16 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
     let hasDefault = false
     // String literal cases narrow the subject: within a clause, the values of
     // the cases that lead to it without falling through code; in default, the rest.
-    const allCases = new Map<string, bool>()
+    const allCases = new Set<string>()
     for (const clause of caseClauses(stmt)) {
-        if (clause.kind === "CaseClause" && isStringLiteralNode(expression(clause))) allCases.set(stringText(expression(clause)), true)
+        if (clause.kind === "CaseClause" && isStringLiteralNode(expression(clause))) allCases.add(stringText(expression(clause)))
     }
-    let entering = new Map<string, bool>()
+    let entering = new Set<string>()
     let narrowable = true
     for (const clause of caseClauses(stmt)) {
         let facts: Fact[] = []
         if (clause.kind === "CaseClause") {
-            if (isStringLiteralNode(expression(clause))) entering.set(stringText(expression(clause)), true)
+            if (isStringLiteralNode(expression(clause))) entering.add(stringText(expression(clause)))
             else narrowable = false
             if (narrowable) facts = literalFacts(c, subject, entering, scope).yes
         } else if (narrowable && entering.size === 0) {
@@ -781,7 +781,7 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
         if (statements(clause).length > 0) {
             const last = clauseBody.length > 0 ? clauseBody[clauseBody.length - 1] : null
             const leaves = last !== null && (last.k === "break" || last.k === "continue" || terminates(last))
-            entering = new Map<string, bool>()
+            entering = new Set<string>()
             narrowable = leaves
         }
     }
@@ -1025,8 +1025,8 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             if (literalSide !== null) {
                 const subject = literalSide === right(node) ? left(node) : right(node)
                 const expr = checkCondition(c, node, scope)
-                const values = new Map<string, bool>()
-                values.set(stringText(literalSide), true)
+                const values = new Set<string>()
+                values.add(stringText(literalSide))
                 const pair = literalFacts(c, subject, values, scope)
                 return op === "EqualsEqualsEqualsToken" ? new Condition(expr, pair.yes, pair.no) : new Condition(expr, pair.no, pair.yes)
             }
@@ -1055,7 +1055,7 @@ function concatFacts(a: Fact[], b: Fact[]): Fact[] {
 }
 
 /** Whether a type's values are all in `values` ("yes"), none ("no"), or some ("both"). */
-function covers(type: Type, values: Map<string, bool>): string {
+function covers(type: Type, values: Set<string>): string {
     const members_ = membersOf(type)
     if (members_.every((m) => m.kind === "literal" && values.has(m.value))) return "yes"
     if (members_.every((m) => m.kind === "literal" && !values.has(m.value))) return "no"
@@ -1076,7 +1076,7 @@ function narrowFacts(c: Checker, target: Node, scope: Scope, matches: (member: T
  * `subject` is a variable of a literal union (`mode === "a"`), a field of a
  * union of objects (`shape.kind === "circle"`), or `typeof x`.
  */
-export function literalFacts(c: Checker, subject: Node, values: Map<string, bool>, scope: Scope): FactPair {
+export function literalFacts(c: Checker, subject: Node, values: Set<string>, scope: Scope): FactPair {
     if (subject.kind === "ParenthesizedExpression") return literalFacts(c, expression(subject), values, scope)
     if (subject.kind === "TypeOfExpression") return narrowFacts(c, expression(subject), scope, (m) => (values.has(typeofName(m)) ? "yes" : "no"))
     if (subject.kind === "PropertyAccessExpression" && questionDotToken(subject) === null) {
