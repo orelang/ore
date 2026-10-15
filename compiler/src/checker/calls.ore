@@ -115,7 +115,7 @@ import { type Operand, errorOperand, UntypedInt } from "./operand"
 import { capture, checkClosure, disposeCall } from "./statements"
 import { type ValueSymbol, LocalSymbol, Scope } from "./symbols"
 
-export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
+export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
     const callee = expression(node)
     if (callee.kind === "SuperKeyword") return checkSuperCall(c, node, scope)
     const args = argsOf(node)
@@ -124,7 +124,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
     if (symbolOfCallee !== null && symbolOfCallee.k === "generic-func") {
         if (isIdentifier(callee)) c.info.definitions.set(callee, symbolOfCallee.decl)
         const generic = symbolOfCallee.generic
-        const call = genericCall(c, generic, parameters(generic.decl), typeArgs, args, node, scope)
+        const call = genericCall(c, generic, parameters(generic.decl), typeArgs, args, node, scope, null, expected)
         if (call === null) return errorOperand
         const func = call.instance
         if (!(func instanceof Func)) return errorOperand
@@ -144,8 +144,8 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
     // Type arguments of a method call are checked with the method.
     if (typeArgs.length > 0 && callee.kind !== "PropertyAccessExpression")
         return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions.")
-    if (questionDotToken(node) !== null && callee.kind !== "PropertyAccessExpression") {
-        // `f?.(...)` calls a function value unless it is null.
+    if (questionDotToken(node) !== null) {
+        // `f?.(...)` and `o.f?.(...)` call a function value unless it is null.
         const value = checkExpr(c, callee, scope)
         if (value.k !== "typed") return value
         return optional(c, value.expr, node, (f) => callValue(c, typed(f), node, scope))

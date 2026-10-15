@@ -1018,6 +1018,7 @@ export function inferTypeArgs(
     params: Node[],
     argTypes: (Type | null)[],
     node: Node,
+    expected: Type | null = null,
 ): Type[] | null {
     const names = generic.params.map((p) => nameNode(p).text)
     const bindings = new Map<string, Type>()
@@ -1026,6 +1027,10 @@ export function inferTypeArgs(
         const argType = i < argTypes.length ? argTypes[i] : null
         if (annotation !== null && argType !== null) inferFrom(c, annotation, argType, names, bindings, generic.scope)
     }
+    // Parameters the arguments do not bind take the expected type of the result: `const xs: string[] = empty()`.
+    const result = typeNode(generic.decl)
+    if (expected !== null && result !== null && names.some((n) => !bindings.has(n)))
+        inferFrom(c, result, expected, names, bindings, generic.scope)
     // Parameters that the arguments do not bind take their defaults.
     const bound: Type[] = []
     let complete = true
@@ -1241,6 +1246,7 @@ export function genericCall(
     node: Node,
     scope: Scope,
     receiver: Expr | null = null,
+    expected: Type | null = null,
 ): GenericCall | null {
     const names = generic.params.map((p) => nameNode(p).text)
     // Spread tuples are taken apart first, unless the type arguments are given: then the call checks them.
@@ -1326,7 +1332,7 @@ export function genericCall(
     if (operands.some((o) => o.k === "error")) return null
     const argTypes: (Type | null)[] = []
     for (const o of operands) argTypes.push(o.k === "typed" ? o.expr.type : o.k === "error" ? null : c.defaultType(o))
-    const typeArgsResolved = inferTypeArgs(c, generic, params, argTypes, node)
+    const typeArgsResolved = inferTypeArgs(c, generic, params, argTypes, node, expected)
     if (typeArgsResolved === null) return null
     const instance = instantiate(c, generic, typeArgsResolved, node)
     return instance !== null ? new GenericCall(instance, operands, expanded) : null
