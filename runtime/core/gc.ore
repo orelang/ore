@@ -23,22 +23,26 @@
 
 import {
     getenv,
+    startThread,
+    pthread_cond_wait,
+    pthread_cond_broadcast,
+    permanentCond,
+    cpuCount,
     isNil,
     lock,
     mmap,
     nanosleep,
     nil,
     nowNs,
+    writeNumber,
+    writeRaw,
     permanent,
     permanentMutex,
-    permanentRwlock,
     pthread_attr_destroy,
     pthread_attr_getstack,
     pthread_get_stackaddr_np,
     pthread_getattr_np,
     pthread_kill,
-    pthread_rwlock_unlock,
-    pthread_rwlock_wrlock,
     pthread_self,
     sigaction,
     unlock,
@@ -48,6 +52,8 @@ import {
 declare function ore_globals_table(): ptr
 declare function ore_globals_count(): i64
 declare function dprintf(fd: i32, format: string, ...args: i64[]): i32
+declare function dladdr(address: ptr, info: ptr): i32
+declare function strlen(s: ptr): u64
 
 const pageShift = 13
 const pageSize = 8192
@@ -92,7 +98,11 @@ const threadOwnBase = 56
 /** The span the thread allocates from, per size class, scanned and noscan apart. */
 /** The number of the last collection the thread stopped for. */
 const threadStoppedFor = 64
-const threadCache = 72
+/** Room for the return addresses of the thread's stack, when the watchdog asks for it (see `dumpThreads`). */
+const threadTrace = 72
+/** Set by the thread once it has printed its stack for the watchdog. */
+const threadDumped = 80
+const threadCache = 88
 const threadRecordSize = threadCache + maxClasses * 2 * 8
 
 let heapBase: ptr
@@ -121,6 +131,8 @@ let allocatedCell: ptr
 let nextCollection: int
 let liveBytes: int
 let collections: int
+/** Bytes allocated since the program started, as the threads reported them: the watchdog's sign of progress. */
+let allocatedEver: ptr
 
 let markStack: ptr
 let markTop: int
@@ -140,20 +152,40 @@ let generationCell: ptr
 let pause: ptr
 /** The scheduler's hook that scans the stacks of parked tasks: a closure cell, or null. */
 let stackRootsHook: ptr
+/** Memory outside the heap that holds pointers into it, such as the workers' blocks: {address, size} pairs, under `gcLock`. */
+let extraRoots: ptr
+let extraRootCount: int
+let extraRootCap: int
 /** 1 when ORE_GCTRACE is set: each collection prints a line to stderr. */
 let trace: int
 let clock: ptr
 
 /**
- * Taken for reading by a worker while it switches stacks, and for writing by
- * the collector before it stops the world, so that every stopped thread is on
- * the stack its record says. No code allocates while it holds the read side.
+ * A lock taken for reading by a worker while it switches stacks, and for
+ * writing by the collector before it stops the world, so that every stopped
+ * thread is on the stack its record says. No code allocates while it holds the
+ * read side. It is made of atomics: a reader blocked in the kernel on a
+ * pthread rwlock and interrupted by the stop signal could lose its wakeup on
+ * macOS, and every thread then waited for a writer that had long gone.
+ * The word holds the number of readers, and `switchWriter` while the
+ * collector holds or wants it.
  */
-let switchLock: ptr
+let switchState: ptr
 
-/** The lock that a worker holds for reading while it switches stacks. */
-export function stackSwitchLock(): ptr {
-    return switchLock
+const switchWriter = 1 << 62
+
+/** Takes the read side: before a worker leaves one stack for another. */
+export function enterSwitch(): void {
+    while (true) {
+        const state = unsafe.atomicLoad<i64>(switchState)
+        if ((state & switchWriter) === 0 && unsafe.atomicCompareExchange<i64>(switchState, state, state + 1)) return
+        nanosleep(pause, nil())
+    }
+}
+
+/** Releases the read side, on whichever stack the worker went on. */
+export function exitSwitch(): void {
+    unsafe.atomicSub<i64>(switchState, 1)
 }
 
 //ore:threadlocal
@@ -211,7 +243,7 @@ function meta(size: int): ptr {
 export function init(): void {
     gcLock = permanentMutex()
     heapLock = permanentMutex()
-    switchLock = permanentRwlock()
+    switchState = permanent(8)
     allocatedCell = permanent(8)
     stoppingCell = permanent(8)
     generationCell = permanent(8)
@@ -244,6 +276,7 @@ export function init(): void {
     markStack = mapMemory(markCap * 8)
     nextCollection = minHeap
     clock = permanent(16)
+    allocatedEver = permanent(8)
     installStopHandler()
 }
 
@@ -270,6 +303,7 @@ function stackBase(): ptr {
 /** Registers the calling thread: it may allocate from now on, and its stack is scanned. */
 export function registerThread(): void {
     const t = permanent(threadRecordSize)
+    setPointer(t, threadTrace, permanent(64))
     setPointer(t, threadId, pthread_self())
     const base = stackBase()
     setPointer(t, threadOwnBase, base)
@@ -282,7 +316,30 @@ export function registerThread(): void {
     threadCount++
     unlock(gcLock)
     // The first thread reads the settings; getenv's argument is a copy, so the thread must be registered.
-    if (threadCount === 1) trace = isNil(getenv("ORE_GCTRACE")) ? 0 : 1
+    if (threadCount === 1) {
+        trace = isNil(getenv("ORE_GCTRACE")) ? 0 : 1
+        startMarkers()
+    }
+}
+
+/**
+ * Makes [address, address + size) a root: memory outside the heap, such as
+ * the scheduler's per-worker blocks, that may hold the only reference to an
+ * object. It must not allocate: it may run before the thread is registered.
+ */
+export function addRoot(address: ptr, size: int): void {
+    lock(gcLock)
+    if (extraRootCount === extraRootCap) {
+        const cap = extraRootCap === 0 ? 16 : extraRootCap * 2
+        const grown = permanent(cap * 16)
+        if (extraRootCount > 0) unsafe.copy(grown, extraRoots, extraRootCount * 16)
+        extraRoots = grown
+        extraRootCap = cap
+    }
+    setPointer(extraRoots, extraRootCount * 16, address)
+    setField(extraRoots, extraRootCount * 16 + 8, size)
+    extraRootCount++
+    unlock(gcLock)
 }
 
 /**
@@ -460,6 +517,7 @@ function allocLarge(size: int, noscan: bool): ptr {
 function flush(t: ptr): void {
     const allocated = field(t, threadAllocated)
     setField(t, threadAllocated, 0)
+    unsafe.atomicAdd<i64>(allocatedEver, allocated)
     if (unsafe.atomicAdd<i64>(allocatedCell, allocated) + allocated >= nextCollection) collect()
 }
 
@@ -523,6 +581,161 @@ function installStopHandler(): void {
         unsafe.store<i32>(unsafe.add(action, 136), 0x10000000)
     }
     if (sigaction(stopSignal(), action, nil()) !== 0) process.panic("gc: cannot install the stop signal")
+    const dump = permanent(256)
+    unsafe.store<ptr>(dump, unsafe.functionAddress(onDump))
+    unsafe.store<i32>(unsafe.add(dump, target.os === "darwin" ? 12 : 136), target.os === "darwin" ? 2 : 0x10000000)
+    if (sigaction(dumpSignal(), dump, nil()) !== 0) process.panic("gc: cannot install the dump signal")
+}
+
+// ---------------------------------------------------------------------------
+// Stacks for the watchdog
+
+const traceDepth = 64
+
+/** SIGUSR2: asks a thread to print its stack. */
+function dumpSignal(): i32 {
+    return target.os === "darwin" ? 31 : 12
+}
+
+/**
+ * The dump signal's handler: prints this thread's native stack to stderr,
+ * walking the chain of frame pointers itself, since libc's backtrace stops at
+ * the end of the thread's own stack and tasks run on stacks of their own. The
+ * walk ends at a null or misaligned frame pointer, or one that goes down: the
+ * first frame of a task has a null one.
+ */
+function onDump(signal: i32): void {
+    const t = threadRecord()
+    const scratch = pointerAt(t, threadTrace)
+    const info = unsafe.add(scratch, 32)
+    writeRaw(2, "thread ")
+    writeNumber(2, i64(unsafe.toInt(pointerAt(t, threadId))), true, scratch)
+    writeRaw(2, ":\n")
+    let fp = currentFp()
+    for (let depth = 0; depth < traceDepth; depth++) {
+        if (unsafe.toInt(fp) === 0 || (unsafe.toInt(fp) & 7) !== 0) break
+        const ret = unsafe.load<ptr>(unsafe.add(fp, 8))
+        const next = unsafe.load<ptr>(fp)
+        writeRaw(2, "  ")
+        writeNumber(2, i64(unsafe.toInt(ret)), true, scratch)
+        writeSymbol(ret, info, scratch)
+        writeRaw(2, "\n")
+        if (unsafe.toInt(next) <= unsafe.toInt(fp)) break
+        fp = next
+    }
+    unsafe.atomicStore<i64>(unsafe.add(t, threadDumped), 1)
+}
+
+/**
+ * Writes " name + offset" for a return address: dladdr's name, or on Linux,
+ * where dladdr knows only exported symbols, the function of the executable's
+ * own symbol table that contains it.
+ */
+function writeSymbol(address: ptr, info: ptr, scratch: ptr): void {
+    if (dladdr(address, info) === 0) return
+    let name = unsafe.load<ptr>(unsafe.add(info, 16))
+    let offset = 0
+    if (!isNil(name)) {
+        offset = unsafe.diff(address, unsafe.load<ptr>(unsafe.add(info, 24)))
+    } else {
+        if (target.os === "darwin") return
+        const base = unsafe.load<ptr>(unsafe.add(info, 8))
+        // The executable's own functions: a library's are its exported ones.
+        if (base !== elfBase) return
+        const symbol = elfFunction(unsafe.diff(address, base))
+        if (isNil(symbol)) return
+        name = unsafe.add(elfNames, i64(unsafe.load<u32>(symbol)))
+        offset = unsafe.diff(address, base) - unsafe.load<i64>(unsafe.add(symbol, 8))
+    }
+    writeRaw(2, " ")
+    writeRaw(2, unsafe.makeString(name, i64(strlen(name))))
+    writeRaw(2, " + ")
+    writeNumber(2, offset, false, scratch)
+}
+
+declare function open(path: ptr, flags: i32): i32
+declare function lseek(fd: i32, offset: i64, whence: i32): i64
+declare function close(fd: i32): i32
+
+/** The executable's ELF symbols (24 bytes each) and their names, mapped by `loadElfSymbols`; Linux only. */
+let elfSymbols: ptr
+let elfSymbolCount: int
+let elfNames: ptr
+/** Where the executable is loaded: the symbols' values are relative to it. */
+let elfBase: ptr
+
+/** Maps /proc/self/exe and finds its symbol table: once, from the watchdog's thread. Allocates nothing. */
+function loadElfSymbols(): void {
+    if (target.os === "darwin" || !isNil(elfSymbols)) return
+    const path = "/proc/self/exe\x00"
+    const fd = open(unsafe.stringData(path), 0)
+    if (fd < 0) return
+    const size = lseek(fd, 0, 2)
+    const image = size > 0 ? mmap(nil(), u64(size), 1, 2, fd, 0) : nil()
+    close(fd)
+    if (isNil(image) || unsafe.toInt(image) === ~u64(0)) return
+    // Elf64_Ehdr: e_shoff at 0x28, e_shentsize at 0x3a, e_shnum at 0x3c.
+    const sections = unsafe.add(image, unsafe.load<i64>(unsafe.add(image, 0x28)))
+    const entry = i64(unsafe.load<u16>(unsafe.add(image, 0x3a)))
+    const count = i64(unsafe.load<u16>(unsafe.add(image, 0x3c)))
+    for (let i = 0; i < count; i++) {
+        // Elf64_Shdr: sh_type at 4, sh_offset at 0x18, sh_size at 0x20, sh_link at 0x28; SHT_SYMTAB is 2.
+        const section = unsafe.add(sections, i * entry)
+        if (unsafe.load<u32>(unsafe.add(section, 4)) !== u32(2)) continue
+        const names = unsafe.add(sections, i64(unsafe.load<u32>(unsafe.add(section, 0x28))) * entry)
+        elfNames = unsafe.add(image, unsafe.load<i64>(unsafe.add(names, 0x18)))
+        elfSymbolCount = unsafe.load<i64>(unsafe.add(section, 0x20)) / 24
+        elfSymbols = unsafe.add(image, unsafe.load<i64>(unsafe.add(section, 0x18)))
+        const info = permanent(32)
+        if (dladdr(unsafe.functionAddress(onDump), info) !== 0) elfBase = unsafe.load<ptr>(unsafe.add(info, 8))
+        return
+    }
+}
+
+/** The function symbol (Elf64_Sym) whose range holds `offset` from the executable's base, or null. */
+function elfFunction(offset: int): ptr {
+    for (let i = 0; i < elfSymbolCount; i++) {
+        // Elf64_Sym: st_name at 0, st_info at 4 (STT_FUNC is 2), st_value at 8, st_size at 16.
+        const symbol = unsafe.add(elfSymbols, i * 24)
+        if ((unsafe.load<u8>(unsafe.add(symbol, 4)) & 15) !== 2) continue
+        const start = unsafe.load<i64>(unsafe.add(symbol, 8))
+        if (offset >= start && offset < start + unsafe.load<i64>(unsafe.add(symbol, 16))) return symbol
+    }
+    return nil()
+}
+
+function currentFp(): ptr {
+    if (target.arch === "arm64") return unsafe.asm<ptr>("mov $0, x29", "=r")
+    return unsafe.asm<ptr>("movq %rbp, $0", "=r")
+}
+
+/**
+ * Prints the native stack of every registered thread, each printed by the
+ * thread itself in a signal handler; for the watchdog, when the program is
+ * stuck. Allocates nothing and takes no lock, since the program may hold any.
+ */
+export function dumpThreads(): void {
+    loadElfSymbols()
+    for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
+        unsafe.atomicStore<i64>(unsafe.add(t, threadDumped), 0)
+        pthread_kill(pointerAt(t, threadId), dumpSignal())
+        // A thread that does not answer within a second is reported as such.
+        let waited = 0
+        while (unsafe.atomicLoad<i64>(unsafe.add(t, threadDumped)) === 0 && waited < 50000) {
+            nanosleep(pause, nil())
+            waited++
+        }
+        if (waited >= 50000) {
+            writeRaw(2, "thread ")
+            writeNumber(2, i64(unsafe.toInt(pointerAt(t, threadId))), true, pointerAt(t, threadTrace))
+            writeRaw(2, ": no answer\n")
+        }
+    }
+}
+
+/** Bytes allocated since the program started (as reported every 128 KB per thread). */
+export function allocatedTotal(): int {
+    return unsafe.atomicLoad<i64>(allocatedEver)
 }
 
 /** The stop signal's handler: the thread stops here, unless it is allocating, in which case it stops after. */
@@ -565,10 +778,104 @@ function currentSp(): ptr {
 }
 
 // ---------------------------------------------------------------------------
-// Marking
+// Marking, on several threads
+//
+// The collector marks from the roots on its own, then with helper threads:
+// each marker has a stack of objects to scan, gives batches of it to a shared
+// pool when the pool is empty, and takes from the pool when its stack is.
+// An object belongs to the marker whose atomic `or` set its mark bit first.
+// Marking ends when the pool is empty and every marker is idle, both seen
+// under the pool's lock, which a marker holds to publish work. The helpers
+// allocate nothing and run only while the world is stopped, so the collector
+// does not stop them.
 
-/** Marks the object that `p` points into, if it is an allocated object of the heap. */
-function mark(p: u64): void {
+// A marker's record, in permanent memory: its stack, the stack's top and capacity.
+const markerStack = 0
+const markerTop = 8
+const markerCap = 16
+const markerSize = 24
+/** The most markers, the collector included. */
+const maxMarkers = 8
+/** Objects moved to and from the pool at a time. */
+const batch = 256
+
+/** The markers' records; the collector is marker 0. */
+let markers: ptr
+let markerCount: int
+let poolLock: ptr
+let pool: ptr
+let poolCount: int
+let poolCap: int
+/** `poolCount` as markers outside the lock read it, to decide to share: a hint. */
+let poolHint: ptr
+/** How many markers wait for work, under `poolLock`. */
+let idleMarkers: int
+/** `idleMarkers` as markers outside the lock read it: while some are idle, the others share. */
+let idleHint: ptr
+/** The helpers sleep on `helperCond` until `markRound` changes, and count themselves in `helpersDone` at the end. */
+let helperLock: ptr
+let helperCond: ptr
+let markRound: int
+let helpersDone: ptr
+
+function newMarker(): ptr {
+    const m = permanent(markerSize)
+    setField(m, markerCap, 1 << 14)
+    setPointer(m, markerStack, mapMemory((1 << 14) * 8))
+    return m
+}
+
+/** Starts the helpers: one per CPU besides the collector, at most `maxMarkers` in all, or ORE_GCPROCS. */
+function startMarkers(): void {
+    poolLock = permanentMutex()
+    helperLock = permanentMutex()
+    helperCond = permanentCond()
+    helpersDone = permanent(8)
+    poolHint = permanent(8)
+    idleHint = permanent(8)
+    poolCap = 1 << 14
+    pool = mapMemory(poolCap * 8)
+    markers = permanent(maxMarkers * 8)
+    let wanted = cpuCount()
+    const configured = getenv("ORE_GCPROCS")
+    if (!isNil(configured)) {
+        let n = 0
+        let i = 0
+        while (true) {
+            const c = unsafe.load<u8>(unsafe.add(configured, i))
+            if (c < 0x30 || c > 0x39) break
+            n = n * 10 + i64(c - 0x30)
+            i++
+        }
+        if (n > 0) wanted = n
+    }
+    if (wanted > maxMarkers) wanted = maxMarkers
+    setPointer(markers, 0, newMarker())
+    markerCount = 1
+    while (markerCount < wanted) {
+        const m = newMarker()
+        if (!startThread(unsafe.functionAddress(helperMain), m)) break
+        setPointer(markers, markerCount * 8, m)
+        markerCount++
+    }
+}
+
+/** A helper: marks in every collection, from the pool. */
+function helperMain(m: ptr): ptr {
+    let seen = 0
+    while (true) {
+        lock(helperLock)
+        while (markRound === seen) pthread_cond_wait(helperCond, helperLock)
+        seen = markRound
+        unlock(helperLock)
+        drain(m)
+        unsafe.atomicAdd<i64>(helpersDone, 1)
+    }
+    return m
+}
+
+/** Marks the object that `p` points into, if it is an allocated object of the heap, on marker `m`. */
+function mark(m: ptr, p: u64): void {
     const offset = p - unsafe.toInt(heapBase)
     if (offset >= u64(nextPage * pageSize)) return
     const span = pointerAt(pageTable, i64(offset >> 13) * 8)
@@ -577,23 +884,35 @@ function mark(p: u64): void {
     const index = unsafe.diff(unsafe.fromInt(p), pointerAt(span, spanStart)) / elemSize
     if (index >= field(span, spanElems)) return
     if (!bit(pointerAt(span, spanAllocBits), index)) return
-    const marks = pointerAt(span, spanMarkBits)
-    if (bit(marks, index)) return
-    setBit(marks, index)
+    // The bitmaps are read as bytes elsewhere: little-endian words hold the same bits.
+    const word = unsafe.add(pointerAt(span, spanMarkBits), (index >> 6) * 8)
+    const mask = 1 << (index & 63)
+    if ((unsafe.atomicOr<i64>(word, mask) & mask) !== 0) return
     if (field(span, spanNoscan) !== 0) return
-    if (markTop === markCap) {
-        const grown = mapMemory(markCap * 16)
-        unsafe.copy(grown, markStack, markTop * 8)
-        markStack = grown
-        markCap *= 2
+    push(m, unsafe.add(pointerAt(span, spanStart), index * elemSize))
+}
+
+function push(m: ptr, object: ptr): void {
+    const top = field(m, markerTop)
+    if (top === field(m, markerCap)) {
+        const cap = top * 2
+        const grown = mapMemory(cap * 8)
+        unsafe.copy(grown, pointerAt(m, markerStack), top * 8)
+        setPointer(m, markerStack, grown)
+        setField(m, markerCap, cap)
     }
-    setPointer(markStack, markTop * 8, unsafe.add(pointerAt(span, spanStart), index * elemSize))
-    markTop++
+    setPointer(pointerAt(m, markerStack), top * 8, object)
+    setField(m, markerTop, top + 1)
 }
 
 /** Marks what the words in [from, from + size) point to. */
+function scanOn(m: ptr, from: ptr, size: int): void {
+    for (let i = 0; i + 8 <= size; i += 8) mark(m, unsafe.load<u64>(unsafe.add(from, i)))
+}
+
+/** Marks what the words in [from, from + size) point to: a root, scanned by the collector. */
 export function scan(from: ptr, size: int): void {
-    for (let i = 0; i + 8 <= size; i += 8) mark(unsafe.load<u64>(unsafe.add(from, i)))
+    scanOn(pointerAt(markers, 0), from, size)
 }
 
 /** Marks what the words in [lo, hi) point to, for the stack of a parked task. */
@@ -602,12 +921,75 @@ export function scanRange(lo: ptr, hi: ptr): void {
     scan(from, unsafe.diff(hi, from))
 }
 
-function drain(): void {
-    while (markTop > 0) {
-        markTop--
-        const object = pointerAt(markStack, markTop * 8)
-        const span = pointerAt(pageTable, (unsafe.diff(object, heapBase) >> pageShift) * 8)
-        scan(object, field(span, spanElemSize))
+/** Moves a batch from the bottom of `m`'s stack to the pool; the caller holds `poolLock`. */
+function share(m: ptr): void {
+    const top = field(m, markerTop)
+    const n = top < batch * 2 ? top / 2 : batch
+    if (poolCount + n > poolCap) {
+        const cap = (poolCount + n) * 2
+        const grown = mapMemory(cap * 8)
+        unsafe.copy(grown, pool, poolCount * 8)
+        pool = grown
+        poolCap = cap
+    }
+    const stack = pointerAt(m, markerStack)
+    unsafe.copy(unsafe.add(pool, poolCount * 8), stack, n * 8)
+    unsafe.copy(stack, unsafe.add(stack, n * 8), (top - n) * 8)
+    poolCount += n
+    unsafe.atomicStore<i64>(poolHint, poolCount)
+    setField(m, markerTop, top - n)
+}
+
+/** Moves up to a batch from the pool to `m`'s stack; the caller holds `poolLock`. */
+function take(m: ptr): void {
+    const n = poolCount < batch ? poolCount : batch
+    for (let i = 0; i < n; i++) {
+        poolCount--
+        push(m, pointerAt(pool, poolCount * 8))
+    }
+    unsafe.atomicStore<i64>(poolHint, poolCount)
+}
+
+/** Marks until there is nothing left to mark on any marker. */
+function drain(m: ptr): void {
+    while (true) {
+        while (field(m, markerTop) > 0) {
+            const top = field(m, markerTop) - 1
+            setField(m, markerTop, top)
+            const object = pointerAt(pointerAt(m, markerStack), top * 8)
+            const span = pointerAt(pageTable, (unsafe.diff(object, heapBase) >> pageShift) * 8)
+            scanOn(m, object, field(span, spanElemSize))
+            // Others are idle: give them half of the work.
+            if (top >= 2 && unsafe.atomicLoad<i64>(idleHint) > 0 && unsafe.atomicLoad<i64>(poolHint) === 0) {
+                lock(poolLock)
+                if (poolCount === 0) share(m)
+                unlock(poolLock)
+            }
+        }
+        lock(poolLock)
+        if (poolCount > 0) {
+            take(m)
+            unlock(poolLock)
+            continue
+        }
+        idleMarkers++
+        unsafe.atomicStore<i64>(idleHint, idleMarkers)
+        while (true) {
+            if (poolCount > 0) {
+                idleMarkers--
+                unsafe.atomicStore<i64>(idleHint, idleMarkers)
+                take(m)
+                break
+            }
+            if (idleMarkers === markerCount) {
+                unlock(poolLock)
+                return
+            }
+            unlock(poolLock)
+            nanosleep(pause, nil())
+            lock(poolLock)
+        }
+        unlock(poolLock)
     }
 }
 
@@ -623,7 +1005,8 @@ export function collect(): void {
     const self = threadRecord()
     const start = nowNs(clock)
     // No worker is between two stacks while the collector holds the write side.
-    pthread_rwlock_wrlock(switchLock)
+    unsafe.atomicOr<i64>(switchState, switchWriter)
+    while ((unsafe.atomicLoad<i64>(switchState) & ~switchWriter) !== 0) nanosleep(pause, nil())
     const generation = unsafe.atomicAdd<i64>(generationCell, 1) + 1
     unsafe.atomicStore<i64>(stoppingCell, 1)
     let others = 0
@@ -651,33 +1034,57 @@ export function collect(): void {
         const hook = unsafe.load<() => void>(stackRootsHook)
         hook()
     }
+    for (let i = 0; i < extraRootCount; i++) scan(pointerAt(extraRoots, i * 16), field(extraRoots, i * 16 + 8))
     const globals = ore_globals_table()
     const count = ore_globals_count()
     for (let i = 0; i < count; i++) scan(pointerAt(globals, i * 16), field(globals, i * 16 + 8))
-    drain()
+    // The helpers join in, then the collector waits until they are all done.
+    idleMarkers = 0
+    unsafe.atomicStore<i64>(idleHint, 0)
+    unsafe.atomicStore<i64>(helpersDone, 0)
+    if (markerCount > 1) {
+        lock(helperLock)
+        markRound++
+        pthread_cond_broadcast(helperCond)
+        unlock(helperLock)
+    }
+    drain(pointerAt(markers, 0))
+    while (unsafe.atomicLoad<i64>(helpersDone) < markerCount - 1) nanosleep(pause, nil())
+    const marked = nowNs(clock)
     sweep()
 
     unsafe.atomicStore<i64>(stoppingCell, 0)
-    pthread_rwlock_unlock(switchLock)
+    unsafe.atomicAnd<i64>(switchState, ~switchWriter)
     const end = nowNs(clock)
     const number = collections
     unlock(gcLock)
     if (trace !== 0) {
         dprintf(
             2,
-            "gc %ld: %ld KB live, %ld KB heap, %ld threads, pause %ld us (stop %ld us)\n",
+            "gc %ld: %ld KB live, %ld KB heap, %ld threads, %ld markers, pause %ld us (stop %ld, mark %ld, sweep %ld)\n",
             number,
             liveBytes >> 10,
             heapSize() >> 10,
             others + 1,
+            markerCount,
             (end - start) / 1000,
             (stopped - start) / 1000,
+            (marked - stopped) / 1000,
+            (end - marked) / 1000,
         )
     }
 }
 
 // ---------------------------------------------------------------------------
 // Sweeping
+
+/** The number of bits set in `x`. */
+function popcount(x: u64): int {
+    let v = x - ((x >> 1) & 0x5555555555555555)
+    v = (v & 0x3333333333333333) + ((v >> 2) & 0x3333333333333333)
+    v = (v + (v >> 4)) & 0x0f0f0f0f0f0f0f0f
+    return i64((v * 0x0101010101010101) >> 56)
+}
 
 /** Frees every unmarked object: the marks become the allocation bits. The world is stopped. */
 function sweep(): void {
@@ -692,7 +1099,8 @@ function sweep(): void {
         const marks = pointerAt(span, spanMarkBits)
         const elems = field(span, spanElems)
         let live = 0
-        for (let i = 0; i < elems; i++) if (bit(marks, i)) live++
+        // Bits past `elems` are never set: count whole words.
+        for (let w = 0; w < (elems + 63) / 64; w++) live += popcount(unsafe.load<u64>(unsafe.add(marks, w * 8)))
         if (live === 0) {
             releaseSpan(span)
             continue

@@ -55,6 +55,15 @@ export function flushOutput(): void {
     unlock(outputLock)
 }
 
+declare function pthread_mutex_trylock(mutex: ptr): i32
+
+/** Flushes standard output unless another thread holds its lock: for a program that is stuck. */
+export function flushOutputIfFree(): void {
+    if (isNil(outputLock) || pthread_mutex_trylock(outputLock) !== 0) return
+    flushLocked()
+    unlock(outputLock)
+}
+
 /** Appends bytes to standard output. */
 function putOut(bytes: ptr, size: int): void {
     lock(outputLock)

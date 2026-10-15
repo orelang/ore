@@ -15,6 +15,12 @@ console.log(results.receive())
   task computing without waiting keeps its thread. The program ends when
   the entry file's top-level code ends, as when `main` returns in Go. When every task waits, the program panics with a
   deadlock.
+- `ORE_WATCHDOG=<seconds>` starts a watchdog for tests: when no task has
+  started or resumed and nothing was allocated for that long, the program
+  prints the scheduler's state, the stack of every task (in debug builds) and
+  of every OS thread, and exits with status 3. It reports a program stuck in
+  the runtime, which the deadlock panic cannot see, but also one that computes
+  that long without allocating, so its limit should be generous.
 - Tasks share memory. As in Go, unsynchronized access to the same variable
   from several tasks, with at least one write, is a data race and its result
   is undefined; communicate through channels or use `ore:sync`.

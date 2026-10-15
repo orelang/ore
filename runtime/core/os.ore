@@ -21,12 +21,9 @@ export declare function pthread_mutex_lock(mutex: ptr): i32
 export declare function pthread_mutex_unlock(mutex: ptr): i32
 export declare function pthread_cond_init(cond: ptr, attributes: ptr): i32
 export declare function pthread_cond_signal(cond: ptr): i32
+export declare function pthread_cond_broadcast(cond: ptr): i32
 export declare function pthread_cond_wait(cond: ptr, mutex: ptr): i32
 export declare function pthread_cond_timedwait(cond: ptr, mutex: ptr, deadline: ptr): i32
-export declare function pthread_rwlock_init(lock: ptr, attributes: ptr): i32
-export declare function pthread_rwlock_rdlock(lock: ptr): i32
-export declare function pthread_rwlock_wrlock(lock: ptr): i32
-export declare function pthread_rwlock_unlock(lock: ptr): i32
 export declare function pthread_attr_init(attributes: ptr): i32
 export declare function pthread_attr_setdetachstate(attributes: ptr, state: i32): i32
 export declare function pthread_attr_destroy(attributes: ptr): i32
@@ -75,6 +72,41 @@ export declare function pthread_getattr_np(thread: ptr, attributes: ptr): i32
 export declare function pthread_attr_getstack(attributes: ptr, address: ptr, size: ptr): i32
 
 // ---------------------------------------------------------------------------
+// Output that allocates nothing: for signal handlers, threads the collector
+// does not know, and a program that is stuck.
+
+declare function write(fd: i32, bytes: ptr, size: u64): i64
+
+/** Writes the bytes of `s` (a constant, or any string already made). */
+export function writeRaw(fd: i32, s: string): void {
+    write(fd, unsafe.stringData(s), u64(s.length))
+}
+
+/** Writes `n` in base 10 or 16, formatted in `scratch` (at least 24 bytes). */
+export function writeNumber(fd: i32, n: int, hex: bool, scratch: ptr): void {
+    const base = hex ? 16 : 10
+    let v = u64(n)
+    if (!hex && n < 0) v = u64(-n)
+    let i = 24
+    while (true) {
+        i--
+        const digit = i64(v % u64(base))
+        unsafe.store<u8>(unsafe.add(scratch, i), u8(digit < 10 ? 0x30 + digit : 0x57 + digit))
+        v = v / u64(base)
+        if (v === u64(0)) break
+    }
+    if (hex) {
+        i -= 2
+        unsafe.store<u8>(unsafe.add(scratch, i), 0x30)
+        unsafe.store<u8>(unsafe.add(scratch, i + 1), 0x78)
+    } else if (n < 0) {
+        i--
+        unsafe.store<u8>(unsafe.add(scratch, i), 0x2d)
+    }
+    write(fd, unsafe.add(scratch, i), u64(24 - i))
+}
+
+// ---------------------------------------------------------------------------
 // Memory outside the collector, for state that C and assembly reach by address
 
 /** Zeroed memory that is never freed or collected. */
@@ -114,12 +146,6 @@ export function permanentCond(): ptr {
     const c = permanent(lockSize)
     pthread_cond_init(c, nil())
     return c
-}
-
-export function permanentRwlock(): ptr {
-    const l = permanent(lockSize)
-    pthread_rwlock_init(l, nil())
-    return l
 }
 
 export function lock(m: ptr): void {

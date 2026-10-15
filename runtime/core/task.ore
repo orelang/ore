@@ -8,9 +8,9 @@
 // Garbage collection: each worker tells the collector the stack base of the
 // task it runs (gc.setStackBase), and a hook scans the used part of every task
 // that is not running. Switching stacks is not atomic, so a worker switches
-// inside a read lock of `switchLock`, which the collector takes for writing
-// before it stops the world. No code allocates while it holds that
-// read lock, or a collection would wait for it forever.
+// inside the read side of the collector's switch lock (gc.enterSwitch), which
+// the collector takes for writing before it stops the world. No code allocates
+// while it holds the read side, or a collection would wait for it forever.
 //
 // Waking before sleeping: a task that waits holds a lock (of a channel, or of
 // the scheduler) that its wakers need, and releases it only after it has left
@@ -28,26 +28,33 @@
 
 import { getTop, setTop } from "ore:runtime/frames"
 import {
+    addRoot,
+    allocatedTotal,
+    dumpThreads,
     enterNoStop,
+    enterSwitch,
     exitNoStop,
+    exitSwitch,
     ownStackBase,
     registerThread,
     scanRange,
     setStackBase,
     setStackRootsHook,
-    stackSwitchLock,
 } from "ore:runtime/gc"
-import { exitProgram } from "ore:runtime/io"
+import { exitProgram, flushOutputIfFree } from "ore:runtime/io"
 import {
     cpuCount,
     deadlineIn,
     epochMs,
     getenv,
+    nanosleep,
     isNil,
     lock,
     mapGuarded,
     nil,
     nowMs,
+    writeNumber,
+    writeRaw,
     pageSize,
     permanent,
     permanentCond,
@@ -55,9 +62,6 @@ import {
     pthread_cond_signal,
     pthread_cond_timedwait,
     pthread_cond_wait,
-    pthread_rwlock_rdlock,
-    pthread_rwlock_unlock,
-    pthread_rwlock_wrlock,
     startThread,
     unlock,
     unmap,
@@ -122,7 +126,6 @@ export class Task {
 class Scheduler {
     lock = permanentMutex()
     cond = permanentCond()
-    switchLock = stackSwitchLock()
     runHead: Task | null = null
     runTail: Task | null = null
     /** Sleeping tasks by wake time. */
@@ -138,6 +141,8 @@ class Scheduler {
     allTasks: Task | null = null
     /** Whether the network poller was started: 0 not yet, 1 starting, 2 running. */
     pollState = permanent(8)
+    /** How many times a worker has started or resumed a task: the watchdog's sign of progress. */
+    switches = permanent(8)
 }
 
 /** The scheduler, set by ore_rt_run_main. */
@@ -200,6 +205,9 @@ export function randomState(): ptr {
 /** A new worker block for this thread; allocates no collected memory. */
 function newWorker(): ptr {
     const w = permanent(workerSize)
+    // The block may hold the only reference to the closure a parked task left
+    // for its worker (at 24) and to the current task (at 32).
+    addRoot(w, workerSize)
     setWorkerBlock(w)
     return w
 }
@@ -216,12 +224,12 @@ function switchContext(save: ptr, load: ptr): void {
     if (target.arch === "arm64") {
         unsafe.asm(
             "sub sp, sp, #160\nstp x19, x20, [sp, #0]\nstp x21, x22, [sp, #16]\nstp x23, x24, [sp, #32]\nstp x25, x26, [sp, #48]\nstp x27, x28, [sp, #64]\nstp x29, x30, [sp, #80]\nstp d8, d9, [sp, #96]\nstp d10, d11, [sp, #112]\nstp d12, d13, [sp, #128]\nstp d14, d15, [sp, #144]\nmov x2, sp\nstr x2, [x0]\nmov sp, x1\nldp x19, x20, [sp, #0]\nldp x21, x22, [sp, #16]\nldp x23, x24, [sp, #32]\nldp x25, x26, [sp, #48]\nldp x27, x28, [sp, #64]\nldp x29, x30, [sp, #80]\nldp d8, d9, [sp, #96]\nldp d10, d11, [sp, #112]\nldp d12, d13, [sp, #128]\nldp d14, d15, [sp, #144]\nadd sp, sp, #160\nret",
-            "",
+            "~{memory}",
         )
     } else {
         unsafe.asm(
             "pushq %rbp\npushq %rbx\npushq %r12\npushq %r13\npushq %r14\npushq %r15\nmovq %rsp, (%rdi)\nmovq %rsi, %rsp\npopq %r15\npopq %r14\npopq %r13\npopq %r12\npopq %rbx\npopq %rbp\nretq",
-            "",
+            "~{memory}",
         )
     }
 }
@@ -229,8 +237,8 @@ function switchContext(save: ptr, load: ptr): void {
 /** The first code of a new task: calls the function in a saved register with the task in another. */
 //ore:naked
 function trampoline(): void {
-    if (target.arch === "arm64") unsafe.asm("mov x0, x19\nblr x20\nbrk #0", "")
-    else unsafe.asm("movq %rbx, %rdi\ncallq *%r12\nud2", "")
+    if (target.arch === "arm64") unsafe.asm("mov x0, x19\nblr x20\nbrk #0", "~{memory}")
+    else unsafe.asm("movq %rbx, %rdi\ncallq *%r12\nud2", "~{memory}")
 }
 
 // ---------------------------------------------------------------------------
@@ -362,20 +370,20 @@ function parkWith(cell: ptr, mutex: ptr): void {
     t.top = getTop()
     unsafe.store<ptr>(unsafe.add(w, 24), cell)
     unsafe.store<ptr>(unsafe.add(w, 56), mutex)
-    pthread_rwlock_rdlock(s.switchLock)
+    enterSwitch()
     setStackBase(ownStackBase())
     t.running = false
     switchContext(t.context, unsafe.load<ptr>(w))
     // Resumed, maybe by another worker, which took the switch lock to get here.
     // `w` is the old worker's block; nothing reads it from here on.
-    pthread_rwlock_unlock(s.switchLock)
+    exitSwitch()
     setTop(t.top)
 }
 
 /** The body of every task, entered from the trampoline on the task's stack. */
 function taskMain(self: ptr): void {
     const s = scheduler()
-    pthread_rwlock_unlock(s.switchLock)
+    exitSwitch()
     const t = unsafe.fromAddress<Task>(self)
     t.body()
     // The program ends with its top-level code.
@@ -547,14 +555,15 @@ function schedule(): void {
     const w = workerBlock()
     while (true) {
         const t = nextTask(w)
+        unsafe.atomicAdd<i64>(s.switches, 1)
         setCurrent(w, unsafe.addressOf(t))
         setTop(t.top)
-        pthread_rwlock_rdlock(s.switchLock)
+        enterSwitch()
         setStackBase(t.hi)
         t.running = true
         switchContext(w, t.sp())
         // The task parked or ended, holding the switch lock.
-        pthread_rwlock_unlock(s.switchLock)
+        exitSwitch()
         setCurrent(w, nil())
         // Decided before `then` runs: once it makes the task runnable, another
         // worker may run it to its end and free it.
@@ -613,5 +622,121 @@ export function runMain(entry: ptr): void {
     enqueueLocked(s.mainTask)
     for (let i = 1; i < count; i++) addWorkerLocked()
     unlock(s.lock)
+    startWatchdog()
     schedule()
+}
+
+// ---------------------------------------------------------------------------
+// The watchdog
+
+/** The seconds of ORE_WATCHDOG, or 0 when it is not set. */
+let watchdogSeconds: int
+
+/**
+ * With ORE_WATCHDOG=<seconds>, a thread that reports a stuck program: one in
+ * which no task started or resumed and nothing was allocated for that long,
+ * such as threads waiting on each other's locks in the runtime. It prints the
+ * scheduler's state, the stack of every parked task (in debug builds) and the
+ * native stack of every thread, then ends the program with status 3. A
+ * program that computes for that long without allocating is reported too, so
+ * it is meant for tests, with a generous limit.
+ */
+function startWatchdog(): void {
+    const configured = getenv("ORE_WATCHDOG")
+    if (isNil(configured)) return
+    let n = 0
+    let i = 0
+    while (true) {
+        const c = unsafe.load<u8>(unsafe.add(configured, i))
+        if (c < 0x30 || c > 0x39) break
+        n = n * 10 + i64(c - 0x30)
+        i++
+    }
+    if (n <= 0) return
+    watchdogSeconds = n
+    if (!startThread(unsafe.functionAddress(watchdogMain), nil())) process.panic("cannot start the watchdog")
+}
+
+/** The watchdog's thread. Unknown to the collector: it allocates nothing and takes no lock. */
+function watchdogMain(argument: ptr): ptr {
+    const s = scheduler()
+    const second = permanent(16)
+    unsafe.store<i64>(second, 1)
+    let switches = unsafe.atomicLoad<i64>(s.switches)
+    let allocated = allocatedTotal()
+    let still = 0
+    while (true) {
+        nanosleep(second, nil())
+        const nowSwitches = unsafe.atomicLoad<i64>(s.switches)
+        const nowAllocated = allocatedTotal()
+        if (nowSwitches !== switches || nowAllocated !== allocated) {
+            switches = nowSwitches
+            allocated = nowAllocated
+            still = 0
+            continue
+        }
+        still++
+        if (still >= watchdogSeconds) break
+    }
+    flushOutputIfFree()
+    reportStuck()
+    exitStuck(3)
+    return argument
+}
+
+declare function _exit(status: i32): void
+
+/** Ends the process at once: other threads may hold the locks that a normal exit would take. */
+function exitStuck(status: i32): void {
+    _exit(status)
+}
+
+/** What the watchdog prints: read without locks, since the program may hold any of them. */
+function reportStuck(): void {
+    const s = scheduler()
+    const scratch = permanent(32)
+    writeRaw(2, "\nwatchdog: no task ran and nothing was allocated for ")
+    writeNumber(2, watchdogSeconds, false, scratch)
+    writeRaw(2, " s (ORE_WATCHDOG)\n")
+    writeRaw(2, "  workers ")
+    writeNumber(2, s.workers, false, scratch)
+    writeRaw(2, ", idle ")
+    writeNumber(2, s.idleWorkers, false, scratch)
+    writeRaw(2, ", in blocking calls ")
+    writeNumber(2, s.blockingWorkers, false, scratch)
+    writeRaw(2, ", waiting for sockets ")
+    writeNumber(2, s.netWaiters, false, scratch)
+    writeRaw(2, s.runHead !== null ? ", runnable tasks queued" : ", no runnable task")
+    writeRaw(2, s.timers !== null ? ", timers pending\n" : ", no timer\n")
+    // Parked tasks, with their debug frames: prev at 0, function at 8, file at 16, line at 24.
+    let t = s.allTasks
+    let shown = 0
+    while (t !== null && shown < 64) {
+        writeRaw(2, t.running ? "task (running):\n" : "task (parked):\n")
+        let frame = t.top
+        let depth = 0
+        while (!isNil(frame) && depth < 32) {
+            writeRaw(2, "  ")
+            writeCString(unsafe.load<ptr>(unsafe.add(frame, 8)))
+            writeRaw(2, " at ")
+            writeCString(unsafe.load<ptr>(unsafe.add(frame, 16)))
+            writeRaw(2, ":")
+            writeNumber(2, i64(unsafe.load<i32>(unsafe.add(frame, 24))), false, scratch)
+            writeRaw(2, "\n")
+            frame = unsafe.load<ptr>(frame)
+            depth++
+        }
+        if (depth === 0) writeRaw(2, "  (no frames: a release build, or not started)\n")
+        t = t.allNext
+        shown++
+    }
+    writeRaw(2, "native stacks:\n")
+    dumpThreads()
+}
+
+declare function strlen(s: ptr): u64
+
+/** Writes a NUL-terminated string without copying it. */
+function writeCString(p: ptr): void {
+    writeRaw(2, unsafe.makeString(p, i64(strlen(p))))
 }
