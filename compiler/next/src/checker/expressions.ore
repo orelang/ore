@@ -48,6 +48,7 @@ import {
     type CompareOp,
 } from "../ir/nodes"
 import {
+    type ArrayType,
     type InterfaceType,
     type StructType,
     type Type,
@@ -653,10 +654,14 @@ export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected
         if (e.kind === "SpreadElement") return c.fail(e, "Spread elements are not supported yet.")
         if (e.kind === "OmittedExpression") return c.fail(node, "Array holes are not supported.")
     }
-    if (expected !== null && expected.kind === "array") {
+    // The context gives the element type: an array type, or a union with exactly one array type (`T[] | null`).
+    const arrays: ArrayType[] = []
+    if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "array") arrays.push(m)
+    if (arrays.length === 1) {
+        const type = arrays[0]
         const values: Expr[] = []
-        for (const e of elems) values.push(c.coerce(checkExpr(c, e, scope, expected.elem), expected.elem, e))
-        return typed(new ArrayLit(expected, values))
+        for (const e of elems) values.push(c.coerce(checkExpr(c, e, scope, type.elem), type.elem, e))
+        return typed(new ArrayLit(type, values))
     }
     const values: Operand[] = []
     for (const e of elems) values.push(checkExpr(c, e, scope))

@@ -227,10 +227,12 @@ functions.
 - `T[]` (or `Array<T>`) is a reference to a growable array, as in
   TypeScript: assigning an array or passing it to a function shares it.
   `===` compares identity.
-- An array literal takes its element type from the context
-  (`let a: u8[] = [1, 2]`), else from its first typed element, else from the
-  default type of its constants (`[1, 2]` is `int[]`). `[]` requires a
-  context type.
+- An array literal takes its element type from the context: an array type
+  (`let a: u8[] = [1, 2]`), or a union with exactly one array type
+  (`let a: Shape[] | null = [new Square(2), new Circle(1)]`), each element
+  converting to it. Without one, it takes the type of its first typed
+  element, else the default type of its constants (`[1, 2]` is `int[]`).
+  `[]` requires a context type.
 - `a[i]` reads and writes elements; an index of any integer type is allowed
   and an index out of range panics. Compound assignments (`a[i] += 1`,
   `a[i]++`) evaluate `a` and `i` once.

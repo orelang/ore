@@ -484,9 +484,12 @@ export abstract class ExpressionChecker extends StatementChecker {
       if (ts.isSpreadElement(e)) return this.fail(e, "Spread elements are not supported yet.")
       if (ts.isOmittedExpression(e)) return this.fail(node, "Array holes are not supported.")
     }
-    if (expected?.kind === "array") {
-      const elems = node.elements.map((e) => this.coerce(this.checkExpr(e, scope, expected.elem), expected.elem, e))
-      return typed({ k: "array", type: expected, elems })
+    // The context gives the element type: an array type, or a union with exactly one array type (`T[] | null`).
+    const arrays = expected ? membersOf(expected).filter((m) => m.kind === "array") : []
+    if (arrays.length === 1) {
+      const type = arrays[0] as ir.ArrayType
+      const elems = node.elements.map((e) => this.coerce(this.checkExpr(e, scope, type.elem), type.elem, e))
+      return typed({ k: "array", type, elems })
     }
     const values = node.elements.map((e) => this.checkExpr(e, scope))
     if (values.some((v) => v.k === "error")) return errorOperand
