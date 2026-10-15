@@ -108,6 +108,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `Math.abs(x)`, `Math.min(a, b)`, `Math.max(a, b)` | for any numeric type, keeping it |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
 | `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
+| `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
@@ -125,7 +126,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
 
-`fs` and `process` are partly written in Ore (`runtime/core/fs.ore` and
+`String`, `fs` and `process` are partly written in Ore
+(`runtime/core/string.ore`, `runtime/core/fs.ore` and
 `runtime/core/process.ore`): the exports of these modules are members of
 the namespaces, classes included, so `fs.FileInfo` and `process.Command`
 are types and `new process.Command(...)` creates one.
@@ -220,6 +222,16 @@ functions.
   `toUpperCase` and `toLowerCase` (ASCII letters), `replace` (the first
   occurrence), `replaceAll`, `repeat(n)`, `padStart(n, pad?)`,
   `padEnd(n, pad?)`, `substring(start, end?)`.
+- `s.codePointAt(i)` is the code point (`int | null`) of the character that
+  starts at byte `i`: U+FFFD if no valid character starts there, `null` if
+  `i` is out of range (JavaScript's `undefined`).
+- `String.fromCharCode(...codes)` makes a string of UTF-16 code units, each
+  taken modulo 2^16, and `String.fromCodePoint(...points)` of code points, as
+  in JavaScript: a high surrogate followed by a low surrogate is one
+  character (`String.fromCharCode(0xd83d, 0xde00)` is `"😀"`, 4 bytes). A lone
+  surrogate, which JavaScript keeps but UTF-8 cannot encode, becomes U+FFFD.
+  A code point past U+10FFFF or negative panics (JavaScript throws a
+  `RangeError`). Both take `int`s: convert a rune with `i64(r)`.
 
 ## Arrays
 
