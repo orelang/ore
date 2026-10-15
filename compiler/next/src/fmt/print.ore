@@ -1008,6 +1008,27 @@ function printNode(n: ENode, args: Args): Doc {
                 printTypeAnnotationProperty(n, "typeAnnotation"),
                 memberSeparator(n),
             ])
+        case "TSIndexSignature": {
+            const parameters = n.all("parameters")
+            const parent = n.parent
+            const inClass = parent !== null && parent.type === "ClassBody"
+            const list = g(
+                c([
+                    indent(c([softline, join(c([t(", "), softline]), parameters.map((p) => pr(p)))])),
+                    parameters.length > 1 ? ifBreak(t(","), empty) : empty,
+                    softline,
+                ]),
+            )
+            return c([
+                t(inClass && n.isStatic ? "static " : ""),
+                t(n.readonly ? "readonly " : ""),
+                t("["),
+                list,
+                t("]"),
+                printTypeAnnotationProperty(n, "typeAnnotation"),
+                memberSeparator(n),
+            ])
+        }
         case "TSParameterProperty":
             return c([
                 t(n.accessibility !== "" ? n.accessibility + " " : ""),
@@ -3307,6 +3328,8 @@ function classPropertyNeedsSemicolon(n: ENode, next: ENode | null): bool {
             if ((value !== null && value.isAsync) || next.kind === "get" || next.kind === "set") return false
             return next.computed || (value !== null && value.generator)
         }
+        case "TSIndexSignature":
+            return true
     }
     return false
 }

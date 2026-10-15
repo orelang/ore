@@ -104,10 +104,10 @@ equivalent in Ore:
 | `interface X { k: "a"; ... }`, a member of a discriminated union | `class X` with `readonly k: "a" = "a"`; the union is a union of classes, narrowed by `switch (x.k)`, `x.k === "a"` or `instanceof` |
 | object literal `{ k: "a", f, g }` | `new X(f, g)`: the constructor takes the required fields in declaration order, then the optional ones |
 | inline object types (`{ test?, body }`, `{ k: "field", ... }` of `InterfaceMember` or `LValue`) | a named class: `SwitchClause`, `InterfaceField` / `InterfaceMethod`, `LocalLValue` / `ElementLValue` / `FieldLValue` / `IfaceFieldLValue`, `FieldInit`, `BindLocal`, `BuiltinError`, `StringsRepr` / `NullableRepr` / `TaggedRepr` |
-| optional field `x?: T` | `x: T \| null`, a constructor parameter with default `null` (`undefined` checks become `!== null`) |
+| optional field `x?: T` of an object literal | `x?: T` (`T \| null`), an optional constructor parameter (`undefined` checks become `!== null`) |
 | optional flag `x?: boolean` | `x: bool`, default `false` |
-| `line?: number` of statements (`StmtBase`) | `line: int \| null = null`, not a constructor parameter, assigned after creating the statement (`stmt.line = line` also on a `Stmt` union) |
-| `readonly` field | `readonly` field; a field named with a reserved word (`else`, `readonly`, `private`) is declared in the class body and assigned by the constructor |
+| `line?: number` of statements (`StmtBase`) | `line?: int`, not a constructor parameter, assigned after creating the statement (`stmt.line = line` also on a `Stmt` union) |
+| `readonly` field | `readonly` field, also named with a reserved word (`readonly readonly: bool`); a field named `else` or `private`, which cannot name a parameter (in TypeScript neither), is declared in the class body and assigned by the constructor |
 | `number` (ids, lines, indices, arity) | `int` |
 | `bits: 8 \| 16 \| 32 \| 64` (numeric literal types) | `int` |
 | string literal unions (`IntName`, `ArithOp`, inline `op` unions) | kept; inline ones get a name (`MapOpName`, `ChanOpName`) |
@@ -120,7 +120,7 @@ equivalent in Ore:
 | `ts.isX(node)`, `node.x` of the TypeScript AST | `node.kind === "X"` and the accessors of `syntax/nodes.ore`; `node.getText()` is `c.text(node)`, the source of a node is `c.sourceOf(node)` (nodes have no parent) |
 | node flags (`NodeFlags.Const`), operator token kinds of unary expressions, `heritageClause.token` | read back from the source text: `declarationKind`, `prefixOperator`, `heritageToken` |
 | `ts.getLeadingCommentRanges(text, stmt.pos)` | `leadingCommentRanges(text, c.fullStart(stmt))` |
-| `WeakMap` / `Set` of objects | `Map<K, bool>` |
+| `WeakMap` of objects | `Map` |
 | `withFacts(facts, () => ...)`, `inBlock(() => ...)` | `c.pushFacts(facts)` ... `c.popFacts()`, or `c.popBlockFacts()` for a block |
 | a function's `.length` (`writeAccessor`'s `next`) | an explicit `usesOld` flag |
 | a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `llvm/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names |

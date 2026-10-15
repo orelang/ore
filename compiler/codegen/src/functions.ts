@@ -286,7 +286,7 @@ export abstract class FunctionEmitter extends EmitterBase {
       this.b.condBr(this.rtBool("ore_rt_chan_recv", [iterable, { ty: "ptr", v: slot }]), body, end)
       this.b.start(body)
       this.declare(stmt.local, this.load(slot, stmt.local.type))
-    } else if (kind === "map") {
+    } else if (kind === "map" || kind === "set") {
       const count = this.b.value("i64", `load i64, ptr ${this.field(iterable.v, MAP, 6)}`)
       const at = this.b.value("i64", `load i64, ptr ${i}`)
       this.b.condBr(this.b.value("i1", `icmp slt i64 ${at.v}, ${count.v}`), body, end)
@@ -296,10 +296,11 @@ export abstract class FunctionEmitter extends EmitterBase {
       const use = this.b.label("live")
       this.b.condBr(live, use, next)
       this.b.start(use)
+      // The elements of a set have no value.
       const key = this.rt("ore_rt_map_key", [iterable, at])
-      const value = this.rt("ore_rt_map_value", [iterable, at])
+      const value = stmt.value ? this.rt("ore_rt_map_value", [iterable, at]) : undefined
       this.declare(stmt.local, this.load(key.v, stmt.local.type))
-      this.declare(stmt.value!, this.load(value.v, stmt.value!.type))
+      if (stmt.value) this.declare(stmt.value, this.load(value!.v, stmt.value.type))
     } else {
       // The array length is read again on every iteration.
       const len = this.b.value("i64", `load i64, ptr ${this.field(iterable.v, ARRAY, 1)}`)

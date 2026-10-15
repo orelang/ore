@@ -172,6 +172,8 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       }
       case "map":
         return this.mapOp(e)
+      case "set":
+        return this.setOp(e)
       case "chan":
         return this.chanOp(e)
       case "func-ref":

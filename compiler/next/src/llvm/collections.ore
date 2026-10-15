@@ -1,7 +1,7 @@
 // Arrays, maps, channels and interface tables. Ported from
 // compiler/codegen/src/collections.ts.
 
-import { type ArrayMethod, type ChanOp, type Itab, type MapOp } from "../ir/nodes"
+import { type ArrayMethod, type ChanOp, type Itab, type MapOp, type SetOp } from "../ir/nodes"
 import { findMethod, FuncType, isStringLike, typeKey, types, unionRepr, type Type, type UnionType } from "../ir/types"
 import { callClosure, helper, toStr } from "./calls"
 import { ARRAY, FN, MAP, STR } from "./context"
@@ -386,6 +386,51 @@ export function mapOp(g: Emitter, e: MapOp): V {
             return g.b.value("i1", `icmp ne ptr ${g.rt("ore_rt_map_get", [m, key]).v}, null`)
         default:
             return g.rtBool("ore_rt_map_delete", [m, key])
+    }
+}
+
+/** A set is a map whose values take no bytes. */
+export function setOp(g: Emitter, e: SetOp): V {
+    const T = e.setType.elem
+    const t = g.mt(T)
+    const set = e.set
+    switch (e.op) {
+        case "new": {
+            const keys = keyFunctions(g, T)
+            const s = g.rt("ore_rt_map_new", [{ ty: "i64", v: sizeOf(t) }, g.i64(0), { ty: "ptr", v: keys.hash }, { ty: "ptr", v: keys.eq }])
+            const values = e.value
+            if (values !== null) g.rt("ore_rt_map_add_keys", [s, expr(g, values)])
+            return s
+        }
+        case "size":
+            if (set === null) process.panic("set.size without a set")
+            return g.b.value("i64", `load i64, ptr ${g.field(expr(g, set).v, MAP, 8)}`)
+        case "clear":
+            if (set === null) process.panic("set.clear without a set")
+            g.rt("ore_rt_map_clear", [expr(g, set)])
+            return voidValue
+        case "values":
+            if (set === null) process.panic("set.values without a set")
+            return g.rt("ore_rt_map_keys", [expr(g, set)])
+        default:
+            break
+    }
+    // The set, then the value, which needs an address.
+    const valueExpr = e.value
+    if (set === null || valueExpr === null) process.panic(`set.${e.op} without a set or value`)
+    const s = expr(g, set)
+    const v = g.b.alloca(t)
+    g.store(expr(g, valueExpr), v, T)
+    const value: V = { ty: "ptr", v }
+    switch (e.op) {
+        case "add":
+            // No bytes of value are copied: the value's address serves.
+            g.rt("ore_rt_map_set", [s, value, value])
+            return s
+        case "has":
+            return g.b.value("i1", `icmp ne ptr ${g.rt("ore_rt_map_get", [s, value]).v}, null`)
+        default:
+            return g.rtBool("ore_rt_map_delete", [s, value])
     }
 }
 

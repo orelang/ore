@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, ChanType, FloatType, FuncType, IntType, InterfaceType, LiteralType, MapType, StringType, StructType, Type, UnionType } from "./types"
+import type { ArrayType, BoolType, ChanType, FloatType, FuncType, IntType, InterfaceType, LiteralType, MapType, SetType, StringType, StructType, Type, UnionType } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -259,6 +259,7 @@ export type Expr =
   | Is
   | Downcast
   | MapOp
+  | SetOp
   | FuncRef
   | Closure
   | CallValue
@@ -613,6 +614,20 @@ export interface MapOp {
   mapType: MapType
   map?: Expr
   key?: Expr
+  value?: Expr
+}
+
+/**
+ * An operation of `Set`: `new Set()` (with `value`, an array whose elements
+ * it adds), `set.add(value)` (the set), `has`, `delete`, `clear`, `size`, and
+ * `values` as an array in insertion order.
+ */
+export interface SetOp {
+  k: "set"
+  op: "new" | "add" | "has" | "delete" | "clear" | "size" | "values"
+  type: Type
+  setType: SetType
+  set?: Expr
   value?: Expr
 }
 

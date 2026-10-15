@@ -713,6 +713,16 @@ export class Converter {
                 if (type !== null) signature.set("typeAnnotation", this.typeAnnotation(type))
                 return signature
             }
+            case "IndexSignature": {
+                const signature = this.make("TSIndexSignature", node)
+                signature.setAll("parameters", this.params(node.list("parameters")))
+                signature.accessibility = this.accessibility(node)
+                signature.readonly = this.modifier(node, "ReadonlyKeyword")
+                signature.isStatic = this.modifier(node, "StaticKeyword")
+                const type = node.child("type")
+                if (type !== null) signature.set("typeAnnotation", this.typeAnnotation(type))
+                return signature
+            }
             case "MethodSignature": {
                 const signature = this.make("TSMethodSignature", node)
                 this.key(signature, must(node.child("name")))
@@ -934,6 +944,8 @@ export class Converter {
         switch (node.kind) {
             case "SemicolonClassElement":
                 return null
+            case "IndexSignature":
+                return this.convert(node)
             case "PropertyDeclaration": {
                 const abstract = this.modifier(node, "AbstractKeyword")
                 const property = this.make(abstract ? "TSAbstractPropertyDefinition" : "PropertyDefinition", node)

@@ -407,6 +407,11 @@ class Dumper {
         if (e.key !== undefined) this.expr(e.key, d, "key")
         if (e.value !== undefined) this.expr(e.value, d, "value")
         return
+      case "set":
+        head(`set ${e.op} setType=${this.type(e.setType)}`)
+        if (e.set !== undefined) this.expr(e.set, d, "set")
+        if (e.value !== undefined) this.expr(e.value, d, "value")
+        return
       case "func-ref":
       case "closure":
         head(`${e.k} ${this.ref(e.func)}`)
@@ -472,6 +477,8 @@ class Dumper {
         return quote(t.value)
       case "map":
         return `Map<${this.type(t.key)}, ${this.type(t.value)}>`
+      case "set":
+        return `Set<${this.type(t.elem)}>`
       case "chan":
         return `Chan<${this.type(t.elem)}>`
       case "select-case":

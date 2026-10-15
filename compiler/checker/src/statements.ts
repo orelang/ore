@@ -253,6 +253,8 @@ export abstract class StatementChecker extends ClassChecker {
         fn.pendingLabel = label
       }
       this.checkStmt(inner, scope, out)
+    } else if (ts.isEnumDeclaration(stmt)) {
+      this.error(stmt, this.unsupportedTopLevel(stmt))
     } else {
       this.error(stmt, "This statement is not supported yet.")
     }
@@ -503,7 +505,7 @@ export abstract class StatementChecker extends ClassChecker {
       bindings = [[names[0], type.key], [names[1], type.value]]
     } else {
       let elem: Type
-      if (type.kind === "array" || type.kind === "chan") elem = type.elem
+      if (type.kind === "array" || type.kind === "chan" || type.kind === "set") elem = type.elem
       else if (type.kind === "string") elem = types.i32
       else return this.error(stmt.expression, `Type '${typeToString(type)}' is not iterable.`), undefined
       bindings = [[decl.name, elem]]

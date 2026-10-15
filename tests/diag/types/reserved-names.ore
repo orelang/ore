@@ -1,0 +1,24 @@
+// Names that strict mode reserves cannot name bindings (TypeScript's error
+// 1213 in classes, 1214 elsewhere), but may name properties.
+
+class Field {
+    readonly private: bool = false
+    constructor(
+        readonly name: string,
+        readonly public: bool, // error: Identifier expected. 'public' is a reserved word in strict mode. Class definitions are automatically in strict mode.
+    ) {}
+
+    method(static: int): int {
+        // error: 'static' is a reserved word in strict mode. Class definitions
+        return static
+    }
+}
+
+function f(yield: int): int {
+    // error: Identifier expected. 'yield' is a reserved word in strict mode. Modules are automatically in strict mode.
+    return yield
+}
+
+const package = 1 // error: 'package' is a reserved word in strict mode.
+const { private } = new Field("x", true) // error: 'private' is a reserved word in strict mode.
+console.log(f(package), private)

@@ -30,9 +30,23 @@
 - `new C(...)` allocates an instance, assigns parameter properties, runs
   field initializers in order, then the constructor body. Field initializers
   cannot use `this`.
-- A field without an initializer starts at its zero value. A field of a type
-  without a zero value (class, object or interface) must be assigned at the
-  top level of the constructor.
+- A field without an initializer starts at its zero value (`0`, `false`,
+  `""`, `[]`, a new map, or `null` for a type that includes it). A field of a
+  type without a zero value (class, object or interface) must be assigned at
+  the top level of the constructor.
+- An optional field `x?: T` has the type `T | null` and starts as `null`
+  unless it has an initializer; it needs a type annotation. An optional
+  constructor parameter, also a parameter property (`public note?: string`),
+  is `null` when the argument is left out. Definite assignment assertions
+  (`x!: T`) are not supported.
+- Members may be named with any word, reserved or not, as in TypeScript:
+  `else: Stmt | null`, `readonly readonly: bool`, `x.new`. Names that declare
+  bindings (parameters, parameter properties, variables, functions, classes)
+  cannot be reserved words, nor the words strict mode reserves (`implements`,
+  `interface`, `let`, `package`, `private`, `protected`, `public`, `static`,
+  `yield`): Ore modules are always in strict mode.
+- Index signatures (`[key: string]: T`) are not supported in interfaces,
+  object types and classes; use a `Map<K, V>`.
 - `private` members are accessible only inside the class. `readonly` fields
   can be assigned only by the constructor of the class.
 - Methods are called on instances; `obj.method` without a call is a
@@ -141,15 +155,35 @@ exhaustive: like a `default`, it lets a function end without `return`.
   `new Map<K, V>()` creates one; the type arguments may come from the context
   (`const m: Map<string, int> = new Map()`). A variable without an
   initializer starts as a new empty map.
+- `new Map([[k1, v1], [k2, v2]])` creates a map from an array literal of
+  `[key, value]` pairs, set in order (a repeated key keeps its first place
+  and its last value). Without type arguments or a context, the key and
+  value types are those of the first pair. Ore has no tuple types, so the
+  entries must be written as such a literal.
 - `get(key)` returns `V | null`; `set(key, value)` returns the map;
   `has`, `delete` (returns whether the key was present), `clear`, `size`.
   `keys()` and `values()` return arrays in insertion order.
 - `for (const [key, value] of map)` iterates entries in insertion order.
 - Keys compare like SameValueZero: numbers and strings by value (`NaN`
-  equals `NaN`, `-0` equals `0`), objects, arrays, maps and interface values
-  by identity. A union is a key type when each of its members is one or is
+  equals `NaN`, `-0` equals `0`), objects, arrays, maps, sets and interface
+  values by identity. A union is a key type when each of its members is one or is
   `null`: two union keys are the same key when they hold the same member
   and the same value as keys of that member's type, so a `Map<A | B, V>` of
   classes keys by identity, `null` is one key, and `1` as `i32` and `1` as
   `int` are different keys of a `Map<i32 | int, V>`. Functions, channels and
   `ptr` values cannot be keys.
+
+## Sets
+
+- `Set<T>` is a reference to a hash set that iterates in insertion order,
+  with the hashing and equality of `Map` keys (unions included). `new Set<T>()` creates one;
+  the type may come from the context; a variable or field without an
+  initializer starts as a new empty set.
+- `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`) or
+  of another set; without a type argument, `T` is their element type.
+- `add(value)` returns the set; `has`, `delete` (returns whether the value
+  was present), `clear`, `size`; `values()` returns an array in insertion
+  order.
+- `for (const x of set)` iterates the elements in insertion order, including
+  those added during the loop, as in JavaScript.
+- Sets cannot be converted to JSON.

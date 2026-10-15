@@ -25,13 +25,23 @@ export function moduleSpecifier(stmt: Node): Node | null {
 
 const BACKSLASH: u8 = 0x5c
 const LF: u8 = 0x0a
-const CR: u8 = 0x0d
 
-/** The value of a string literal node: its text without the quotes, with escapes resolved. */
+/**
+ * The value of a string literal node: its text without the quotes, with
+ * escapes resolved. `\x` and `\u` escapes are UTF-16 code units, as in
+ * JavaScript: a surrogate pair written as two escapes is one character.
+ */
 export function stringValue(node: Node): string {
     const raw = node.text
     const end = raw.length >= 2 ? raw.length - 1 : raw.length
     let value = ""
+    // The code units of the escapes just read, until other text follows.
+    let units: int[] = []
+    const put = (text: string) => {
+        if (text.length === 0) return
+        value += String.fromCharCode(...units) + text
+        units = []
+    }
     let from = 1
     let i = 1
     while (i < end) {
@@ -39,30 +49,30 @@ export function stringValue(node: Node): string {
             i++
             continue
         }
-        value += raw.slice(from, i)
+        put(raw.slice(from, i))
         const c = raw.slice(i + 1, i + 2)
         i += 2
         switch (c) {
             case "n":
-                value += "\n"
+                put("\n")
                 break
             case "t":
-                value += "\t"
+                put("\t")
                 break
             case "r":
-                value += "\r"
+                put("\r")
                 break
             case "b":
-                value += "\b"
+                put("\b")
                 break
             case "f":
-                value += "\f"
+                put("\f")
                 break
             case "v":
-                value += "\v"
+                put("\v")
                 break
             case "0":
-                value += "\0"
+                put("\0")
                 break
             case "\r":
                 // A line continuation.
@@ -70,53 +80,34 @@ export function stringValue(node: Node): string {
                 break
             case "\n":
                 break
-            case "x":
-                value += codeUnit(raw.slice(i, i + 2))
+            case "x": {
+                const unit = Number.parseInt(raw.slice(i, i + 2), 16)
+                if (unit !== null) units.push(unit)
                 i += 2
                 break
+            }
             case "u":
                 if (raw.slice(i, i + 1) === "{") {
                     const close = raw.indexOf("}", i)
                     const point = close < 0 ? null : Number.parseInt(raw.slice(i + 1, close), 16)
                     if (close >= 0) i = close + 1
-                    if (point !== null) value += codePoint(point)
+                    if (point !== null && point >= 0x10000 && point <= 0x10ffff) {
+                        units.push(0xd800 + ((point - 0x10000) >> 10))
+                        units.push(0xdc00 + ((point - 0x10000) & 0x3ff))
+                    } else if (point !== null && point >= 0 && point < 0x10000) {
+                        units.push(point)
+                    }
                 } else {
-                    value += codeUnit(raw.slice(i, i + 4))
+                    const unit = Number.parseInt(raw.slice(i, i + 4), 16)
+                    if (unit !== null) units.push(unit)
                     i += 4
                 }
                 break
             default:
-                value += c
+                put(c)
         }
         from = i
     }
-    return value + raw.slice(from, end)
-}
-
-const hexDigits = "0123456789abcdef"
-
-function hex4(n: int): string {
-    let s = ""
-    for (let shift = 12; shift >= 0; shift -= 4) s += hexDigits.slice((n >> shift) & 15, ((n >> shift) & 15) + 1)
-    return s
-}
-
-/** The character of a UTF-16 code unit, written in hex digits; JSON decodes it. */
-function codeUnit(digits: string): string {
-    const n = Number.parseInt(digits, 16)
-    if (n === null) return ""
-    return codePoint(n)
-}
-
-/** The UTF-8 text of a code point, decoded by the JSON reader from `\uXXXX` escapes. */
-function codePoint(n: int): string {
-    let escape = ""
-    if (n >= 0x10000) {
-        const m = n - 0x10000
-        escape = `\\u${hex4(0xd800 + (m >> 10))}\\u${hex4(0xdc00 + (m & 0x3ff))}`
-    } else {
-        escape = `\\u${hex4(n)}`
-    }
-    const s = JSON.parse<string>(`"${escape}"`)
-    return s instanceof Error ? "" : s
+    put(raw.slice(from, end))
+    return value + String.fromCharCode(...units)
 }

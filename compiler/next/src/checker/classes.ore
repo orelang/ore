@@ -47,7 +47,7 @@ import { type Checker } from "./base"
 import { type InterfaceInfo, Accessor, ClassInfo, FieldInitInfo, GenericMethod, InterfaceInfo as InterfaceInfoClass, MethodInfo, FuncContext } from "./context"
 import { declareGeneric, paramScope, prepend, resolveParams, checkReturns } from "./declarations"
 import { checkExpr } from "./expressions"
-import { cIdent, hasZeroValue } from "./helpers"
+import { cIdent, hasZeroValue, indexSignatureMessage, zeroNeedsInit, zeroValue } from "./helpers"
 import { checkBlock } from "./statements"
 import { type Generic, ClassSymbol, Generic as GenericClass, Scope, TypeSymbol } from "./symbols"
 
@@ -103,12 +103,15 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             if (name === null || !declareMember(c, decls, name, member, nameNode(member))) continue
             const question = questionToken(member)
             const exclamation = exclamationToken(member)
-            if (question !== null || exclamation !== null) c.error(question ?? exclamation!, "Optional and definitely-assigned fields are not supported.")
+            if (exclamation !== null) c.error(exclamation, "Definitely-assigned fields are not supported.")
             let fieldType: Type | null = null
             const annotation = typeNode(member)
             const init = initializer(member)
             if (annotation !== null) fieldType = c.resolveValueType(annotation, scope)
+            else if (question !== null) c.error(nameNode(member), `Optional field '${name}' needs a type annotation.`)
             else if (init === null) c.error(nameNode(member), `Field '${name}' needs a type annotation or an initializer.`)
+            // `x?: T` is `T | null`, null unless initialized.
+            if (fieldType !== null && question !== null) fieldType = c.unionOf([fieldType, types.null])
             if (init !== null) info.inits.push(new FieldInitInfo(name, init))
             // A field without an annotation gets its type from the initializer later.
             type.fields.push(new Field(name, fieldType ?? types.void, flags.isReadonly, flags.isPrivate))
@@ -165,7 +168,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
         } else if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
             declareAccessor(c, member, info, scope, flags.isPrivate)
         } else {
-            c.error(member, "This class member is not supported.")
+            c.error(member, member.kind === "IndexSignature" ? indexSignatureMessage : "This class member is not supported.")
         }
     }
     if (type.ctor === null) type.ctor = ctorFunc(c, info, [], nameNode(decl))
@@ -241,6 +244,12 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
 
     // Constructor: allocate, assign parameter properties, run field initializers, then the body.
     const body_: Stmt[] = [new LetStmt(self, new Alloc(type))]
+    // Other fields start at their zero value: the allocation is zeroed, which is not `""`, `[]` or `null` of every type.
+    const initialized = new Set<string>()
+    for (const p of info.paramProps) initialized.add(p.name)
+    for (const init of info.inits) initialized.add(init.name)
+    for (const field of type.fields)
+        if (!initialized.has(field.name) && zeroNeedsInit(field.type)) body_.push(setField(thisRef, field.name, zeroValue(field.type)))
     for (const p of info.paramProps) body_.push(setField(thisRef, p.name, new LocalRef(p.type, p)))
     for (const init of info.inits) {
         const value = init.value
@@ -260,9 +269,9 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
     ctor.body = new Block(body_)
 
     // Fields of reference types have no zero value and must be set in the constructor.
-    const assigned = new Map<string, bool>()
-    for (const p of info.paramProps) assigned.set(p.name, true)
-    for (const i of info.inits) assigned.set(i.name, true)
+    const assigned = new Set<string>()
+    for (const p of info.paramProps) assigned.add(p.name)
+    for (const i of info.inits) assigned.add(i.name)
     const ctorBody = ctorDecl !== null ? body(ctorDecl) : null
     if (ctorBody !== null) {
         for (const stmt of statements(ctorBody)) {
@@ -271,7 +280,7 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
             if (e.kind !== "BinaryExpression") continue
             const target = left(e)
             if (operatorToken(e).kind === "EqualsToken" && target.kind === "PropertyAccessExpression" && expression(target).kind === "ThisKeyword") {
-                assigned.set(nameNode(target).text, true)
+                assigned.add(nameNode(target).text)
             }
         }
     }
@@ -435,7 +444,7 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
     for (const member of members(info.decl)) {
         const memberName = member.child("name")
         if (memberName === null) {
-            c.error(member, "Call, construct and index signatures are not supported.")
+            c.error(member, member.kind === "IndexSignature" ? indexSignatureMessage : "Call and construct signatures are not supported.")
             continue
         }
         const name = c.memberName(memberName)

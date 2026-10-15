@@ -17,7 +17,7 @@ const targetConstants: Record<string, string> = {
  * The runtime modules that implement built-in namespaces in Ore: their
  * exports are members of the namespace, as `fs.stat` or `fs.FileInfo`.
  */
-export const namespaceModules: Record<string, string> = { fs: "ore:runtime/fs", process: "ore:runtime/process" }
+export const namespaceModules: Record<string, string> = { String: "ore:runtime/string", fs: "ore:runtime/fs", process: "ore:runtime/process" }
 
 /**
  * Builds the root scope from the type aliases and functions of

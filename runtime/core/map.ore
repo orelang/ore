@@ -1,4 +1,5 @@
-// Maps: hash tables that keep insertion order, like JavaScript's Map.
+// Maps: hash tables that keep insertion order, like JavaScript's Map. A Set
+// is a map whose values take no bytes.
 //
 // Entries are stored densely in insertion order, each a header {live, hash}
 // then the key and the value, rounded up to 8 bytes; deleted entries stay as
@@ -175,6 +176,18 @@ function mapSet(m: ptr, key: ptr, value: ptr): void {
     unsafe.copy(mapValue(m, i), value, valueSize)
     unsafe.store<int>(slotOf(m, findSlot(m, key, hash)), i + 1)
     setField(m, sizeAt, field(m, sizeAt) + 1)
+}
+
+/** Adds the elements of an array as keys: `new Set(values)`, whose values take no bytes. */
+//ore:runtime ore_rt_map_add_keys
+function mapAddKeys(m: ptr, a: ptr): void {
+    const size = field(m, keySizeAt)
+    const data = unsafe.load<ptr>(a)
+    const count = unsafe.load<int>(unsafe.add(a, 8))
+    for (let i = 0; i < count; i++) {
+        const key = unsafe.add(data, i * size)
+        mapSet(m, key, key)
+    }
 }
 
 //ore:runtime ore_rt_map_delete

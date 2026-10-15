@@ -542,6 +542,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.rt("ore_rt_str_pad", [s, a[0]!, a[1] ?? space, { ty: "i1", v: "true" }])
       case "padEnd":
         return this.rt("ore_rt_str_pad", [s, a[0]!, a[1] ?? space, { ty: "i1", v: "false" }])
+      case "codePointAt":
+        return this.rt("ore_rt_str_code_point_at", [s, a[0]!])
       default:
         return this.rt("ore_rt_str_substring", [s, a[0]!, a[1] ?? this.i64(BigInt("9223372036854775807"))])
     }

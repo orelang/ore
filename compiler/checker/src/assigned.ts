@@ -255,6 +255,8 @@ function children(e: ir.Expr): ir.Expr[] {
       return [e.value, ...e.args]
     case "map":
       return [e.map, e.key, e.value].filter((x): x is ir.Expr => x !== undefined)
+    case "set":
+      return [e.set, e.value].filter((x): x is ir.Expr => x !== undefined)
     case "call-value":
       return [e.callee, ...e.args]
     case "bound-method":
