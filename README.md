@@ -31,8 +31,8 @@ garbage collector. Programs compile through LLVM to a single native binary.
 ```ts
 import { Mutex } from "ore:sync"
 
-async function price(id: int): Promise<u64 | Error> {
-    await time.delay(10)
+function price(id: int): u64 | Error {
+    task.sleep(10)
     return id > 0 ? u64(id) * 100 : new Error(`no item ${id}`)
 }
 
@@ -41,8 +41,8 @@ const done = new Chan<bool>()
 let total: u64 = 0
 
 for (const id of [3, -1, 7]) {
-    task.spawn(async () => {
-        const p = await price(id)
+    task.spawn(() => {
+        const p = price(id)
         if (p instanceof Error) console.error(p.message)
         else {
             using guard = lock.acquire()

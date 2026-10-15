@@ -5,11 +5,11 @@
 `any`, `var`, `==` / `!=`, `eval`, `delete`, `with`, `arguments`,
 `prototype`, computed and dynamic property keys on structs, decorators,
 `enum` and `const enum` (use unions of literals), index signatures (use
-`Map`), `namespace` (use modules), `throw` / `try`,
-`async` / `await`.
+`Map`), `namespace` (use modules), `throw` / `try`.
 
-`unknown` is allowed as an explicitly boxed value that must be narrowed before
-use.
+Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
+`await` and `Promise`, `unknown`, intersections, `keyof` and the other
+computed types.
 
 ## Changed semantics
 
