@@ -3,6 +3,13 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
+## 0.1.1
+
+- Code is generated for the baseline CPU of the architecture instead of the
+  building machine's (`ORE_CPU=native` opts in): the Linux x86-64 release of
+  0.1.0, built on CI with that machine's instructions, crashed with an
+  illegal instruction on other processors.
+
 ## 0.1.0
 
 The first release: the language, its runtime and its whole toolchain written
