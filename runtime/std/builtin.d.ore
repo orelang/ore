@@ -360,33 +360,41 @@ declare namespace process {
 
     /** The number of CPUs the system has online. */
     function cpus(): int
+
     /** Runs a program (found in PATH) with this process's stdin, stdout and stderr, and waits; returns its exit status. */
     function run(program: string, args?: string[]): int | Error
     /** Runs a program and waits, collecting its stdout and stderr. */
     function output(program: string, args?: string[]): Output | Error
+    /** Starts a program with this process's stdio, as `run`, without waiting: see `Child`. */
+    function spawn(program: string, args?: string[]): Child | Error
 
-    /** A program to run, with its arguments: set the fields, then call `run()`, `output()` or `spawn()`. */
-    class Command {
-        constructor(program: string, args?: string[])
-        readonly program: string
-        readonly args: string[]
-        /** The working directory; "" for this process's. */
-        cwd: string
-        /** Variables set over the inherited environment. */
-        env: Map<string, string>
-        /** Whether to start from an empty environment. */
-        clearEnv: bool
-        /** Text for the standard input, then closed; null for none (empty for `output()`, inherited for `run()`). */
-        stdin: string | null
-        /** Runs with this process's stdio and waits; returns the exit status (128 + signal if killed). */
-        run(): int | Error
-        /** Runs and waits, collecting stdout and stderr; a failing status is no Error. */
-        output(): Output | Error
-        /** Starts with this process's stdio, as `run()`, without waiting: see `Child`. */
-        spawn(): Child | Error
+    /**
+     * `run`, `output` and `spawn` with options: the working directory, the
+     * environment, the standard input. Written in Ore, in
+     * runtime/core/process-command.ore, whose exports are its members.
+     */
+    namespace command {
+        /** Runs with this process's stdio (stdin unless `options.stdin`) and waits; returns the exit status (128 + signal if killed). */
+        function run(program: string, args?: string[], options?: CommandOptions): int | Error
+        /** Runs and waits, collecting stdout and stderr; stdin is empty unless `options.stdin`; a failing status is no Error. */
+        function output(program: string, args?: string[], options?: CommandOptions): Output | Error
+        /** Starts as `run`, without waiting: see `Child`. */
+        function spawn(program: string, args?: string[], options?: CommandOptions): Child | Error
     }
 
-    /** A program started by `Command.spawn()`, running alongside this one. */
+    /** How `command.run`, `command.output` and `command.spawn` start a program; each setting may be left out. */
+    type CommandOptions = {
+        /** The working directory; this process's when left out or "". */
+        cwd?: string
+        /** Variables set over the inherited environment. */
+        env?: Map<string, string>
+        /** Whether to start from an empty environment (then only `env`). */
+        clearEnv?: bool
+        /** Text for the standard input, then closed (when left out: empty for `output`, inherited for `run` and `spawn`). */
+        stdin?: string
+    }
+
+    /** A program started by `spawn`, running alongside this one. */
     class Child {
         readonly pid: int
         /** Waits for it to end (once more: the same status); returns the exit status (128 + signal if killed). */

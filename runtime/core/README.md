@@ -37,7 +37,9 @@ Rules for this code:
 | `fs.ore` | The namespace `fs` in Ore: directories, `stat`, `remove`, `rename`, `realpath`, temporary directories, with the `stat` and `dirent` layouts of each platform |
 | `regexp-syntax.ore` | Regular expressions parsed and compiled into programs for the matcher, with JavaScript's syntax and errors; also imported by the compiler, which checks literals with it, so it uses only what stage 0 of the bootstrap compiles |
 | `regexp.ore` | The global classes `RegExp` and `RegExpMatch`: the backtracking matcher over UTF-8, `exec`, `test`, `lastIndex`, and the string methods that take a regular expression (`s.match(re)` calls `re`'s private `stringMatch`) |
-| `process.ore` | The namespace `process` in Ore: running programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller, the environment |
+| `spawn.ore` | Starting programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller: for `process` and `process.command` |
+| `process.ore` | The namespace `process` in Ore: `run`, `output` and `spawn` without options, `Child`, `Output`, `CommandOptions`, the environment |
+| `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |
 | `net.ore` | TCP on non-blocking sockets: listen, connect, accept, read, write, with the socket layouts and constants of each platform |
 | `io.ore` | Printing through one shared buffer, and the end of the program |
 | `program.ore` | The entry point (`main`), arguments, panics with their stack trace, and the `ore test` runner |

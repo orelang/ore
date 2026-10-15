@@ -213,10 +213,12 @@ export function watchdogCases(settings: Settings): Case[] {
             'console.log("waiting")\nconst data = fs.read(0, 1)\nconsole.log(data instanceof Error)\n',
         )
         // Standard input is a pipe that nobody writes to or closes while the program runs.
-        const command = new process.Command("sh", ["-c", 'sleep 4 | "$0"', program])
-        command.env.set("ORE_WATCHDOG", "1")
-        command.env.set("ORE_THREADS", "2")
-        const run = command.output()
+        const run = process.command.output("sh", ["-c", 'sleep 4 | "$0"', program], {
+            env: new Map([
+                ["ORE_WATCHDOG", "1"],
+                ["ORE_THREADS", "2"],
+            ]),
+        })
         if (run instanceof Error) fail(run.message)
         const problems: string[] = []
         if (run.code !== 3) problems.push(`exit status ${run.code}, expected 3`)
@@ -290,9 +292,7 @@ export function objectCases(settings: Settings): Case[] {
 
 /** Runs a program with arguments and the cases' build cache; fails unless it succeeds without writing to stderr. */
 function succeed(settings: Settings, program: string, args: string[]): string {
-    const command = new process.Command(program, args)
-    command.env.set("ORE_CACHE", settings.cache)
-    const run = command.output()
+    const run = process.command.output(program, args, { env: new Map([["ORE_CACHE", settings.cache]]) })
     if (run instanceof Error) fail(run.message)
     if (run.code !== 0 || run.stderr !== "") {
         fail(`${program} ${args.join(" ")}: exit status ${run.code}, stderr ${quote(run.stderr)}`)

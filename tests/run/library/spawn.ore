@@ -1,4 +1,5 @@
-// Running other programs: output, exit codes, cwd, env, stdin, inherited stdio.
+// Running other programs: output, exit codes, and with the options of
+// `process.command` cwd, env, clearEnv and stdin; inherited stdio.
 
 function must(out: process.Output | Error): process.Output {
     if (out instanceof Error) process.panic(out.message)
@@ -22,31 +23,31 @@ const dir = fs.mkdtemp("ore-spawn-")
 if (dir instanceof Error) process.panic(dir.message)
 const real = fs.realpath(dir)
 if (real instanceof Error) process.panic(real.message)
-const cmd = new process.Command("sh", ["-c", 'pwd; echo "$GREETING $NAME"; test -n "$HOME" && echo home'])
-cmd.cwd = dir
-cmd.env.set("GREETING", "hi")
-cmd.env.set("NAME", "ore")
-const inDir = must(cmd.output())
+const script = ["-c", 'pwd; echo "$GREETING $NAME"; test -n "$HOME" && echo home']
+const options: process.CommandOptions = {
+    cwd: dir,
+    env: new Map([
+        ["GREETING", "hi"],
+        ["NAME", "ore"],
+    ]),
+}
+const inDir = must(process.command.output("sh", script, options))
 console.log(inDir.stdout.replace(real, "<dir>"))
-// A command runs again with the same settings.
-console.log(must(cmd.output()).stdout === inDir.stdout)
+// The same options again.
+console.log(must(process.command.output("sh", script, options)).stdout === inDir.stdout)
 
 // An empty environment.
-const bare = new process.Command("/usr/bin/env")
-bare.clearEnv = true
-bare.env.set("ONLY", "this")
-console.log(JSON.stringify(must(bare.output()).stdout))
+const bare = process.command.output("/usr/bin/env", [], { clearEnv: true, env: new Map([["ONLY", "this"]]) })
+console.log(JSON.stringify(must(bare).stdout))
 
 // Standard input: written while the output is read.
-const cat = new process.Command("cat")
-cat.stdin = "line 1\nline 2\n"
-console.log(JSON.stringify(must(cat.output()).stdout))
+const cat = process.command.output("cat", [], { stdin: "line 1\nline 2\n" })
+console.log(JSON.stringify(must(cat).stdout))
 // Without stdin, the input is empty.
 console.log(JSON.stringify(must(process.output("cat")).stdout))
 // A child that does not read all of its input.
-const head = new process.Command("head", ["-c", "5"])
-head.stdin = "x".repeat(1 << 20)
-console.log(JSON.stringify(must(head.output()).stdout))
+const head = process.command.output("head", ["-c", "5"], { stdin: "x".repeat(1 << 20) })
+console.log(JSON.stringify(must(head).stdout))
 
 // More than a pipe holds, on both pipes at once, in both orders: reading one
 // pipe to its end before the other would deadlock.
@@ -62,23 +63,18 @@ const mixed = must(
 )
 console.log(mixed.stdout.length, mixed.stderr.length)
 // A large input echoed back: written and read at the same time.
-const echoBack = new process.Command("cat")
-echoBack.stdin = "0123456789".repeat(400000)
-const echoed = must(echoBack.output())
-console.log(echoed.stdout.length, echoed.stdout === echoBack.stdin)
+const text = "0123456789".repeat(400000)
+const echoed = must(process.command.output("cat", [], { stdin: text }))
+console.log(echoed.stdout.length, echoed.stdout === text)
 
 // Errors: a program that does not exist, or a directory that does not.
 const missing = process.output("ore-surely-not-a-program")
 console.log(missing instanceof Error ? missing.message : "ran")
 const notExecutable = process.output(dir)
 console.log(notExecutable instanceof Error ? notExecutable.message.replace(dir, "<dir>") : "ran")
-const relative = new process.Command("./missing.sh")
-relative.cwd = dir
-const noScript = relative.output()
+const noScript = process.command.output("./missing.sh", [], { cwd: dir })
 console.log(noScript instanceof Error ? noScript.message : "ran")
-const nowhere = new process.Command("pwd")
-nowhere.cwd = `${dir}/missing`
-const lost = nowhere.output()
+const lost = process.command.output("pwd", [], { cwd: `${dir}/missing` })
 console.log(lost instanceof Error ? lost.message.replace(dir, "<dir>") : `ran: ${lost.code}`)
 
 // Inherited standard output, in order with what this program printed.

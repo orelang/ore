@@ -41,19 +41,11 @@ function write(path: string, text: string): void {
 /** Starts `ore run --watch main.ore` in a directory, as the runner itself (`runner --ore`). */
 function startWatcher(self: string, settings: Settings, dir: string): Watcher {
     const output = join(dir, "output.txt")
-    const command = new process.Command("sh", [
-        "-c",
-        'exec "$@" >"$0" 2>&1',
-        output,
-        self,
-        "--ore",
-        "run",
-        "--watch",
-        "main.ore",
-    ])
-    command.cwd = dir
-    command.env.set("ORE_CACHE", settings.cache)
-    const child = command.spawn()
+    const child = process.command.spawn(
+        "sh",
+        ["-c", 'exec "$@" >"$0" 2>&1', output, self, "--ore", "run", "--watch", "main.ore"],
+        { cwd: dir, env: new Map([["ORE_CACHE", settings.cache]]) },
+    )
     if (child instanceof Error) fail(child.message)
     return new Watcher(child, dir, output)
 }

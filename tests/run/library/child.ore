@@ -1,8 +1,7 @@
-// Programs running alongside this one: started by `Command.spawn()`, waited
-// for, and stopped by a signal.
+// Programs running alongside this one: started by `process.spawn` or
+// `process.command.spawn`, waited for, and stopped by a signal.
 
-function started(command: process.Command): process.Child {
-    const child = command.spawn()
+function started(child: process.Child | Error): process.Child {
     if (child instanceof Error) process.panic(child.message)
     return child
 }
@@ -15,24 +14,22 @@ function status(child: process.Child): int {
 
 // It runs while this program goes on, with this program's standard output.
 console.log("before")
-const quick = started(new process.Command("sh", ["-c", "echo from the child; exit 3"]))
+const quick = started(process.spawn("sh", ["-c", "echo from the child; exit 3"]))
 console.log(quick.pid > 0)
 console.log("status", status(quick))
 // Waited for again: the same status; a signal is no longer sent.
 console.log("again", status(quick), quick.kill() === null)
 
-// Standard input, as for `run()`.
-const cat = new process.Command("cat")
-cat.stdin = "fed to cat\n"
-console.log("cat", status(started(cat)))
+// Standard input, as for `run`.
+console.log("cat", status(started(process.command.spawn("cat", [], { stdin: "fed to cat\n" }))))
 
 // Stopped by SIGTERM: 128 + 15.
-const sleeper = started(new process.Command("sleep", ["10"]))
+const sleeper = started(process.spawn("sleep", ["10"]))
 console.log("kill", sleeper.kill() === null)
 console.log("terminated", status(sleeper))
 
 // A child that ignores SIGTERM, waited for with a timeout, then killed.
-const stubborn = started(new process.Command("sh", ["-c", "trap '' TERM; echo ready; exec sleep 10"]))
+const stubborn = started(process.spawn("sh", ["-c", "trap '' TERM; echo ready; exec sleep 10"]))
 task.sleep(100)
 stubborn.kill(15)
 const exits = new Chan<int>(1)
@@ -46,6 +43,6 @@ console.log(waited)
 stubborn.kill(9)
 console.log("killed", exits.receive())
 
-// A program that cannot start is an Error, as for `run()`.
-const missing = new process.Command("ore-surely-not-a-program").spawn()
+// A program that cannot start is an Error, as for `run`.
+const missing = process.spawn("ore-surely-not-a-program")
 console.log(missing instanceof Error ? missing.message : "started")

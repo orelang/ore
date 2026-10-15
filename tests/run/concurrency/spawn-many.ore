@@ -7,12 +7,11 @@ const count = 64
 const results = new Chan<string>(count)
 for (let i = 0; i < count; i++) {
     task.spawn(() => {
-        const cmd = new process.Command("sh", [
-            "-c",
-            "echo $N; head -c 200000 /dev/zero >&2; sleep 0.1; exit $(($N % 7))",
-        ])
-        cmd.env.set("N", `${i}`)
-        const out = cmd.output()
+        const out = process.command.output(
+            "sh",
+            ["-c", "echo $N; head -c 200000 /dev/zero >&2; sleep 0.1; exit $(($N % 7))"],
+            { env: new Map([["N", `${i}`]]) },
+        )
         if (out instanceof Error) {
             results.send(out.message)
             return

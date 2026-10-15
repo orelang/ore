@@ -11,8 +11,15 @@ before 1.0, a minor version may change the language.
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change
   builds again. `ore build --watch` and `ore test --watch` too.
-- `process.Command.spawn()` starts a program without waiting for it: a
-  `process.Child` with `pid`, `wait()` and `kill(signal)`.
+- Breaking: `new process.Command(...)` is gone. Programs are run by
+  functions: `process.run`, `process.output` and the new `process.spawn`
+  take the program and its arguments, and the nested namespace
+  `process.command` has `run`, `output` and `spawn` with a third parameter,
+  a `process.CommandOptions` (`cwd`, `env`, `clearEnv`, `stdin`, each
+  optional): `process.command.run("make", [], { cwd: "build" })`.
+- `process.spawn` and `process.command.spawn` start a program without
+  waiting for it: a `process.Child` with `pid`, `wait()` and `kill(signal)`.
+- Built-in namespaces can be nested, as `process.command` in `process`.
 - Diagnostics have codes (`error[ORE2033]`) and a page each in
   `docs/errors`, linked from the command line and the language server.
 - The language server runs the checker: type errors, hover with the

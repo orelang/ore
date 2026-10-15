@@ -1,0 +1,72 @@
+// The namespace `process.command` in Ore, nested in `process`: running a
+// program with `process.CommandOptions`. Its exports are members of
+// `process.command` (see `namespaceModule` in
+// compiler/src/checker/builtins.ore); `process.run`, `output` and `spawn`
+// are these without options. Children are started and awaited by
+// runtime/core/spawn.ore.
+
+import { flushOutput } from "ore:runtime/io"
+import { type CommandOptions, Child, Output } from "ore:runtime/process"
+import { Launch, codeOf, feed, readAll, signalOf, start, waitExit } from "ore:runtime/spawn"
+
+/** The program, found in PATH unless its name has a slash, with its arguments and options. */
+function launch(program: string, args: string[], options: CommandOptions): Launch {
+    return new Launch(
+        program,
+        args,
+        options.cwd ?? "",
+        options.env ?? new Map<string, string>(),
+        options.clearEnv ?? false,
+        options.stdin,
+    )
+}
+
+/**
+ * Runs a program with this process's standard output and error (and
+ * input, unless `options.stdin` is set) and waits for it; returns its exit
+ * status, 128 plus the signal's number if a signal killed it.
+ *
+ *   const code = process.command.run("make", ["test"], { cwd: "build" })
+ */
+export function run(program: string, args: string[] = [], options: CommandOptions = {}): int | Error {
+    const child = spawn(program, args, options)
+    if (child instanceof Error) return child
+    return child.wait()
+}
+
+/**
+ * Starts a program as `run` does, with this process's standard output and
+ * error (and input, unless `options.stdin` is set), and returns at once:
+ * the child runs alongside this process until `wait()` collects it.
+ */
+export function spawn(program: string, args: string[] = [], options: CommandOptions = {}): Child | Error {
+    flushOutput()
+    const what = launch(program, args, options)
+    const child = start(what, false)
+    if (child instanceof Error) return child
+    feed(child, what.stdin)
+    return new Child(i64(child.pid))
+}
+
+/**
+ * Runs a program and waits for it, collecting what it writes to standard
+ * output and error. Its standard input is empty unless `options.stdin` is
+ * set. A failing exit status is no Error: see `code` and `ok`.
+ *
+ *   const out = process.command.output("git", ["status", "--short"], { cwd: "repo" })
+ */
+export function output(program: string, args: string[] = [], options: CommandOptions = {}): Output | Error {
+    const what = launch(program, args, options)
+    const child = start(what, true)
+    if (child instanceof Error) return child
+    feed(child, what.stdin)
+    // stderr in another task, so that neither pipe can fill up unread.
+    const errors = new Chan<string>(1)
+    const errorFd = child.errors
+    task.spawn(() => errors.send(readAll(errorFd)))
+    const stdout = readAll(child.output)
+    const stderr = errors.receive() ?? ""
+    const status = waitExit(child.pid)
+    if (status instanceof Error) return status
+    return new Output(codeOf(status), stdout, stderr, signalOf(status))
+}
