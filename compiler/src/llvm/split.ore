@@ -10,13 +10,13 @@
 // A function is in the part of the file the line `; file <path>` before it
 // names (the emitter writes it in debug builds); a helper or a method
 // without one, in the part of the first function that uses it. The globals
-// (interface and class tables included) are defined in part 0, with the
-// functions after a line `; data`, such as `ore_entry`, and those nothing
-// else uses, so that each has one address, and declared
-// in the parts that use them; string and array constants, which are private,
-// are copied into each part that uses them. What was internal becomes hidden:
+// (interface and class tables included) are defined in part 0, so that each
+// has one address, and declared in the parts that use them; part 0 also has
+// the functions after a line `; data`, such as `ore_entry`, and those that
+// nothing else uses. String and array constants, which are private, are
+// copied into each part that uses them. What was internal becomes hidden:
 // visible to the other parts, not outside the executable. A function defined
-// in one part is declared in the others that call it.
+// in one part is declared in the others that use it.
 //
 // The text is the emitter's (llvm/emit.ore), whose shapes are few: a
 // definition starts a line with `define` and ends at a line `}`; a global is
@@ -39,6 +39,8 @@ class Function {
     data = false
     /** The globals and types it uses, each once, in order. */
     references: string[] = []
+    /** The types its declaration uses. */
+    declarationReferences: string[] = []
 
     constructor(
         readonly name: string,
@@ -60,6 +62,8 @@ class Definition {
         /** A global's declaration for the parts that do not define it; "" for the others. */
         readonly declaration: string,
         readonly references: string[],
+        /** The types a global's declaration uses. */
+        readonly declarationReferences: string[] = [],
     ) {}
 }
 
@@ -113,7 +117,7 @@ export function splitModule(ir: string): string[] {
         else if (line.startsWith("%")) {
             symbols.types.set(line.slice(0, line.indexOf(" = ")), new Definition(line, "", references(line)))
         } else if (line.startsWith("declare ")) {
-            symbols.externals.set(functionName(line), new Definition(line, "", []))
+            symbols.externals.set(functionName(line), new Definition(line, "", references(line)))
         } else if (line.startsWith("@")) {
             const name = line.slice(0, line.indexOf(" = "))
             const rest = line.slice(name.length + 3)
@@ -122,7 +126,11 @@ export function splitModule(ir: string): string[] {
                 symbols.constants.set(name, new Definition(line, "", references(line)))
             else {
                 const global = splitGlobal(line)
-                symbols.globals.set(name, new Definition(global.definition, global.declaration, references(line)))
+                const declarationReferences = references(global.declaration)
+                symbols.globals.set(
+                    name,
+                    new Definition(global.definition, global.declaration, references(line), declarationReferences),
+                )
                 globalOrder.push(name)
             }
         } else if (line.startsWith("attributes ")) attributes.push(line)
@@ -138,6 +146,7 @@ export function splitModule(ir: string): string[] {
             scan(f.head, found, seen)
             scan(f.body, found, seen)
             f.references = found
+            f.declarationReferences = references(f.declaration)
         }
     })
 
@@ -275,11 +284,13 @@ class PartBuilder {
         const f = this.symbols.functions.get(name)
         if (f !== null) {
             this.declarations.push(f.declaration)
+            this.useAll(f.declarationReferences)
             return
         }
         const global = this.symbols.globals.get(name)
         if (global !== null) {
             this.declarations.push(global.declaration)
+            this.useAll(global.declarationReferences)
             return
         }
         const external = this.symbols.externals.get(name)
