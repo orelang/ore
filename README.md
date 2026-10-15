@@ -316,7 +316,11 @@ ore fmt                  # format .ore files: 4 spaces, no semicolons
 
 A single file works too: `ore run hello.ore`. A debug build of a small
 program takes about 0.3 s (LLVM through its C API on every CPU, linked with
-lld), a release build about 1.4 s.
+lld), a release build about 1.4 s. LLVM's object files are kept in a build
+cache (`~/.cache/ore`; `ore cache` prints its size, `ore cache clean`
+empties it): another build compiles again only the source files that
+changed, the runtime once per compiler, and a release build of an unchanged
+program skips LLVM.
 
 `dist/ore` is the compiler written in Ore ([compiler](compiler)); it
 rebuilds itself with `ore build compiler/src/main.ore -o ore --release`.

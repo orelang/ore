@@ -19,7 +19,6 @@ import {
     isStringLike,
     isSubclass,
     sameType,
-    typeKey,
     typeofName,
     typeToString,
     types,
@@ -48,8 +47,9 @@ import {
     thunk,
     type Part,
 } from "./calls"
-import { memberIndex, typeId } from "./helpers"
+import { memberIndex } from "./helpers"
 import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
+import { fnvHex } from "./names"
 import { slot } from "./functions"
 
 /** A place other than a local: `Exclude<ir.LValue, { k: "local" }>` in TypeScript. */
@@ -220,7 +220,8 @@ export function expr(g: Emitter, e: Expr): V {
         case "to-iface": {
             const value = expr(g, e.value)
             const itab = e.itab
-            if (itab !== null) return g.aggregate(IFACE, [value, { ty: "ptr", v: `@itab.${itab.id}` }])
+            if (itab !== null)
+                return g.aggregate(IFACE, [value, { ty: "ptr", v: g.names.itab(itab.id, itab.struct, itab.iface) }])
             const indices = e.indices ?? []
             const values: string[] = []
             for (const i of indices) values.push(`${i}`)
@@ -369,10 +370,20 @@ export function fieldPtr(g: Emitter, object: string, s: StructType, name: string
 
 /** A pointer to a constant array of `ty` elements. */
 export function constArray(g: Emitter, ty: string, values: string[]): string {
-    const name = `@const.${g.helpers.size}.${g.defs.size}.${g.strings.size}.${g.decls.size}`
     const items: string[] = []
     for (const v of values) items.push(`${ty} ${v}`)
-    g.helpers.set(name, `${name} = private unnamed_addr constant [${values.length} x ${ty}] [${items.join(", ")}]`)
+    const value = `[${values.length} x ${ty}] [${items.join(", ")}]`
+    // Named after its value, as strings are: the same array is one constant.
+    const base = `@const.${fnvHex(value)}`
+    let name = base
+    let n = 2
+    let known = g.helpers.get(name)
+    while (known !== null && known !== `${name} = private unnamed_addr constant ${value}`) {
+        name = `${base}.${n}`
+        n++
+        known = g.helpers.get(name)
+    }
+    if (known === null) g.helpers.set(name, `${name} = private unnamed_addr constant ${value}`)
     return name
 }
 
@@ -679,7 +690,7 @@ export function equals(g: Emitter, a: V, b: V, type: Type): V {
 }
 
 export function unionEquals(g: Emitter, u: UnionType): string {
-    const name = `@U.${u.id}.eq`
+    const name = `@U.${g.names.union(u)}.eq`
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     const ty = g.unionType(u)
@@ -791,7 +802,8 @@ export function ifaceIs(g: Emitter, value: V, s: StructType): V {
         return choose(
             g,
             present,
-            () => g.b.value("i1", `icmp eq i64 ${g.b.value("i64", `load i64, ptr ${table.v}`).v}, ${typeId(s)}`),
+            () =>
+                g.b.value("i1", `icmp eq i64 ${g.b.value("i64", `load i64, ptr ${table.v}`).v}, ${g.names.typeId(s)}`),
             () => ({ ty: "i1", v: "false" }),
             "i1",
         )
@@ -805,7 +817,7 @@ export function ifaceIs(g: Emitter, value: V, s: StructType): V {
             const id = g.b.value("i64", `load i64, ptr ${table.v}`)
             let known: V = { ty: "i1", v: "false" }
             for (let i = 0; i < related.length; i++) {
-                const test = g.b.value("i1", `icmp eq i64 ${id.v}, ${typeId(related[i])}`)
+                const test = g.b.value("i1", `icmp eq i64 ${id.v}, ${g.names.typeId(related[i])}`)
                 known = i === 0 ? test : g.b.value("i1", `or i1 ${known.v}, ${test.v}`)
             }
             return choose(
@@ -897,7 +909,7 @@ export function recast(g: Emitter, v: V, from: Type, to: Type): V {
 
 /** The function converting a union to another type, as `recast` does: `@ore.recast.<from>.<to>`. */
 export function recaster(g: Emitter, from: UnionType, to: Type): string {
-    const name = globalName(`ore.recast.${from.id}.${shortKey(to)}`)
+    const name = globalName(`ore.recast.${g.names.union(from)}.${g.names.key(to)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     const fromTy = g.lt(from)
@@ -1012,7 +1024,7 @@ export function narrowStrings(g: Emitter, v: V, from: UnionType, to: UnionType):
 
 /** The function telling what `typeof` says of a value of a union: `@ore.typeof.<union>`. */
 export function typeofer(g: Emitter, u: UnionType): string {
-    const name = globalName(`ore.typeof.${u.id}`)
+    const name = globalName(`ore.typeof.${g.names.union(u)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     const uty = g.lt(u)
@@ -1029,11 +1041,6 @@ export function typeofer(g: Emitter, u: UnionType): string {
         e.b.terminate(`ret ${STR} ${result.v}`)
     })
     return name
-}
-
-/** A short key of a type for the names of helpers: a union by its id. */
-function shortKey(t: Type): string {
-    return t.kind === "union" ? `u${t.id}` : typeKey(t)
 }
 
 export function optional(g: Emitter, e: Optional): V {
@@ -1140,7 +1147,7 @@ export function sharedField(g: Emitter, u: UnionType, name: string, type: Type):
 
 /** The function reading a field common to the members of a union: `@ore.ufield.<union>.<field>.<type>`. */
 export function unionFielder(g: Emitter, u: UnionType, name: string, type: Type): string {
-    const helperName = globalName(`ore.ufield.${u.id}.${name}.${shortKey(type)}`)
+    const helperName = globalName(`ore.ufield.${g.names.union(u)}.${name}.${g.names.key(type)}`)
     if (g.helpers.has(helperName)) return helperName
     g.helpers.set(helperName, "")
     const uty = g.lt(u)

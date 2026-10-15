@@ -23,6 +23,7 @@ import { StackPlan, type SlotNode } from "../opt/escape"
 import { EmitOptions, FN, IFACE, STR, Storage, type Breakable, type Disposal } from "./context"
 import { boxed } from "./helpers"
 import { cString, FnBuilder, globalName, intConstant, sizeOf, voidValue, type V } from "./ll"
+import { fnvHex, StableNames } from "./names"
 
 /** The saved state of the function being emitted, while a helper is emitted. */
 export class Saved {
@@ -49,6 +50,15 @@ export class Emitter {
     stringNames = new Map<string, string>()
 
     strings = new Map<string, string>()
+
+    /** The names of string constants, after their bytes. */
+    stringIds = new Set<string>()
+
+    /** Names of types, globals and closures that do not depend on the checker's numbering. */
+    names = new StableNames()
+
+    /** Whether a frame refers to `@ore.file`. */
+    usesEntryFile = false
 
     helpers = new Map<string, string>()
 
@@ -125,7 +135,7 @@ export class Emitter {
     }
 
     structType(s: StructType): string {
-        const name = `%S.${s.id}`
+        const name = `%S.${this.names.struct(s)}`
         if (!this.defs.has(name)) {
             this.defs.set(name, "")
             const fields: string[] = []
@@ -147,7 +157,7 @@ export class Emitter {
 
     /** Points a new instance of a class with a class table to it. */
     setTable(object: V, s: StructType) {
-        if (this.tables.has(s.id)) this.b.emit(`store ptr @vt.${s.id}, ptr ${object.v}`)
+        if (this.tables.has(s.id)) this.b.emit(`store ptr ${this.classTable(s)}, ptr ${object.v}`)
     }
 
     /** The function in the class table of an instance, in the slot of a method. */
@@ -170,14 +180,19 @@ export class Emitter {
         let result: V = { ty: "i1", v: "false" }
         const classes = this.subclasses(s)
         for (let i = 0; i < classes.length; i++) {
-            const test = this.b.value("i1", `icmp eq ptr ${table.v}, @vt.${classes[i].id}`)
+            const test = this.b.value("i1", `icmp eq ptr ${table.v}, ${this.classTable(classes[i])}`)
             result = i === 0 ? test : this.b.value("i1", `or i1 ${result.v}, ${test.v}`)
         }
         return result
     }
 
+    /** The class table of a class: `@vt.<class>`. */
+    classTable(s: StructType): string {
+        return `@vt.${this.names.struct(s)}`
+    }
+
     unionType(u: UnionType): string {
-        const name = `%U.${u.id}`
+        const name = `%U.${this.names.union(u)}`
         if (!this.defs.has(name)) this.defs.set(name, `${name} = type { i32, [${this.unionWords(u)} x i64] }`)
         return name
     }
@@ -202,6 +217,16 @@ export class Emitter {
         return name
     }
 
+    /**
+     * The name of the program's entry file as a C string, for the frames of
+     * functions that do not know their file (methods): a global, so that
+     * their IR does not depend on the program.
+     */
+    entryFile(): string {
+        this.usesEntryFile = true
+        return "@ore.file"
+    }
+
     /** A string value constant. */
     str(value: string): V {
         return { ty: STR, v: `{ ptr ${this.bytes(value)}, i64 ${value.length} }` }
@@ -215,7 +240,11 @@ export class Emitter {
     bytes(bytes: string): string {
         const known = this.stringNames.get(bytes)
         if (known !== null) return known
-        const id = `@str.${this.strings.size}`
+        // Named after the bytes, so that the name does not depend on the strings before it.
+        const base = `@str.${fnvHex(bytes)}`
+        let id = base
+        for (let n = 2; this.stringIds.has(id); n++) id = `${base}.${n}`
+        this.stringIds.add(id)
         this.strings.set(bytes, `${id} = private unnamed_addr constant [${bytes.length} x i8] ${cString(bytes)}`)
         this.stringNames.set(bytes, id)
         return id
@@ -353,7 +382,9 @@ export class Emitter {
 
     globalOf(local: Local): string {
         const exportName = local.exportName
-        return exportName !== null && exportName !== "" ? `@${exportName}` : globalName(`G.${local.name}.${local.id}`)
+        if (exportName !== null && exportName !== "") return `@${exportName}`
+        const name = this.names.globals.get(local)
+        return name !== null ? name : globalName(`G.${local.name}.${local.id}`)
     }
 
     /**

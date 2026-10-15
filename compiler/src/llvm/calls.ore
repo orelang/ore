@@ -2,7 +2,7 @@
 // inline assembly).
 
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
-import { intRange, typeKey, type FuncType, type Type, type UnionType } from "../ir/types"
+import { intRange, type FuncType, type Type, type UnionType } from "../ir/types"
 import { counted, json } from "./json"
 import { ARRAY, FN, IFACE, STR } from "./context"
 import { Emitter } from "./base"
@@ -159,7 +159,7 @@ export function bound(g: Emitter, e: BoundMethod): V {
     const name =
         method !== null
             ? globalName(`${method.name}.${e.virtual ? "vbound" : "bound"}`)
-            : globalName(`iface.bound.${typeKey(type)}.${known !== null ? `${known}` : "undefined"}`)
+            : globalName(`iface.bound.${g.names.key(type)}.${known !== null ? `${known}` : "undefined"}`)
     if (!g.helpers.has(name)) {
         g.helpers.set(name, "")
         const params: string[] = ["ptr %env"]
@@ -241,7 +241,7 @@ export function toStr(g: Emitter, v: V, t: Type): V {
 
 /** The function formatting a value of a union, the first member that matches: `@ore.tostr.<union>`. */
 export function unionToStr(g: Emitter, t: UnionType): string {
-    const name = globalName(`ore.tostr.${t.id}`)
+    const name = globalName(`ore.tostr.${g.names.union(t)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     const uty = g.lt(t)
@@ -266,7 +266,7 @@ export function unionToStr(g: Emitter, t: UnionType): string {
 
 /** The function printing a value of a union: `@ore.print.<union>`. */
 export function unionPrinter(g: Emitter, t: UnionType): string {
-    const name = globalName(`ore.print.${t.id}`)
+    const name = globalName(`ore.print.${g.names.union(t)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     const uty = g.lt(t)
@@ -700,7 +700,7 @@ export function error(g: Emitter, e: BuiltinCall, message: V): V {
     const err = e.error
     if (err === null) process.panic(`${e.name} without an error constructor`)
     const object = callDirect(g, err.ctor.name, "ptr", [message])
-    return g.aggregate(IFACE, [object, { ty: "ptr", v: `@itab.${err.itab.id}` }])
+    return g.aggregate(IFACE, [object, { ty: "ptr", v: g.names.itab(err.itab.id, err.itab.struct, err.itab.iface) }])
 }
 
 /**

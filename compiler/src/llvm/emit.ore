@@ -10,7 +10,9 @@ import { classTable, itab } from "./collections"
 import { ARRAY, EmitOptions, FN, FRAME, IFACE, MAP, STR } from "./context"
 import { declareExtern, emitFunction } from "./functions"
 import { findGlobals } from "./helpers"
-import { FRAME_POINTER, globalName, sizeOf } from "./ll"
+import { cString, FRAME_POINTER, globalName, sizeOf } from "./ll"
+import { nameClosures } from "./names"
+import { DATA_MARKER, FILE_MARKER } from "./split"
 
 export { EmitOptions } from "./context"
 
@@ -21,6 +23,7 @@ export { EmitOptions } from "./context"
  */
 export function emitModule(module: Module, options: EmitOptions | null = null): string {
     const opts = options ?? new EmitOptions(false)
+    nameClosures(module)
     // Inlining loses the frames of stack traces, so debug builds keep every call.
     if (!opts.debug) inlineCalls(module)
     return emit(new Emitter(module, opts))
@@ -29,6 +32,7 @@ export function emitModule(module: Module, options: EmitOptions | null = null): 
 /** `ModuleEmitter.emit` of the TypeScript. */
 export function emit(g: Emitter): string {
     const m = g.module
+    const opts = g.options
     g.file = m.file
     g.defs.set(STR, `${STR} = type { ptr, i64 }`)
     g.defs.set(FN, `${FN} = type { ptr, ptr }`)
@@ -47,7 +51,9 @@ export function emit(g: Emitter): string {
         if (runtime !== null && runtime !== "") g.runtime.set(runtime, func)
     }
     const roots: string[] = []
-    for (const local of findGlobals(m)) {
+    const globals = findGlobals(m)
+    g.names.nameGlobals(globals)
+    for (const local of globals) {
         g.globals.add(local)
         // The collector scans the globals that may hold pointers; a thread-local one belongs to its thread.
         const kind = local.type.kind
@@ -63,25 +69,40 @@ export function emit(g: Emitter): string {
             `${g.globalOf(local)} = ${linkage}${local.threadLocal ? "thread_local " : ""}global ${g.mt(local.type)} zeroinitializer`,
         )
     }
-    for (const t of m.itabs) g.out.push(itab(g, t))
-    for (const s of m.structs) if (g.tables.has(s.id)) g.out.push(classTable(g, s))
     for (const func of m.functions) {
         if (func.extern) {
             declareExtern(g, func)
             continue
         }
+        // Debug builds are split by file (llvm/split.ore), which this line
+        // gives; a function without one (a method) goes with its first caller.
+        const file = func.file
+        const marker = opts.debug && file !== null ? `${FILE_MARKER}${file}` : ""
+        if (marker !== "") g.out.push(marker)
         g.out.push(emitFunction(g, func, false))
-        if (g.plan.ctorsAt.has(func)) g.out.push(emitFunction(g, func, true))
+        if (g.plan.ctorsAt.has(func)) {
+            if (marker !== "") g.out.push(marker)
+            g.out.push(emitFunction(g, func, true))
+        }
     }
-    let entry = "define void @ore_entry() #0 {"
+    // The tables after the functions, so that the runtime names its types first (see llvm/names.ore).
+    for (const t of m.itabs) g.out.push(itab(g, t))
+    for (const s of m.structs) if (g.tables.has(s.id)) g.out.push(classTable(g, s))
+    // What depends on the whole program goes to the part with the globals.
+    const data = opts.debug ? `${DATA_MARKER}\n` : ""
+    let entry = `${data}define void @ore_entry() #0 {`
     for (const f of m.inits) entry += `\n  call void ${globalName(f.name)}()`
     g.out.push(`${entry}\n  ret void\n}`)
     // The runtime declares ore_entry to take its address; the definition is here.
     g.decls.delete("@ore_entry")
     // The table of globals for the collector's roots, read through two functions the runtime declares.
     g.out.push(`@ore.globals = internal constant [${roots.length} x { ptr, i64 }] [${roots.join(", ")}]`)
-    g.out.push("define ptr @ore_globals_table() #0 {\n  ret ptr @ore.globals\n}")
-    g.out.push(`define i64 @ore_globals_count() #0 {\n  ret i64 ${roots.length}\n}`)
+    g.out.push(`${data}define ptr @ore_globals_table() #0 {\n  ret ptr @ore.globals\n}`)
+    g.out.push(`${data}define i64 @ore_globals_count() #0 {\n  ret i64 ${roots.length}\n}`)
+    if (g.usesEntryFile) {
+        const bytes = `${m.file}\u0000`
+        g.out.push(`@ore.file = internal unnamed_addr constant [${bytes.length} x i8] ${cString(bytes)}`)
+    }
     g.out.push(FRAME_POINTER)
     g.decls.delete("@ore_globals_table")
     g.decls.delete("@ore_globals_count")

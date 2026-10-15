@@ -17,7 +17,9 @@ ORE_BLESS=1 ci/test.sh run/   # rewrite the .out files from the actual output
 default, as [`ci/bootstrap.sh`](../ci/bootstrap.sh) makes it), keeps it in `~/.cache/ore/test` by a hash of its
 sources, and runs it from the root of the repository. The runner holds the
 compiler in Ore (`compiler/src`): it compiles the test programs in its
-own process, in one task per CPU, and runs them. Each case runs as a test of
+own process, in one task per CPU, and runs them; the builds share a build
+cache of their own in the runner's temporary directory, so that the
+runtime is compiled by LLVM once per run. Each case runs as a test of
 `"ore:test"`, so a failure, even a panic of the compiler, fails only that
 case; it prints `✓` or `✗` and the reason for each case, then the skipped
 groups, the failed cases and the counts, and exits with 1 if a case failed.
@@ -64,5 +66,8 @@ The other cases of the runner:
 - `watchdog/`: `ORE_WATCHDOG` reports a program blocked on its input.
 - `object/`: an executable from LLVM IR and C sources, and IR that does not
   verify.
+- `cache/`: the build cache: a second build takes every object from it and
+  works, another program takes the runtime's, editing one file of a program
+  recompiles that file's part only, and a release build takes its object.
 
 [`ci/stress.sh`](../ci/stress.sh) runs the concurrent programs many times.

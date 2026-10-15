@@ -7,7 +7,6 @@ import {
     FuncType,
     isStringLike,
     overridden,
-    typeKey,
     types,
     unionRepr,
     type StructType,
@@ -31,7 +30,6 @@ import {
     unionOf,
 } from "./expressions"
 import { counted } from "./json"
-import { typeId } from "./helpers"
 import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
 
 function nullIndex(u: UnionType): int {
@@ -236,7 +234,7 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
 
 /** A C sort comparison calling a comparator closure, whose number result gives the order. */
 export function comparator(g: Emitter, type: FuncType): string {
-    const name = globalName(`cmp.${typeKey(type)}`)
+    const name = globalName(`cmp.${g.names.key(type)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     helper(g, name, `define internal i32 ${name}(ptr %ctx, ptr %a, ptr %b)`, (e) => {
@@ -263,7 +261,7 @@ export function comparator(g: Emitter, type: FuncType): string {
 
 /** A C sort comparison in ascending order of numbers or strings. */
 export function naturalOrder(g: Emitter, type: Type): string {
-    const name = globalName(`natural.${typeKey(type)}`)
+    const name = globalName(`natural.${g.names.key(type)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     helper(g, name, `define internal i32 ${name}(ptr %ctx, ptr %a, ptr %b)`, (e) => {
@@ -289,7 +287,7 @@ export type KeyFunctions = { hash: string; eq: string }
  * strings by contents, references by identity, NaN equal to NaN.
  */
 export function keyFunctions(g: Emitter, key: Type): KeyFunctions {
-    const id = typeKey(key)
+    const id = g.names.key(key)
     const hash = globalName(`hash.${id}`)
     const eq = globalName(`eq.${id}`)
     if (g.helpers.has(hash)) return { hash, eq }
@@ -595,7 +593,7 @@ export function chanOp(g: Emitter, e: ChanOp): V {
 /** A function calling the handler of a receive case with the value, as its `T | null` parameter. */
 export function receiveDispatch(g: Emitter, elem: Type, handler: FuncType): string {
     const param = handler.params.length > 0 ? handler.params[0] : null
-    const name = globalName(`dispatch.${typeKey(param ?? elem)}.${handler.params.length}`)
+    const name = globalName(`dispatch.${g.names.key(param ?? elem)}.${handler.params.length}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     helper(g, name, `define internal void ${name}(ptr %c)`, (e) => {
@@ -626,7 +624,7 @@ export function receiveDispatch(g: Emitter, elem: Type, handler: FuncType): stri
 
 export function itab(g: Emitter, t: Itab): string {
     const s = g.structType(t.struct)
-    const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${typeId(t.struct)})`]
+    const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${g.names.typeId(t.struct)})`]
     for (const m of t.iface.members) {
         if (m.k === "field") {
             const field = findField(t.struct, m.name)
@@ -642,12 +640,12 @@ export function itab(g: Emitter, t: Itab): string {
             else all.push(`ptr ${globalName(method.func.name)}`)
         }
     }
-    return `@itab.${t.id} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
+    return `${g.names.itab(t.id, t.struct, t.iface)} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
 }
 
 /** The class table of a class with a base class or subclasses: its type id, then its methods by slot. */
 export function classTable(g: Emitter, s: StructType): string {
-    const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${typeId(s)})`]
+    const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${g.names.typeId(s)})`]
     for (const m of s.methods) all.push(`ptr ${globalName(m.func.name)}`)
-    return `@vt.${s.id} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
+    return `${g.classTable(s)} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
 }

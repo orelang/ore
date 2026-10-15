@@ -1,0 +1,191 @@
+// Names in the LLVM IR that do not depend on the order in which the checker
+// numbered types, locals and closures, so that the IR of a function stays the
+// same when unrelated code changes: debug builds cache the object files of
+// the parts of a module by their text (driver/cache.ore), and a part hits
+// only if it is the same byte for byte. A type is named after what it is (a
+// class after its name, a union after its members), a string constant after
+// its bytes, a closure after its file and its place there, a global after
+// its name; a name taken twice gets a suffix, `.2`, in the order the names are
+// asked for, in which the runtime comes first.
+
+import { type Func, type Local, type Module } from "../ir/nodes"
+import { type InterfaceType, type StructType, type Type, typeToString, type UnionType } from "../ir/types"
+import { globalName } from "./ll"
+
+const hexDigits = "0123456789abcdef"
+
+/** The 64-bit FNV-1a hash of the bytes of a string. */
+export function fnv(text: string): u64 {
+    let h: u64 = 0xcbf29ce484222325
+    for (let i = 0; i < text.length; i++) {
+        h = h ^ u64(text[i])
+        h = h * 0x100000001b3
+    }
+    return h
+}
+
+/** The FNV-1a hash of a string as 16 hexadecimal digits. */
+export function fnvHex(text: string): string {
+    const h = fnv(text)
+    let out = ""
+    for (let shift: u64 = 60; ; shift -= 4) {
+        const d = i64((h >> shift) & 15)
+        out += hexDigits.slice(d, d + 1)
+        if (shift === 0) break
+    }
+    return out
+}
+
+/** A key as a part of an LLVM name: its characters escaped as `globalName` does, or its hash when long. */
+function nameOf(key: string): string {
+    if (key.length > 40) return `h${fnvHex(key)}`
+    return globalName(key).slice(1)
+}
+
+/** The stable names of one module's types, globals and type ids. */
+export class StableNames {
+    structs = new Map<int, string>()
+    interfaces = new Map<int, string>()
+    unions = new Map<int, string>()
+    itabs = new Map<int, string>()
+    /** The names given, by kind: "S:Node". */
+    taken = new Set<string>()
+    typeIds = new Map<int, int>()
+    takenIds = new Set<int>()
+    globals = new Map<Local, string>()
+
+    /** `candidate`, or with a suffix if another type of the kind has it. */
+    private unique(kind: string, candidate: string): string {
+        let name = candidate
+        let n = 2
+        while (this.taken.has(`${kind}:${name}`)) {
+            name = `${candidate}.${n}`
+            n++
+        }
+        this.taken.add(`${kind}:${name}`)
+        return name
+    }
+
+    /** The name of a struct type: a class or alias by its name, a shape or tuple by its fields. */
+    struct(s: StructType): string {
+        const known = this.structs.get(s.id)
+        if (known !== null) return known
+        // A shape cannot contain itself without a name; this guards the recursion anyway.
+        this.structs.set(s.id, "?")
+        let key = ""
+        const name = s.name
+        if (name !== null) key = name
+        else if (s.tuple) key = `[${s.fields.map((f) => this.key(f.type)).join(",")}]`
+        else {
+            const fields: string[] = []
+            for (const f of s.fields)
+                fields.push(`${f.readonly ? "readonly " : ""}${f.name}${f.optional ? "?" : ""}:${this.key(f.type)}`)
+            key = `{${fields.join(";")}}`
+        }
+        const result = this.unique("S", nameOf(key))
+        this.structs.set(s.id, result)
+        return result
+    }
+
+    /** The name of an interface type: its name, or its members' names. */
+    iface(t: InterfaceType): string {
+        const known = this.interfaces.get(t.id)
+        if (known !== null) return known
+        const names: string[] = []
+        for (const m of t.members) names.push(m.name)
+        const result = this.unique("I", nameOf(t.name !== "" ? t.name : `{${names.join(",")}}`))
+        this.interfaces.set(t.id, result)
+        return result
+    }
+
+    /** The name of a union type, from its members. */
+    union(u: UnionType): string {
+        const known = this.unions.get(u.id)
+        if (known !== null) return known
+        const keys: string[] = []
+        for (const m of u.members) keys.push(this.key(m))
+        const result = this.unique("U", nameOf(keys.join("|")))
+        this.unions.set(u.id, result)
+        return result
+    }
+
+    /** The name of the interface table of a struct converted to an interface. */
+    itab(id: int, s: StructType, t: InterfaceType): string {
+        const known = this.itabs.get(id)
+        if (known !== null) return known
+        const result = `@itab.${this.unique("itab", `${this.struct(s)}.${this.iface(t)}`)}`
+        this.itabs.set(id, result)
+        return result
+    }
+
+    /**
+     * A key of a type for the names of helpers, as `typeKey` but with
+     * structs, interfaces and unions by their names here instead of their ids.
+     */
+    key(type: Type): string {
+        switch (type.kind) {
+            case "array":
+                return `${this.key(type.elem)}[]`
+            case "struct":
+                return `#${this.struct(type)}`
+            case "interface":
+                return `@${this.iface(type)}`
+            case "union":
+                return `u${this.union(type)}`
+            case "literal":
+                return JSON.stringify(type.value)
+            case "map":
+                return `Map<${this.key(type.key)},${this.key(type.value)}>`
+            case "set":
+                return `Set<${this.key(type.elem)}>`
+            case "chan":
+                return `Chan<${this.key(type.elem)}>`
+            case "func": {
+                const params: string[] = []
+                for (const p of type.params) params.push(this.key(p))
+                return `(${params.join(",")})=>${this.key(type.result)}`
+            }
+            default:
+                return typeToString(type)
+        }
+    }
+
+    /**
+     * The id of a class in interface and class tables: a hash of its name,
+     * odd (never 0) and positive, distinct from the others of the program.
+     */
+    typeId(s: StructType): int {
+        const known = this.typeIds.get(s.id)
+        if (known !== null) return known
+        let id = i64(fnv(this.struct(s)) & 0x3fffffffffffffff) | 1
+        while (this.takenIds.has(id)) id += 2
+        this.takenIds.add(id)
+        this.typeIds.set(s.id, id)
+        return id
+    }
+
+    /** Names the globals of a module after their names, the first of each name without a suffix. */
+    nameGlobals(globals: Local[]): void {
+        for (const local of globals) this.globals.set(local, globalName(`G.${this.unique("G", local.name)}`))
+    }
+}
+
+/**
+ * Names the closures of a module after their file and their order in it,
+ * instead of their order in the whole program: `ore_lambda_<file>_<n>`.
+ */
+export function nameClosures(m: Module): void {
+    const counts = new Map<string, int>()
+    for (const f of m.functions) {
+        if (!f.name.startsWith("ore_lambda_")) continue
+        const file = fileOf(m, f)
+        const n = counts.get(file) ?? 0
+        counts.set(file, n + 1)
+        f.name = `ore_lambda_${fnvHex(file).slice(0, 8)}_${n}`
+    }
+}
+
+/** The path of the file that declares a function. */
+export function fileOf(m: Module, f: Func): string {
+    return f.file ?? m.file
+}

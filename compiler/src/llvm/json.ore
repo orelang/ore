@@ -1,7 +1,7 @@
 // JSON: an encoder and a decoder generated per type.
 
 import { type BuiltinCall } from "../ir/nodes"
-import { intRange, typeKey, typeToString, unionRepr, type Type, type UnionType } from "../ir/types"
+import { intRange, typeToString, unionRepr, type Type, type UnionType } from "../ir/types"
 import { error, helper } from "./calls"
 import { keyFunctions } from "./collections"
 import {
@@ -84,7 +84,7 @@ export function putc(g: Emitter, b: V, c: string) {
 
 /** A helper writing a value of a type as JSON: `(ptr b, T v, i64 indent, i64 depth)`. */
 export function jsonEncoder(g: Emitter, type: Type): string {
-    const name = globalName(`json.enc.${typeKey(type)}`)
+    const name = globalName(`json.enc.${g.names.key(type)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     const ty = g.lt(type)
@@ -320,7 +320,7 @@ export function commaAfterFirst(g: Emitter, b: V, i: V) {
 
 /** A helper reading a value of a type from a parsed JSON value: `T (ptr v, ptr c)`. */
 export function jsonDecoder(g: Emitter, type: Type): string {
-    const name = globalName(`json.dec.${typeKey(type)}`)
+    const name = globalName(`json.dec.${g.names.key(type)}`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     const ty = g.lt(type)

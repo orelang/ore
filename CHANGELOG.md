@@ -7,11 +7,16 @@ before 1.0, a minor version may change the language.
 
 - Diagnostics have codes (`error[ORE2033]`) and a page each in
   `docs/errors`, linked from the command line and the language server.
-
 - The language server runs the checker: type errors, hover with the
   signature or type and the JSDoc comment, go to definition (also into the
   standard library), completion after `.`, references and rename.
-
+- A build cache in `~/.cache/ore` (`$ORE_CACHE`, `$XDG_CACHE_HOME`;
+  `ORE_CACHE=off` turns it off): LLVM's object files are kept by a hash of
+  their IR, the compiler and the target. Debug builds are split by source
+  file, so that the runtime is compiled once per compiler and an edit
+  recompiles only the files it changes; release builds reuse the object of
+  an unchanged program. `ore cache` prints its size, `ore cache clean`
+  empties it.
 - Tuples `[A, B]`: literals in their context, constant indexing, `length`,
   destructuring (an array literal destructured by an array pattern is one),
   inference of generic parameters, JSON as arrays. `new Map(entries)` from

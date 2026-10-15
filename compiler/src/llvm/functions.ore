@@ -92,7 +92,8 @@ export function emitFunction(g: Emitter, func: Func, at: bool): string {
         const prev = g.b.value("ptr", `load ptr, ptr ${top(g)}`)
         g.b.emit(`store ptr ${prev.v}, ptr ${g.field(frame, FRAME, 0)}`)
         g.b.emit(`store ptr ${g.cstr(func.sourceName).v}, ptr ${g.field(frame, FRAME, 1)}`)
-        g.b.emit(`store ptr ${g.cstr(file ?? g.file).v}, ptr ${g.field(frame, FRAME, 2)}`)
+        const fileName = file !== null ? g.cstr(file).v : g.entryFile()
+        g.b.emit(`store ptr ${fileName}, ptr ${g.field(frame, FRAME, 2)}`)
         g.b.emit(`store i32 ${func.line}, ptr ${g.field(frame, FRAME, 3)}`)
         g.b.emit(`store ptr ${frame}, ptr ${top(g)}`)
         g.frame = frame

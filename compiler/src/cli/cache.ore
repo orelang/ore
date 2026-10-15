@@ -1,0 +1,32 @@
+// `ore cache`: where the build cache is (driver/cache.ore) and how much it
+// holds; `ore cache clean` empties it.
+
+import { cacheRoot, cacheSize, cleanCache, objectsDir } from "../driver/cache"
+import { toolError, usageError } from "./commands"
+
+/** `ore cache [clean]` */
+export function cacheCommand(args: string[]): i32 {
+    if (args.length > 1 || (args.length === 1 && args[0] !== "clean"))
+        return usageError(`unknown arguments: ${args.join(" ")} (usage: ore cache [clean])`)
+    const root = cacheRoot()
+    if (root === "") {
+        console.log("The build cache is off (ORE_CACHE=off, or no home directory).")
+        return 0
+    }
+    if (args.length === 1) {
+        const before = cacheSize(root)
+        const error = cleanCache(root)
+        if (error !== null) return toolError(error)
+        console.log(`Removed ${before.files} object files (${megabytes(before.bytes)}) from ${objectsDir(root)}.`)
+        return 0
+    }
+    const size = cacheSize(root)
+    console.log(`${objectsDir(root)}: ${size.files} object files, ${megabytes(size.bytes)}`)
+    return 0
+}
+
+/** A size in megabytes, with one decimal. */
+function megabytes(bytes: int): string {
+    const tenths = (bytes * 10 + 512 * 1024) / (1024 * 1024)
+    return `${tenths / 10}.${tenths % 10} MB`
+}

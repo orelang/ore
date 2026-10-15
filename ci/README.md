@@ -5,7 +5,9 @@
   commit tagged `seed`, the last with the compiler in TypeScript, built once
   with Bun and cached).
 - `test.sh`: builds the test runner with `$ORE` (`dist/ore`) and runs every
-  test (see [tests](../tests/README.md)).
+  test (see [tests](../tests/README.md)). The builds of the runner, and of
+  the `ore` it builds, use a build cache in the runner's temporary
+  directory, not the user's `~/.cache/ore`.
 - `stress.sh`: builds the concurrent tests with `--release` and runs them
   many times, with 1 and 8 threads, printing the first differing output; a
   run stuck for 20 s gets the watchdog's stacks, one stuck for 30 s fails.
