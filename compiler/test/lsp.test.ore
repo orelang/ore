@@ -243,8 +243,10 @@ test("lifecycle: initialize, shutdown and exit", () => {
 
     const init = client.initialize()
     const capabilities =
-        `{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"hoverProvider":true,` +
-        `"referencesProvider":true,"renameProvider":{"prepareProvider":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"textDocumentSync":2}`
+        `{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,` +
+        `"documentFormattingProvider":true,"documentSymbolProvider":true,"hoverProvider":true,` +
+        `"referencesProvider":true,"renameProvider":{"prepareProvider":true},` +
+        `"signatureHelpProvider":{"triggerCharacters":["(",","]},"textDocumentSync":2}`
     expect(init).toBe(
         message(`"id":0,"result":{"capabilities":${capabilities},"serverInfo":{"name":"ore","version":"test"}}`),
     )
@@ -370,6 +372,17 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     const help = client.request("8", "textDocument/signatureHelp", at(7, 21))
     expect(help.includes(`"label":"function add(a: int, b: int): int"`)).toBe(true)
     expect(help.includes(`"activeParameter":1`)).toBe(true)
+
+    // The outline, and the document formatted.
+    const outline = client.request(
+        "9",
+        "textDocument/documentSymbol",
+        `{"textDocument":{"uri":${JSON.stringify(uri)}}}`,
+    )
+    expect(outline.includes(`"name":"add"`)).toBe(true)
+    expect(outline.includes(`"name":"total"`)).toBe(true)
+    const formatted = client.request("10", "textDocument/formatting", `{"textDocument":{"uri":${JSON.stringify(uri)}}}`)
+    expect(formatted).toBe(message(`"id":10,"result":[]`))
 
     // Members after a dot, while the line does not parse yet.
     const typing = 'const word = "abc"\nword.\n'

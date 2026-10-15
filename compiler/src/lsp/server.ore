@@ -12,10 +12,14 @@ import {
     ServerNotInitialized,
     type Message,
 } from "./jsonrpc"
-import { dirname, join } from "ore:path"
+import { dirname, isAbsolute, join } from "ore:path"
+import { resolveImport } from "../project/resolve"
+import { moduleSpecifier, stringValue } from "../syntax/imports"
+import { parse as parseFile } from "../syntax/parse"
 import { cacheRoot } from "../driver/cache"
 import { docsUrl } from "../syntax/codes"
-import { offsetAt, pathToUri, uriToPath, type Position, type Range } from "./text"
+import { format } from "../fmt/print"
+import { offsetAt, pathToUri, positionAt, uriToPath, type Position, type Range } from "./text"
 
 // ---------------------------------------------------------------------------
 // The params and results of the methods, as JSON
@@ -157,6 +161,16 @@ export class Server {
             case "textDocument/signatureHelp":
                 this.signatureHelp(m)
                 return
+            case "textDocument/formatting":
+                this.formatting(m)
+                return
+            case "textDocument/documentSymbol": {
+                const p = params<{ textDocument: TextDocumentIdentifier }>(m)
+                if (p instanceof Error) return this.invalid(m, p)
+                const analysis = this.analysisOf(p.textDocument.uri)
+                this.connection.respond(m.id, analysis === null ? "[]" : JSON.stringify(analysis.symbols()))
+                return
+            }
             case "textDocument/references":
                 this.references(m)
                 return
@@ -207,6 +221,8 @@ export class Server {
                 renameProvider: { prepareProvider: true },
                 completionProvider: { triggerCharacters: ["."] },
                 signatureHelpProvider: { triggerCharacters: ["(", ","] },
+                documentFormattingProvider: true,
+                documentSymbolProvider: true,
             },
             serverInfo: { name: "ore", version: this.version },
         }
@@ -302,15 +318,22 @@ export class Server {
     }
 
     /**
-     * The references to a symbol in the document's program and in every .ore
-     * file of the workspace, whose programs may import it.
-     *
-     * TODO(std): the .ore files below `this.roots`, outside node_modules and
-     * hidden directories; this needs reading
-     * directories, which the std does not have yet.
+     * The references to a symbol in the document's program and in the .ore
+     * files of the workspace that can refer to it: the file that declares it,
+     * and the files that name it and import that file.
      */
-    private workspaceReferences(uri: string, key: string): Reference[] {
-        const files = [uriToPath(uri)]
+    private workspaceReferences(uri: string, key: string, name: string): Reference[] {
+        const current = uriToPath(uri)
+        const declared = key.slice(0, key.lastIndexOf(":"))
+        const files = [current]
+        if (isAbsolute(declared)) {
+            for (const file of this.workspaceFiles()) {
+                if (file === current) continue
+                const text = this.textOf(file)
+                if (text === null || !text.includes(name)) continue
+                if (file === declared || importsFile(file, text, declared)) files.push(file)
+            }
+        }
         const found = new Map<string, Reference>()
         for (const file of files) {
             const analysis = this.fresh(pathToUri(file))
@@ -319,6 +342,13 @@ export class Server {
                 found.set(`${r.path}:${r.range.start.line}:${r.range.start.character}`, r)
         }
         return found.values()
+    }
+
+    /** The .ore files below the workspace's folders, outside node_modules, dist and hidden directories. */
+    private workspaceFiles(): string[] {
+        const files: string[] = []
+        for (const root of this.roots) collectOreFiles(root, files)
+        return files
     }
 
     // -------------------------------------------------------------------------
@@ -349,6 +379,24 @@ export class Server {
                 items.push({ label: c.label, kind: c.kind === "method" ? kindMethod : kindField, detail: c.detail })
         }
         this.connection.respond(m.id, JSON.stringify(items))
+    }
+
+    /** The whole document formatted as `ore fmt` does: one edit, none when it is formatted, null when it does not parse. */
+    private formatting(m: Message): void {
+        const p = params<{ textDocument: TextDocumentIdentifier }>(m)
+        if (p instanceof Error) return this.invalid(m, p)
+        const document = this.documents.get(p.textDocument.uri)
+        if (document === null) return this.connection.respond(m.id, "null")
+        const text = document.text
+        const formatted = format(text)
+        if (formatted instanceof Error) return this.connection.respond(m.id, "null")
+        const edits: TextEdit[] = []
+        if (formatted !== text)
+            edits.push({
+                range: { start: { line: 0, character: 0 }, end: positionAt(text, text.length) },
+                newText: formatted,
+            })
+        this.connection.respond(m.id, JSON.stringify(edits))
     }
 
     private signatureHelp(m: Message): void {
@@ -396,7 +444,7 @@ export class Server {
         const analysis = this.fresh(p.textDocument.uri)
         const symbol = analysis === null ? null : analysis.symbolAt(p.position)
         if (symbol !== null) {
-            for (const r of this.workspaceReferences(p.textDocument.uri, symbol.key)) {
+            for (const r of this.workspaceReferences(p.textDocument.uri, symbol.key, symbol.name)) {
                 if (p.context.includeDeclaration || !r.declaration)
                     locations.push({ uri: pathToUri(r.path), range: r.range })
             }
@@ -423,7 +471,7 @@ export class Server {
         const symbol = analysis === null ? null : analysis.symbolAt(p.position)
         if (symbol === null || symbol.builtin) return this.connection.respond(m.id, "null")
         const changes = new Map<string, TextEdit[]>()
-        for (const r of this.workspaceReferences(p.textDocument.uri, symbol.key)) {
+        for (const r of this.workspaceReferences(p.textDocument.uri, symbol.key, symbol.name)) {
             const uri = pathToUri(r.path)
             const existing = changes.get(uri)
             const edits: TextEdit[] = existing ?? []
@@ -449,6 +497,30 @@ function locationUri(location: Location, current: string): string {
     fs.mkdir(dirname(path), true)
     fs.writeFile(path, text)
     return pathToUri(path)
+}
+
+/** Adds the .ore files below a directory, outside node_modules, dist, target and hidden directories. */
+function collectOreFiles(dir: string, out: string[]): void {
+    const names = fs.readDir(dir)
+    if (names instanceof Error) return
+    for (const name of names) {
+        if (name.startsWith(".") || name === "node_modules" || name === "dist" || name === "target") continue
+        const path = join(dir, name)
+        if (fs.isDir(path)) collectOreFiles(path, out)
+        else if (name.endsWith(".ore")) out.push(path)
+    }
+}
+
+/** Whether a module imports the file `target`. */
+function importsFile(file: string, text: string, target: string): bool {
+    const parsed = parseFile(file, text)
+    for (const stmt of parsed.source.ast.list("statements")) {
+        const specifier = moduleSpecifier(stmt)
+        if (specifier === null) continue
+        const resolved = resolveImport(stringValue(specifier), file)
+        if (typeof resolved === "string" && resolved === target) return true
+    }
+    return false
 }
 
 /** Serves on standard input and output; the exit code. */

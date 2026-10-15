@@ -59,6 +59,17 @@ export type Completion = {
 /** The signature of the function being called, its parameters (substrings of `label`), and which one is being written. */
 export type SignatureHelp = { label: string; documentation: string; parameters: string[]; active: int }
 
+/** A declaration of the document for its outline: its kind is LSP's SymbolKind. */
+export class DocumentSymbol {
+    constructor(
+        readonly name: string,
+        readonly kind: int,
+        readonly range: Range,
+        readonly selectionRange: Range,
+        readonly children: DocumentSymbol[],
+    ) {}
+}
+
 /** Markdown hover text and the range of the identifier it describes. */
 export type Hover = { contents: string; range: Range }
 
@@ -80,7 +91,22 @@ export interface Analysis {
     definition(position: Position): Location | null
     /** The signature of the call whose arguments are being written at a position. */
     signatureHelp(position: Position): SignatureHelp | null
+    /** The declarations of the document, for its outline. */
+    symbols(): DocumentSymbol[]
 }
+
+// LSP's SymbolKind.
+const kindNamespace = 3
+const kindClass = 5
+const kindMethod = 6
+const kindProperty = 7
+const kindField = 8
+const kindConstructor = 9
+const kindInterface = 11
+const kindFunction = 12
+const kindVariable = 13
+const kindConstant = 14
+const kindTypeParameter = 26
 
 /** Kinds of nodes whose leading comment documents the declaration inside them. */
 const documented = [
@@ -441,6 +467,73 @@ class CheckedAnalysis {
             parameters,
             active,
         }
+    }
+
+    symbols(): DocumentSymbol[] {
+        const source = this.source
+        const ast = source !== null ? source.ast : parse(this.text).file
+        if (ast === null) return []
+        return this.symbolsIn(ast.list("statements"))
+    }
+
+    private symbolsIn(nodes: Node[]): DocumentSymbol[] {
+        const found: DocumentSymbol[] = []
+        for (const n of nodes) {
+            const k = n.kind
+            if (k === "VariableStatement") {
+                const list = n.child("declarationList")
+                if (list === null) continue
+                const constant = this.text.slice(list.start, list.end).startsWith("const")
+                for (const d of list.list("declarations")) {
+                    const name = d.child("name")
+                    if (name !== null && name.kind === "Identifier")
+                        found.push(this.symbol(name.text, constant ? kindConstant : kindVariable, d, name, []))
+                }
+                continue
+            }
+            const name = n.child("name")
+            if (name === null) continue
+            const label = name.kind === "Identifier" ? name.text : this.text.slice(name.start, name.end)
+            if (k === "FunctionDeclaration") found.push(this.symbol(label, kindFunction, n, name, []))
+            else if (k === "ClassDeclaration")
+                found.push(this.symbol(label, kindClass, n, name, this.membersOf(n.list("members"))))
+            else if (k === "InterfaceDeclaration")
+                found.push(this.symbol(label, kindInterface, n, name, this.membersOf(n.list("members"))))
+            else if (k === "TypeAliasDeclaration") found.push(this.symbol(label, kindTypeParameter, n, name, []))
+            else if (k === "ModuleDeclaration") {
+                const body = n.child("body")
+                const children: DocumentSymbol[] = body !== null ? this.symbolsIn(body.list("statements")) : []
+                found.push(this.symbol(label, kindNamespace, n, name, children))
+            }
+        }
+        return found
+    }
+
+    private membersOf(members: Node[]): DocumentSymbol[] {
+        const found: DocumentSymbol[] = []
+        for (const m of members) {
+            const k = m.kind
+            const name = m.child("name")
+            if (k === "Constructor") {
+                found.push(this.symbol("constructor", kindConstructor, m, m, []))
+                continue
+            }
+            if (name === null) continue
+            const label = name.kind === "Identifier" ? name.text : this.text.slice(name.start, name.end)
+            if (k === "MethodDeclaration" || k === "MethodSignature")
+                found.push(this.symbol(label, kindMethod, m, name, []))
+            else if (k === "GetAccessor" || k === "SetAccessor")
+                found.push(this.symbol(label, kindProperty, m, name, []))
+            else if (k === "PropertyDeclaration" || k === "PropertySignature")
+                found.push(this.symbol(label, kindField, m, name, []))
+        }
+        return found
+    }
+
+    private symbol(name: string, kind: int, node: Node, nameNode: Node, children: DocumentSymbol[]): DocumentSymbol {
+        const selection =
+            nameNode === node ? this.range(node.start, node.start) : this.range(nameNode.start, nameNode.end)
+        return new DocumentSymbol(name, kind, this.range(node.start, node.end), selection, children)
     }
 
     completions(position: Position): Completion[] {
