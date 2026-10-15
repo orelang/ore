@@ -1,0 +1,184 @@
+// The values of untyped integer constants: `bigint` in the TypeScript
+// checker. Here a sign and a `u64` magnitude, which covers every integer
+// type of Ore (-2^63 .. 2^64-1); a constant beyond that wraps, where the
+// TypeScript checker would report its exact value.
+
+export class Big {
+    readonly neg: bool
+    readonly mag: u64
+
+    constructor(neg: bool, mag: u64) {
+        // Zero has no sign.
+        this.neg = neg && mag !== u64(0)
+        this.mag = mag
+    }
+}
+
+const I64_MIN_MAG: u64 = u64(1) << u64(63)
+
+export function bigOf(value: int): Big {
+    if (value < 0) return new Big(true, u64(-(value + 1)) + u64(1))
+    return new Big(false, u64(value))
+}
+
+export function bigOfU64(value: u64): Big {
+    return new Big(false, value)
+}
+
+/** The bits of the value as an `i64`, as the IR holds integer constants. */
+export function bigToI64(a: Big): i64 {
+    if (!a.neg) return i64(a.mag)
+    return -i64(a.mag - u64(1)) - 1
+}
+
+/** `Number(bigint)`: the nearest double. */
+export function bigToF64(a: Big): f64 {
+    const m = f64(a.mag)
+    return a.neg ? -m : m
+}
+
+/** `BigInt(Math.trunc(x))` of a finite double. */
+export function bigFromF64(x: f64): Big {
+    const t = Math.trunc(x)
+    if (t < 0.0) return new Big(true, u64(-t))
+    return new Big(false, u64(t))
+}
+
+export function bigIsNeg(a: Big): bool {
+    return a.neg
+}
+
+export function bigIsZero(a: Big): bool {
+    return a.mag === u64(0)
+}
+
+/** -1, 0 or 1. */
+export function bigCmp(a: Big, b: Big): int {
+    if (a.neg !== b.neg) return a.neg ? -1 : 1
+    if (a.mag === b.mag) return 0
+    const less = a.mag < b.mag
+    if (a.neg) return less ? 1 : -1
+    return less ? -1 : 1
+}
+
+export function bigEq(a: Big, b: Big): bool {
+    return a.neg === b.neg && a.mag === b.mag
+}
+
+export function bigLt(a: Big, b: Big): bool {
+    return bigCmp(a, b) < 0
+}
+
+export function bigGt(a: Big, b: Big): bool {
+    return bigCmp(a, b) > 0
+}
+
+export function bigNeg(a: Big): Big {
+    return new Big(!a.neg, a.mag)
+}
+
+export function bigAdd(a: Big, b: Big): Big {
+    if (a.neg === b.neg) return new Big(a.neg, a.mag + b.mag)
+    // Different signs: subtract the smaller magnitude from the larger.
+    if (a.mag >= b.mag) return new Big(a.neg, a.mag - b.mag)
+    return new Big(b.neg, b.mag - a.mag)
+}
+
+export function bigSub(a: Big, b: Big): Big {
+    return bigAdd(a, bigNeg(b))
+}
+
+export function bigMul(a: Big, b: Big): Big {
+    return new Big(a.neg !== b.neg, a.mag * b.mag)
+}
+
+/** Truncating division, as `bigint` divides; the divisor is not zero. */
+export function bigDiv(a: Big, b: Big): Big {
+    return new Big(a.neg !== b.neg, a.mag / b.mag)
+}
+
+/** The remainder, with the sign of the dividend, as `bigint` does. */
+export function bigRem(a: Big, b: Big): Big {
+    return new Big(a.neg, a.mag % b.mag)
+}
+
+/** `~a` is `-a - 1`. */
+export function bigNot(a: Big): Big {
+    return bigSub(bigNeg(a), bigOf(1))
+}
+
+/** Whether a value is in the `i64` range, where bitwise operations use two's complement. */
+function fitsI64(a: Big): bool {
+    return a.neg ? a.mag <= I64_MIN_MAG : a.mag < I64_MIN_MAG
+}
+
+function bitwise(op: string, a: Big, b: Big): Big {
+    if (fitsI64(a) && fitsI64(b)) {
+        const x = bigToI64(a)
+        const y = bigToI64(b)
+        return bigOf(op === "&" ? x & y : op === "|" ? x | y : x ^ y)
+    }
+    // Beyond the i64 range, both operands are taken as unsigned bit patterns.
+    const x = a.mag
+    const y = b.mag
+    return new Big(false, op === "&" ? x & y : op === "|" ? x | y : x ^ y)
+}
+
+export function bigAnd(a: Big, b: Big): Big {
+    return bitwise("&", a, b)
+}
+
+export function bigOr(a: Big, b: Big): Big {
+    return bitwise("|", a, b)
+}
+
+export function bigXor(a: Big, b: Big): Big {
+    return bitwise("^", a, b)
+}
+
+/** `a << n` for a shift count of at most 1024. */
+export function bigShl(a: Big, n: int): Big {
+    // A shift past the width loses the value, which the TypeScript checker would keep.
+    if (n >= 64) return new Big(false, 0)
+    return new Big(a.neg, a.mag << u64(n))
+}
+
+/** `a >> n`: an arithmetic shift, rounding toward negative infinity for negative values. */
+export function bigShr(a: Big, n: int): Big {
+    if (!a.neg) return new Big(false, n >= 64 ? u64(0) : a.mag >> u64(n))
+    // floor(-m / 2^n) = -((m - 1) >> n) - 1
+    const shifted = n >= 64 ? u64(0) : (a.mag - u64(1)) >> u64(n)
+    return new Big(true, shifted + u64(1))
+}
+
+/** The decimal text of a value, as `${bigint}` writes it. */
+export function bigText(a: Big): string {
+    return a.neg ? `-${a.mag}` : `${a.mag}`
+}
+
+function digitValue(c: u8): int {
+    if (c >= 0x30 && c <= 0x39) return i64(c) - 0x30
+    if (c >= 0x61 && c <= 0x7a) return i64(c) - 0x61 + 10
+    if (c >= 0x41 && c <= 0x5a) return i64(c) - 0x41 + 10
+    return 99
+}
+
+/** `BigInt(text)` of a numeric literal without separators: decimal, or with a `0x`, `0o` or `0b` prefix. */
+export function bigParse(text: string): Big {
+    let radix: u64 = 10
+    let start = 0
+    if (text.length >= 2 && text[0] === 0x30) {
+        const p = text[1]
+        if (p === 0x78 || p === 0x58) radix = 16
+        else if (p === 0x6f || p === 0x4f) radix = 8
+        else if (p === 0x62 || p === 0x42) radix = 2
+        if (radix !== u64(10)) start = 2
+    }
+    let mag: u64 = 0
+    for (let i = start; i < text.length; i++) {
+        const d = digitValue(text[i])
+        if (d >= i64(radix)) break
+        mag = mag * radix + u64(d)
+    }
+    return new Big(false, mag)
+}
