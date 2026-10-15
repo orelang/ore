@@ -417,10 +417,10 @@ Every directory below has a README with the details.
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |
 | `tests/async` | Async tests with their expected output, waiting for async |
 | `tests/bench` | Benchmarks |
-| `tests/harness` | The test runners: golden, async, the Ore compiler against TypeScript, Zed queries |
-| `editors/zed` | Zed extension |
+| `tests/runner` | The test runner (`ci/test.sh`), written in Ore |
+| `editors/zed` | Zed extension (GPL-3.0-or-later: it carries Zed's TypeScript queries) |
 | `editors/vscode` | VS Code extension |
-| `ci/` | Linux test environment and stress tests |
+| `ci/` | Bootstrap, tests, stress tests, packaging and releases |
 
 ## License
 
@@ -430,3 +430,7 @@ Ore is licensed under either of the [MIT license](LICENSE-MIT) or the
 Unless you state otherwise, any contribution you submit for inclusion in Ore,
 as defined in the Apache License 2.0, is dual licensed as above, without any
 additional terms or conditions.
+
+The Zed extension in [`editors/zed`](editors/zed) is the exception: it
+carries Zed's TypeScript queries and is licensed under the
+[GPL-3.0-or-later](editors/zed/LICENSE-GPL).
