@@ -6,7 +6,7 @@ import { type Type, FuncType, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
-import { builtinScope } from "./builtins"
+import { builtinScope, namespaceModule, namespaceNames } from "./builtins"
 import { checkClassBodies, checkFieldInitializers, checkImplements, declareClass, declareClassMembers, declareInterface, fillInterface } from "./classes"
 import { CheckResult, ExportEntry, FuncContext, ModuleInfo } from "./context"
 import {
@@ -19,6 +19,7 @@ import {
     declareFunction,
     declareImport,
     declareTypeAlias,
+    exportOf,
     isConstantStatement,
     localizeGlobals,
     unsupportedTopLevel,
@@ -52,6 +53,17 @@ export function check(program: Program): CheckResult {
         const info = new ModuleInfo(source, new Scope(builtins.scope), source === program.entry ? "" : `m${i}_`, new Map<string, ExportEntry>())
         c.modules.set(source, info)
         modules.push(info)
+    }
+    // Built-in namespaces implemented in Ore take the exports of their module.
+    for (const ns of namespaceNames) {
+        const symbol = builtins.scope.lookupValue(ns)
+        const path = namespaceModule(ns)
+        let module: ModuleInfo | null = null
+        for (const m of modules) if (module === null && m.source.path === path) module = m
+        if (symbol !== null && symbol.k === "namespace" && module !== null) {
+            const target = module
+            symbol.module = (name) => exportOf(c, target, name)
+        }
     }
     const bodies: Body[] = []
     const each = (pass: (stmt: Node, module: ModuleInfo) => void) => {
