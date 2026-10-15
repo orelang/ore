@@ -1,0 +1,1161 @@
+// Statements, destructuring, closures and narrowing; see
+// compiler/checker/src/statements.ts.
+
+import {
+    type Expr,
+    type LoopStmt,
+    type Stmt,
+    Assign,
+    Bind,
+    BindLocal,
+    Block,
+    BreakStmt,
+    Closure,
+    ContinueStmt,
+    Downcast,
+    ExprStmt,
+    ForOfStmt,
+    Func,
+    IfaceCall,
+    IfStmt,
+    Index,
+    IntLit,
+    IsNull,
+    LetStmt,
+    Local,
+    LocalLValue,
+    LocalRef,
+    LoopStmt as LoopStmtClass,
+    MethodCall,
+    Not,
+    Recast,
+    ReturnStmt,
+    Seq,
+    Slice,
+    SwitchClause,
+    SwitchStmt,
+    UsingStmt,
+    Logical,
+    setLine,
+} from "../ir/nodes"
+import { type FuncType, type StructType, type Type, FuncType as FuncTypeClass, findMethod, isNumeric, isStringLike, membersOf, sameType, typeofName, types, typeToString } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import {
+    body,
+    caseClauses,
+    condition as conditionNode,
+    declarationKind,
+    declarationList,
+    declarations,
+    dotDotDotToken,
+    elements,
+    elseStatement,
+    expression,
+    incrementor,
+    initializer,
+    isAssignmentOperator,
+    isIdentifier,
+    isStringLiteralNode,
+    label,
+    left,
+    modifiers,
+    nameNode,
+    operand,
+    operatorToken,
+    parameters,
+    prefixOperator,
+    properties,
+    propertyName,
+    questionDotToken,
+    questionToken,
+    right,
+    statement,
+    statements,
+    stringText,
+    thenStatement,
+    typeNode,
+    typeParameters,
+    asteriskToken,
+} from "../syntax/nodes"
+import { type Checker } from "./base"
+import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
+import { directives, exportVariable, paramScope, prepend, checkReturns, threadLocal } from "./declarations"
+import { assignTarget, checkExpr, compare, interfaceFor, member, narrowTo, settle, writeAccessor } from "./expressions"
+import { disposeName, exits, fieldType, hasZeroValue, isTrue, paramName, poison, terminates, typed, typeOf, zeroValue } from "./helpers"
+import { type Operand, errorOperand } from "./operand"
+import { type ValueSymbol, ConstSymbol, LocalSymbol, Scope } from "./symbols"
+
+export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
+    const inner = new Scope(scope)
+    const out: Stmt[] = []
+    c.pushFacts([])
+    // Function declarations are hoisted, as in JavaScript: they exist from the
+    // start of the block, can call each other, and see every variable of the
+    // block. Their signatures are declared first and their bodies checked last.
+    const all = statements(block)
+    const nested = all.filter((s) => s.kind === "FunctionDeclaration")
+    const locals: (Local | null)[] = nested.map((decl) => declareNestedFunction(c, decl, inner))
+    const stmts: Stmt[] = []
+    checkStatements(c, all.filter((s) => s.kind !== "FunctionDeclaration"), inner, stmts)
+
+    const creations: Stmt[] = []
+    const captured = new Map<Local, bool>()
+    for (let i = 0; i < nested.length; i++) {
+        const local = locals[i]
+        if (local === null) continue
+        const decl = nested[i]
+        const closure = checkClosure(c, decl, inner, local.type)
+        if (closure.k !== "typed") continue
+        const expr = closure.expr
+        if (expr.k === "closure") {
+            const captures = expr.func.captures
+            if (captures !== null) for (const x of captures) captured.set(x, true)
+        }
+        const creation = new ExprStmt(new Assign(local.type, new LocalLValue(local), expr))
+        creation.line = c.line(decl)
+        creations.push(creation)
+    }
+    // Variables of this block used by hoisted functions get their boxes at the
+    // start of the block; their declarations become assignments.
+    const boxes: Stmt[] = []
+    for (let i = 0; i < stmts.length; i++) {
+        const s = stmts[i]
+        if (s.k !== "let" || !captured.has(s.local)) continue
+        s.local.assigned = true
+        const box = new LetStmt(s.local)
+        box.line = s.line
+        boxes.push(box)
+        const init = s.init
+        if (init !== null) {
+            const assign = new ExprStmt(new Assign(s.local.type, new LocalLValue(s.local), init))
+            assign.line = s.line
+            stmts[i] = assign
+        } else {
+            stmts[i] = new Block([])
+        }
+    }
+    for (let i = 0; i < locals.length; i++) {
+        const local = locals[i]
+        if (local === null) continue
+        const declared = new LetStmt(local)
+        declared.line = c.line(nested[i])
+        out.push(declared)
+    }
+    for (const s of boxes) out.push(s)
+    for (const s of creations) out.push(s)
+    for (const s of stmts) out.push(s)
+    c.popFacts()
+    return new Block(out)
+}
+
+/**
+ * Checks statements of a block. A `using` declaration takes the statements
+ * after it as its body, so that its resource is disposed when they end.
+ */
+export function checkStatements(c: Checker, stmts: Node[], scope: Scope, out: Stmt[]) {
+    for (let i = 0; i < stmts.length; i++) {
+        const stmt = stmts[i]
+        if (stmt.kind === "VariableStatement" && declarationKind(declarationList(stmt), c.sourceOf(stmt).text) === "using") {
+            checkUsing(c, stmt, stmts.slice(i + 1), scope, out)
+            return
+        }
+        checkStmt(c, stmt, scope, out)
+    }
+}
+
+export function checkUsing(c: Checker, stmt: Node, rest: Node[], scope: Scope, out: Stmt[]) {
+    const decls = declarations(declarationList(stmt))
+    if (decls.length !== 1) {
+        // After an error, the rest of the block is still checked.
+        c.error(stmt, "Declare one resource per 'using'.")
+        checkStatements(c, rest, scope, out)
+        return
+    }
+    const decl = decls[0]
+    const init_ = initializer(decl)
+    if (!isIdentifier(nameNode(decl)) || init_ === null) {
+        c.error(decl, "'using' needs a name and an initializer.")
+        checkStatements(c, rest, scope, out)
+        return
+    }
+    const annotation = typeNode(decl)
+    const declared = annotation !== null ? c.resolveValueType(annotation, scope) : null
+    const value = checkExpr(c, init_, scope, declared)
+    if (value.k === "error") {
+        checkStatements(c, rest, scope, out)
+        return
+    }
+    const init = declared !== null ? c.coerce(value, declared, init_) : c.toDefault(value, init_)
+    const local = c.newLocal(nameNode(decl).text, init.type, false)
+    if (scope === c.globals) local.global = true
+    if (!scope.declareValue(local.name, new LocalSymbol(local, decl))) c.error(nameNode(decl), `Cannot redeclare '${local.name}' in the same scope.`)
+    c.info.types.set(nameNode(decl), local.type)
+
+    // The resource, or null, must have `[Symbol.dispose](): void`.
+    const resource = c.withoutNull(local.type)
+    const ref: Expr = new LocalRef(local.type, local)
+    const target: Expr = sameType(resource, local.type) ? ref : new Recast(resource, ref)
+    const call = disposeCall(target)
+    if (call === null) {
+        c.error(init_, `Type '${typeToString(resource)}' is not disposable: it needs a '[Symbol.dispose](): void' method.`)
+        checkStatements(c, rest, scope, out)
+        return
+    }
+    const callStmt: Stmt = new ExprStmt(call)
+    const dispose: Stmt = sameType(resource, local.type) ? callStmt : new IfStmt(new Not(types.bool, new IsNull(types.bool, ref)), callStmt)
+    const inner: Stmt[] = []
+    checkStatements(c, rest, scope, inner)
+    const using = new UsingStmt(local, init, dispose, inner)
+    using.line = c.line(stmt)
+    out.push(using)
+}
+
+/** A call of `[Symbol.dispose]()` on a value, if its type has that method. */
+export function disposeCall(value: Expr): Expr | null {
+    const type = value.type
+    if (type.kind === "struct") {
+        const method = findMethod(type, disposeName)
+        if (method !== null && method.func.params.length === 0) return new MethodCall(method.func.type.result, method.func, value, [])
+    }
+    if (type.kind === "interface") {
+        for (let index = 0; index < type.members.length; index++) {
+            const m = type.members[index]
+            if (m.name !== disposeName) continue
+            if (m.k === "method" && m.type.params.length === 0) return new IfaceCall(m.type.result, value, index, m.type, [])
+            return null
+        }
+    }
+    return null
+}
+
+/** Declares a local for a nested function declaration, typed by its annotations. */
+export function declareNestedFunction(c: Checker, decl: Node, scope: Scope): Local | null {
+    const name = decl.child("name")
+    if (name === null || body(decl) === null) {
+        c.error(decl, "A nested function needs a name and a body.")
+        return null
+    }
+    const typeParams = typeParameters(decl)
+    if (typeParams.length > 0) {
+        c.error(typeParams[0], "Nested generic functions are not supported.")
+        return null
+    }
+    const params: Type[] = []
+    for (const p of parameters(decl)) {
+        const annotation = typeNode(p)
+        if (annotation === null) {
+            c.error(p, `Parameter '${c.text(nameNode(p))}' must have a type annotation.`)
+            return null
+        }
+        const t = c.resolveValueType(annotation, scope)
+        if (t === null) return null
+        params.push(t)
+    }
+    const annotation = typeNode(decl)
+    const result = annotation !== null ? c.resolveType(annotation, scope) : types.void
+    if (result === null) return null
+    const local = c.newLocal(name.text, new FuncTypeClass(params, result), false)
+    // Assigned once its closure exists; a recursive function captures itself through a box.
+    local.assigned = true
+    if (!scope.declareValue(name.text, new LocalSymbol(local, decl))) c.error(name, `Cannot redeclare '${name.text}' in the same scope.`)
+    c.info.types.set(name, local.type)
+    return local
+}
+
+/** Checks a statement whose own scope ends with it (a branch or loop body). */
+export function checkNested(c: Checker, stmt: Node, scope: Scope): Stmt {
+    if (stmt.kind === "Block") return checkBlock(c, stmt, scope)
+    const out: Stmt[] = []
+    c.pushFacts([])
+    checkStmt(c, stmt, new Scope(scope), out)
+    c.popFacts()
+    return out.length === 1 ? out[0] : new Block(out)
+}
+
+export function checkStmt(c: Checker, stmt: Node, scope: Scope, out: Stmt[]) {
+    const before = out.length
+    checkStmtInner(c, stmt, scope, out)
+    const line = c.line(stmt)
+    for (let i = before; i < out.length; i++) if (out[i].line === null) setLine(out[i], line)
+}
+
+function findLoop(fn: FuncContext, name: string): LoopContext | null {
+    for (let i = fn.loops.length - 1; i >= 0; i--) if (fn.loops[i].label === name) return fn.loops[i]
+    return null
+}
+
+export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]) {
+    const fn = c.fn!
+    const k = stmt.kind
+    if (k === "Block") out.push(checkBlock(c, stmt, scope))
+    else if (k === "VariableStatement") checkVariables(c, declarationList(stmt), scope, out, stmt)
+    else if (k === "ExpressionStatement") {
+        const value = checkExpr(c, expression(stmt), scope)
+        if (value.k === "typed") out.push(new ExprStmt(value.expr))
+    } else if (k === "IfStatement") {
+        const cond = condition(c, expression(stmt), scope)
+        c.pushFacts(cond.whenTrue)
+        const then = checkNested(c, thenStatement(stmt), scope)
+        c.popFacts()
+        const elseNode = elseStatement(stmt)
+        let elseStmt: Stmt | null = null
+        if (elseNode !== null) {
+            c.pushFacts(cond.whenFalse)
+            elseStmt = checkNested(c, elseNode, scope)
+            c.popFacts()
+        }
+        out.push(new IfStmt(cond.expr, then, elseStmt))
+        // After `if (x === null) return` (or continue, break), x is not null for the rest of the block.
+        const thenExits = exits(then)
+        const elseExits = elseStmt !== null && exits(elseStmt)
+        if (thenExits && !elseExits) addFacts(c, cond.whenFalse)
+        else if (elseExits && !thenExits) addFacts(c, cond.whenTrue)
+    } else if (k === "WhileStatement") {
+        invalidateAssigned(c, stmt, scope)
+        const cond = condition(c, expression(stmt), scope)
+        c.pushFacts(cond.whenTrue)
+        const loop = checkLoopBody(c, statement(stmt), scope)
+        c.popFacts()
+        out.push(new LoopStmtClass(loop.context.id, loop.context.labeled, false, loop.body, null, isTrue(cond.expr) ? null : cond.expr))
+    } else if (k === "DoStatement") {
+        invalidateAssigned(c, stmt, scope)
+        const loop = checkLoopBody(c, statement(stmt), scope)
+        const cond = checkCondition(c, expression(stmt), scope)
+        out.push(new LoopStmtClass(loop.context.id, loop.context.labeled, true, loop.body, null, cond))
+    } else if (k === "ForStatement") {
+        out.push(checkFor(c, stmt, scope))
+    } else if (k === "BreakStatement" || k === "ContinueStatement") {
+        const isBreak = k === "BreakStatement"
+        const target = label(stmt)
+        if (target !== null) {
+            const loop = findLoop(fn, target.text)
+            if (loop === null) c.error(target, `Cannot find loop label '${target.text}'.`)
+            else if (!isBreak && loop.isSwitch) c.error(target, `Cannot continue '${loop.label}': it labels a switch.`)
+            else {
+                loop.labeled = true
+                out.push(isBreak ? new BreakStmt(loop.id) : new ContinueStmt(loop.id))
+            }
+        } else if (isBreak) {
+            if (fn.loops.length === 0) c.error(stmt, "'break' must be inside a loop or switch.")
+            out.push(new BreakStmt())
+        } else {
+            let loop: LoopContext | null = null
+            for (let i = fn.loops.length - 1; i >= 0 && loop === null; i--) if (!fn.loops[i].isSwitch) loop = fn.loops[i]
+            if (loop === null) c.error(stmt, "'continue' must be inside a loop.")
+            // Inside a switch, a plain C `continue` still targets the enclosing loop.
+            out.push(new ContinueStmt())
+        }
+    } else if (k === "ReturnStatement") {
+        out.push(checkReturn(c, stmt, scope))
+    } else if (k === "EmptyStatement") {
+        // nothing
+    } else if (k === "FunctionDeclaration") {
+        // A function declaration outside a block body, such as `if (x) function f() {}`.
+        c.error(stmt, "A function declaration must be at the top level or directly in a block.")
+    } else if (k === "ThrowStatement" || k === "TryStatement") {
+        c.error(stmt, "Exceptions are not supported in Ore. Return an error value, or call panic() for unrecoverable failures.")
+    } else if (k === "SwitchStatement") {
+        const sw = checkSwitch(c, stmt, scope)
+        if (sw !== null) out.push(sw)
+    } else if (k === "ForOfStatement") {
+        const loop = checkForOf(c, stmt, scope)
+        if (loop !== null) out.push(loop)
+    } else if (k === "ForInStatement") {
+        c.error(stmt, "'for...in' is not supported in Ore. Use 'for...of'.")
+    } else if (k === "LabeledStatement") {
+        const labelNode = label(stmt)!
+        const name = labelNode.text
+        const inner = statement(stmt)
+        const ik = inner.kind
+        let duplicate = false
+        for (const l of fn.loops) if (l.label === name) duplicate = true
+        if (!(ik === "WhileStatement" || ik === "DoStatement" || ik === "ForStatement" || ik === "ForOfStatement" || ik === "SwitchStatement")) {
+            c.error(labelNode, "Labels are only supported on loops and switches.")
+        } else if (duplicate) {
+            c.error(labelNode, `Duplicate label '${name}'.`)
+        } else {
+            fn.pendingLabel = name
+        }
+        checkStmt(c, inner, scope, out)
+    } else {
+        c.error(stmt, "This statement is not supported yet.")
+    }
+}
+
+/** `let` and `const` declarations; `stmt` is the `VariableStatement`, or null in a `for`. */
+export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[], stmt: Node | null = null) {
+    const kind = declarationKind(list, c.sourceOf(list).text)
+    const isConst = kind === "const"
+    if (!isConst && kind !== "let") {
+        if (kind === "using") {
+            c.error(list, "'using' must be a statement directly in a block.")
+            return
+        }
+        c.error(list, "'var' is not supported in Ore. Use 'let' or 'const'.")
+        return
+    }
+    for (const decl of declarations(list)) {
+        const nameId = nameNode(decl)
+        const annotation = typeNode(decl)
+        const init_ = initializer(decl)
+        if (!isIdentifier(nameId)) {
+            if (init_ === null) {
+                c.error(nameId, "A destructuring declaration must be initialized.")
+                continue
+            }
+            const declared = annotation !== null ? c.resolveValueType(annotation, scope) : null
+            const value = checkExpr(c, init_, scope, declared)
+            if (value.k === "error") continue
+            const init = declared !== null ? c.coerce(value, declared, init_) : c.toDefault(value, init_)
+            bindPattern(c, nameId, init, !isConst, scope, out)
+            continue
+        }
+        const name = nameId.text
+        const declared = annotation !== null ? c.resolveValueType(annotation, scope) : null
+        if (isConst && init_ === null) c.error(nameId, "A 'const' declaration must be initialized.")
+
+        const value = init_ !== null ? checkExpr(c, init_, scope, declared) : null
+        let symbol: ValueSymbol
+        if (isConst && declared === null && value !== null && (value.k === "untyped-int" || value.k === "untyped-float")) {
+            // An untyped constant stays untyped, like in Go: `const n = 10` is usable as any numeric type.
+            symbol = new ConstSymbol(value, null, decl)
+            c.info.types.set(nameId, c.defaultType(value))
+        } else {
+            let type: Type
+            let init: Expr
+            // Without a value, a variable of a type without a zero value, or without a
+            // type, must be assigned before it is read.
+            let unassigned = false
+            if (declared !== null) {
+                type = declared
+                unassigned = value === null && !hasZeroValue(declared)
+                init = value !== null ? c.coerce(value, declared, init_!) : zeroValue(declared)
+            } else if (value !== null) {
+                init = c.toDefault(value, init_!)
+                type = typeOf(init)
+                if (type.kind === "void" || type.kind === "never") c.error(init_!, `Cannot assign an expression of type '${type.kind}' to a variable.`)
+                if (type.kind === "null") c.error(init_!, `Cannot infer a type from 'null'. Add a type annotation, e.g. 'let ${name}: T | null = null'.`)
+            } else {
+                // Typed by its first assignment.
+                type = types.never
+                init = zeroValue(types.i64)
+                unassigned = true
+            }
+            const local = c.newLocal(name, type, !isConst)
+            // Its type is unknown: uses of it report nothing more.
+            if (declared === null && value !== null && value.k === "error") c.poisoned.set(local, true)
+            if (scope === c.globals) local.global = true
+            if (scope === c.globals && stmt !== null) {
+                const found = directives(c, stmt)
+                let threadlocal = false
+                for (const d of found) if (d.name === "threadlocal") threadlocal = true
+                if (threadlocal) threadLocal(c, decl, local)
+                for (const d of found) {
+                    if (d.name === "export" && d.arg !== "") {
+                        exportVariable(c, decl, local, d.arg)
+                        break
+                    }
+                }
+            }
+            symbol = new LocalSymbol(local, decl)
+            if (declared === null && value === null) c.untyped.set(local, true)
+            else c.info.types.set(nameId, type)
+            if (unassigned) {
+                c.unassigned.set(local, true)
+                c.declNodes.set(local, nameId)
+                out.push(new LetStmt(local))
+            } else if (local.global && value === null && (isNumeric(type) || type.kind === "bool" || type.kind === "ptr")) {
+                // Such a global is zero bits before any code runs, so the declaration does not store it again.
+                out.push(new LetStmt(local))
+            } else {
+                out.push(new LetStmt(local, init))
+            }
+            const initType = init_ !== null ? c.info.types.get(init_) : null
+            if (initType !== null) narrowTo(c, `L${local.id}`, type, initType)
+        }
+        if (!scope.declareValue(name, symbol)) c.error(nameId, `Cannot redeclare '${name}' in the same scope.`)
+    }
+}
+
+/**
+ * Declares the names of a binding pattern, or a single name, with the parts
+ * of `value` they select, adding the declarations to `out`.
+ */
+export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, scope: Scope, out: Stmt[]) {
+    if (isIdentifier(name)) {
+        declareBinding(c, name, value, mutable, scope, out)
+        return
+    }
+    // The value is read once per name, so it is held in a local first.
+    let whole = value
+    if (whole.k !== "local") {
+        const local = c.newLocal("tmp", value.type, false)
+        out.push(new LetStmt(local, value))
+        whole = new LocalRef(value.type, local)
+    }
+    if (name.kind === "ObjectBindingPattern") {
+        for (const e of elements(name)) {
+            if (dotDotDotToken(e) !== null) {
+                c.error(e, "Rest elements are not supported in object destructuring.")
+                continue
+            }
+            const init = initializer(e)
+            if (init !== null) c.error(init, "Default values in destructuring are not supported.")
+            const key = propertyName(e) ?? nameNode(e)
+            if (!isIdentifier(key) && key.kind !== "StringLiteral") {
+                c.error(key, "Destructure a property by its name.")
+                continue
+            }
+            const part = member(c, whole, key, isIdentifier(key) ? key.text : stringText(key))
+            if (part.k === "typed") bindPattern(c, nameNode(e), part.expr, mutable, scope, out)
+        }
+        return
+    }
+    const array = whole.type
+    if (array.kind !== "array") {
+        c.error(name, `Type '${typeToString(array)}' cannot be destructured as an array.`)
+        return
+    }
+    const elems = elements(name)
+    for (let i = 0; i < elems.length; i++) {
+        const e = elems[i]
+        if (e.kind === "OmittedExpression") continue
+        const init = initializer(e)
+        if (init !== null) c.error(init, "Default values in destructuring are not supported.")
+        const index: Expr = new IntLit(types.i64, i)
+        const part: Expr = dotDotDotToken(e) !== null ? new Slice(array, whole, index) : new Index(array.elem, whole, index)
+        bindPattern(c, nameNode(e), part, mutable, scope, out)
+    }
+}
+
+export function declareBinding(c: Checker, name: Node, init: Expr, mutable: bool, scope: Scope, out: Stmt[]) {
+    const local = c.newLocal(name.text, init.type, mutable)
+    if (scope === c.globals) local.global = true
+    if (!scope.declareValue(local.name, new LocalSymbol(local, name))) c.error(name, `Cannot redeclare '${local.name}' in the same scope.`)
+    c.info.types.set(name, init.type)
+    out.push(new LetStmt(local, init))
+}
+
+/** The state of a destructuring assignment: the locals that hold parts, and the assignments. */
+class Destructuring {
+    readonly locals: BindLocal[] = []
+    readonly assigns: Expr[] = []
+
+    hold(c: Checker, v: Expr): Expr {
+        const local = c.newLocal("tmp", v.type, false)
+        this.locals.push(new BindLocal(local, v))
+        return new LocalRef(v.type, local)
+    }
+}
+
+/** `[a, b] = value` or `({ a, b } = value)`: assigns the parts of the value; evaluates to the value. */
+export function checkDestructuringAssign(c: Checker, node: Node, scope: Scope): Operand {
+    const operand_ = checkExpr(c, right(node), scope)
+    if (operand_.k === "error") return operand_
+    const value = c.toDefault(operand_, right(node))
+    const state = new Destructuring()
+    destructure(c, state, left(node), value, scope)
+    const result = state.locals[0]
+    const ref: Expr = new LocalRef(value.type, result.local)
+    const exprs: Expr[] = []
+    for (const a of state.assigns) exprs.push(a)
+    exprs.push(ref)
+    return typed(new Bind(value.type, state.locals, new Seq(value.type, exprs)))
+}
+
+function destructure(c: Checker, state: Destructuring, target: Node, part: Expr, scope: Scope) {
+    if (target.kind === "ArrayLiteralExpression") {
+        const whole = state.hold(c, part)
+        const array = whole.type
+        if (array.kind !== "array") {
+            c.error(target, `Type '${typeToString(array)}' cannot be destructured as an array.`)
+            return
+        }
+        const elems = elements(target)
+        for (let i = 0; i < elems.length; i++) {
+            const e = elems[i]
+            if (e.kind === "OmittedExpression") continue
+            const index: Expr = new IntLit(types.i64, i)
+            if (e.kind === "SpreadElement") destructure(c, state, expression(e), new Slice(array, whole, index), scope)
+            else destructure(c, state, e, new Index(array.elem, whole, index), scope)
+        }
+        return
+    }
+    if (target.kind === "ObjectLiteralExpression") {
+        const whole = state.hold(c, part)
+        for (const p of properties(target)) {
+            const pname = p.child("name")
+            if (p.kind === "ShorthandPropertyAssignment") {
+                const field = member(c, whole, pname!, pname!.text)
+                if (field.k === "typed") destructure(c, state, pname!, field.expr, scope)
+            } else if (p.kind === "PropertyAssignment" && pname !== null && (isIdentifier(pname) || pname.kind === "StringLiteral")) {
+                const field = member(c, whole, pname, isIdentifier(pname) ? pname.text : stringText(pname))
+                if (field.k === "typed") destructure(c, state, initializer(p)!, field.expr, scope)
+            } else {
+                c.error(p, "Destructure a property by its name.")
+            }
+        }
+        return
+    }
+    const lvalue = assignTarget(c, target, scope)
+    if (lvalue === null) return
+    const place = lvalue.lvalue
+    if (place !== null && place.k === "local" && c.untyped.has(place.local)) {
+        if (!settle(c, place.local, typed(part), target)) return
+        lvalue.type = place.local.type
+    }
+    const key = refKey(c, target, scope)
+    if (key !== null) invalidate(c, key)
+    if (lvalue.accessor !== null) {
+        const write = writeAccessor(c, lvalue, target, (old) => c.coerce(typed(part), lvalue.type, target), false, false)
+        if (write.k === "typed") state.assigns.push(write.expr)
+        return
+    }
+    state.assigns.push(new Assign(lvalue.type, place!, c.coerce(typed(part), lvalue.type, target)))
+}
+
+export function checkFor(c: Checker, stmt: Node, outer: Scope): Stmt {
+    const scope = new Scope(outer)
+    const prelude: Stmt[] = []
+    const init = initializer(stmt)
+    if (init !== null) {
+        if (init.kind === "VariableDeclarationList") checkVariables(c, init, scope, prelude)
+        else {
+            const value = checkExpr(c, init, scope)
+            if (value.k === "typed") prelude.push(new ExprStmt(value.expr))
+        }
+    }
+    invalidateAssigned(c, stmt, scope)
+    const condNode = conditionNode(stmt)
+    const cond = condNode !== null ? condition(c, condNode, scope) : null
+    let update: Expr | null = null
+    const inc = incrementor(stmt)
+    if (inc !== null) {
+        const value = checkExpr(c, inc, scope)
+        if (value.k === "typed") update = value.expr
+    }
+    c.pushFacts(cond !== null ? cond.whenTrue : [])
+    const loop = checkLoopBody(c, statement(stmt), scope)
+    c.popFacts()
+    const perIteration: Local[] = []
+    for (const s of prelude) if (s.k === "let" && s.local.mutable) perIteration.push(s.local)
+    const condExpr = cond !== null && !isTrue(cond.expr) ? cond.expr : null
+    const result = new LoopStmtClass(loop.context.id, loop.context.labeled, false, loop.body, perIteration, condExpr, update)
+    if (prelude.length === 0) return result
+    prelude.push(result)
+    return new Block(prelude)
+}
+
+export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | null {
+    const list = initializer(stmt)!
+    const kind = list.kind === "VariableDeclarationList" ? declarationKind(list, c.sourceOf(list).text) : "var"
+    if (kind !== "const" && kind !== "let") {
+        c.error(list, "The loop variable must be declared with 'const' or 'let'.")
+        return null
+    }
+    const decl = declarations(list)[0]
+    const annotation = typeNode(decl)
+    if (annotation !== null) c.error(annotation, "The loop variable cannot have a type annotation; its type comes from the iterable.")
+
+    const value = checkExpr(c, expression(stmt), outer)
+    if (value.k === "error") return null
+    const iterable = c.toDefault(value, expression(stmt))
+    const type = iterable.type
+    const mutable = kind === "let"
+    // Names and types of the loop variables: one, or `[key, value]` for a map.
+    const names: Node[] = []
+    const elemTypes: Type[] = []
+    if (type.kind === "map") {
+        const pattern = nameNode(decl)
+        const found: (Node | null)[] = []
+        if (pattern.kind === "ArrayBindingPattern") {
+            for (const e of elements(pattern)) {
+                const n = e.kind === "BindingElement" ? nameNode(e) : null
+                found.push(n !== null && isIdentifier(n) && dotDotDotToken(e) === null && initializer(e) === null ? n : null)
+            }
+        }
+        if (found.length !== 2 || found[0] === null || found[1] === null) {
+            c.error(nameNode(decl), "Iterate a Map with 'for (const [key, value] of map)'.")
+            return null
+        }
+        names.push(found[0]!)
+        elemTypes.push(type.key)
+        names.push(found[1]!)
+        elemTypes.push(type.value)
+    } else {
+        let elem: Type
+        if (type.kind === "array") elem = type.elem
+        else if (type.kind === "chan") elem = type.elem
+        else if (type.kind === "string") elem = types.i32
+        else {
+            c.error(expression(stmt), `Type '${typeToString(type)}' is not iterable.`)
+            return null
+        }
+        names.push(nameNode(decl))
+        elemTypes.push(elem)
+    }
+
+    invalidateAssigned(c, statement(stmt), outer)
+    const scope = new Scope(outer)
+    // A destructured element is held by a hidden loop variable, unpacked at the start of each iteration.
+    const prologue: Stmt[] = []
+    const locals: Local[] = []
+    for (let i = 0; i < names.length; i++) {
+        const name = names[i]
+        const t = elemTypes[i]
+        if (!isIdentifier(name)) {
+            const local = c.newLocal("item", t, false)
+            bindPattern(c, name, new LocalRef(t, local), mutable, scope, prologue)
+            locals.push(local)
+            continue
+        }
+        const local = c.newLocal(name.text, t, mutable)
+        if (!scope.declareValue(local.name, new LocalSymbol(local, name))) c.error(name, `Duplicate name '${name.text}'.`)
+        c.info.types.set(name, t)
+        locals.push(local)
+    }
+    const loop = checkLoopBody(c, statement(stmt), scope)
+    let loopBody = loop.body
+    if (prologue.length > 0) loopBody = new Block(prepend(prologue, loopBody.k === "block" ? loopBody.body : [loopBody]))
+    return new ForOfStmt(loop.context.id, loop.context.labeled, locals[0], iterable, loopBody, locals.length > 1 ? locals[1] : null)
+}
+
+export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | null {
+    const subject = expression(stmt)
+    const operand_ = checkExpr(c, subject, outer)
+    if (operand_.k === "error") return null
+    const value = c.toDefault(operand_, subject)
+    const type = value.type
+    if (!(isNumeric(type) || type.kind === "bool" || membersOf(type).every(isStringLike))) {
+        c.error(subject, `Cannot switch on a value of type '${typeToString(type)}'.`)
+        return null
+    }
+    const fn = c.fn!
+    const local = c.newLocal("switch", type, false)
+    const ref: Expr = new LocalRef(type, local)
+    const loop = new LoopContext(fn.nextLoopId++, fn.pendingLabel, true)
+    fn.pendingLabel = null
+
+    // All clauses share one block scope, as in TypeScript.
+    const scope = new Scope(outer)
+    const clauses: SwitchClause[] = []
+    let hasDefault = false
+    // String literal cases narrow the subject: within a clause, the values of
+    // the cases that lead to it without falling through code; in default, the rest.
+    const allCases = new Map<string, bool>()
+    for (const clause of caseClauses(stmt)) {
+        if (clause.kind === "CaseClause" && isStringLiteralNode(expression(clause))) allCases.set(stringText(expression(clause)), true)
+    }
+    let entering = new Map<string, bool>()
+    let narrowable = true
+    for (const clause of caseClauses(stmt)) {
+        let facts: Fact[] = []
+        if (clause.kind === "CaseClause") {
+            if (isStringLiteralNode(expression(clause))) entering.set(stringText(expression(clause)), true)
+            else narrowable = false
+            if (narrowable) facts = literalFacts(c, subject, entering, scope).yes
+        } else if (narrowable && entering.size === 0) {
+            facts = literalFacts(c, subject, allCases, scope).no
+        }
+        c.pushFacts(facts)
+        let test: Expr | null = null
+        if (clause.kind === "CaseClause") {
+            const caseNode = expression(clause)
+            const compared = compare(c, "===", typed(ref), checkExpr(c, caseNode, scope), caseNode, subject, caseNode)
+            test = compared.k === "typed" ? compared.expr : poison(types.bool)
+        } else if (hasDefault) {
+            c.error(clause, "A switch can have only one 'default' clause.")
+        } else {
+            hasDefault = true
+        }
+        fn.loops.push(loop)
+        const clauseBody: Stmt[] = []
+        for (const s of statements(clause)) checkStmt(c, s, scope, clauseBody)
+        fn.loops.pop()
+        c.popFacts()
+        clauses.push(new SwitchClause(clauseBody, test))
+        // The next clause is narrowed only if this one cannot fall through into it.
+        if (statements(clause).length > 0) {
+            const last = clauseBody.length > 0 ? clauseBody[clauseBody.length - 1] : null
+            const leaves = last !== null && (last.k === "break" || last.k === "continue" || terminates(last))
+            entering = new Map<string, bool>()
+            narrowable = leaves
+        }
+    }
+    // A switch over a union of string literals that has a case for each is exhaustive.
+    const exhaustive = membersOf(type).every((m) => m.kind === "literal" && allCases.has(m.value))
+    return new SwitchStmt(loop.id, loop.labeled, exhaustive, local, value, clauses)
+}
+
+/** A loop body and its loop context. */
+export class LoopBody {
+    constructor(
+        readonly context: LoopContext,
+        readonly body: Stmt,
+    ) {}
+}
+
+export function checkLoopBody(c: Checker, stmt: Node, scope: Scope): LoopBody {
+    const fn = c.fn!
+    const loop = new LoopContext(fn.nextLoopId++, fn.pendingLabel)
+    fn.pendingLabel = null
+    fn.loops.push(loop)
+    const loopBody = checkNested(c, stmt, scope)
+    fn.loops.pop()
+    return new LoopBody(loop, loopBody)
+}
+
+export function checkReturn(c: Checker, stmt: Node, scope: Scope): ReturnStmt {
+    const fn = c.fn!
+    const valueNode = stmt.child("expression")
+    if (fn.topLevel) {
+        c.error(stmt, "'return' is only allowed in a function. Use 'process.exit()' to end the program.")
+        return new ReturnStmt()
+    }
+    if (fn.ctor) {
+        if (valueNode !== null) c.error(valueNode, "A constructor cannot return a value.")
+        const self = fn.thisLocal!
+        return new ReturnStmt(new LocalRef(self.type, self))
+    }
+    const current = fn.result
+    if (current === null) {
+        // A closure without a return type takes the type of its first return.
+        if (valueNode === null) {
+            fn.result = types.void
+            return new ReturnStmt()
+        }
+        const value = checkExpr(c, valueNode, scope)
+        if (value.k === "error") return new ReturnStmt()
+        const expr = c.toDefault(value, valueNode)
+        fn.result = expr.type
+        return new ReturnStmt(expr)
+    }
+    if (valueNode === null) {
+        if (current.kind !== "void") c.error(stmt, `A return value of type '${typeToString(current)}' is required.`)
+        return new ReturnStmt()
+    }
+    const value = checkExpr(c, valueNode, scope, current)
+    if (current.kind === "void") {
+        // `return f()` of a void `f` calls it and returns.
+        if (value.k === "typed" && value.expr.type.kind === "void") return new ReturnStmt(value.expr)
+        if (value.k !== "error") c.error(valueNode, "A function without a return type annotation cannot return a value.")
+        return new ReturnStmt()
+    }
+    return new ReturnStmt(c.coerce(value, current, valueNode))
+}
+
+export function checkCondition(c: Checker, node: Node, scope: Scope): Expr {
+    return c.coerce(checkExpr(c, node, scope), types.bool, node)
+}
+
+/** Records that closures, innermost first, capture a local of an enclosing function. */
+export function capture(local: Local, closures: Func[]) {
+    if (closures.length === 0 || local.global) return
+    local.captured = true
+    for (const f of closures) {
+        const captures = f.captures!
+        if (!captures.includes(local)) captures.push(local)
+    }
+}
+
+/** The local id of a narrowing key `L<id>`, or -1. */
+function keyLocal(key: string): int {
+    if (key.length < 2 || key[0] !== 0x4c) return -1
+    for (let i = 1; i < key.length; i++) if (key[i] < 0x30 || key[i] > 0x39) return -1
+    return Number.parseInt(key.slice(1)) ?? -1
+}
+
+/**
+ * Checks an arrow function, function expression or nested function into a
+ * closure. Parameter and return types come from annotations or from the
+ * expected function type; otherwise the return type is inferred.
+ */
+export function checkClosure(c: Checker, node: Node, outer: Scope, expected: Type | null = null, inferResult: bool = false): Operand {
+    const typeParams = typeParameters(node)
+    if (typeParams.length > 0) return c.fail(typeParams[0], "Generic closures are not supported.")
+    const asterisk = asteriskToken(node)
+    if (asterisk !== null) return c.fail(asterisk, "Generators are not supported in Ore.")
+    for (const m of modifiers(node)) if (m.kind === "AsyncKeyword") return c.fail(node, "'async' is not supported in Ore. Use spawn() and channels.")
+    // The expected function type, also from a union such as `(() => void) | null`.
+    const funcs: FuncType[] = []
+    if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "func") funcs.push(m)
+    const want = funcs.length === 1 ? funcs[0] : null
+    const params_ = parameters(node)
+    if (want !== null && params_.length > want.params.length) {
+        return c.fail(node, `This function takes ${params_.length} parameter(s), but ${want.params.length} are expected.`)
+    }
+    const params: Local[] = []
+    for (let i = 0; i < params_.length; i++) {
+        const p = params_[i]
+        if (dotDotDotToken(p) !== null || questionToken(p) !== null || initializer(p) !== null) return c.fail(p, "Optional, default and rest parameters are not supported in closures, which are called as values.")
+        const annotation = typeNode(p)
+        const type = annotation !== null ? c.resolveValueType(annotation, outer) : want !== null && i < want.params.length ? want.params[i] : null
+        if (type === null) return c.fail(nameNode(p), `Parameter '${c.text(nameNode(p))}' needs a type annotation here.`)
+        if (annotation !== null && want !== null && !sameType(type, want.params[i])) {
+            return c.fail(annotation, `Parameter type '${typeToString(type)}' does not match the expected '${typeToString(want.params[i])}'.`)
+        }
+        c.info.types.set(nameNode(p), type)
+        params.push(c.newLocal(paramName(p, i), type, true))
+    }
+    // An unused trailing parameter of the expected type is still passed.
+    if (want !== null) for (let i = params.length; i < want.params.length; i++) params.push(c.newLocal(`_${i}`, want.params[i], false))
+
+    const resultNode = typeNode(node)
+    const annotated = resultNode !== null ? c.resolveType(resultNode, outer) : null
+    const outerFn = c.fn
+    const isDeclaration = node.kind === "FunctionDeclaration"
+    const name = isDeclaration ? nameNode(node).text : "<lambda>"
+    const outerClosure = outerFn !== null ? outerFn.closure : null
+    const noCaptures: Func[] = []
+    const noLocals: Local[] = []
+    const func = new Func(
+        `ore_lambda_${c.nextLambda++}`,
+        outerClosure !== null ? `${outerClosure.sourceName}.${name}` : name,
+        c.line(node),
+        new FuncTypeClass(params.map((p) => p.type), types.void),
+        params,
+        new Block([]),
+        false,
+        c.sourceOf(node).path,
+        false,
+        null,
+        null,
+        noLocals,
+    )
+    c.module.functions.push(func)
+    const prologue: Stmt[] = []
+    const scope = paramScope(c, params_, params, new Scope(outer, func), prologue)
+
+    // Arrow functions keep the `this` of the enclosing method; function expressions have none.
+    const isArrow = node.kind === "ArrowFunction"
+    const savedFn = c.fn
+    const savedFacts = c.facts
+    // What is known about constants where a function literal is created stays
+    // true inside it. A hoisted declaration may run earlier, so it knows nothing.
+    const inherited = new Map<string, Type>()
+    if (!isDeclaration) {
+        for (const frame of savedFacts) {
+            for (const [key, type] of frame) {
+                const id = keyLocal(key)
+                const local = id < 0 ? null : c.localsById.get(id)
+                if (local !== null && !local.mutable && !local.assigned) inherited.set(key, type)
+            }
+        }
+    }
+    c.facts = [inherited]
+    let result: Type | null = annotated
+    if (result === null && !inferResult && want !== null) result = want.result.kind !== "void" ? want.result : types.void
+    const captures: Func[] = [func]
+    if (isArrow && outerFn !== null && outerFn.thisCaptures !== null) for (const f of outerFn.thisCaptures) captures.push(f)
+    c.fn = new FuncContext(
+        result,
+        [],
+        0,
+        func,
+        isArrow ? captures : noCaptures.slice(),
+        isArrow && outerFn !== null ? outerFn.thisLocal : null,
+        isArrow && outerFn !== null ? outerFn.cls : null,
+    )
+    const ok = closureBody(c, node, func, scope, prologue, resultNode)
+    c.fn = savedFn
+    c.facts = savedFacts
+    if (!ok) return errorOperand
+    const closure = new Closure(func.type, func)
+    c.closureNodes.set(closure, node)
+    return typed(closure)
+}
+
+/** The body of a closure being checked; false when its expression body has an error. */
+function closureBody(c: Checker, node: Node, func: Func, scope: Scope, prologue: Stmt[], resultNode: Node | null): bool {
+    const fn = c.fn!
+    const fnBody = body(node)!
+    if (fnBody.kind === "Block") {
+        func.body = checkBlock(c, fnBody, scope)
+    } else {
+        // An expression body returns its value, or is evaluated for a void result.
+        const value = checkExpr(c, fnBody, scope, fn.result)
+        if (value.k === "error") return false
+        const result = fn.result
+        if (result !== null && result.kind === "void") {
+            func.body = new Block(value.k === "typed" ? [new ExprStmt(value.expr)] : [])
+        } else {
+            const expr = result !== null ? c.coerce(value, result, fnBody) : c.toDefault(value, fnBody)
+            if (fn.result === null) fn.result = expr.type
+            func.body = new Block([new ReturnStmt(expr)])
+        }
+    }
+    func.body.body = prepend(prologue, func.body.body)
+    func.type = new FuncTypeClass(func.type.params, fn.result ?? types.void)
+    checkReturns(c, func, resultNode ?? node)
+    return true
+}
+
+/** Checks a condition and the facts it establishes when true and when false. */
+export function condition(c: Checker, node: Node, scope: Scope): Condition {
+    if (node.kind === "ParenthesizedExpression") return condition(c, expression(node), scope)
+    if (node.kind === "PrefixUnaryExpression" && prefixOperator(node, c.sourceOf(node).text) === "!") {
+        const inner = condition(c, operand(node), scope)
+        return new Condition(new Not(types.bool, inner.expr), inner.whenFalse, inner.whenTrue)
+    }
+    if (node.kind === "BinaryExpression") {
+        const op = operatorToken(node).kind
+        if (op === "AmpersandAmpersandToken" || op === "BarBarToken") {
+            const and = op === "AmpersandAmpersandToken"
+            const l = condition(c, left(node), scope)
+            // The right side runs only when the left side did not decide the result.
+            c.pushFacts(and ? l.whenTrue : l.whenFalse)
+            const r = condition(c, right(node), scope)
+            c.popFacts()
+            const expr: Expr = new Logical(types.bool, and ? "&&" : "||", l.expr, r.expr)
+            return and ? new Condition(expr, concatFacts(l.whenTrue, r.whenTrue), []) : new Condition(expr, [], concatFacts(l.whenFalse, r.whenFalse))
+        }
+        if (op === "EqualsEqualsEqualsToken" || op === "ExclamationEqualsEqualsToken") {
+            const nullSide = right(node).kind === "NullKeyword" ? left(node) : left(node).kind === "NullKeyword" ? right(node) : null
+            if (nullSide !== null) {
+                const expr = checkCondition(c, node, scope)
+                const key = refKey(c, nullSide, scope)
+                const type = c.info.types.get(nullSide)
+                const notNull: Fact[] = key !== null && type !== null ? [new Fact(key, c.withoutNull(type))] : []
+                return op === "EqualsEqualsEqualsToken" ? new Condition(expr, [], notNull) : new Condition(expr, notNull, [])
+            }
+            const literalSide = isStringLiteralNode(right(node)) ? right(node) : isStringLiteralNode(left(node)) ? left(node) : null
+            if (literalSide !== null) {
+                const subject = literalSide === right(node) ? left(node) : right(node)
+                const expr = checkCondition(c, node, scope)
+                const values = new Map<string, bool>()
+                values.set(stringText(literalSide), true)
+                const pair = literalFacts(c, subject, values, scope)
+                return op === "EqualsEqualsEqualsToken" ? new Condition(expr, pair.yes, pair.no) : new Condition(expr, pair.no, pair.yes)
+            }
+        }
+        if (op === "InstanceOfKeyword") {
+            const expr = checkCondition(c, node, scope)
+            const key = refKey(c, left(node), scope)
+            const type = c.info.types.get(left(node))
+            const r = right(node)
+            const found = isIdentifier(r) ? scope.lookupType(r.text) : null
+            const target = found !== null ? found.type : null
+            if (key === null || type === null || target === null) return new Condition(expr, [], [])
+            // Only a member of a union can be excluded when the test is false.
+            const isMember = membersOf(type).some((m) => sameType(m, target))
+            return new Condition(expr, [new Fact(key, target)], isMember ? [new Fact(key, c.without(type, (m) => sameType(m, target)))] : [])
+        }
+    }
+    return new Condition(checkCondition(c, node, scope), [], [])
+}
+
+function concatFacts(a: Fact[], b: Fact[]): Fact[] {
+    const out: Fact[] = []
+    for (const f of a) out.push(f)
+    for (const f of b) out.push(f)
+    return out
+}
+
+/** Whether a type's values are all in `values` ("yes"), none ("no"), or some ("both"). */
+function covers(type: Type, values: Map<string, bool>): string {
+    const members_ = membersOf(type)
+    if (members_.every((m) => m.kind === "literal" && values.has(m.value))) return "yes"
+    if (members_.every((m) => m.kind === "literal" && !values.has(m.value))) return "no"
+    return "both"
+}
+
+function narrowFacts(c: Checker, target: Node, scope: Scope, matches: (member: Type) => string): FactPair {
+    const key = refKey(c, target, scope)
+    const type = c.info.types.get(target)
+    if (key === null || type === null || type.kind !== "union") return new FactPair([], [])
+    const yes = c.unionOf(type.members.filter((m) => matches(m) !== "no"))
+    const no = c.unionOf(type.members.filter((m) => matches(m) !== "yes"))
+    return new FactPair([new Fact(key, yes)], [new Fact(key, no)])
+}
+
+/**
+ * Facts when `subject` equals one of `values`, and when it does not:
+ * `subject` is a variable of a literal union (`mode === "a"`), a field of a
+ * union of objects (`shape.kind === "circle"`), or `typeof x`.
+ */
+export function literalFacts(c: Checker, subject: Node, values: Map<string, bool>, scope: Scope): FactPair {
+    if (subject.kind === "ParenthesizedExpression") return literalFacts(c, expression(subject), values, scope)
+    if (subject.kind === "TypeOfExpression") return narrowFacts(c, expression(subject), scope, (m) => (values.has(typeofName(m)) ? "yes" : "no"))
+    if (subject.kind === "PropertyAccessExpression" && questionDotToken(subject) === null) {
+        const base = c.info.types.get(expression(subject))
+        if (base !== null && base.kind === "union") {
+            const name = nameNode(subject).text
+            return narrowFacts(c, expression(subject), scope, (m) => {
+                const type = fieldType(m, name)
+                return type !== null ? covers(type, values) : "both"
+            })
+        }
+    }
+    return narrowFacts(c, subject, scope, (m) => covers(m, values))
+}
+
+/**
+ * The key of a variable or a field path for narrowing facts: `L<id>` for a
+ * local or `this`, followed by `.field` for each field access.
+ */
+export function refKey(c: Checker, node: Node, scope: Scope): string | null {
+    if (node.kind === "ParenthesizedExpression") return refKey(c, expression(node), scope)
+    if (isIdentifier(node)) {
+        const symbol = scope.lookupValue(node.text)
+        return symbol !== null && symbol.k === "local" ? `L${symbol.local.id}` : null
+    }
+    if (node.kind === "ThisKeyword") {
+        const fn = c.fn
+        const self = fn !== null ? fn.thisLocal : null
+        return self !== null ? `L${self.id}` : null
+    }
+    if (node.kind === "PropertyAccessExpression" && questionDotToken(node) === null) {
+        const base = refKey(c, expression(node), scope)
+        return base !== null ? `${base}.${nameNode(node).text}` : null
+    }
+    return null
+}
+
+/** A reference narrowed by the facts in effect, with a run-time checked conversion. */
+export function narrowed(c: Checker, key: string, expr: Expr): Expr {
+    for (let i = c.facts.length - 1; i >= 0; i--) {
+        const type = c.facts[i].get(key)
+        if (type !== null) return narrowConvert(c, expr, type)
+    }
+    return expr
+}
+
+/**
+ * Converts a value to a narrower type established by a check: a member of
+ * its union, or the class behind an interface (directly or in a union).
+ */
+export function narrowConvert(c: Checker, expr: Expr, type: Type): Expr {
+    if (sameType(type, expr.type)) return expr
+    const from = expr.type
+    if (type.kind === "struct" && from.kind === "interface") return new Downcast(type, expr)
+    if (type.kind === "struct" && from.kind === "union" && !from.members.some((m) => sameType(m, type))) {
+        const via = interfaceFor(c, from, type)
+        if (via !== null) return new Downcast(type, new Recast(via, expr))
+    }
+    return new Recast(type, expr)
+}
+
+/** Adds facts that hold for the rest of the current flow scope. */
+export function addFacts(c: Checker, facts: Fact[]) {
+    const frame = c.facts[c.facts.length - 1]
+    for (const f of facts) frame.set(f.key, f.type)
+}
+
+/** Forgets facts about a variable or field path and paths through it, after it may have changed. */
+export function invalidate(c: Checker, key: string) {
+    const prefix = `${key}.`
+    for (const frame of c.facts) {
+        const drop: string[] = []
+        for (const [k, _] of frame) if (k === key || k.startsWith(prefix)) drop.push(k)
+        for (const k of drop) frame.delete(k)
+    }
+}
+
+/** Forgets facts about variables assigned anywhere in a loop, which may change between iterations. */
+export function invalidateAssigned(c: Checker, node: Node, scope: Scope) {
+    if (node.kind === "BinaryExpression" && isAssignmentOperator(operatorToken(node).kind)) {
+        const key = refKey(c, left(node), scope)
+        if (key !== null) invalidate(c, key)
+    }
+    for (const child of node.children) invalidateAssigned(c, child, scope)
+}

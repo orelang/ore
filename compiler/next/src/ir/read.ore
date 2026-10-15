@@ -1111,8 +1111,10 @@ class Reader {
                 const type = this.exprType(c)
                 return new IfaceCall(type, this.expr(d, "value"), index, method, this.exprs(d, "arg"))
             }
-            case "null":
-                return new NullLit(this.unionType(this.exprType(c)))
+            case "null": {
+                const t = this.exprType(c)
+                return new NullLit(t.kind === "null" ? t : this.unionType(t))
+            }
             case "optional": {
                 const t = this.exprType(c)
                 const type = t.kind === "void" ? t : this.unionType(t)

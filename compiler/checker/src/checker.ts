@@ -3,7 +3,7 @@ import * as ir from "@ore/ir"
 import { types } from "@ore/ir"
 import type { Source } from "@ore/syntax"
 import ts from "typescript"
-import { builtinScope } from "./builtins"
+import { builtinScope, namespaceModules } from "./builtins"
 import { Scope } from "./symbols"
 import type { CheckResult, ProgramInput, ModuleInfo } from "./context"
 import { isDeclaration } from "./helpers"
@@ -33,6 +33,12 @@ export class Checker extends CallChecker {
       this.modules.set(source, info)
       return info
     })
+    // Built-in namespaces implemented in Ore take the exports of their module.
+    for (const [ns, path] of Object.entries(namespaceModules)) {
+      const symbol = builtins.scope.lookupValue(ns)
+      const module = modules.find((m) => m.source.path === path)
+      if (symbol?.k === "namespace" && module) symbol.module = (name) => this.exportOf(module, name)
+    }
     const bodies: [ts.FunctionDeclaration, ir.Func, Scope][] = []
     const each = (pass: (stmt: ts.Statement, module: ModuleInfo) => void) => {
       for (const module of modules) {

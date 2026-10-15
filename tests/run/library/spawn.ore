@@ -1,0 +1,86 @@
+// Running other programs: output, exit codes, cwd, env, stdin, inherited stdio.
+
+function must(out: process.Output | Error): process.Output {
+    if (out instanceof Error) process.panic(out.message)
+    return out
+}
+
+// Arguments are passed as they are, without a shell.
+const echo = must(process.output("echo", ["hello", "two words", "$HOME"]))
+console.log(JSON.stringify(echo.stdout), echo.code, echo.ok, echo.signal)
+
+// Exit codes, and stderr apart from stdout.
+const failing = must(process.output("sh", ["-c", "echo out; echo err >&2; exit 3"]))
+console.log(JSON.stringify(failing.stdout), JSON.stringify(failing.stderr), failing.code, failing.ok)
+
+// A signal: 128 plus its number.
+const killed = must(process.output("sh", ["-c", "kill -TERM $$"]))
+console.log(killed.code, killed.signal, killed.ok)
+
+// The working directory, and variables over the inherited environment.
+const dir = fs.mkdtemp("ore-spawn-")
+if (dir instanceof Error) process.panic(dir.message)
+const real = fs.realpath(dir)
+if (real instanceof Error) process.panic(real.message)
+const cmd = new process.Command("sh", ["-c", "pwd; echo \"$GREETING $NAME\"; test -n \"$HOME\" && echo home"])
+cmd.cwd = dir
+cmd.env.set("GREETING", "hi")
+cmd.env.set("NAME", "ore")
+const inDir = must(cmd.output())
+console.log(inDir.stdout.replace(real, "<dir>"))
+// A command runs again with the same settings.
+console.log(must(cmd.output()).stdout === inDir.stdout)
+
+// An empty environment.
+const bare = new process.Command("/usr/bin/env")
+bare.clearEnv = true
+bare.env.set("ONLY", "this")
+console.log(JSON.stringify(must(bare.output()).stdout))
+
+// Standard input: written while the output is read.
+const cat = new process.Command("cat")
+cat.stdin = "line 1\nline 2\n"
+console.log(JSON.stringify(must(cat.output()).stdout))
+// Without stdin, the input is empty.
+console.log(JSON.stringify(must(process.output("cat")).stdout))
+// A child that does not read all of its input.
+const head = new process.Command("head", ["-c", "5"])
+head.stdin = "x".repeat(1 << 20)
+console.log(JSON.stringify(must(head.output()).stdout))
+
+// More than a pipe holds, on both pipes at once, in both orders: reading one
+// pipe to its end before the other would deadlock.
+const big = must(process.output("sh", ["-c", "head -c 3000000 /dev/zero | tr '\\0' a >&2; head -c 2000000 /dev/zero | tr '\\0' b"]))
+console.log(big.stdout.length, big.stderr.length, big.stdout[0] === 0x62, big.stderr[2999999] === 0x61)
+const mixed = must(process.output("sh", ["-c", "for i in 1 2 3 4 5 6 7 8; do head -c 300000 /dev/zero >&2; head -c 300000 /dev/zero; done"]))
+console.log(mixed.stdout.length, mixed.stderr.length)
+// A large input echoed back: written and read at the same time.
+const echoBack = new process.Command("cat")
+echoBack.stdin = "0123456789".repeat(400000)
+const echoed = must(echoBack.output())
+console.log(echoed.stdout.length, echoed.stdout === echoBack.stdin)
+
+// Errors: a program that does not exist, or a directory that does not.
+const missing = process.output("ore-surely-not-a-program")
+console.log(missing instanceof Error ? missing.message : "ran")
+const notExecutable = process.output(dir)
+console.log(notExecutable instanceof Error ? notExecutable.message.replace(dir, "<dir>") : "ran")
+const relative = new process.Command("./missing.sh")
+relative.cwd = dir
+const noScript = relative.output()
+console.log(noScript instanceof Error ? noScript.message : "ran")
+const nowhere = new process.Command("pwd")
+nowhere.cwd = `${dir}/missing`
+const lost = nowhere.output()
+console.log(lost instanceof Error ? lost.message.replace(dir, "<dir>") : `ran: ${lost.code}`)
+
+// Inherited standard output, in order with what this program printed.
+console.log("before")
+const code = process.run("sh", ["-c", "echo from the child; exit 5"])
+console.log("after", code instanceof Error ? code.message : code)
+
+// The environment of this process.
+const vars = process.env()
+console.log(vars.get("HOME") === process.getenv("HOME"), vars.size > 0)
+
+fs.remove(dir, true)

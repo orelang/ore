@@ -1,0 +1,360 @@
+// Typed accessors of the syntax tree for the checker: the children of a
+// node by the roles the parser gives them (the property names of the
+// TypeScript AST), and what TypeScript keeps in node flags or token kinds,
+// read back from the source text.
+
+import { Node, type NodeKind } from "./ast"
+import { stringValue } from "./imports"
+
+/** A child that the node kind always has. */
+function required(node: Node, role: string): Node {
+    const child = node.child(role)
+    if (child === null) process.panic(`${node.kind} at ${node.start} has no ${role}`)
+    return child
+}
+
+export function expression(node: Node): Node {
+    return required(node, "expression")
+}
+
+export function nameNode(node: Node): Node {
+    return required(node, "name")
+}
+
+/** The name child, if any (a class or function expression may have none). */
+export function optionalName(node: Node): Node | null {
+    return node.child("name")
+}
+
+/** The text of an identifier child `name`. */
+export function nameText(node: Node): string {
+    return required(node, "name").text
+}
+
+export function operand(node: Node): Node {
+    return required(node, "operand")
+}
+
+export function left(node: Node): Node {
+    return required(node, "left")
+}
+
+export function right(node: Node): Node {
+    return required(node, "right")
+}
+
+export function operatorToken(node: Node): Node {
+    return required(node, "operatorToken")
+}
+
+export function typeNode(node: Node): Node | null {
+    return node.child("type")
+}
+
+export function initializer(node: Node): Node | null {
+    return node.child("initializer")
+}
+
+export function body(node: Node): Node | null {
+    return node.child("body")
+}
+
+export function statements(node: Node): Node[] {
+    return node.list("statements")
+}
+
+export function members(node: Node): Node[] {
+    return node.list("members")
+}
+
+export function parameters(node: Node): Node[] {
+    return node.list("parameters")
+}
+
+export function typeParameters(node: Node): Node[] {
+    return node.list("typeParameters")
+}
+
+export function typeArguments(node: Node): Node[] {
+    return node.list("typeArguments")
+}
+
+export function args(node: Node): Node[] {
+    return node.list("arguments")
+}
+
+export function modifiers(node: Node): Node[] {
+    return node.list("modifiers")
+}
+
+export function hasModifier(node: Node, kind: NodeKind): bool {
+    for (const m of node.list("modifiers")) if (m.kind === kind) return true
+    return false
+}
+
+export function declarationList(node: Node): Node {
+    return required(node, "declarationList")
+}
+
+export function declarations(node: Node): Node[] {
+    return node.list("declarations")
+}
+
+export function elements(node: Node): Node[] {
+    return node.list("elements")
+}
+
+export function properties(node: Node): Node[] {
+    return node.list("properties")
+}
+
+export function heritageClauses(node: Node): Node[] {
+    return node.list("heritageClauses")
+}
+
+export function types(node: Node): Node[] {
+    return node.list("types")
+}
+
+export function questionToken(node: Node): Node | null {
+    return node.child("questionToken")
+}
+
+export function dotDotDotToken(node: Node): Node | null {
+    return node.child("dotDotDotToken")
+}
+
+export function exclamationToken(node: Node): Node | null {
+    return node.child("exclamationToken")
+}
+
+export function asteriskToken(node: Node): Node | null {
+    return node.child("asteriskToken")
+}
+
+export function questionDotToken(node: Node): Node | null {
+    return node.child("questionDotToken")
+}
+
+export function argumentExpression(node: Node): Node {
+    return required(node, "argumentExpression")
+}
+
+export function thenStatement(node: Node): Node {
+    return required(node, "thenStatement")
+}
+
+export function elseStatement(node: Node): Node | null {
+    return node.child("elseStatement")
+}
+
+/** The body of a loop or labeled statement. */
+export function statement(node: Node): Node {
+    return required(node, "statement")
+}
+
+export function condition(node: Node): Node | null {
+    return node.child("condition")
+}
+
+export function incrementor(node: Node): Node | null {
+    return node.child("incrementor")
+}
+
+export function label(node: Node): Node | null {
+    return node.child("label")
+}
+
+export function caseClauses(node: Node): Node[] {
+    return required(node, "caseBlock").list("clauses")
+}
+
+export function templateHead(node: Node): Node {
+    return required(node, "head")
+}
+
+export function templateSpans(node: Node): Node[] {
+    return node.list("templateSpans")
+}
+
+export function literal(node: Node): Node {
+    return required(node, "literal")
+}
+
+export function propertyName(node: Node): Node | null {
+    return node.child("propertyName")
+}
+
+export function moduleSpecifierNode(node: Node): Node | null {
+    return node.child("moduleSpecifier")
+}
+
+export function importClause(node: Node): Node | null {
+    return node.child("importClause")
+}
+
+export function namedBindings(node: Node): Node | null {
+    return node.child("namedBindings")
+}
+
+export function exportClause(node: Node): Node | null {
+    return node.child("exportClause")
+}
+
+export function typeName(node: Node): Node {
+    return required(node, "typeName")
+}
+
+export function elementType(node: Node): Node {
+    return required(node, "elementType")
+}
+
+export function constraint(node: Node): Node | null {
+    return node.child("constraint")
+}
+
+export function defaultType(node: Node): Node | null {
+    return node.child("default")
+}
+
+export function whenTrue(node: Node): Node {
+    return required(node, "whenTrue")
+}
+
+export function whenFalse(node: Node): Node {
+    return required(node, "whenFalse")
+}
+
+export function isIdentifier(node: Node): bool {
+    return node.kind === "Identifier"
+}
+
+/** A string literal or a template literal without substitutions. */
+export function isStringLiteralNode(node: Node): bool {
+    return node.kind === "StringLiteral" || node.kind === "NoSubstitutionTemplateLiteral"
+}
+
+/** The value of a string literal, with escapes resolved: `node.text` in TypeScript. */
+export function stringText(node: Node): string {
+    return stringValue(node)
+}
+
+/**
+ * The cooked text of a template part: a `NoSubstitutionTemplateLiteral`,
+ * `TemplateHead`, `TemplateMiddle` or `TemplateTail` token, without its
+ * delimiters and with escapes resolved.
+ */
+export function templateText(node: Node): string {
+    const raw = node.text
+    const head = node.kind === "TemplateHead" || node.kind === "TemplateMiddle"
+    const end = raw.length - (head ? 2 : 1)
+    if (end < 1) return ""
+    // Escapes are those of string literals; `"` is not special between the delimiters.
+    const fake = new Node("StringLiteral", 0, 0)
+    fake.text = `"${raw.slice(1, end)}"`
+    return stringValue(fake)
+}
+
+/** The kind of a `VariableDeclarationList` from its keyword: TypeScript's node flags. */
+export function declarationKind(list: Node, text: string): "let" | "const" | "var" | "using" {
+    const word = text.slice(list.start, list.start + 5)
+    if (word === "const") return "const"
+    if (word === "using") return "using"
+    if (word.slice(0, 3) === "let") return "let"
+    return "var"
+}
+
+/** The operator of a prefix unary expression, which TypeScript keeps as a token kind. */
+export function prefixOperator(node: Node, text: string): string {
+    const two = text.slice(node.start, node.start + 2)
+    if (two === "++" || two === "--") return two
+    return text.slice(node.start, node.start + 1)
+}
+
+/** The operator of a postfix unary expression: `++` or `--`. */
+export function postfixOperator(node: Node, text: string): string {
+    return text.slice(node.end - 2, node.end)
+}
+
+/** `extends` or `implements` of a heritage clause. */
+export function heritageToken(clause: Node, text: string): string {
+    return text.slice(clause.start, clause.start + 10) === "implements" ? "implements" : "extends"
+}
+
+const assignmentKinds = [
+    "EqualsToken",
+    "PlusEqualsToken",
+    "MinusEqualsToken",
+    "AsteriskEqualsToken",
+    "AsteriskAsteriskEqualsToken",
+    "SlashEqualsToken",
+    "PercentEqualsToken",
+    "LessThanLessThanEqualsToken",
+    "GreaterThanGreaterThanEqualsToken",
+    "GreaterThanGreaterThanGreaterThanEqualsToken",
+    "AmpersandEqualsToken",
+    "BarEqualsToken",
+    "CaretEqualsToken",
+    "AmpersandAmpersandEqualsToken",
+    "BarBarEqualsToken",
+    "QuestionQuestionEqualsToken",
+]
+
+/** Whether a token kind is between `FirstAssignment` and `LastAssignment`. */
+export function isAssignmentOperator(kind: string): bool {
+    return assignmentKinds.includes(kind)
+}
+
+/** A comment: the bytes from `pos` to `end`. */
+export class CommentRange {
+    constructor(
+        readonly pos: int,
+        readonly end: int,
+    ) {}
+}
+
+const LF: u8 = 0x0a
+const CR: u8 = 0x0d
+const SLASH: u8 = 0x2f
+const STAR: u8 = 0x2a
+
+/**
+ * The comments before the token at `pos`, as `ts.getLeadingCommentRanges`
+ * finds them: from `pos`, every comment up to the next token, except that
+ * after `pos > 0` a comment on the same line as the previous token is a
+ * trailing comment of that token, not a leading one.
+ */
+export function leadingCommentRanges(text: string, pos: int): CommentRange[] {
+    const found: CommentRange[] = []
+    let collecting = pos === 0
+    let i = pos
+    if (i === 0 && text.startsWith("#!")) {
+        while (i < text.length && text[i] !== LF && text[i] !== CR) i++
+    }
+    while (i < text.length) {
+        const c = text[i]
+        if (c === LF || c === CR) {
+            i++
+            collecting = true
+        } else if (c === 0x20 || c === 0x09 || c === 0x0b || c === 0x0c) {
+            i++
+        } else if (c === SLASH && i + 1 < text.length && text[i + 1] === SLASH) {
+            const start = i
+            i += 2
+            while (i < text.length && text[i] !== LF && text[i] !== CR) i++
+            if (collecting) found.push(new CommentRange(start, i))
+        } else if (c === SLASH && i + 1 < text.length && text[i + 1] === STAR) {
+            const start = i
+            const close = text.indexOf("*/", i + 2)
+            i = close < 0 ? text.length : close + 2
+            if (collecting) found.push(new CommentRange(start, i))
+        } else if (c === 0xc2 && i + 1 < text.length && text[i + 1] === 0xa0) {
+            i += 2
+        } else if (c === 0xef && i + 2 < text.length && text[i + 1] === 0xbb && text[i + 2] === 0xbf) {
+            i += 3
+        } else {
+            break
+        }
+    }
+    return found
+}

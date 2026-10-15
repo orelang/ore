@@ -1,5 +1,5 @@
 // ore-next: for now, prints the tokens or the syntax tree of a file or the
-// modules of a program, or serves the language server.
+// modules of a program, formats a file, or serves the language server.
 //
 //   ore-next tokens <file.ore>    one token per line: kind, start and end byte
 //   ore-next tree <file.ore>      the syntax tree in pre-order: kind, start and end byte
@@ -7,16 +7,21 @@
 //   ore-next modules <entry.ore>  the modules of the program in load order, each with its
 //                                 imports ("import <specifier> <module>") and text imports
 //                                 ("text <specifier> <bytes>"), then the diagnostics
-//   ore-next ir <dump.txt>        reads the dump of an IR module (compiler/ir/src/dump.ts) and
+//   ore-next fmt <file.ore>       the file formatted in the Ore style, as `ore fmt` formats it
+//   ore-next ir <entry.ore>       the IR of the checked program (`dump` of ir/dump.ore), or
+//                                 its diagnostics on stderr with status 1
+//   ore-next read <dump.txt>      reads the dump of an IR module (compiler/ir/src/dump.ts) and
 //                                 writes it again: the round trip of ir/read.ore
 //   ore-next llvm <dump.txt> [--debug]
 //                                 the LLVM IR of the module of a dump, from opt/ and codegen/:
 //                                 inlined unless --debug, which keeps frames for stack traces
 //   ore-next lsp                  the language server on stdin and stdout
 
-import { emitModule, EmitOptions } from "./codegen/emit"
+import { check } from "./checker/checker"
+import { format } from "./fmt/print"
 import { dump as dumpModule } from "./ir/dump"
 import { readModule } from "./ir/read"
+import { emitModule, EmitOptions } from "./codegen/emit"
 import { serve } from "./lsp/server"
 import { loadProgram } from "./project/load"
 import { dump, dumpRoles } from "./syntax/ast"
@@ -30,11 +35,11 @@ if (process.args.length === 1 && process.args[0] === "lsp") process.exit(i32(ser
 
 const llvm = process.args.length >= 2 && process.args.length <= 3 && process.args[0] === "llvm" && (process.args.length === 2 || process.args[2] === "--debug")
 const mode = llvm ? "llvm" : process.args.length === 2 ? process.args[0] : ""
-if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "ir" && mode !== "llvm") {
-    console.error("usage: ore-next tokens|tree|roles|modules <file.ore> | ore-next ir <dump.txt> | ore-next llvm <dump.txt> [--debug] | ore-next lsp")
+if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "fmt" && mode !== "ir" && mode !== "read" && mode !== "llvm") {
+    console.error("usage: ore-next tokens|tree|roles|modules|fmt|ir <file.ore> | ore-next read <dump.txt> | ore-next llvm <dump.txt> [--debug] | ore-next lsp")
     process.exit(2)
 }
-if (mode === "ir" || mode === "llvm") {
+if (mode === "read" || mode === "llvm") {
     const text = fs.readFile(process.args[1])
     if (text instanceof Error) {
         console.error(text.message)
@@ -45,8 +50,26 @@ if (mode === "ir" || mode === "llvm") {
         console.error(module.message)
         process.exit(1)
     }
-    if (mode === "ir") console.write(dumpModule(module))
+    if (mode === "read") console.write(dumpModule(module))
     else console.write(emitModule(module, new EmitOptions(process.args.length === 3)))
+    process.exit(0)
+}
+if (mode === "ir") {
+    const program = loadProgram(process.args[1])
+    if (program instanceof Error) {
+        console.error(program.message)
+        process.exit(1)
+    }
+    // As the driver does: the loader's diagnostics, then the checker's.
+    const diagnostics = program.diagnostics.slice()
+    const checked = program.syntaxErrors ? null : check(program)
+    if (checked !== null) for (const d of checked.diagnostics) diagnostics.push(d)
+    const module = checked !== null ? checked.module : null
+    if (module === null || program.diagnostics.length > 0) {
+        for (const d of diagnostics) console.error(formatDiagnostic(d))
+        process.exit(1)
+    }
+    console.write(dumpModule(module))
     process.exit(0)
 }
 if (mode === "modules") {
@@ -70,7 +93,14 @@ if (text instanceof Error) {
     console.error(text.message)
     process.exit(1)
 }
-if (mode === "tokens") {
+if (mode === "fmt") {
+    const formatted = format(text)
+    if (formatted instanceof Error) {
+        console.error(formatted.message)
+        process.exit(1)
+    }
+    console.write(formatted)
+} else if (mode === "tokens") {
     for (const token of tokenize(text)) console.log(token.kind, token.start, token.end)
 } else {
     const parser = parse(text)

@@ -5,11 +5,11 @@
 // the program's top-level code, has its own mapped stack with a guard page.
 // The program ends when the top-level code ends.
 //
-// Garbage collection: each worker tells the GC the stack bottom of the task
-// it runs (GC_set_stackbottom), and a push-other-roots hook scans the used
-// part of every task that is not running. Switching stacks is not atomic, so
-// a worker switches inside a read lock of `switchLock`, which the GC takes for
-// writing before it stops the world. No code allocates while it holds that
+// Garbage collection: each worker tells the collector the stack base of the
+// task it runs (gc.setStackBase), and a hook scans the used part of every task
+// that is not running. Switching stacks is not atomic, so a worker switches
+// inside a read lock of `switchLock`, which the collector takes for writing
+// before it stops the world. No code allocates while it holds that
 // read lock, or a collection would wait for it forever.
 //
 // Waking before sleeping: a task that waits holds a lock (of a channel, or of
@@ -27,23 +27,21 @@
 // reset.
 
 import { getTop, setTop } from "ore:runtime/frames"
+import {
+    enterNoStop,
+    exitNoStop,
+    ownStackBase,
+    registerThread,
+    scanRange,
+    setStackBase,
+    setStackRootsHook,
+    stackSwitchLock,
+} from "ore:runtime/gc"
 import { exitProgram } from "ore:runtime/io"
 import {
-    GC_allow_register_threads,
-    GC_call_with_alloc_lock,
-    GC_get_my_stackbottom,
-    GC_get_push_other_roots,
-    GC_get_stack_base,
-    GC_push_all_eager,
-    GC_register_my_thread,
-    GC_set_on_collection_event,
-    GC_set_push_other_roots,
-    GC_set_stackbottom,
     cpuCount,
     deadlineIn,
     epochMs,
-    gcEventPostStartWorld,
-    gcEventPreStopWorld,
     getenv,
     isNil,
     lock,
@@ -54,7 +52,6 @@ import {
     permanent,
     permanentCond,
     permanentMutex,
-    permanentRwlock,
     pthread_cond_signal,
     pthread_cond_timedwait,
     pthread_cond_wait,
@@ -125,7 +122,7 @@ export class Task {
 class Scheduler {
     lock = permanentMutex()
     cond = permanentCond()
-    switchLock = permanentRwlock()
+    switchLock = stackSwitchLock()
     runHead: Task | null = null
     runTail: Task | null = null
     /** Sleeping tasks by wake time. */
@@ -139,8 +136,6 @@ class Scheduler {
     mainTask: Task | null = null
     /** All live tasks; changed only with the GC's allocation lock held. */
     allTasks: Task | null = null
-    /** The GC's previous push-other-roots hook, as a closure cell, or null. */
-    previousPush = nil()
     /** Whether the network poller was started: 0 not yet, 1 starting, 2 running. */
     pollState = permanent(8)
 }
@@ -155,8 +150,8 @@ export function scheduler(): Scheduler {
 // ---------------------------------------------------------------------------
 // Per worker: a block of memory that the thread-local `worker` points to.
 //   0 the scheduler loop's stack pointer while a task runs
-//   8 the worker's own stack base (GC_stack_base)
-//  16 the worker's GC thread handle
+//   8 unused
+//  16 unused
 //  24 what to do after the current task has left its stack: a closure cell, or null
 //  32 the current task, or null
 //  40 a timespec, for clocks and deadlines (16 bytes)
@@ -206,7 +201,6 @@ export function randomState(): ptr {
 function newWorker(): ptr {
     const w = permanent(workerSize)
     setWorkerBlock(w)
-    unsafe.store<ptr>(unsafe.add(w, 16), GC_get_my_stackbottom(unsafe.add(w, 8)))
     return w
 }
 
@@ -247,33 +241,21 @@ function pushTaskStacks(): void {
     const s = scheduler()
     let t = s.allTasks
     while (t !== null) {
-        if (!t.running && !isNil(t.sp())) GC_push_all_eager(t.sp(), t.hi)
+        if (!t.running && !isNil(t.sp())) scanRange(t.sp(), t.hi)
         t = t.allNext
     }
-    if (!isNil(s.previousPush)) {
-        const previous = unsafe.load<() => void>(s.previousPush)
-        previous()
-    }
 }
 
-/** Keeps the GC from stopping the world while a worker is between two stacks. */
-function onCollectionEvent(event: i32): void {
-    const s = scheduler()
-    if (event === gcEventPreStopWorld) pthread_rwlock_wrlock(s.switchLock)
-    else if (event === gcEventPostStartWorld) pthread_rwlock_unlock(s.switchLock)
-}
-
-function linkTask(data: ptr): ptr {
+function linkTask(data: ptr): void {
     const s = scheduler()
     const t = unsafe.fromAddress<Task>(data)
     t.allNext = s.allTasks
     const first = s.allTasks
     if (first !== null) first.allPrev = t
     s.allTasks = t
-    return nil()
 }
 
-function unlinkTask(data: ptr): ptr {
+function unlinkTask(data: ptr): void {
     const s = scheduler()
     const t = unsafe.fromAddress<Task>(data)
     const prev = t.allPrev
@@ -281,7 +263,6 @@ function unlinkTask(data: ptr): ptr {
     if (prev !== null) prev.allNext = next
     else s.allTasks = next
     if (next !== null) next.allPrev = prev
-    return nil()
 }
 
 // ---------------------------------------------------------------------------
@@ -336,12 +317,16 @@ function newTask(body: () => void, stackSize: int): Task {
         unsafe.store<ptr>(unsafe.add(frame, 48), unsafe.functionAddress(trampoline))
         unsafe.store<ptr>(t.context, frame)
     }
-    GC_call_with_alloc_lock(unsafe.functionAddress(linkTask), self)
+    enterNoStop()
+    linkTask(self)
+    exitNoStop()
     return t
 }
 
 function freeTask(t: Task): void {
-    GC_call_with_alloc_lock(unsafe.functionAddress(unlinkTask), unsafe.addressOf(t))
+    enterNoStop()
+    unlinkTask(unsafe.addressOf(t))
+    exitNoStop()
     unmap(t.map, t.mapSize)
 }
 
@@ -378,7 +363,7 @@ function parkWith(cell: ptr, mutex: ptr): void {
     unsafe.store<ptr>(unsafe.add(w, 24), cell)
     unsafe.store<ptr>(unsafe.add(w, 56), mutex)
     pthread_rwlock_rdlock(s.switchLock)
-    GC_set_stackbottom(unsafe.load<ptr>(unsafe.add(w, 16)), unsafe.add(w, 8))
+    setStackBase(ownStackBase())
     t.running = false
     switchContext(t.context, unsafe.load<ptr>(w))
     // Resumed, maybe by another worker, which took the switch lock to get here.
@@ -565,7 +550,7 @@ function schedule(): void {
         setCurrent(w, unsafe.addressOf(t))
         setTop(t.top)
         pthread_rwlock_rdlock(s.switchLock)
-        GC_set_stackbottom(unsafe.load<ptr>(unsafe.add(w, 16)), unsafe.add(t.context, 8))
+        setStackBase(t.hi)
         t.running = true
         switchContext(w, t.sp())
         // The task parked or ended, holding the switch lock.
@@ -588,9 +573,7 @@ function schedule(): void {
 }
 
 function workerMain(argument: ptr): ptr {
-    const base = permanent(16)
-    GC_get_stack_base(base)
-    GC_register_my_thread(base)
+    registerThread()
     newWorker()
     schedule()
     return argument
@@ -616,16 +599,8 @@ function workerCount(): int {
 export function runMain(entry: ptr): void {
     const s = new Scheduler()
     schedulerAddress = unsafe.addressOf(s)
-    GC_allow_register_threads()
     newWorker()
-    // The previous hook, as a closure cell: a C function called with an environment it ignores.
-    const previous = GC_get_push_other_roots()
-    if (!isNil(previous)) {
-        s.previousPush = permanent(16)
-        unsafe.store<ptr>(s.previousPush, previous)
-    }
-    GC_set_push_other_roots(unsafe.functionAddress(pushTaskStacks))
-    GC_set_on_collection_event(unsafe.functionAddress(onCollectionEvent))
+    setStackRootsHook(unsafe.functionAddress(pushTaskStacks))
 
     const count = workerCount()
     s.maxWorkers = count + 64

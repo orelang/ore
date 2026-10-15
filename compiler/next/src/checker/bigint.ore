@@ -1,0 +1,388 @@
+// The values of untyped integer constants: `bigint` in the TypeScript
+// checker. An arbitrary-precision integer: a sign and a magnitude in 32-bit
+// limbs, least significant first, without leading zero limbs.
+
+export class Big {
+    constructor(
+        readonly neg: bool,
+        readonly limbs: u32[],
+    ) {}
+}
+
+const BASE: u64 = u64(1) << u64(32)
+const MASK: u64 = BASE - u64(1)
+
+/** A value from a sign and limbs that may have leading zeros; zero has no sign. */
+function make(neg: bool, limbs: u32[]): Big {
+    while (limbs.length > 0 && limbs[limbs.length - 1] === u32(0)) limbs.pop()
+    return new Big(neg && limbs.length > 0, limbs)
+}
+
+function limbsOfU64(value: u64): u32[] {
+    const limbs: u32[] = []
+    let v = value
+    while (v !== u64(0)) {
+        limbs.push(u32(v & MASK))
+        v = v >> u64(32)
+    }
+    return limbs
+}
+
+export function bigOfU64(value: u64): Big {
+    return make(false, limbsOfU64(value))
+}
+
+export function bigOf(value: int): Big {
+    if (value < 0) return make(true, limbsOfU64(u64(-(value + 1)) + u64(1)))
+    return make(false, limbsOfU64(u64(value)))
+}
+
+/** The low 64 bits of the magnitude. */
+function low64(a: Big): u64 {
+    let v: u64 = 0
+    if (a.limbs.length > 0) v = u64(a.limbs[0])
+    if (a.limbs.length > 1) v = v | (u64(a.limbs[1]) << u64(32))
+    return v
+}
+
+/** The bits of the value as an `i64`, as the IR holds integer constants: its low 64 bits in two's complement. */
+export function bigToI64(a: Big): i64 {
+    const m = low64(a)
+    return a.neg ? i64(~m + u64(1)) : i64(m)
+}
+
+function bitLength(limbs: u32[]): int {
+    if (limbs.length === 0) return 0
+    let top = limbs[limbs.length - 1]
+    let bits = (limbs.length - 1) * 32
+    while (top !== u32(0)) {
+        bits++
+        top = top >> u32(1)
+    }
+    return bits
+}
+
+/** `Number(bigint)`: the nearest double. */
+export function bigToF64(a: Big): f64 {
+    const bits = bitLength(a.limbs)
+    let m: f64
+    if (bits <= 64) m = f64(low64(a))
+    else {
+        // The top 64 bits, with the lowest set when any bit below them is: enough to round once, correctly.
+        const shift = bits - 64
+        const top = shiftRightLimbs(a.limbs, shift)
+        let v = low64(new Big(false, top))
+        if (anyBitBelow(a.limbs, shift)) v = v | u64(1)
+        m = f64(v) * Math.pow(2.0, f64(shift))
+    }
+    return a.neg ? -m : m
+}
+
+function anyBitBelow(limbs: u32[], n: int): bool {
+    const whole = n / 32
+    for (let i = 0; i < whole && i < limbs.length; i++) if (limbs[i] !== u32(0)) return true
+    const rest = n % 32
+    if (rest > 0 && whole < limbs.length) return (limbs[whole] & ((u32(1) << u32(rest)) - u32(1))) !== u32(0)
+    return false
+}
+
+/** `BigInt(Math.trunc(x))` of a finite double. */
+export function bigFromF64(x: f64): Big {
+    const neg = x < 0.0
+    let t = Math.trunc(neg ? -x : x)
+    if (t < 18446744073709551616.0) return make(neg, limbsOfU64(u64(t)))
+    // Above 2^64: an integer mantissa times a power of two.
+    let exponent = 0
+    while (t >= 9007199254740992.0) {
+        t = t / 2.0
+        exponent++
+    }
+    return make(neg, shiftLeftLimbs(limbsOfU64(u64(t)), exponent))
+}
+
+export function bigIsNeg(a: Big): bool {
+    return a.neg
+}
+
+export function bigIsZero(a: Big): bool {
+    return a.limbs.length === 0
+}
+
+function compareMagnitude(a: u32[], b: u32[]): int {
+    if (a.length !== b.length) return a.length < b.length ? -1 : 1
+    for (let i = a.length - 1; i >= 0; i--) {
+        if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1
+    }
+    return 0
+}
+
+/** -1, 0 or 1. */
+export function bigCmp(a: Big, b: Big): int {
+    if (a.neg !== b.neg) return a.neg ? -1 : 1
+    const c = compareMagnitude(a.limbs, b.limbs)
+    return a.neg ? -c : c
+}
+
+export function bigEq(a: Big, b: Big): bool {
+    return bigCmp(a, b) === 0
+}
+
+export function bigLt(a: Big, b: Big): bool {
+    return bigCmp(a, b) < 0
+}
+
+export function bigGt(a: Big, b: Big): bool {
+    return bigCmp(a, b) > 0
+}
+
+export function bigNeg(a: Big): Big {
+    return make(!a.neg, a.limbs.slice())
+}
+
+function addMagnitude(a: u32[], b: u32[]): u32[] {
+    const out: u32[] = []
+    let carry: u64 = 0
+    const n = a.length > b.length ? a.length : b.length
+    for (let i = 0; i < n; i++) {
+        const sum = (i < a.length ? u64(a[i]) : u64(0)) + (i < b.length ? u64(b[i]) : u64(0)) + carry
+        out.push(u32(sum & MASK))
+        carry = sum >> u64(32)
+    }
+    if (carry !== u64(0)) out.push(u32(carry))
+    return out
+}
+
+/** `a - b` for `a >= b`. */
+function subMagnitude(a: u32[], b: u32[]): u32[] {
+    const out: u32[] = []
+    let borrow: u64 = 0
+    for (let i = 0; i < a.length; i++) {
+        const x = u64(a[i])
+        const y = (i < b.length ? u64(b[i]) : u64(0)) + borrow
+        if (x >= y) {
+            out.push(u32(x - y))
+            borrow = 0
+        } else {
+            out.push(u32(x + BASE - y))
+            borrow = 1
+        }
+    }
+    return out
+}
+
+export function bigAdd(a: Big, b: Big): Big {
+    if (a.neg === b.neg) return make(a.neg, addMagnitude(a.limbs, b.limbs))
+    // Different signs: subtract the smaller magnitude from the larger.
+    if (compareMagnitude(a.limbs, b.limbs) >= 0) return make(a.neg, subMagnitude(a.limbs, b.limbs))
+    return make(b.neg, subMagnitude(b.limbs, a.limbs))
+}
+
+export function bigSub(a: Big, b: Big): Big {
+    return bigAdd(a, bigNeg(b))
+}
+
+function mulMagnitude(a: u32[], b: u32[]): u32[] {
+    const out: u32[] = []
+    for (let i = 0; i < a.length + b.length; i++) out.push(0)
+    for (let i = 0; i < a.length; i++) {
+        let carry: u64 = 0
+        for (let j = 0; j < b.length; j++) {
+            const t = u64(a[i]) * u64(b[j]) + u64(out[i + j]) + carry
+            out[i + j] = u32(t & MASK)
+            carry = t >> u64(32)
+        }
+        let k = i + b.length
+        while (carry !== u64(0)) {
+            const t = u64(out[k]) + carry
+            out[k] = u32(t & MASK)
+            carry = t >> u64(32)
+            k++
+        }
+    }
+    return out
+}
+
+export function bigMul(a: Big, b: Big): Big {
+    return make(a.neg !== b.neg, mulMagnitude(a.limbs, b.limbs))
+}
+
+/** The quotient and remainder of magnitudes, by shifting and subtracting bit by bit. */
+class DivMod {
+    constructor(
+        readonly quotient: u32[],
+        readonly remainder: u32[],
+    ) {}
+}
+
+function divMagnitude(a: u32[], b: u32[]): DivMod {
+    const quotient: u32[] = []
+    for (let i = 0; i < a.length; i++) quotient.push(0)
+    let remainder: u32[] = []
+    for (let bit = bitLength(a) - 1; bit >= 0; bit--) {
+        remainder = shiftLeftLimbs(remainder, 1)
+        if (((a[bit / 32] >> u32(bit % 32)) & u32(1)) !== u32(0)) {
+            if (remainder.length === 0) remainder.push(1)
+            else remainder[0] = remainder[0] | u32(1)
+        }
+        if (compareMagnitude(trim(remainder), b) >= 0) {
+            remainder = subMagnitude(trim(remainder), b)
+            quotient[bit / 32] = quotient[bit / 32] | (u32(1) << u32(bit % 32))
+        }
+        remainder = trim(remainder)
+    }
+    return new DivMod(quotient, remainder)
+}
+
+function trim(limbs: u32[]): u32[] {
+    while (limbs.length > 0 && limbs[limbs.length - 1] === u32(0)) limbs.pop()
+    return limbs
+}
+
+/** Truncating division, as `bigint` divides; the divisor is not zero. */
+export function bigDiv(a: Big, b: Big): Big {
+    return make(a.neg !== b.neg, divMagnitude(a.limbs, b.limbs).quotient)
+}
+
+/** The remainder, with the sign of the dividend, as `bigint` does. */
+export function bigRem(a: Big, b: Big): Big {
+    return make(a.neg, divMagnitude(a.limbs, b.limbs).remainder)
+}
+
+/** `~a` is `-a - 1`. */
+export function bigNot(a: Big): Big {
+    return bigSub(bigNeg(a), bigOf(1))
+}
+
+/** The value in two's complement over `n` limbs. */
+function twos(a: Big, n: int): u32[] {
+    const out: u32[] = []
+    for (let i = 0; i < n; i++) out.push(i < a.limbs.length ? a.limbs[i] : u32(0))
+    if (!a.neg) return out
+    // -m is ~m + 1.
+    let carry: u64 = 1
+    for (let i = 0; i < n; i++) {
+        const t = u64(~out[i]) + carry
+        out[i] = u32(t & MASK)
+        carry = t >> u64(32)
+    }
+    return out
+}
+
+/** A value from two's complement over its limbs: negative when the top bit is set. */
+function fromTwos(limbs: u32[]): Big {
+    const n = limbs.length
+    if (n === 0 || (limbs[n - 1] >> u32(31)) === u32(0)) return make(false, limbs)
+    const m: u32[] = []
+    let carry: u64 = 1
+    for (let i = 0; i < n; i++) {
+        const t = u64(~limbs[i]) + carry
+        m.push(u32(t & MASK))
+        carry = t >> u64(32)
+    }
+    return make(true, m)
+}
+
+function bitwise(op: string, a: Big, b: Big): Big {
+    // One limb more than either value, for the sign.
+    const n = (a.limbs.length > b.limbs.length ? a.limbs.length : b.limbs.length) + 1
+    const x = twos(a, n)
+    const y = twos(b, n)
+    const out: u32[] = []
+    for (let i = 0; i < n; i++) out.push(op === "&" ? x[i] & y[i] : op === "|" ? x[i] | y[i] : x[i] ^ y[i])
+    return fromTwos(out)
+}
+
+export function bigAnd(a: Big, b: Big): Big {
+    return bitwise("&", a, b)
+}
+
+export function bigOr(a: Big, b: Big): Big {
+    return bitwise("|", a, b)
+}
+
+export function bigXor(a: Big, b: Big): Big {
+    return bitwise("^", a, b)
+}
+
+function shiftLeftLimbs(limbs: u32[], n: int): u32[] {
+    const out: u32[] = []
+    for (let i = 0; i < n / 32; i++) out.push(0)
+    const bits = u64(n % 32)
+    let carry: u64 = 0
+    for (const l of limbs) {
+        const t = (u64(l) << bits) | carry
+        out.push(u32(t & MASK))
+        carry = t >> u64(32)
+    }
+    if (carry !== u64(0)) out.push(u32(carry))
+    return out
+}
+
+function shiftRightLimbs(limbs: u32[], n: int): u32[] {
+    const out: u32[] = []
+    const whole = n / 32
+    const bits = u64(n % 32)
+    for (let i = whole; i < limbs.length; i++) {
+        let t = u64(limbs[i]) >> bits
+        if (bits !== u64(0) && i + 1 < limbs.length) t = t | ((u64(limbs[i + 1]) << (u64(32) - bits)) & MASK)
+        out.push(u32(t))
+    }
+    return out
+}
+
+/** `a << n` for a shift count of at most 1024. */
+export function bigShl(a: Big, n: int): Big {
+    return make(a.neg, shiftLeftLimbs(a.limbs, n))
+}
+
+/** `a >> n`: an arithmetic shift, rounding toward negative infinity for negative values. */
+export function bigShr(a: Big, n: int): Big {
+    if (!a.neg) return make(false, shiftRightLimbs(a.limbs, n))
+    // floor(-m / 2^n) = -((m - 1) >> n) - 1
+    const m1 = subMagnitude(a.limbs, [1])
+    return make(true, addMagnitude(trim(shiftRightLimbs(trim(m1), n)), [1]))
+}
+
+/** The decimal text of a value, as `${bigint}` writes it. */
+export function bigText(a: Big): string {
+    if (a.limbs.length === 0) return "0"
+    const chunks: string[] = []
+    let rest = a.limbs.slice()
+    const billion: u32[] = [1000000000]
+    while (rest.length > 0) {
+        const d = divMagnitude(rest, billion)
+        chunks.push(`${low64(new Big(false, d.remainder))}`)
+        rest = trim(d.quotient)
+    }
+    let text = a.neg ? "-" : ""
+    for (let i = chunks.length - 1; i >= 0; i--) text += i === chunks.length - 1 ? chunks[i] : chunks[i].padStart(9, "0")
+    return text
+}
+
+function digitValue(c: u8): int {
+    if (c >= 0x30 && c <= 0x39) return i64(c) - 0x30
+    if (c >= 0x61 && c <= 0x7a) return i64(c) - 0x61 + 10
+    if (c >= 0x41 && c <= 0x5a) return i64(c) - 0x41 + 10
+    return 99
+}
+
+/** `BigInt(text)` of a numeric literal without separators: decimal, or with a `0x`, `0o` or `0b` prefix. */
+export function bigParse(text: string): Big {
+    let radix = 10
+    let start = 0
+    if (text.length >= 2 && text[0] === 0x30) {
+        const p = text[1]
+        if (p === 0x78 || p === 0x58) radix = 16
+        else if (p === 0x6f || p === 0x4f) radix = 8
+        else if (p === 0x62 || p === 0x42) radix = 2
+        if (radix !== 10) start = 2
+    }
+    let limbs: u32[] = []
+    const r: u32[] = [u32(radix)]
+    for (let i = start; i < text.length; i++) {
+        const d = digitValue(text[i])
+        if (d >= radix) break
+        limbs = addMagnitude(trim(mulMagnitude(limbs, r)), limbsOfU64(u64(d)))
+    }
+    return make(false, limbs)
+}

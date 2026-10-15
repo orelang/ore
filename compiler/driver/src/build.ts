@@ -6,8 +6,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { clang } from "./clang"
-import { prepareGc } from "./gc"
-import { cacheDir } from "./runtime"
 
 
 export interface CompileResult {
@@ -67,14 +65,13 @@ export async function build(path: string, options: BuildOptions): Promise<BuildR
   if (options.emitLlvm) writeFileSync(options.emitLlvm, ir)
 
   const flags = [...commonFlags, ...(options.release ? ["-O2"] : ["-O0", "-g"])]
-  // The runtime is Ore, part of the program's LLVM IR; only the GC is a separate object.
-  const gc = await prepareGc(cacheDir())
+  // The runtime, the collector included, is Ore: part of the program's LLVM IR.
   const dir = mkdtempSync(join(tmpdir(), "ore-build-"))
   try {
     const irPath = join(dir, "main.ll")
     writeFileSync(irPath, ir)
     const libs = (native?.link ?? []).map((l) => `-l${l}`)
-    await clang([...flags, irPath, ...(native?.sources ?? []), gc, "-lm", "-pthread", ...libs, "-o", options.output])
+    await clang([...flags, irPath, ...(native?.sources ?? []), "-lm", "-pthread", ...libs, "-o", options.output])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

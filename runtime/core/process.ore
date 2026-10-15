@@ -1,0 +1,506 @@
+// The namespace `process` in Ore: running other programs, and the
+// environment. Its exports are members of `process` (see `namespaceModules`
+// in compiler/checker/src/builtins.ts): `process.run`, `process.output`,
+// `process.Command`, `process.env`. args, getenv, panic and exit are runtime
+// functions of other files.
+//
+// A child is started with posix_spawn, after its program is looked up in
+// PATH here. Its output comes through pipes whose ends in this process are
+// non-blocking: a task reading one parks on the poller (netWait) while the
+// pipe is empty, so waiting occupies no worker, and stdout and stderr are
+// read by two tasks at once, so that a child filling one pipe while this
+// process waits on the other cannot deadlock.
+// Its exit is awaited on the poller too (exitWait), then collected with
+// waitpid.
+//
+// Descriptors this process opens must not leak into children, where they
+// would keep a pipe open: on Linux the pipes are created close-on-exec at
+// once (pipe2); macOS has no pipe2, so its children get only the
+// descriptors the spawn names (POSIX_SPAWN_CLOEXEC_DEFAULT).
+//
+// Constants and the layouts of posix_spawnattr_t, posix_spawn_file_actions_t
+// and sigset_t were read from the system headers of macOS (arm64) and Linux
+// (glibc, arm64 and x86-64).
+
+import { flushOutput } from "ore:runtime/io"
+import { allowCollections, holdCollections } from "ore:runtime/gc"
+import { isNil, nil, stat } from "ore:runtime/os"
+import { exitWait, netWait } from "ore:runtime/poll"
+import { environment } from "ore:runtime/program"
+import { cString, errno, fromCString } from "ore:runtime/sys"
+import { blockingEnter, blockingExit } from "ore:runtime/task"
+
+// ---------------------------------------------------------------------------
+// libc
+
+declare function posix_spawn(pid: ptr, path: ptr, actions: ptr, attributes: ptr, argv: ptr, envp: ptr): i32
+declare function posix_spawn_file_actions_init(actions: ptr): i32
+declare function posix_spawn_file_actions_destroy(actions: ptr): i32
+declare function posix_spawn_file_actions_adddup2(actions: ptr, fd: i32, target: i32): i32
+declare function posix_spawn_file_actions_addopen(actions: ptr, fd: i32, path: string, flags: i32, mode: u32): i32
+declare function posix_spawn_file_actions_addchdir_np(actions: ptr, path: string): i32
+declare function posix_spawn_file_actions_addinherit_np(actions: ptr, fd: i32): i32
+declare function posix_spawnattr_init(attributes: ptr): i32
+declare function posix_spawnattr_destroy(attributes: ptr): i32
+declare function posix_spawnattr_setflags(attributes: ptr, flags: i16): i32
+declare function posix_spawnattr_setsigdefault(attributes: ptr, signals: ptr): i32
+declare function posix_spawnattr_setsigmask(attributes: ptr, signals: ptr): i32
+declare function waitpid(pid: i32, status: ptr, options: i32): i32
+declare function pipe(fds: ptr): i32
+declare function pipe2(fds: ptr, flags: i32): i32
+declare function fcntl(fd: i32, command: i32, ...args: i64[]): i32
+declare function read(fd: i32, buffer: ptr, size: u64): i64
+declare function write(fd: i32, buffer: ptr, size: u64): i64
+declare function close(fd: i32): i32
+declare function strerror(code: i32): ptr
+declare function signal(signal: i32, handler: ptr): ptr
+declare function access(path: string, mode: i32): i32
+
+// ---------------------------------------------------------------------------
+// Constants of each platform
+
+const eintr: i32 = 4
+const echild: i32 = 10
+const fGetfl: i32 = 3
+const fSetfl: i32 = 4
+const fSetfd: i32 = 2
+const fdCloexec = 1
+const wnohang: i32 = 1
+const sigpipe: i32 = 13
+
+// posix_spawnattr flags.
+const spawnSetsigdef: i16 = 0x04
+const spawnSetsigmask: i16 = 0x08
+/** macOS: the child inherits only the descriptors that file actions name. */
+const spawnCloexecDefault: i16 = 0x4000
+
+/** Room for a posix_spawnattr_t or posix_spawn_file_actions_t (a pointer on macOS; 336 and 80 bytes on Linux), or a sigset_t (4 bytes on macOS, 128 on Linux). */
+const spawnBufferSize = 512
+
+function eagain(): i32 {
+    return target.os === "darwin" ? 35 : 11
+}
+
+function oNonblock(): int {
+    return target.os === "darwin" ? 4 : 0x800
+}
+
+function oCloexec(): i32 {
+    return target.os === "darwin" ? 0x1000000 : 0x80000
+}
+
+function reason(code: i32): string {
+    return fromCString(strerror(code))
+}
+
+// ---------------------------------------------------------------------------
+// The environment
+
+/** The variables of this process's environment, by name. */
+export function env(): Map<string, string> {
+    const vars = new Map<string, string>()
+    const entries = environment()
+    if (isNil(entries)) return vars
+    for (let i = 0; ; i++) {
+        const entry = unsafe.load<ptr>(unsafe.add(entries, i * 8))
+        if (isNil(entry)) break
+        const text = fromCString(entry)
+        const eq = text.indexOf("=")
+        if (eq > 0 && !vars.has(text.slice(0, eq))) vars.set(text.slice(0, eq), text.slice(eq + 1))
+    }
+    return vars
+}
+
+/** A NULL-terminated array of C strings, which keeps them alive as long as it lives. */
+function cArray(strings: string[]): ptr {
+    const array = unsafe.alloc((strings.length + 1) * 8)
+    for (let i = 0; i < strings.length; i++) unsafe.store<ptr>(unsafe.add(array, i * 8), cString(strings[i]))
+    return array
+}
+
+/** The environment of a child: this process's, or none, with the command's variables over it. */
+function environmentOf(command: Command): ptr {
+    if (!command.clearEnv && command.env.size === 0) return environment()
+    const entries: string[] = []
+    if (!command.clearEnv) {
+        for (const [name, value] of env()) if (!command.env.has(name)) entries.push(`${name}=${value}`)
+    }
+    for (const [name, value] of command.env) entries.push(`${name}=${value}`)
+    return cArray(entries)
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+
+/** What a finished command wrote, and how it ended. */
+export class Output {
+    constructor(
+        /** The exit status; 128 plus the signal's number when a signal killed it, as shells report. */
+        readonly code: int,
+        /** Everything it wrote to standard output. */
+        readonly stdout: string,
+        /** Everything it wrote to standard error. */
+        readonly stderr: string,
+        /** The signal that killed it, or 0 if it exited. */
+        readonly signal: int,
+    ) {}
+
+    /** Whether it exited with status 0. */
+    get ok(): bool {
+        return this.code === 0 && this.signal === 0
+    }
+}
+
+/**
+ * A program to run, found in PATH unless its name has a slash, with its
+ * arguments. Set the fields, then call `run()` or `output()`; a command can
+ * run several times.
+ *
+ *   const cmd = new process.Command("git", ["status", "--short"])
+ *   cmd.cwd = "repo"
+ *   const out = cmd.output()
+ */
+export class Command {
+    /** The working directory of the child; "" for this process's. */
+    cwd = ""
+    /** Variables to set in the child's environment, over the inherited ones. */
+    env = new Map<string, string>()
+    /** Whether the child starts from an empty environment instead of this process's. */
+    clearEnv = false
+    /** Text written to the child's standard input, which is then closed; null for none. */
+    stdin: string | null = null
+
+    constructor(
+        readonly program: string,
+        readonly args: string[] = [],
+    ) {}
+
+    /**
+     * Runs the command with this process's standard output and error (and
+     * input, unless `stdin` is set) and waits for it; returns its exit
+     * status, 128 plus the signal's number if a signal killed it.
+     */
+    run(): int | Error {
+        flushOutput()
+        const child = start(this, false)
+        if (child instanceof Error) return child
+        feed(child, this.stdin)
+        const status = waitExit(child.pid)
+        if (status instanceof Error) return status
+        return codeOf(status)
+    }
+
+    /**
+     * Runs the command and waits for it, collecting what it writes to
+     * standard output and error. Its standard input is empty unless `stdin`
+     * is set. A failing exit status is no Error: see `code` and `ok`.
+     */
+    output(): Output | Error {
+        const child = start(this, true)
+        if (child instanceof Error) return child
+        feed(child, this.stdin)
+        // stderr in another task, so that neither pipe can fill up unread.
+        const errors = new Chan<string>(1)
+        const errorFd = child.errors
+        task.spawn(() => errors.send(readAll(errorFd)))
+        const stdout = readAll(child.output)
+        const stderr = errors.receive() ?? ""
+        const status = waitExit(child.pid)
+        if (status instanceof Error) return status
+        return new Output(codeOf(status), stdout, stderr, signalOf(status))
+    }
+}
+
+/** Runs a program with this process's standard input and output and waits for it; returns its exit status. */
+export function run(program: string, args: string[] = []): int | Error {
+    return new Command(program, args).run()
+}
+
+/** Runs a program and waits for it, collecting its standard output and error. */
+export function output(program: string, args: string[] = []): Output | Error {
+    return new Command(program, args).output()
+}
+
+// ---------------------------------------------------------------------------
+// Starting a child
+
+/** A started child: its pid, and this process's ends of its pipes, or -1. */
+class Child {
+    constructor(
+        readonly pid: i32,
+        readonly input: i32,
+        readonly output: i32,
+        readonly errors: i32,
+    ) {}
+}
+
+/** Two new descriptors in `fds`, the read end then the write end, close-on-exec; false with errno set. */
+function newPipe(fds: ptr): bool {
+    if (target.os === "linux") return pipe2(fds, oCloexec()) === 0
+    if (pipe(fds) !== 0) return false
+    // Not atomic: another thread may spawn in between, but macOS children
+    // only get the descriptors named by their spawn.
+    fcntl(unsafe.load<i32>(fds), fSetfd, fdCloexec)
+    fcntl(unsafe.load<i32>(unsafe.add(fds, 4)), fSetfd, fdCloexec)
+    return true
+}
+
+function setNonblocking(fd: i32): void {
+    fcntl(fd, fSetfl, i64(fcntl(fd, fGetfl, 0)) | oNonblock())
+}
+
+function closeAll(fds: ptr, count: int): void {
+    for (let i = 0; i < count; i++) {
+        const fd = unsafe.load<i32>(unsafe.add(fds, i * 4))
+        if (fd >= 0) close(fd)
+    }
+}
+
+/** Whether `path` is a regular file this process may execute; errno says why not. */
+function executable(path: string): bool {
+    if (access(path, 1) !== 0) return false
+    const info = unsafe.allocBytes(256)
+    if (stat(path, info) !== 0) return false
+    // st_mode, as in fs.ore: a regular file.
+    const mode =
+        target.os === "darwin"
+            ? i64(unsafe.load<u16>(unsafe.add(info, 4)))
+            : i64(unsafe.load<u32>(unsafe.add(info, target.arch === "x86_64" ? 24 : 16)))
+    if ((mode & 0xf000) === 0x8000) return true
+    // EACCES, as execvp reports it.
+    unsafe.store<i32>(errnoAddress(), 13)
+    return false
+}
+
+declare function __error(): ptr
+declare function __errno_location(): ptr
+
+function errnoAddress(): ptr {
+    if (target.os === "darwin") return __error()
+    return __errno_location()
+}
+
+/**
+ * The file to execute for a command: its program if the name has a slash,
+ * else the first executable file of that name in PATH, as execvp finds it.
+ * Looked up here rather than by posix_spawnp, and the working directory
+ * checked, so that the errors are the same everywhere: glibc reports a
+ * failed exec from the child, which emulators such as qemu cannot do.
+ */
+function locate(command: Command): string | Error {
+    const program = command.program
+    const cwd = command.cwd
+    if (cwd.length > 0) {
+        const info = unsafe.allocBytes(256)
+        if (stat(cwd, info) !== 0) return new Error(`cannot run ${program} in ${cwd}: ${reason(errno())}`)
+    }
+    if (program.length === 0) return new Error("cannot run a program without a name")
+    if (program.includes("/")) {
+        const path = program.startsWith("/") || cwd.length === 0 ? program : `${cwd}/${program}`
+        if (executable(path)) return program
+        return new Error(`cannot run ${program}: ${reason(errno())}`)
+    }
+    const search = process.getenv("PATH") ?? "/usr/local/bin:/usr/bin:/bin"
+    for (const dir of search.split(":")) {
+        const candidate = `${dir.length > 0 ? dir : "."}/${program}`
+        if (executable(candidate)) return candidate
+    }
+    return new Error(`cannot run ${program}: not found in PATH`)
+}
+
+/** Whether SIGPIPE is ignored yet, so that writing to a child that exited reports EPIPE instead of killing this process. */
+let sigpipeIgnored: bool
+
+/**
+ * Starts the command: with pipes for standard output and error when
+ * `capture`, else with this process's; with a pipe for standard input when
+ * the command has `stdin`, else /dev/null when capturing.
+ */
+function start(command: Command, capture: bool): Child | Error {
+    blockingEnter()
+    const file = locate(command)
+    blockingExit()
+    if (file instanceof Error) return file
+    const feeding = command.stdin !== null
+    if (feeding && !sigpipeIgnored) {
+        signal(sigpipe, unsafe.fromInt(1))
+        sigpipeIgnored = true
+    }
+    // The pipes: input (read, write), output (read, write), errors (read, write).
+    const fds = unsafe.allocBytes(24)
+    unsafe.fill(fds, 0xff, 24)
+    if ((feeding && !newPipe(fds)) || (capture && (!newPipe(unsafe.add(fds, 8)) || !newPipe(unsafe.add(fds, 16))))) {
+        const message = `cannot run ${command.program}: ${reason(errno())}`
+        closeAll(fds, 6)
+        return new Error(message)
+    }
+    const fd = (i: int) => unsafe.load<i32>(unsafe.add(fds, i * 4))
+
+    const actions = unsafe.allocBytes(spawnBufferSize)
+    const attributes = unsafe.allocBytes(spawnBufferSize)
+    const signals = unsafe.allocBytes(spawnBufferSize)
+    posix_spawn_file_actions_init(actions)
+    posix_spawnattr_init(attributes)
+    if (feeding) posix_spawn_file_actions_adddup2(actions, fd(0), 0)
+    else if (capture) posix_spawn_file_actions_addopen(actions, 0, "/dev/null", 0, 0)
+    else if (target.os === "darwin") posix_spawn_file_actions_addinherit_np(actions, 0)
+    if (capture) {
+        posix_spawn_file_actions_adddup2(actions, fd(3), 1)
+        posix_spawn_file_actions_adddup2(actions, fd(5), 2)
+    } else if (target.os === "darwin") {
+        posix_spawn_file_actions_addinherit_np(actions, 1)
+        posix_spawn_file_actions_addinherit_np(actions, 2)
+    }
+    if (command.cwd.length > 0) posix_spawn_file_actions_addchdir_np(actions, command.cwd)
+    // The child starts with no signal blocked and SIGPIPE back to its default,
+    // which this process may ignore.
+    let flags = spawnSetsigdef | spawnSetsigmask
+    if (target.os === "darwin") flags = flags | spawnCloexecDefault
+    posix_spawnattr_setflags(attributes, flags)
+    posix_spawnattr_setsigmask(attributes, signals)
+    unsafe.store<u32>(unsafe.add(signals, 256), u32(1) << u32(sigpipe - 1))
+    posix_spawnattr_setsigdefault(attributes, unsafe.add(signals, 256))
+
+    const words = [command.program]
+    for (const arg of command.args) words.push(arg)
+    const argv = cArray(words)
+    const envp = environmentOf(command)
+    const pid = unsafe.allocBytes(8)
+    // posix_spawn with collections held, so that none starts meanwhile.
+    // glibc's child shares this process's memory until it execs (clone with
+    // CLONE_VM | CLONE_VFORK); under Rosetta, which runs the amd64 tests on
+    // Apple machines, the collector's stop signals during a spawn deadlock
+    // the threads.
+    const call = unsafe.allocBytes(56)
+    unsafe.store<ptr>(call, pid)
+    unsafe.store<ptr>(unsafe.add(call, 8), cString(file))
+    unsafe.store<ptr>(unsafe.add(call, 16), actions)
+    unsafe.store<ptr>(unsafe.add(call, 24), attributes)
+    unsafe.store<ptr>(unsafe.add(call, 32), argv)
+    unsafe.store<ptr>(unsafe.add(call, 40), envp)
+    holdCollections()
+    spawnLocked(call)
+    allowCollections()
+    const error = unsafe.load<i32>(unsafe.add(call, 48))
+    posix_spawn_file_actions_destroy(actions)
+    posix_spawnattr_destroy(attributes)
+    // The child's ends of the pipes are its own now.
+    for (const end of [0, 3, 5]) {
+        if (fd(end) >= 0) close(fd(end))
+    }
+    if (error !== 0) {
+        for (const end of [1, 2, 4]) {
+            if (fd(end) >= 0) close(fd(end))
+        }
+        return new Error(`cannot run ${command.program}: ${reason(error)}`)
+    }
+    for (const end of [1, 2, 4]) {
+        if (fd(end) >= 0) setNonblocking(fd(end))
+    }
+    return new Child(unsafe.load<i32>(pid), fd(1), fd(2), fd(4))
+}
+
+function slot(call: ptr, i: int): ptr {
+    return unsafe.load<ptr>(unsafe.add(call, i * 8))
+}
+
+/** posix_spawn with the arguments at `call`, its result stored after them; runs under the collector's lock, so it must not allocate. */
+function spawnLocked(call: ptr): void {
+    unsafe.store<i32>(
+        unsafe.add(call, 48),
+        posix_spawn(slot(call, 0), slot(call, 1), slot(call, 2), slot(call, 3), slot(call, 4), slot(call, 5)),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Pipes
+
+/** Writes `data` to the child's standard input in another task, then closes it. */
+function feed(child: Child, data: string | null): void {
+    const fd = child.input
+    if (fd < 0 || data === null) return
+    const text: string = data
+    task.spawn(() => {
+        let done = 0
+        while (done < text.length) {
+            const n = write(fd, unsafe.add(unsafe.stringData(text), done), u64(text.length - done))
+            if (n >= 0) {
+                done += n
+                continue
+            }
+            const e = errno()
+            if (e === eagain()) netWait(fd, true)
+            // EPIPE: the child no longer reads.
+            else if (e !== eintr) break
+        }
+        close(fd)
+    })
+}
+
+/** Reads a pipe until its end, then closes it. */
+function readAll(fd: i32): string {
+    if (fd < 0) return ""
+    let size = 65536
+    let length = 0
+    let data = unsafe.allocBytes(size)
+    while (true) {
+        const n = read(fd, unsafe.add(data, length), u64(size - length))
+        if (n === 0) break
+        if (n < 0) {
+            const e = errno()
+            if (e === eagain()) netWait(fd, false)
+            else if (e !== eintr) break
+            continue
+        }
+        length += n
+        if (length === size) {
+            const bigger = unsafe.allocBytes(size * 2)
+            unsafe.copy(bigger, data, length)
+            data = bigger
+            size *= 2
+        }
+    }
+    close(fd)
+    return unsafe.makeString(data, length)
+}
+
+// ---------------------------------------------------------------------------
+// Waiting for a child
+
+/** Waits for a child to end and collects it; returns its wait status. */
+function waitExit(pid: i32): int | Error {
+    const status = unsafe.allocBytes(8)
+    while (true) {
+        const r = waitpid(pid, status, wnohang)
+        if (r === pid) return i64(unsafe.load<i32>(status))
+        if (r < 0) {
+            const e = errno()
+            if (e === eintr) continue
+            return new Error(`cannot wait for process ${pid}: ${reason(e)}`)
+        }
+        // Still running: wait on the poller, or else by blocking a worker.
+        if (!exitWait(pid)) return waitBlocking(pid, status)
+    }
+}
+
+function waitBlocking(pid: i32, status: ptr): int | Error {
+    blockingEnter()
+    let r = waitpid(pid, status, 0)
+    while (r < 0 && errno() === eintr) r = waitpid(pid, status, 0)
+    const e = r < 0 ? errno() : 0
+    blockingExit()
+    if (r < 0) return new Error(`cannot wait for process ${pid}: ${reason(e === 0 ? echild : e)}`)
+    return i64(unsafe.load<i32>(status))
+}
+
+/** The signal that ended a child, or 0 if it exited (WIFSIGNALED, WTERMSIG). */
+function signalOf(status: int): int {
+    const s = status & 0x7f
+    return s !== 0 && s !== 0x7f ? s : 0
+}
+
+/** The exit status (WEXITSTATUS), or 128 plus the signal's number. */
+function codeOf(status: int): int {
+    const s = signalOf(status)
+    return s !== 0 ? 128 + s : (status >> 8) & 0xff
+}

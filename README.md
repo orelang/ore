@@ -68,8 +68,9 @@ total: 1000
   the M:N scheduler of green threads (stackful, on a pool of OS threads,
   with the context switch in assembly), channels and `select`, and a
   netpoller on kqueue or epoll, printing, panics, files and sockets. Only
-  libc and the Boehm GC are outside Ore. Memory is managed by the Boehm garbage collector, built with
-  threads and parallel marking.
+  libc is outside Ore, the garbage collector included: a mark-sweep
+  collector in the shape of Go's, with per-thread allocation from
+  size-classed spans.
 - **Tooling.** One `ore` binary builds, runs, checks, tests and formats code
   and serves the language server. Debug builds keep stack traces for panics.
 - **Platforms.** macOS and Linux, arm64 and x86-64.
@@ -256,8 +257,7 @@ inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
 
 ## Getting started
 
-Requirements: [Bun](https://bun.sh) and clang. The Boehm GC is a submodule:
-clone with `--recursive` or run `git submodule update --init`.
+Requirements: [Bun](https://bun.sh) and clang.
 
 ```sh
 bun install
@@ -344,9 +344,9 @@ Another binary can be set with the `ore.path` setting.
 | 7.5. Multi-threaded scheduler, blocking I/O handoff, `ore:sync` | done |
 | 8. Performance: escape analysis, inlining, LLVM backend, low-level layer (`unsafe`, directives) | done |
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
-| 9. Runtime in Ore: no C left; only libc and the Boehm GC outside Ore | done |
+| 9. Runtime in Ore: no C left; only libc outside Ore | done |
 | 10. Compiler in Ore: lexer and parser (done); checker, backend, bootstrap | in progress |
-| 11. Own precise garbage collector | planned |
+| 11. Own garbage collector: stop-the-world mark-sweep (done); parallel and concurrent marking, precise heap | in progress |
 | 12. Promises and `async`/`await` | planned |
 
 ### Known limitations
@@ -390,7 +390,6 @@ Every directory below has a README with the details.
 | `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer, the parser and the loading of modules) |
 | `runtime/core` | The runtime written in Ore (`ore:runtime/...`), part of every program |
 | `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`, `ore:path`) |
-| `runtime/third_party/bdwgc` | The Boehm garbage collector (submodule) |
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |
 | `tests/async` | Async tests, with references from Bun (waiting for Phase 8.6) |

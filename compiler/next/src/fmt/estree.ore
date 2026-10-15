@@ -1,0 +1,1359 @@
+// The tree that the printer formats: the syntax tree converted to the shape
+// of typescript-estree's, which prettier formats, with the same node types,
+// children and ranges, so that the printer and the placement of comments can
+// follow prettier's rules as they are written.
+
+import { type Node, type NodeKind } from "../syntax/ast"
+import { type Token } from "../syntax/lexer"
+import { type Kind } from "../syntax/tokens"
+
+/** A comment of the source, a line or a block comment, with the text between its delimiters. */
+export class Comment {
+    leading = false
+    trailing = false
+    printed = false
+    /** A dangling comment placed by a handler for one place in its node, such as "commentBeforeArrow". */
+    marker = ""
+    placement = ""
+    enclosing: ENode | null = null
+    preceding: ENode | null = null
+    following: ENode | null = null
+
+    constructor(
+        readonly block: bool,
+        readonly value: string,
+        readonly start: int,
+        readonly end: int,
+    ) {}
+}
+
+/** A node in the shape of typescript-estree's: a type, a range, and children by property name. */
+export class ENode {
+    kids: ENode[] = []
+    /** The property of this node holding each child, parallel to `kids`. */
+    roles: string[] = []
+    parent: ENode | null = null
+    /** The property of the parent holding this node, and the index in it for lists (-1 otherwise). */
+    key = ""
+    index = -1
+    comments: Comment[] = []
+    name = ""
+    raw = ""
+    operator = ""
+    /** `const`/`let` of declarations, `get`/`set`/`method`/`constructor`/`init` of members, `namespace`/`module`/`global`. */
+    kind = ""
+    /** For a Literal: "string", "number", "bigint", "boolean" or "null". */
+    literal = ""
+    accessibility = ""
+    importKind = ""
+    computed = false
+    optional = false
+    shorthand = false
+    method = false
+    isStatic = false
+    readonly = false
+    prefix = false
+    isAsync = false
+    generator = false
+    declare = false
+    isAbstract = false
+    definite = false
+    tail = false
+    override = false
+    isConst = false
+    /** The end of a statement before its `;`, or -1. */
+    contentEnd = -1
+    /** Lists with this role, even when empty, so that `list` tells an empty list from a missing one. */
+    lists: string[] = []
+
+    constructor(
+        readonly type: string,
+        public start: int,
+        public end: int,
+    ) {}
+
+    set(role: string, child: ENode | null): ENode {
+        if (child !== null) {
+            child.parent = this
+            child.key = role
+            child.index = -1
+            this.kids.push(child)
+            this.roles.push(role)
+        }
+        return this
+    }
+
+    setAll(role: string, children: ENode[]): ENode {
+        if (!this.lists.includes(role)) this.lists.push(role)
+        let i = 0
+        for (const child of children) {
+            child.parent = this
+            child.key = role
+            child.index = i
+            this.kids.push(child)
+            this.roles.push(role)
+            i++
+        }
+        return this
+    }
+
+    get(role: string): ENode | null {
+        for (let i = 0; i < this.kids.length; i++) if (this.roles[i] === role) return this.kids[i]
+        return null
+    }
+
+    /** The child with a role, which must be present. */
+    at(role: string): ENode {
+        const child = this.get(role)
+        if (child === null) process.panic(`fmt: ${this.type} has no ${role}`)
+        return child
+    }
+
+    all(role: string): ENode[] {
+        const found: ENode[] = []
+        for (let i = 0; i < this.kids.length; i++) if (this.roles[i] === role) found.push(this.kids[i])
+        return found
+    }
+
+    has(role: string): bool {
+        return this.get(role) !== null
+    }
+
+    hasList(role: string): bool {
+        return this.lists.includes(role)
+    }
+
+    /** The siblings of this node in the list holding it. */
+    siblings(): ENode[] {
+        const parent = this.parent
+        if (parent === null || this.index < 0) return []
+        return parent.all(this.key)
+    }
+
+    isFirst(): bool {
+        return this.index === 0
+    }
+
+    isLast(): bool {
+        return this.index >= 0 && this.index === this.siblings().length - 1
+    }
+
+    next(): ENode | null {
+        const siblings = this.siblings()
+        return this.index >= 0 && this.index + 1 < siblings.length ? siblings[this.index + 1] : null
+    }
+
+    previous(): ENode | null {
+        const siblings = this.siblings()
+        return this.index > 0 ? siblings[this.index - 1] : null
+    }
+
+    grandparent(): ENode | null {
+        const parent = this.parent
+        return parent === null ? null : parent.parent
+    }
+}
+
+// Characters.
+const LF = 10
+const CR = 13
+const SPACE = 32
+const TAB = 9
+const SLASH = 47
+const STAR = 42
+const SEMI = 59
+
+/** A child that the parser always produces. */
+function must(node: Node | null): Node {
+    if (node === null) process.panic("fmt: missing node")
+    return node
+}
+
+/** The comments of a text, from the gaps between its tokens. */
+export function extractComments(text: string, tokens: Token[]): Comment[] {
+    const comments: Comment[] = []
+    let pos = 0
+    for (const token of tokens) {
+        scanGap(text, pos, token.start, comments)
+        pos = token.end
+    }
+    return comments
+}
+
+function scanGap(text: string, from: int, to: int, out: Comment[]) {
+    let i = from
+    while (i < to) {
+        const c = text[i]
+        if (c === SLASH && i + 1 < to && text[i + 1] === SLASH) {
+            let end = i + 2
+            while (end < to && text[end] !== LF && text[end] !== CR) end++
+            out.push(new Comment(false, text.slice(i + 2, end), i, end))
+            i = end
+        } else if (c === SLASH && i + 1 < to && text[i + 1] === STAR) {
+            const close = text.indexOf("*/", i + 2)
+            const end = close < 0 ? to : close + 2
+            out.push(new Comment(true, text.slice(i + 2, close < 0 ? to : close), i, end))
+            i = end
+        } else {
+            i++
+        }
+    }
+}
+
+/** The text with every character of the comments but line breaks replaced by spaces. */
+export function blankComments(text: string, comments: Comment[]): string {
+    if (comments.length === 0) return text
+    const parts: string[] = []
+    let pos = 0
+    for (const comment of comments) {
+        parts.push(text.slice(pos, comment.start))
+        let blank = ""
+        let run = 0
+        for (let i = comment.start; i < comment.end; i++) {
+            if (text[i] === LF) {
+                blank += " ".repeat(run) + "\n"
+                run = 0
+            } else run++
+        }
+        parts.push(blank + " ".repeat(run))
+        pos = comment.end
+    }
+    parts.push(text.slice(pos))
+    return parts.join("")
+}
+
+/** Converts a syntax tree to the tree prettier formats. */
+export class Converter {
+    constructor(
+        readonly text: string,
+        readonly tokens: Token[],
+        /** The text with comments blanked out. */
+        readonly blank: string,
+    ) {}
+
+    // -------------------------------------------------------------------------
+    // Tokens
+
+    /** The index of the first token starting at or after `pos`. */
+    private tokenIndex(pos: int): int {
+        let lo = 0
+        let hi = this.tokens.length
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1
+            if (this.tokens[mid].start < pos) lo = mid + 1
+            else hi = mid
+        }
+        return lo
+    }
+
+    /** The first token starting at or after `pos`. */
+    private tokenAfter(pos: int): Token {
+        const i = this.tokenIndex(pos)
+        return this.tokens[i < this.tokens.length ? i : this.tokens.length - 1]
+    }
+
+    /** The last token ending at or before `pos`. */
+    private tokenBefore(pos: int): Token {
+        let i = this.tokenIndex(pos) - 1
+        while (i > 0 && this.tokens[i].end > pos) i--
+        return this.tokens[i < 0 ? 0 : i]
+    }
+
+    /** The first token of a kind at or after `pos`. */
+    private find(kind: Kind, pos: int): Token {
+        let i = this.tokenIndex(pos)
+        while (i < this.tokens.length - 1 && this.tokens[i].kind !== kind) i++
+        return this.tokens[i]
+    }
+
+    private word(pos: int): string {
+        const token = this.tokenAfter(pos)
+        return this.text.slice(token.start, token.end)
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+
+    private make(type: string, from: Node): ENode {
+        return new ENode(type, from.start, from.end)
+    }
+
+    private modifier(node: Node, kind: NodeKind): bool {
+        for (const m of node.list("modifiers")) if (m.kind === kind) return true
+        return false
+    }
+
+    private convertList(nodes: Node[]): ENode[] {
+        const out: ENode[] = []
+        for (const n of nodes) {
+            const converted = this.convert(n)
+            if (converted !== null) out.push(converted)
+        }
+        return out
+    }
+
+    private opt(node: Node | null): ENode | null {
+        return node === null ? null : this.convert(node)
+    }
+
+    private req(node: Node | null): ENode {
+        if (node === null) process.panic("fmt: missing node")
+        const converted = this.convert(node)
+        if (converted === null) process.panic(`fmt: cannot convert ${node.kind}`)
+        return converted
+    }
+
+    /** A type annotation: from the `:` (or `=>`) before the type to its end. */
+    private typeAnnotation(type: Node): ENode {
+        const before = this.tokenBefore(type.start)
+        const node = new ENode("TSTypeAnnotation", before.start, type.end)
+        return node.set("typeAnnotation", this.req(type))
+    }
+
+    /** Type parameters `<T, U>` as a declaration or instantiation, spanning the angle brackets. */
+    private typeParams(type: string, params: Node[]): ENode | null {
+        if (params.length === 0) return null
+        const open = this.tokenBefore(params[0].start)
+        let close = this.tokenAfter(params[params.length - 1].end)
+        if (close.kind === "CommaToken") close = this.tokenAfter(close.end)
+        const node = new ENode(type, open.start, close.end)
+        return node.setAll("params", this.convertList(params))
+    }
+
+    private identifier(node: Node): ENode {
+        const id = this.make("Identifier", node)
+        id.name = node.text
+        return id
+    }
+
+    /** Extends a node to the end of its type annotation. */
+    private annotate(target: ENode, type: Node | null) {
+        if (type === null) return
+        const annotation = this.typeAnnotation(type)
+        target.set("typeAnnotation", annotation)
+        if (annotation.end > target.end) target.end = annotation.end
+    }
+
+    private literal(node: Node, kind: string): ENode {
+        const lit = this.make("Literal", node)
+        lit.raw = this.text.slice(node.start, node.end)
+        lit.literal = kind
+        return lit
+    }
+
+    /** A template element: the raw text between the delimiters of a template token. */
+    private templateElement(token: Node, tail: bool): ENode {
+        const start = token.start + 1
+        const end = token.end - (tail ? 1 : 2)
+        const element = new ENode("TemplateElement", start, end)
+        element.raw = this.text.slice(start, end)
+        element.tail = tail
+        return element
+    }
+
+    /** The end of a statement before its `;`. */
+    private statementEnd(node: ENode) {
+        if (node.end > node.start && this.text[node.end - 1] === SEMI) {
+            let end = node.end - 1
+            while (end > node.start) {
+                const c = this.blank[end - 1]
+                if (c === SPACE || c === TAB || c === LF || c === CR) end--
+                else break
+            }
+            node.contentEnd = end
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Conversion
+
+    file(node: Node): ENode {
+        const program = new ENode("Program", 0, this.text.length)
+        return program.setAll("body", this.convertList(node.list("statements")))
+    }
+
+    convert(node: Node): ENode | null {
+        switch (node.kind) {
+            case "Identifier":
+                return this.identifier(node)
+            case "PrivateIdentifier": {
+                const id = this.make("PrivateIdentifier", node)
+                id.name = node.text.slice(1)
+                return id
+            }
+            case "StringLiteral":
+                return this.literal(node, "string")
+            case "NumericLiteral":
+                return this.literal(node, "number")
+            case "BigIntLiteral":
+                return this.literal(node, "bigint")
+            case "TrueKeyword":
+            case "FalseKeyword":
+                return this.literal(node, "boolean")
+            case "NullKeyword":
+                return this.literal(node, "null")
+            case "ThisKeyword":
+                return this.make("ThisExpression", node)
+            case "SuperKeyword":
+                return this.make("Super", node)
+            case "NoSubstitutionTemplateLiteral": {
+                const template = this.make("TemplateLiteral", node)
+                template.setAll("quasis", [this.templateElement(node, true)])
+                return template.setAll("expressions", [])
+            }
+            case "TemplateExpression": {
+                const template = this.make("TemplateLiteral", node)
+                const quasis = [this.templateElement(must(node.child("head")), false)]
+                const expressions: ENode[] = []
+                for (const span of node.list("templateSpans")) {
+                    expressions.push(this.req(span.child("expression")))
+                    const literal = must(span.child("literal"))
+                    quasis.push(this.templateElement(literal, literal.kind === "TemplateTail"))
+                }
+                return template.setAll("quasis", quasis).setAll("expressions", expressions)
+            }
+            case "SourceFile":
+                return this.file(node)
+            case "Block": {
+                const block = this.make("BlockStatement", node)
+                return block.setAll("body", this.convertList(node.list("statements")))
+            }
+            case "ModuleBlock": {
+                const block = this.make("TSModuleBlock", node)
+                return block.setAll("body", this.convertList(node.list("statements")))
+            }
+            case "EmptyStatement":
+                return this.make("EmptyStatement", node)
+            case "ExpressionStatement": {
+                const statement = this.make("ExpressionStatement", node).set(
+                    "expression",
+                    this.req(node.child("expression")),
+                )
+                this.statementEnd(statement)
+                return statement
+            }
+            case "VariableStatement":
+                return this.variableStatement(node)
+            case "VariableDeclarationList":
+                return this.declarationList(node, this.make("VariableDeclaration", node))
+            case "VariableDeclaration":
+                return this.declarator(node)
+            case "IfStatement":
+                return this.make("IfStatement", node)
+                    .set("test", this.req(node.child("expression")))
+                    .set("consequent", this.req(node.child("thenStatement")))
+                    .set("alternate", this.opt(node.child("elseStatement")))
+            case "WhileStatement":
+                return this.make("WhileStatement", node)
+                    .set("test", this.req(node.child("expression")))
+                    .set("body", this.req(node.child("statement")))
+            case "DoStatement": {
+                const statement = this.make("DoWhileStatement", node)
+                    .set("body", this.req(node.child("statement")))
+                    .set("test", this.req(node.child("expression")))
+                this.statementEnd(statement)
+                return statement
+            }
+            case "ForStatement":
+                return this.make("ForStatement", node)
+                    .set("init", this.opt(node.child("initializer")))
+                    .set("test", this.opt(node.child("condition")))
+                    .set("update", this.opt(node.child("incrementor")))
+                    .set("body", this.req(node.child("statement")))
+            case "ForOfStatement":
+            case "ForInStatement":
+                return this.make(node.kind, node)
+                    .set("left", this.forLeft(must(node.child("initializer"))))
+                    .set("right", this.req(node.child("expression")))
+                    .set("body", this.req(node.child("statement")))
+            case "ReturnStatement":
+            case "ThrowStatement": {
+                const statement = this.make(node.kind, node).set("argument", this.opt(node.child("expression")))
+                this.statementEnd(statement)
+                return statement
+            }
+            case "BreakStatement":
+            case "ContinueStatement":
+                return this.make(node.kind, node).set("label", this.opt(node.child("label")))
+            case "LabeledStatement":
+                return this.make("LabeledStatement", node)
+                    .set("label", this.req(node.child("label")))
+                    .set("body", this.req(node.child("statement")))
+            case "SwitchStatement": {
+                const statement = this.make("SwitchStatement", node).set(
+                    "discriminant",
+                    this.req(node.child("expression")),
+                )
+                const cases: ENode[] = []
+                for (const clause of must(node.child("caseBlock")).list("clauses")) {
+                    const c = this.make("SwitchCase", clause).set("test", this.opt(clause.child("expression")))
+                    cases.push(c.setAll("consequent", this.convertList(clause.list("statements"))))
+                }
+                return statement.setAll("cases", cases)
+            }
+            case "TryStatement": {
+                const statement = this.make("TryStatement", node).set("block", this.req(node.child("tryBlock")))
+                const clause = node.child("catchClause")
+                if (clause !== null) {
+                    const handler = this.make("CatchClause", clause)
+                    const declaration = clause.child("variableDeclaration")
+                    if (declaration !== null) {
+                        const param = this.bindingName(must(declaration.child("name")))
+                        this.annotate(param, declaration.child("type"))
+                        handler.set("param", param)
+                    }
+                    statement.set("handler", handler.set("body", this.req(clause.child("block"))))
+                }
+                return statement.set("finalizer", this.opt(node.child("finallyBlock")))
+            }
+            case "FunctionDeclaration":
+                return this.exported(node, this.functionDeclaration(node))
+            case "ClassDeclaration":
+                return this.exported(node, this.classDeclaration(node))
+            case "InterfaceDeclaration":
+                return this.exported(node, this.interfaceDeclaration(node))
+            case "TypeAliasDeclaration": {
+                const alias = this.make("TSTypeAliasDeclaration", node)
+                    .set("id", this.req(node.child("name")))
+                    .set("typeParameters", this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")))
+                    .set("typeAnnotation", this.req(node.child("type")))
+                alias.declare = this.modifier(node, "DeclareKeyword")
+                return this.exported(node, alias)
+            }
+            case "EnumDeclaration": {
+                const declaration = this.make("TSEnumDeclaration", node).set("id", this.req(node.child("name")))
+                declaration.declare = this.modifier(node, "DeclareKeyword")
+                declaration.isConst = this.modifier(node, "ConstKeyword")
+                const name = must(node.child("name"))
+                const open = this.find("OpenBraceToken", name.end)
+                const body = new ENode("TSEnumBody", open.start, node.end)
+                const members: ENode[] = []
+                for (const member of node.list("members"))
+                    members.push(
+                        this.make("TSEnumMember", member)
+                            .set("id", this.req(member.child("name")))
+                            .set("initializer", this.opt(member.child("initializer"))),
+                    )
+                declaration.set("body", body.setAll("members", members))
+                return this.exported(node, declaration)
+            }
+            case "ModuleDeclaration": {
+                const declaration = this.make("TSModuleDeclaration", node)
+                declaration.declare = this.modifier(node, "DeclareKeyword")
+                const name = must(node.child("name"))
+                const keyword = this.tokenBefore(name.start)
+                declaration.kind =
+                    name.kind === "Identifier" && name.text === "global" && keyword.kind !== "NamespaceKeyword"
+                        ? "global"
+                        : this.text.slice(keyword.start, keyword.end)
+                declaration.set("id", this.req(name)).set("body", this.opt(node.child("body")))
+                return this.exported(node, declaration)
+            }
+            case "ImportDeclaration":
+                return this.importDeclaration(node)
+            case "ExportDeclaration":
+                return this.exportDeclaration(node)
+            case "ExportAssignment": {
+                const isDefault = node.list("modifiers").length > 0
+                const statement = this.make(isDefault ? "ExportDefaultDeclaration" : "TSExportAssignment", node)
+                statement.set(isDefault ? "declaration" : "expression", this.req(node.child("expression")))
+                this.statementEnd(statement)
+                return statement
+            }
+            case "BinaryExpression":
+                return this.binary(node)
+            case "PrefixUnaryExpression": {
+                const op = this.text.slice(node.start, node.start + 2)
+                if (op === "++" || op === "--") {
+                    const update = this.make("UpdateExpression", node).set("argument", this.req(node.child("operand")))
+                    update.operator = op
+                    update.prefix = true
+                    return update
+                }
+                const unary = this.make("UnaryExpression", node).set("argument", this.req(node.child("operand")))
+                unary.operator = this.text.slice(node.start, node.start + 1)
+                unary.prefix = true
+                return unary
+            }
+            case "PostfixUnaryExpression": {
+                const update = this.make("UpdateExpression", node).set("argument", this.req(node.child("operand")))
+                update.operator = this.text.slice(node.end - 2, node.end)
+                return update
+            }
+            case "TypeOfExpression":
+            case "VoidExpression":
+            case "DeleteExpression": {
+                const unary = this.make("UnaryExpression", node).set("argument", this.req(node.child("expression")))
+                unary.operator =
+                    node.kind === "TypeOfExpression" ? "typeof" : node.kind === "VoidExpression" ? "void" : "delete"
+                unary.prefix = true
+                return unary
+            }
+            case "AwaitExpression":
+                return this.make("AwaitExpression", node).set("argument", this.req(node.child("expression")))
+            case "ParenthesizedExpression":
+                return this.req(node.child("expression"))
+            case "CallExpression": {
+                const call = this.make("CallExpression", node)
+                const callee = this.req(node.child("expression"))
+                call.optional = node.child("questionDotToken") !== null
+                call.set("callee", callee)
+                call.set("typeArguments", this.typeParams("TSTypeParameterInstantiation", node.list("typeArguments")))
+                call.setAll("arguments", this.convertList(node.list("arguments")))
+                return this.chain(call, must(node.child("expression")), call.optional)
+            }
+            case "NewExpression": {
+                const call = this.make("NewExpression", node).set("callee", this.req(node.child("expression")))
+                call.set("typeArguments", this.typeParams("TSTypeParameterInstantiation", node.list("typeArguments")))
+                return call.setAll("arguments", this.convertList(node.list("arguments")))
+            }
+            case "PropertyAccessExpression":
+            case "ElementAccessExpression": {
+                const member = this.make("MemberExpression", node)
+                member.computed = node.kind === "ElementAccessExpression"
+                member.optional = node.child("questionDotToken") !== null
+                member.set("object", this.req(node.child("expression")))
+                member.set(
+                    "property",
+                    this.req(member.computed ? node.child("argumentExpression") : node.child("name")),
+                )
+                return this.chain(member, must(node.child("expression")), member.optional)
+            }
+            case "NonNullExpression": {
+                const nonNull = this.make("TSNonNullExpression", node).set(
+                    "expression",
+                    this.req(node.child("expression")),
+                )
+                return this.chain(nonNull, must(node.child("expression")), false)
+            }
+            case "AsExpression":
+                return this.make("TSAsExpression", node)
+                    .set("expression", this.req(node.child("expression")))
+                    .set("typeAnnotation", this.req(node.child("type")))
+            case "ConditionalExpression":
+                return this.make("ConditionalExpression", node)
+                    .set("test", this.req(node.child("condition")))
+                    .set("consequent", this.req(node.child("whenTrue")))
+                    .set("alternate", this.req(node.child("whenFalse")))
+            case "ArrowFunction":
+                return this.arrow(node)
+            case "FunctionExpression": {
+                const fn = this.functionLike("FunctionExpression", node, node.start)
+                fn.set("id", this.opt(node.child("name")))
+                return fn
+            }
+            case "ObjectLiteralExpression":
+                return this.objectLiteral(node, false)
+            case "ArrayLiteralExpression":
+                return this.arrayLiteral(node, false)
+            case "SpreadElement":
+            case "SpreadAssignment":
+                return this.make("SpreadElement", node).set("argument", this.req(node.child("expression")))
+            case "OmittedExpression":
+                return this.make("Hole", node)
+            case "QualifiedName":
+                return this.make("TSQualifiedName", node)
+                    .set("left", this.req(node.child("left")))
+                    .set("right", this.req(node.child("right")))
+            case "ComputedPropertyName":
+                return this.req(node.child("expression"))
+            case "ObjectBindingPattern":
+            case "ArrayBindingPattern":
+                return this.bindingName(node)
+            // Types
+            case "StringKeyword":
+            case "NumberKeyword":
+            case "BooleanKeyword":
+            case "BigIntKeyword":
+            case "SymbolKeyword":
+            case "ObjectKeyword":
+            case "NeverKeyword":
+            case "UnknownKeyword":
+            case "AnyKeyword":
+            case "UndefinedKeyword":
+            case "VoidKeyword":
+            case "IntrinsicKeyword":
+                return this.make(`TS${node.kind}`, node)
+            case "LiteralType": {
+                const literal = must(node.child("literal"))
+                if (literal.kind === "NullKeyword") return this.make("TSNullKeyword", node)
+                return this.make("TSLiteralType", node).set("literal", this.req(literal))
+            }
+            case "TypeReference":
+                return this.make("TSTypeReference", node)
+                    .set("typeName", this.req(node.child("typeName")))
+                    .set("typeArguments", this.typeParams("TSTypeParameterInstantiation", node.list("typeArguments")))
+            case "ArrayType":
+                return this.make("TSArrayType", node).set("elementType", this.req(node.child("elementType")))
+            case "UnionType":
+            case "IntersectionType": {
+                const types = node.list("types")
+                if (types.length === 1) return this.req(types[0])
+                const type = this.make(node.kind === "UnionType" ? "TSUnionType" : "TSIntersectionType", node)
+                return type.setAll("types", this.convertList(types))
+            }
+            case "ParenthesizedType":
+                return this.req(node.child("type"))
+            case "FunctionType": {
+                const fn = this.make("TSFunctionType", node)
+                fn.set("typeParameters", this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")))
+                fn.setAll("params", this.params(node.list("parameters")))
+                const type = node.child("type")
+                if (type !== null) fn.set("returnType", this.typeAnnotation(type))
+                return fn
+            }
+            case "TypeLiteral":
+                return this.make("TSTypeLiteral", node).setAll("members", this.convertList(node.list("members")))
+            case "PropertySignature": {
+                const signature = this.make("TSPropertySignature", node)
+                this.key(signature, must(node.child("name")))
+                signature.optional = node.child("questionToken") !== null
+                signature.readonly = this.modifier(node, "ReadonlyKeyword")
+                const type = node.child("type")
+                if (type !== null) signature.set("typeAnnotation", this.typeAnnotation(type))
+                return signature
+            }
+            case "MethodSignature": {
+                const signature = this.make("TSMethodSignature", node)
+                this.key(signature, must(node.child("name")))
+                signature.optional = node.child("questionToken") !== null
+                signature.kind = "method"
+                signature.set(
+                    "typeParameters",
+                    this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")),
+                )
+                signature.setAll("params", this.params(node.list("parameters")))
+                const type = node.child("type")
+                if (type !== null) signature.set("returnType", this.typeAnnotation(type))
+                return signature
+            }
+            case "TypeQuery":
+                return this.make("TSTypeQuery", node).set("exprName", this.req(node.child("exprName")))
+            case "TypeOperator": {
+                const operator = this.make("TSTypeOperator", node).set("typeAnnotation", this.req(node.child("type")))
+                operator.operator = this.word(node.start)
+                return operator
+            }
+            case "IndexedAccessType":
+                return this.make("TSIndexedAccessType", node)
+                    .set("objectType", this.req(node.child("objectType")))
+                    .set("indexType", this.req(node.child("indexType")))
+            case "TupleType":
+                return this.make("TSTupleType", node).setAll("elementTypes", this.convertList(node.list("elements")))
+            case "TypeParameter": {
+                const parameter = this.make("TSTypeParameter", node)
+                    .set("name", this.req(node.child("name")))
+                    .set("constraint", this.opt(node.child("constraint")))
+                    .set("default", this.opt(node.child("default")))
+                parameter.isConst = this.modifier(node, "ConstKeyword")
+                return parameter
+            }
+            case "ExpressionWithTypeArguments":
+                return this.make("TSInterfaceHeritage", node)
+                    .set("expression", this.req(node.child("expression")))
+                    .set("typeArguments", this.typeParams("TSTypeParameterInstantiation", node.list("typeArguments")))
+        }
+        process.panic(`fmt: cannot convert ${node.kind} at ${node.start}`)
+    }
+
+    // -------------------------------------------------------------------------
+    // Declarations
+
+    /** Wraps a declaration with `export` (and `default`) in an export declaration. */
+    private exported(node: Node, declaration: ENode): ENode {
+        const modifiers = node.list("modifiers")
+        if (modifiers.length === 0 || modifiers[0].kind !== "ExportKeyword") return declaration
+        const isDefault = modifiers.length > 1 && modifiers[1].kind === "DefaultKeyword"
+        const after = this.tokenAfter((isDefault ? modifiers[1] : modifiers[0]).end)
+        declaration.start = after.start
+        const wrapper = this.make(isDefault ? "ExportDefaultDeclaration" : "ExportNamedDeclaration", node)
+        wrapper.set("declaration", declaration)
+        if (!isDefault) wrapper.setAll("specifiers", []).setAll("attributes", [])
+        this.statementEnd(wrapper)
+        return wrapper
+    }
+
+    private variableStatement(node: Node): ENode {
+        const declaration = this.make("VariableDeclaration", node)
+        declaration.declare = this.modifier(node, "DeclareKeyword")
+        this.declarationList(must(node.child("declarationList")), declaration)
+        return this.exported(node, declaration)
+    }
+
+    private declarationList(list: Node, declaration: ENode): ENode {
+        declaration.kind = this.word(list.start)
+        return declaration.setAll("declarations", this.convertList(list.list("declarations")))
+    }
+
+    private declarator(node: Node): ENode {
+        const declarator = this.make("VariableDeclarator", node)
+        const id = this.bindingName(must(node.child("name")))
+        this.annotate(id, node.child("type"))
+        declarator.definite = node.child("exclamationToken") !== null
+        return declarator.set("id", id).set("init", this.opt(node.child("initializer")))
+    }
+
+    private forLeft(node: Node): ENode {
+        if (node.kind === "VariableDeclarationList")
+            return this.declarationList(node, this.make("VariableDeclaration", node))
+        return this.assignmentTarget(node)
+    }
+
+    private functionDeclaration(node: Node): ENode {
+        const body = node.child("body")
+        const fn = this.functionLike(body === null ? "TSDeclareFunction" : "FunctionDeclaration", node, node.start)
+        fn.set("id", this.opt(node.child("name")))
+        fn.declare = this.modifier(node, "DeclareKeyword")
+        return fn
+    }
+
+    /** A function: its type parameters, parameters, return type and body. */
+    private functionLike(type: string, node: Node, start: int): ENode {
+        const fn = new ENode(type, start, node.end)
+        fn.isAsync = this.modifier(node, "AsyncKeyword")
+        fn.generator = node.child("asteriskToken") !== null
+        fn.set("typeParameters", this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")))
+        fn.setAll("params", this.params(node.list("parameters")))
+        const type_ = node.child("type")
+        if (type_ !== null) fn.set("returnType", this.typeAnnotation(type_))
+        return fn.set("body", this.opt(node.child("body")))
+    }
+
+    private arrow(node: Node): ENode {
+        const fn = this.functionLike("ArrowFunctionExpression", node, node.start)
+        return fn
+    }
+
+    private params(parameters: Node[]): ENode[] {
+        const out: ENode[] = []
+        for (const p of parameters) out.push(this.parameter(p))
+        return out
+    }
+
+    private parameter(node: Node): ENode {
+        const name = must(node.child("name"))
+        let parameter: ENode
+        let result: ENode
+        if (node.child("dotDotDotToken") !== null) {
+            result = this.make("RestElement", node).set("argument", this.bindingName(name))
+            parameter = result
+        } else if (node.child("initializer") !== null) {
+            parameter = this.bindingName(name)
+            result = this.make("AssignmentPattern", node)
+            result.set("left", parameter).set("right", this.req(node.child("initializer")))
+        } else {
+            parameter = this.bindingName(name)
+            result = parameter
+        }
+        this.annotate(parameter, node.child("type"))
+        const question = node.child("questionToken")
+        if (question !== null) {
+            if (question.end > parameter.end) parameter.end = question.end
+            parameter.optional = true
+        }
+        const modifiers = node.list("modifiers")
+        if (modifiers.length > 0) {
+            if (result.type === "AssignmentPattern") result.start = parameter.start
+            const property = this.make("TSParameterProperty", node).set("parameter", result)
+            property.accessibility = this.accessibility(node)
+            property.readonly = this.modifier(node, "ReadonlyKeyword")
+            property.isStatic = this.modifier(node, "StaticKeyword")
+            property.override = this.modifier(node, "OverrideKeyword")
+            return property
+        }
+        return result
+    }
+
+    private accessibility(node: Node): string {
+        if (this.modifier(node, "PublicKeyword")) return "public"
+        if (this.modifier(node, "PrivateKeyword")) return "private"
+        if (this.modifier(node, "ProtectedKeyword")) return "protected"
+        return ""
+    }
+
+    /** The key of a member: `[expression]` sets `computed`. */
+    private key(member: ENode, name: Node) {
+        member.computed = name.kind === "ComputedPropertyName"
+        member.set("key", this.req(name))
+    }
+
+    /** The end of the header of a class or interface: its name, type parameters or heritage clauses. */
+    private headerEnd(node: Node): int {
+        let end = node.start
+        for (const role of ["name", "heritageClauses"])
+            for (const child of node.list(role)) if (child.end > end) end = child.end
+        // The `>` closing type parameters.
+        const typeParameters = node.list("typeParameters")
+        if (typeParameters.length > 0) {
+            const close = this.find("GreaterThanToken", typeParameters[typeParameters.length - 1].end).end
+            if (close > end) end = close
+        }
+        return end
+    }
+
+    private classDeclaration(node: Node): ENode {
+        const declaration = this.make("ClassDeclaration", node).set("id", this.opt(node.child("name")))
+        declaration.declare = this.modifier(node, "DeclareKeyword")
+        declaration.isAbstract = this.modifier(node, "AbstractKeyword")
+        declaration.set("typeParameters", this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")))
+        const implements_: ENode[] = []
+        for (const clause of node.list("heritageClauses")) {
+            const types = clause.list("types")
+            if (this.word(clause.start) === "extends") {
+                if (types.length > 0) {
+                    declaration.set("superClass", this.req(types[0].child("expression")))
+                    declaration.set(
+                        "superTypeArguments",
+                        this.typeParams("TSTypeParameterInstantiation", types[0].list("typeArguments")),
+                    )
+                }
+            } else {
+                for (const type of types)
+                    implements_.push(
+                        this.make("TSClassImplements", type)
+                            .set("expression", this.req(type.child("expression")))
+                            .set(
+                                "typeArguments",
+                                this.typeParams("TSTypeParameterInstantiation", type.list("typeArguments")),
+                            ),
+                    )
+            }
+        }
+        declaration.setAll("implements", implements_)
+        const open = this.find("OpenBraceToken", this.headerEnd(node))
+        const body = new ENode("ClassBody", open.start, node.end)
+        const members: ENode[] = []
+        for (const member of node.list("members")) {
+            const converted = this.classMember(member)
+            if (converted !== null) members.push(converted)
+        }
+        return declaration.set("body", body.setAll("body", members))
+    }
+
+    private classMember(node: Node): ENode | null {
+        switch (node.kind) {
+            case "SemicolonClassElement":
+                return null
+            case "PropertyDeclaration": {
+                const abstract = this.modifier(node, "AbstractKeyword")
+                const property = this.make(abstract ? "TSAbstractPropertyDefinition" : "PropertyDefinition", node)
+                this.memberModifiers(property, node)
+                this.key(property, must(node.child("name")))
+                property.optional = node.child("questionToken") !== null
+                property.definite = node.child("exclamationToken") !== null
+                const type = node.child("type")
+                if (type !== null) property.set("typeAnnotation", this.typeAnnotation(type))
+                return property.set("value", this.opt(node.child("initializer")))
+            }
+            case "MethodDeclaration":
+            case "Constructor":
+            case "GetAccessor":
+            case "SetAccessor": {
+                const abstract = this.modifier(node, "AbstractKeyword")
+                const method = this.make(abstract ? "TSAbstractMethodDefinition" : "MethodDefinition", node)
+                this.memberModifiers(method, node)
+                method.kind =
+                    node.kind === "Constructor"
+                        ? "constructor"
+                        : node.kind === "GetAccessor"
+                          ? "get"
+                          : node.kind === "SetAccessor"
+                            ? "set"
+                            : "method"
+                let nameEnd = node.start
+                if (node.kind === "Constructor") {
+                    const keyword = this.find("ConstructorKeyword", node.start)
+                    const key = new ENode("Identifier", keyword.start, keyword.end)
+                    key.name = "constructor"
+                    method.set("key", key)
+                    nameEnd = keyword.end
+                } else {
+                    const name = must(node.child("name"))
+                    this.key(method, name)
+                    nameEnd = name.end
+                    method.optional = node.child("questionToken") !== null
+                }
+                method.set("value", this.methodValue(node, nameEnd))
+                return method
+            }
+        }
+        process.panic(`fmt: cannot convert class member ${node.kind}`)
+    }
+
+    private memberModifiers(member: ENode, node: Node) {
+        member.accessibility = this.accessibility(node)
+        member.isStatic = this.modifier(node, "StaticKeyword")
+        member.readonly = this.modifier(node, "ReadonlyKeyword")
+        member.declare = this.modifier(node, "DeclareKeyword")
+        member.override = this.modifier(node, "OverrideKeyword")
+    }
+
+    /** The function of a method, from its `(` or `<`. */
+    private methodValue(node: Node, nameEnd: int): ENode {
+        const typeParameters = node.list("typeParameters")
+        const start =
+            typeParameters.length > 0
+                ? this.tokenBefore(typeParameters[0].start).start
+                : this.find("OpenParenToken", nameEnd).start
+        const hasBody = node.child("body") !== null
+        const fn = this.functionLike(hasBody ? "FunctionExpression" : "TSEmptyBodyFunctionExpression", node, start)
+        return fn
+    }
+
+    private interfaceDeclaration(node: Node): ENode {
+        const declaration = this.make("TSInterfaceDeclaration", node).set("id", this.req(node.child("name")))
+        declaration.declare = this.modifier(node, "DeclareKeyword")
+        declaration.set("typeParameters", this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")))
+        const extends_: ENode[] = []
+        for (const clause of node.list("heritageClauses"))
+            for (const t of this.convertList(clause.list("types"))) extends_.push(t)
+        declaration.setAll("extends", extends_)
+        const open = this.find("OpenBraceToken", this.headerEnd(node))
+        const body = new ENode("TSInterfaceBody", open.start, node.end)
+        return declaration.set("body", body.setAll("body", this.convertList(node.list("members"))))
+    }
+
+    private importDeclaration(node: Node): ENode {
+        const declaration = this.make("ImportDeclaration", node)
+        declaration.importKind = "value"
+        const specifiers: ENode[] = []
+        const clause = node.child("importClause")
+        if (clause !== null) {
+            const first = clause.children.length > 0 ? clause.children[0].start : clause.end
+            if (first > clause.start && this.word(clause.start) === "type") declaration.importKind = "type"
+            const name = clause.child("name")
+            if (name !== null) specifiers.push(this.make("ImportDefaultSpecifier", name).set("local", this.req(name)))
+            const bindings = clause.child("namedBindings")
+            if (bindings !== null) {
+                if (bindings.kind === "NamespaceImport")
+                    specifiers.push(
+                        this.make("ImportNamespaceSpecifier", bindings).set("local", this.req(bindings.child("name"))),
+                    )
+                else for (const element of bindings.list("elements")) specifiers.push(this.specifier(element, true))
+            }
+        }
+        declaration.setAll("specifiers", specifiers)
+        declaration.set("source", this.req(node.child("moduleSpecifier")))
+        const attributes: ENode[] = []
+        const withClause = node.child("attributes")
+        if (withClause !== null)
+            for (const attribute of withClause.list("elements"))
+                attributes.push(
+                    this.make("ImportAttribute", attribute)
+                        .set("key", this.req(attribute.child("name")))
+                        .set("value", this.req(attribute.child("value"))),
+                )
+        declaration.setAll("attributes", attributes)
+        this.statementEnd(declaration)
+        return declaration
+    }
+
+    /** `a`, `a as b` and `type a` of imports and exports. */
+    private specifier(node: Node, isImport: bool): ENode {
+        const specifier = this.make(isImport ? "ImportSpecifier" : "ExportSpecifier", node)
+        const name = must(node.child("name"))
+        const property = node.child("propertyName")
+        const first = property !== null ? property : name
+        const kind = first.start > node.start && this.word(node.start) === "type" ? "type" : "value"
+        specifier.importKind = kind
+        if (isImport) {
+            specifier.set("imported", this.req(first))
+            specifier.set("local", this.req(name))
+        } else {
+            specifier.set("local", this.req(first))
+            specifier.set("exported", this.req(name))
+        }
+        return specifier
+    }
+
+    private exportDeclaration(node: Node): ENode {
+        const clause = node.child("exportClause")
+        const source = node.child("moduleSpecifier")
+        let declaration: ENode
+        const isType = this.word(this.tokenAfter(node.start).end) === "type"
+        if (clause === null) {
+            declaration = this.make("ExportAllDeclaration", node)
+        } else {
+            declaration = this.make("ExportNamedDeclaration", node)
+            const specifiers: ENode[] = []
+            for (const element of clause.list("elements")) specifiers.push(this.specifier(element, false))
+            declaration.setAll("specifiers", specifiers)
+        }
+        declaration.importKind = isType ? "type" : "value"
+        declaration.set("source", this.opt(source))
+        declaration.setAll("attributes", [])
+        this.statementEnd(declaration)
+        return declaration
+    }
+
+    // -------------------------------------------------------------------------
+    // Expressions
+
+    private binary(node: Node): ENode {
+        const operatorToken = node.child("operatorToken")
+        if (operatorToken === null) {
+            // `x satisfies T`
+            return this.make("TSSatisfiesExpression", node)
+                .set("expression", this.req(node.child("expression")))
+                .set("typeAnnotation", this.req(node.child("type")))
+        }
+        const op = operatorToken.text
+        const left = must(node.child("left"))
+        const right = must(node.child("right"))
+        if (op === ",") {
+            const sequence = this.make("SequenceExpression", node)
+            const expressions: ENode[] = []
+            const l = this.req(left)
+            if (l.type === "SequenceExpression" && left.kind !== "ParenthesizedExpression") {
+                for (const e of l.all("expressions")) expressions.push(e)
+            } else expressions.push(l)
+            expressions.push(this.req(right))
+            return sequence.setAll("expressions", expressions)
+        }
+        if (
+            op.endsWith("=") &&
+            op !== "==" &&
+            op !== "===" &&
+            op !== "!=" &&
+            op !== "!==" &&
+            op !== "<=" &&
+            op !== ">="
+        ) {
+            const assignment = this.make("AssignmentExpression", node)
+            assignment.operator = op
+            return assignment.set("left", this.assignmentTarget(left)).set("right", this.req(right))
+        }
+        const type = op === "&&" || op === "||" || op === "??" ? "LogicalExpression" : "BinaryExpression"
+        const binary = this.make(type, node)
+        binary.operator = op
+        binary.set("left", this.req(left)).set("right", this.req(right))
+        if (type === "LogicalExpression") return rebalance(binary)
+        return binary
+    }
+
+    /** The target of an assignment: array and object literals are patterns. */
+    private assignmentTarget(node: Node): ENode {
+        if (node.kind === "ArrayLiteralExpression") return this.arrayLiteral(node, true)
+        if (node.kind === "ObjectLiteralExpression") return this.objectLiteral(node, true)
+        return this.req(node)
+    }
+
+    /** Wraps the end of an optional chain (`a?.b`) in a ChainExpression, as typescript-estree does. */
+    private chain(node: ENode, childNode: Node, optional: bool): ENode {
+        const childRole =
+            node.type === "MemberExpression" ? "object" : node.type === "CallExpression" ? "callee" : "expression"
+        const child = node.at(childRole)
+        const unwrap = child.type === "ChainExpression" && childNode.kind !== "ParenthesizedExpression"
+        if (!unwrap && !optional) return node
+        if (unwrap) {
+            // Replace the child chain by its expression.
+            const inner = child.at("expression")
+            for (let i = 0; i < node.kids.length; i++)
+                if (node.roles[i] === childRole) {
+                    node.kids[i] = inner
+                    inner.parent = node
+                    inner.key = childRole
+                }
+        }
+        const wrapper = new ENode("ChainExpression", node.start, node.end)
+        return wrapper.set("expression", node)
+    }
+
+    private objectLiteral(node: Node, pattern: bool): ENode {
+        const object = this.make(pattern ? "ObjectPattern" : "ObjectExpression", node)
+        const properties: ENode[] = []
+        for (const member of node.list("properties")) {
+            switch (member.kind) {
+                case "PropertyAssignment": {
+                    const property = this.make("Property", member)
+                    property.kind = "init"
+                    this.key(property, must(member.child("name")))
+                    const value = must(member.child("initializer"))
+                    property.set("value", pattern ? this.assignmentTarget(value) : this.req(value))
+                    properties.push(property)
+                    break
+                }
+                case "ShorthandPropertyAssignment": {
+                    const property = this.make("Property", member)
+                    property.kind = "init"
+                    property.shorthand = true
+                    const name = must(member.child("name"))
+                    property.set("key", this.req(name))
+                    const init = member.child("objectAssignmentInitializer")
+                    if (init !== null) {
+                        const value = this.make("AssignmentPattern", member)
+                        property.set("value", value.set("left", this.req(name)).set("right", this.req(init)))
+                    } else property.set("value", this.req(name))
+                    properties.push(property)
+                    break
+                }
+                case "SpreadAssignment":
+                    properties.push(
+                        this.make(pattern ? "RestElement" : "SpreadElement", member).set(
+                            "argument",
+                            this.req(member.child("expression")),
+                        ),
+                    )
+                    break
+                case "MethodDeclaration":
+                case "GetAccessor":
+                case "SetAccessor": {
+                    const property = this.make("Property", member)
+                    property.kind =
+                        member.kind === "GetAccessor" ? "get" : member.kind === "SetAccessor" ? "set" : "init"
+                    property.method = member.kind === "MethodDeclaration"
+                    const name = must(member.child("name"))
+                    this.key(property, name)
+                    property.set("value", this.methodValue(member, name.end))
+                    properties.push(property)
+                    break
+                }
+                default:
+                    process.panic(`fmt: cannot convert ${member.kind}`)
+            }
+        }
+        return object.setAll("properties", properties)
+    }
+
+    private arrayLiteral(node: Node, pattern: bool): ENode {
+        const array = this.make(pattern ? "ArrayPattern" : "ArrayExpression", node)
+        const elements: ENode[] = []
+        for (const element of node.list("elements")) {
+            if (pattern && element.kind === "SpreadElement")
+                elements.push(
+                    this.make("RestElement", element).set(
+                        "argument",
+                        this.assignmentTarget(must(element.child("expression"))),
+                    ),
+                )
+            else if (pattern) elements.push(this.assignmentTarget(element))
+            else elements.push(this.req(element))
+        }
+        return array.setAll("elements", elements)
+    }
+
+    /** A binding name: an identifier or an object or array pattern. */
+    private bindingName(node: Node): ENode {
+        if (node.kind === "ObjectBindingPattern") {
+            const pattern = this.make("ObjectPattern", node)
+            const properties: ENode[] = []
+            for (const element of node.list("elements")) {
+                if (element.child("dotDotDotToken") !== null) {
+                    properties.push(
+                        this.make("RestElement", element).set(
+                            "argument",
+                            this.bindingName(must(element.child("name"))),
+                        ),
+                    )
+                    continue
+                }
+                const property = this.make("Property", element)
+                property.kind = "init"
+                const propertyName = element.child("propertyName")
+                const name = must(element.child("name"))
+                let value: ENode
+                if (propertyName !== null) {
+                    this.key(property, propertyName)
+                    value = this.bindingName(name)
+                } else {
+                    property.shorthand = true
+                    property.set("key", this.bindingName(name))
+                    value = this.bindingName(name)
+                }
+                const init = element.child("initializer")
+                if (init !== null) {
+                    const assignment = new ENode("AssignmentPattern", value.start, element.end)
+                    value = assignment.set("left", value).set("right", this.req(init))
+                }
+                properties.push(property.set("value", value))
+            }
+            return pattern.setAll("properties", properties)
+        }
+        if (node.kind === "ArrayBindingPattern") {
+            const pattern = this.make("ArrayPattern", node)
+            const elements: ENode[] = []
+            for (const element of node.list("elements")) {
+                if (element.kind === "OmittedExpression") {
+                    elements.push(this.make("Hole", element))
+                    continue
+                }
+                if (element.child("dotDotDotToken") !== null) {
+                    elements.push(
+                        this.make("RestElement", element).set(
+                            "argument",
+                            this.bindingName(must(element.child("name"))),
+                        ),
+                    )
+                    continue
+                }
+                let value = this.bindingName(must(element.child("name")))
+                const init = element.child("initializer")
+                if (init !== null) {
+                    const assignment = this.make("AssignmentPattern", element)
+                    value = assignment.set("left", value).set("right", this.req(init))
+                }
+                elements.push(value)
+            }
+            return pattern.setAll("elements", elements)
+        }
+        return this.identifier(node)
+    }
+}
+
+/** `a && (b && c)` as `(a && b) && c`, as prettier rebalances logical expressions. */
+function rebalance(node: ENode): ENode {
+    const right = node.at("right")
+    if (right.type !== "LogicalExpression" || right.operator !== node.operator) return node
+    const left = node.at("left")
+    const rightLeft = right.at("left")
+    const inner = new ENode("LogicalExpression", left.start, locEnd(rightLeft))
+    inner.operator = node.operator
+    inner.set("left", left).set("right", rightLeft)
+    const outer = new ENode("LogicalExpression", node.start, node.end)
+    outer.operator = node.operator
+    outer.set("left", rebalance(inner)).set("right", right.at("right"))
+    return rebalance(outer)
+}
+
+/** The start of a node, as prettier's locStart. */
+export function locStart(node: ENode): int {
+    return node.start
+}
+
+/** The end of a node, as prettier's locEnd: statements end before their `;`. */
+export function locEnd(node: ENode): int {
+    switch (node.type) {
+        case "IfStatement": {
+            const alternate = node.get("alternate")
+            return locEnd(alternate !== null ? alternate : node.at("consequent"))
+        }
+        case "ForInStatement":
+        case "ForOfStatement":
+        case "ForStatement":
+        case "LabeledStatement":
+        case "WhileStatement":
+            return locEnd(node.at("body"))
+        case "BreakStatement": {
+            const label = node.get("label")
+            return label !== null ? locEnd(label) : node.start + 5
+        }
+        case "ContinueStatement": {
+            const label = node.get("label")
+            return label !== null ? locEnd(label) : node.start + 8
+        }
+        case "VariableDeclaration": {
+            const declarations = node.all("declarations")
+            return declarations.length > 0 ? locEnd(declarations[declarations.length - 1]) : node.end
+        }
+        case "ExpressionStatement":
+        case "ImportDeclaration":
+        case "ExportDefaultDeclaration":
+        case "ExportNamedDeclaration":
+        case "ExportAllDeclaration":
+        case "ReturnStatement":
+        case "ThrowStatement":
+        case "DoWhileStatement":
+            return node.contentEnd >= 0 ? node.contentEnd : node.end
+    }
+    return node.end
+}

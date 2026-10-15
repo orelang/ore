@@ -1,0 +1,779 @@
+// Documents: the layout language of Wadler's "prettier printer", as in
+// prettier. A document is text with groups that are printed on one line if
+// they fit in the width, or broken at their lines otherwise.
+
+export const TEXT = 0
+export const CONCAT = 1
+export const GROUP = 2
+export const FILL = 3
+export const IF_BREAK = 4
+export const INDENT = 5
+export const ALIGN = 6
+export const LINE = 7
+export const LINE_SUFFIX = 8
+export const LINE_SUFFIX_BOUNDARY = 9
+export const BREAK_PARENT = 10
+export const TRIM = 11
+export const INDENT_IF_BREAK = 12
+export const LABEL = 13
+
+/** Widths of `align` that are not widths. */
+const ALIGN_ROOT = 1000000
+const ALIGN_TO_ROOT = -1000000
+
+const noDocs: Doc[] = []
+
+export class Doc {
+    /** The parts of a concatenation or a fill. */
+    parts: Doc[]
+    text = ""
+    /** The contents of groups, indents, aligns, labels and line suffixes; the break contents of an ifBreak. */
+    contents: Doc | null = null
+    /** The flat contents of an ifBreak. */
+    flat: Doc | null = null
+    shouldBreak = false
+    /** The states of a conditional group, tried in order. */
+    expandedStates: Doc[]
+    /** The id of a group, or 0. */
+    id = 0
+    /** The group whose mode an ifBreak or indentIfBreak follows, or 0 for the enclosing one. */
+    groupId = 0
+    negate = false
+    hard = false
+    soft = false
+    literal = false
+    /** The width of an align. */
+    n = 0
+    label = ""
+    /** The last traversal that visited this group. */
+    mark = 0
+
+    constructor(readonly kind: int) {
+        this.parts = noDocs
+        this.expandedStates = noDocs
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Builders
+
+export function text(s: string): Doc {
+    const d = new Doc(TEXT)
+    d.text = s
+    return d
+}
+
+export const empty = text("")
+
+export function concat(parts: Doc[]): Doc {
+    const d = new Doc(CONCAT)
+    d.parts = parts
+    return d
+}
+
+export function group(contents: Doc, shouldBreak = false, id = 0): Doc {
+    const d = new Doc(GROUP)
+    d.contents = contents
+    d.shouldBreak = shouldBreak
+    d.id = id
+    return d
+}
+
+/** A group printed in the first of its states that fits, or else in the last one, broken. */
+export function conditionalGroup(states: Doc[]): Doc {
+    const d = group(states[0])
+    d.expandedStates = states
+    return d
+}
+
+export function fill(parts: Doc[]): Doc {
+    const d = new Doc(FILL)
+    d.parts = parts
+    return d
+}
+
+export function ifBreak(breakContents: Doc, flatContents: Doc | null = null, groupId = 0): Doc {
+    const d = new Doc(IF_BREAK)
+    d.contents = breakContents
+    d.flat = flatContents
+    d.groupId = groupId
+    return d
+}
+
+export function indent(contents: Doc): Doc {
+    const d = new Doc(INDENT)
+    d.contents = contents
+    return d
+}
+
+export function align(n: int, contents: Doc): Doc {
+    const d = new Doc(ALIGN)
+    d.contents = contents
+    d.n = n
+    return d
+}
+
+export function markAsRoot(contents: Doc): Doc {
+    return align(ALIGN_ROOT, contents)
+}
+
+export function dedentToRoot(contents: Doc): Doc {
+    return align(ALIGN_TO_ROOT, contents)
+}
+
+export function lineSuffix(contents: Doc): Doc {
+    const d = new Doc(LINE_SUFFIX)
+    d.contents = contents
+    return d
+}
+
+export function indentIfBreak(contents: Doc, groupId: int, negate = false): Doc {
+    const d = new Doc(INDENT_IF_BREAK)
+    d.contents = contents
+    d.groupId = groupId
+    d.negate = negate
+    return d
+}
+
+export function label(name: string, contents: Doc): Doc {
+    if (name === "") return contents
+    const d = new Doc(LABEL)
+    d.contents = contents
+    d.label = name
+    return d
+}
+
+function makeLine(hard: bool, soft: bool, literal: bool): Doc {
+    const d = new Doc(LINE)
+    d.hard = hard
+    d.soft = soft
+    d.literal = literal
+    return d
+}
+
+export const line = makeLine(false, false, false)
+export const softline = makeLine(false, true, false)
+export const hardlineWithoutBreakParent = makeLine(true, false, false)
+export const literallineWithoutBreakParent = makeLine(true, false, true)
+export const breakParent = new Doc(BREAK_PARENT)
+export const lineSuffixBoundary = new Doc(LINE_SUFFIX_BOUNDARY)
+export const trim = new Doc(TRIM)
+export const hardline = concat([hardlineWithoutBreakParent, breakParent])
+export const literalline = concat([literallineWithoutBreakParent, breakParent])
+
+export function join(separator: Doc, docs: Doc[]): Doc {
+    const parts: Doc[] = []
+    for (let i = 0; i < docs.length; i++) {
+        if (i > 0) parts.push(separator)
+        parts.push(docs[i])
+    }
+    return concat(parts)
+}
+
+let lastId = 0
+
+/** A new group id. */
+export function newId(): int {
+    lastId++
+    return lastId
+}
+
+// -----------------------------------------------------------------------------
+// Utilities
+
+/** The children of a document, as prettier's traverseDoc visits them. */
+function children(d: Doc, conditional: bool): Doc[] {
+    switch (d.kind) {
+        case CONCAT:
+        case FILL:
+            return d.parts
+        case IF_BREAK: {
+            const out: Doc[] = []
+            const b = d.contents
+            if (b !== null) out.push(b)
+            const f = d.flat
+            if (f !== null) out.push(f)
+            return out
+        }
+        case GROUP:
+            if (conditional && d.expandedStates.length > 0) return d.expandedStates
+            break
+    }
+    const c = d.contents
+    return c === null ? noDocs : [c]
+}
+
+/** Whether a document has a group that breaks, a hard line or a breakParent. */
+export function willBreak(d: Doc): bool {
+    const stack = [d]
+    while (stack.length > 0) {
+        const doc = stack.pop()
+        if (doc.kind === GROUP && doc.shouldBreak) return true
+        if (doc.kind === LINE && doc.hard) return true
+        if (doc.kind === BREAK_PARENT) return true
+        const kids = children(doc, false)
+        for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i])
+    }
+    return false
+}
+
+/** Whether a document has a line. */
+export function hasLine(d: Doc): bool {
+    const stack = [d]
+    while (stack.length > 0) {
+        const doc = stack.pop()
+        if (doc.kind === LINE) return true
+        const kids = children(doc, false)
+        for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i])
+    }
+    return false
+}
+
+/** A document with its soft lines removed, its lines as spaces and ifBreaks flat. */
+export function removeLines(d: Doc): Doc {
+    switch (d.kind) {
+        case LINE:
+            if (d.hard) return d
+            return d.soft ? empty : text(" ")
+        case IF_BREAK: {
+            const f = d.flat
+            return f === null ? empty : removeLines(f)
+        }
+        case CONCAT:
+        case FILL: {
+            const parts: Doc[] = []
+            for (const p of d.parts) parts.push(removeLines(p))
+            const out = new Doc(d.kind)
+            out.parts = parts
+            return out
+        }
+        case GROUP: {
+            const out = group(removeLines(d.contents!), d.shouldBreak, d.id)
+            if (d.expandedStates.length > 0) {
+                const states: Doc[] = []
+                for (const s of d.expandedStates) states.push(removeLines(s))
+                out.expandedStates = states
+                out.contents = states[0]
+            }
+            return out
+        }
+        case INDENT:
+        case ALIGN:
+        case LINE_SUFFIX:
+        case INDENT_IF_BREAK:
+        case LABEL: {
+            const out = new Doc(d.kind)
+            out.contents = removeLines(d.contents!)
+            out.n = d.n
+            out.groupId = d.groupId
+            out.negate = d.negate
+            out.label = d.label
+            return out
+        }
+    }
+    return d
+}
+
+/** The text of a document made only of text, or null. */
+export function flatText(d: Doc): string | null {
+    if (d.kind === TEXT) return d.text
+    if (d.kind !== CONCAT) return null
+    let s = ""
+    for (const p of d.parts) {
+        const t = flatText(p)
+        if (t === null) return null
+        s += t
+    }
+    return s
+}
+
+/** The parts of a document as prettier's cleanDoc leaves them: nested concatenations flattened, texts merged. */
+export function cleanParts(d: Doc): Doc[] {
+    const out: Doc[] = []
+    flattenInto(d, out)
+    return out
+}
+
+function flattenInto(d: Doc, out: Doc[]) {
+    if (d.kind === CONCAT) {
+        for (const p of d.parts) flattenInto(p, out)
+        return
+    }
+    if (d.kind === TEXT) {
+        if (d.text === "") return
+        if (out.length > 0 && out[out.length - 1].kind === TEXT) {
+            out[out.length - 1] = text(out[out.length - 1].text + d.text)
+            return
+        }
+    }
+    out.push(d)
+}
+
+let traversal = 0
+
+/** Breaks the groups that contain a hard line or a broken group, as prettier's propagateBreaks. */
+export function propagateBreaks(d: Doc) {
+    traversal++
+    const groups: Doc[] = []
+    // Entries: a document to enter, or (as exit markers) a group to leave.
+    const stack: Doc[] = [d]
+    const exits: bool[] = [false]
+    while (stack.length > 0) {
+        const doc = stack.pop()
+        const exit = exits.pop()
+        if (exit) {
+            const g = groups.pop()
+            if (g.shouldBreak) breakLast(groups)
+            continue
+        }
+        if (doc.kind === BREAK_PARENT) breakLast(groups)
+        if (doc.kind === GROUP) {
+            groups.push(doc)
+            stack.push(doc)
+            exits.push(true)
+            if (doc.mark === traversal) continue
+            doc.mark = traversal
+        }
+        const kids = children(doc, true)
+        for (let i = kids.length - 1; i >= 0; i--) {
+            stack.push(kids[i])
+            exits.push(false)
+        }
+    }
+}
+
+function breakLast(groups: Doc[]) {
+    if (groups.length === 0) return
+    const g = groups[groups.length - 1]
+    if (g.expandedStates.length === 0 && !g.shouldBreak) g.shouldBreak = true
+}
+
+// -----------------------------------------------------------------------------
+// Widths
+
+/** Wide characters (East Asian Wide and Fullwidth, emoji), as pairs of first and last code points. */
+const wide = [
+    4352, 4447, 8986, 8987, 9001, 9002, 9193, 9196, 9200, 9200, 9203, 9203, 9725, 9726, 9748, 9749, 9776, 9783, 9800,
+    9811, 9855, 9855, 9866, 9871, 9875, 9875, 9889, 9889, 9898, 9899, 9917, 9918, 9924, 9925, 9934, 9934, 9940, 9940,
+    9962, 9962, 9970, 9971, 9973, 9973, 9978, 9978, 9981, 9981, 9989, 9989, 9994, 9995, 10024, 10024, 10060, 10060,
+    10062, 10062, 10067, 10069, 10071, 10071, 10133, 10135, 10160, 10160, 10175, 10175, 11035, 11036, 11088, 11088,
+    11093, 11093, 11904, 11929, 11931, 12019, 12032, 12245, 12272, 12287, 12289, 12350, 12353, 12438, 12441, 12543,
+    12549, 12591, 12593, 12686, 12688, 12773, 12783, 12830, 12832, 12871, 12880, 42124, 42128, 42182, 43360, 43388,
+    44032, 55203, 63744, 64255, 65040, 65049, 65072, 65106, 65108, 65126, 65128, 65131, 94176, 94180, 94192, 94198,
+    94208, 101589, 101631, 101662, 101760, 101874, 110576, 110579, 110581, 110587, 110589, 110590, 110592, 110882,
+    110898, 110898, 110928, 110930, 110933, 110933, 110948, 110951, 110960, 111355, 119552, 119638, 119648, 119670,
+    126980, 126980, 127183, 127183, 127374, 127374, 127377, 127386, 127488, 127490, 127504, 127547, 127552, 127560,
+    127568, 127569, 127584, 127589, 127744, 127776, 127789, 127797, 127799, 127868, 127870, 127891, 127904, 127946,
+    127951, 127955, 127968, 127984, 127988, 127988, 127992, 128062, 128064, 128064, 128066, 128252, 128255, 128317,
+    128331, 128334, 128336, 128359, 128378, 128378, 128405, 128406, 128420, 128420, 128507, 128591, 128640, 128709,
+    128716, 128716, 128720, 128722, 128725, 128728, 128732, 128735, 128747, 128748, 128756, 128764, 128992, 129003,
+    129008, 129008, 129292, 129338, 129340, 129349, 129351, 129535, 129648, 129660, 129664, 129674, 129678, 129734,
+    129736, 129736, 129741, 129756, 129759, 129770, 129775, 129784, 131072, 196605, 196608, 262141,
+]
+
+function isWide(c: int): bool {
+    if (c >= 12288 && c <= 65510) {
+        // Fullwidth forms.
+        if (c === 12288 || (c >= 65281 && c <= 65376) || (c >= 65504 && c <= 65510)) return true
+    }
+    if (c >= 19968 && c <= 40959) return true
+    if (c < 4352 || c > 262141) return false
+    let lo = 0
+    let hi = wide.length / 2 - 1
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1
+        if (c < wide[mid * 2]) hi = mid - 1
+        else if (c > wide[mid * 2 + 1]) lo = mid + 1
+        else return true
+    }
+    return false
+}
+
+/** The width of a text in columns: wide characters count 2, combining marks 0. */
+export function width(s: string): int {
+    let ascii = true
+    for (let i = 0; i < s.length; i++)
+        if (s[i] >= 128) {
+            ascii = false
+            break
+        }
+    if (ascii) return s.length
+    let w = 0
+    for (const r of s) {
+        const c = i64(r)
+        if (c <= 31 || (c >= 127 && c <= 159) || (c >= 768 && c <= 879) || (c >= 65024 && c <= 65039)) continue
+        w += isWide(c) ? 2 : 1
+    }
+    return w
+}
+
+// -----------------------------------------------------------------------------
+// Printing
+
+const MODE_BREAK = 1
+const MODE_FLAT = 2
+
+/** An indentation: its text and width, and the root that literal lines return to. */
+class Indent {
+    root: Indent | null = null
+
+    constructor(
+        readonly value: string,
+        readonly length: int,
+        /** The widths of its parts, to remove the last one for a dedent. */
+        readonly parts: int[],
+    ) {}
+}
+
+const rootIndent = new Indent("", 0, [])
+
+function makeIndent(ind: Indent, width: int): Indent {
+    const parts = ind.parts.slice()
+    parts.push(width)
+    const next = new Indent(ind.value + " ".repeat(width), ind.length + width, parts)
+    next.root = ind.root
+    return next
+}
+
+function makeAlign(ind: Indent, n: int): Indent {
+    if (n === ALIGN_ROOT) {
+        const next = new Indent(ind.value, ind.length, ind.parts)
+        next.root = ind
+        return next
+    }
+    if (n === ALIGN_TO_ROOT) {
+        const root = ind.root
+        return root === null ? rootIndent : root
+    }
+    if (n < 0) {
+        const parts = ind.parts.slice(0, ind.parts.length - 1)
+        let w = 0
+        for (const p of parts) w += p
+        const next = new Indent(" ".repeat(w), w, parts)
+        next.root = ind.root
+        return next
+    }
+    return makeIndent(ind, n)
+}
+
+class Cmd {
+    constructor(
+        readonly ind: Indent,
+        readonly mode: int,
+        readonly doc: Doc,
+        /** For a fill: the index of its first part left to print. */
+        readonly fillStart: int,
+    ) {}
+}
+
+function cmd(ind: Indent, mode: int, doc: Doc): Cmd {
+    return new Cmd(ind, mode, doc, 0)
+}
+
+/** The number of spaces and tabs at the end of a text. */
+function trailingBlanks(s: string): int {
+    let n = 0
+    for (let i = s.length - 1; i >= 0; i--) {
+        const c = s[i]
+        if (c === 32 || c === 9) n++
+        else break
+    }
+    return n
+}
+
+/** Whether the next command fits in `width` columns, followed by the rest commands up to the first line. */
+function fits(
+    next: Cmd,
+    rest: Cmd[],
+    widthLeft: int,
+    hasLineSuffix: bool,
+    modes: Map<int, int>,
+    mustBeFlat: bool,
+): bool {
+    let w = widthLeft
+    let restIdx = rest.length
+    const stack: Cmd[] = [next]
+    let out = ""
+    // A space of a flat line, counted only when text follows it.
+    let pendingSpace = false
+    while (w >= 0) {
+        if (stack.length === 0) {
+            if (restIdx === 0) return true
+            restIdx--
+            stack.push(rest[restIdx])
+            continue
+        }
+        const c = stack.pop()
+        const mode = c.mode
+        const doc = c.doc
+        switch (doc.kind) {
+            case TEXT:
+                if (doc.text !== "") {
+                    if (pendingSpace) {
+                        out += " "
+                        w--
+                        pendingSpace = false
+                    }
+                    out += doc.text
+                    w -= width(doc.text)
+                }
+                break
+            case CONCAT:
+            case FILL:
+                for (let i = doc.parts.length - 1; i >= c.fillStart; i--) stack.push(cmd(c.ind, mode, doc.parts[i]))
+                break
+            case INDENT:
+            case ALIGN:
+            case INDENT_IF_BREAK:
+            case LABEL:
+                stack.push(cmd(c.ind, mode, doc.contents!))
+                break
+            case TRIM: {
+                const n = trailingBlanks(out)
+                out = out.slice(0, out.length - n)
+                w += n
+                break
+            }
+            case GROUP: {
+                if (mustBeFlat && doc.shouldBreak) return false
+                const groupMode = doc.shouldBreak ? MODE_BREAK : mode
+                const contents =
+                    doc.expandedStates.length > 0 && groupMode === MODE_BREAK
+                        ? doc.expandedStates[doc.expandedStates.length - 1]
+                        : doc.contents!
+                stack.push(cmd(c.ind, groupMode, contents))
+                break
+            }
+            case IF_BREAK: {
+                let groupMode = mode
+                if (doc.groupId !== 0) {
+                    const m = modes.get(doc.groupId)
+                    groupMode = m === null ? MODE_FLAT : m
+                }
+                const contents = groupMode === MODE_BREAK ? doc.contents : doc.flat
+                if (contents !== null) stack.push(cmd(c.ind, mode, contents))
+                break
+            }
+            case LINE:
+                if (mode === MODE_BREAK || doc.hard) return true
+                if (!doc.soft) pendingSpace = true
+                break
+            case LINE_SUFFIX:
+                hasLineSuffix = true
+                break
+            case LINE_SUFFIX_BOUNDARY:
+                if (hasLineSuffix) return false
+                break
+        }
+    }
+    return false
+}
+
+/** The output of the printer: the lines written, with the current one open for trimming. */
+class Output {
+    done: string[] = []
+    current: string[] = []
+
+    write(s: string) {
+        this.current.push(s)
+    }
+
+    /** Removes the spaces and tabs at the end of the output; returns how many. */
+    trim(): int {
+        const s = this.current.join("")
+        this.current = []
+        const n = trailingBlanks(s)
+        this.done.push(s.slice(0, s.length - n))
+        return n
+    }
+
+    finish(): string {
+        this.done.push(this.current.join(""))
+        this.current = []
+        return this.done.join("")
+    }
+}
+
+/** Prints a document in `printWidth` columns; a negative width never breaks groups. */
+export function printDoc(d: Doc, printWidth: int): string {
+    propagateBreaks(d)
+    const infinite = printWidth < 0
+    const modes = new Map<int, int>()
+    let pos = 0
+    const cmds: Cmd[] = [cmd(rootIndent, MODE_BREAK, d)]
+    let lineSuffixes: Cmd[] = []
+    let shouldRemeasure = false
+    const out = new Output()
+    while (cmds.length > 0) {
+        const c = cmds.pop()
+        const ind = c.ind
+        const mode = c.mode
+        const doc = c.doc
+        switch (doc.kind) {
+            case TEXT:
+                if (doc.text !== "") {
+                    out.write(doc.text)
+                    if (cmds.length > 0) pos += width(doc.text)
+                }
+                break
+            case CONCAT:
+                for (let i = doc.parts.length - 1; i >= 0; i--) cmds.push(cmd(ind, mode, doc.parts[i]))
+                break
+            case INDENT:
+                cmds.push(cmd(makeIndent(ind, 4), mode, doc.contents!))
+                break
+            case ALIGN:
+                cmds.push(cmd(makeAlign(ind, doc.n), mode, doc.contents!))
+                break
+            case TRIM:
+                pos -= out.trim()
+                break
+            case GROUP: {
+                let next: Cmd
+                if (mode === MODE_FLAT && !shouldRemeasure) {
+                    next = cmd(ind, doc.shouldBreak ? MODE_BREAK : MODE_FLAT, doc.contents!)
+                } else {
+                    shouldRemeasure = false
+                    const flat = cmd(ind, MODE_FLAT, doc.contents!)
+                    const left = printWidth - pos
+                    const hasSuffix = lineSuffixes.length > 0
+                    if (!doc.shouldBreak && (infinite || fits(flat, cmds, left, hasSuffix, modes, false))) {
+                        next = flat
+                    } else if (doc.expandedStates.length === 0) {
+                        next = cmd(ind, MODE_BREAK, doc.contents!)
+                    } else {
+                        const states = doc.expandedStates
+                        const last = cmd(ind, MODE_BREAK, states[states.length - 1])
+                        next = last
+                        if (!doc.shouldBreak) {
+                            for (let i = 1; i < states.length - 1; i++) {
+                                const state = cmd(ind, MODE_FLAT, states[i])
+                                if (infinite || fits(state, cmds, left, hasSuffix, modes, false)) {
+                                    next = state
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+                cmds.push(next)
+                if (doc.id !== 0) modes.set(doc.id, next.mode)
+                break
+            }
+            case FILL: {
+                const left = printWidth - pos
+                const start = c.fillStart
+                const parts = doc.parts
+                const remaining = parts.length - start
+                if (remaining === 0) break
+                const content = parts[start]
+                const contentFlat = cmd(ind, MODE_FLAT, content)
+                const contentBreak = cmd(ind, MODE_BREAK, content)
+                const contentFits = infinite || fits(contentFlat, [], left, lineSuffixes.length > 0, modes, true)
+                if (remaining === 1) {
+                    cmds.push(contentFits ? contentFlat : contentBreak)
+                    break
+                }
+                const whitespace = parts[start + 1]
+                const whitespaceFlat = cmd(ind, MODE_FLAT, whitespace)
+                const whitespaceBreak = cmd(ind, MODE_BREAK, whitespace)
+                if (remaining === 2) {
+                    if (contentFits) {
+                        cmds.push(whitespaceFlat)
+                        cmds.push(contentFlat)
+                    } else {
+                        cmds.push(whitespaceBreak)
+                        cmds.push(contentBreak)
+                    }
+                    break
+                }
+                const second = parts[start + 2]
+                cmds.push(new Cmd(ind, mode, doc, start + 2))
+                const firstAndSecond = cmd(ind, MODE_FLAT, concat([content, whitespace, second]))
+                const bothFit = infinite || fits(firstAndSecond, [], left, lineSuffixes.length > 0, modes, true)
+                if (bothFit) {
+                    cmds.push(whitespaceFlat)
+                    cmds.push(contentFlat)
+                } else if (contentFits) {
+                    cmds.push(whitespaceBreak)
+                    cmds.push(contentFlat)
+                } else {
+                    cmds.push(whitespaceBreak)
+                    cmds.push(contentBreak)
+                }
+                break
+            }
+            case IF_BREAK:
+            case INDENT_IF_BREAK: {
+                let groupMode = mode
+                if (doc.groupId !== 0) {
+                    const m = modes.get(doc.groupId)
+                    groupMode = m === null ? 0 : m
+                }
+                if (groupMode === MODE_BREAK) {
+                    const contents =
+                        doc.kind === IF_BREAK ? doc.contents : doc.negate ? doc.contents : indent(doc.contents!)
+                    if (contents !== null) cmds.push(cmd(ind, mode, contents))
+                }
+                if (groupMode === MODE_FLAT) {
+                    const contents =
+                        doc.kind === IF_BREAK ? doc.flat : doc.negate ? indent(doc.contents!) : doc.contents
+                    if (contents !== null) cmds.push(cmd(ind, mode, contents))
+                }
+                break
+            }
+            case LINE_SUFFIX:
+                lineSuffixes.push(cmd(ind, mode, doc.contents!))
+                break
+            case LINE_SUFFIX_BOUNDARY:
+                if (lineSuffixes.length > 0) cmds.push(cmd(ind, mode, hardlineWithoutBreakParent))
+                break
+            case LINE: {
+                let breaks = mode === MODE_BREAK
+                if (mode === MODE_FLAT) {
+                    if (!doc.hard) {
+                        if (!doc.soft) {
+                            out.write(" ")
+                            pos += 1
+                        }
+                        break
+                    }
+                    shouldRemeasure = true
+                    breaks = true
+                }
+                if (breaks) {
+                    if (lineSuffixes.length > 0) {
+                        cmds.push(c)
+                        for (let i = lineSuffixes.length - 1; i >= 0; i--) cmds.push(lineSuffixes[i])
+                        lineSuffixes = []
+                        break
+                    }
+                    if (doc.literal) {
+                        out.write("\n")
+                        pos = 0
+                        const root = ind.root
+                        if (root !== null) {
+                            out.write(root.value)
+                            pos = root.length
+                        }
+                    } else {
+                        out.trim()
+                        out.write("\n" + ind.value)
+                        pos = ind.length
+                    }
+                }
+                break
+            }
+            case LABEL:
+                cmds.push(cmd(ind, mode, doc.contents!))
+                break
+            case BREAK_PARENT:
+                break
+        }
+        if (cmds.length === 0 && lineSuffixes.length > 0) {
+            for (let i = lineSuffixes.length - 1; i >= 0; i--) cmds.push(lineSuffixes[i])
+            lineSuffixes = []
+        }
+    }
+    return out.finish()
+}

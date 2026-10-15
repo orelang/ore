@@ -194,8 +194,12 @@ export function expr(g: Emitter, e: Expr): V {
             for (const a of args) all.push(a)
             return callIndirect(g, fn.v, g.lt(e.method.result), all)
         }
-        case "null":
-            return inject(g, e.type, nullIndex(e.type), null)
+        case "null": {
+            // `null` of the type `null` itself, which the checker in Ore may make, has no union to tag.
+            const t = e.type
+            if (t.kind !== "union") return g.zero(t)
+            return inject(g, t, nullIndex(t), null)
+        }
         case "recast":
             return recast(g, expr(g, e.value), e.value.type, e.type)
         case "is-null": {

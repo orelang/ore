@@ -707,8 +707,9 @@ export abstract class DeclarationChecker extends CheckerBase {
    */
   protected resolveParams(parameters: readonly ts.ParameterDeclaration[], scope: Scope): ir.Local[] {
     const params: ir.Local[] = []
-    // Default values may use the parameters before them.
-    const defaults = new Scope(scope)
+    // Default values may use the parameters before them: each parameter is
+    // declared in a scope of its own, so a value checked later sees only those.
+    let defaults = new Scope(scope)
     let required = -1
     let rest = false
     for (const [i, p] of parameters.entries()) {
@@ -718,7 +719,12 @@ export abstract class DeclarationChecker extends CheckerBase {
         const value = this.checkDefault(p.initializer, defaults, undefined)
         if (value) type = value.type
       } else this.error(p.name, `Parameter '${p.name.getText()}' must have a type annotation.`)
-      if (type && p.type && p.initializer) this.checkDefault(p.initializer, defaults, type)
+      // A value with a declared type is checked once every declaration is known,
+      // since it may construct a class or use a constant declared further down.
+      if (type && p.type && p.initializer) {
+        const [initializer, before, declared] = [p.initializer, defaults, type]
+        this.pending.push(() => void this.checkDefault(initializer, before, declared))
+      }
       if (type && p.questionToken) type = this.unionOf([type, types.null])
       if (p.dotDotDotToken) {
         if (i !== parameters.length - 1) this.error(p, "A rest parameter must be the last parameter.")
@@ -732,7 +738,10 @@ export abstract class DeclarationChecker extends CheckerBase {
       if (type) this.info.types.set(p.name, type)
       const local = this.newLocal(paramName(p, i), type ?? types.i64, true)
       params.push(local)
-      if (ts.isIdentifier(p.name)) defaults.declareValue(local.name, { k: "local", local, decl: p })
+      if (ts.isIdentifier(p.name)) {
+        defaults = new Scope(defaults)
+        defaults.declareValue(local.name, { k: "local", local, decl: p })
+      }
     }
     if (required !== -1) this.signatures.set(params, { parameters, scope, required, rest })
     return params

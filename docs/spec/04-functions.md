@@ -23,7 +23,9 @@
   parameters after the required ones: `b = 1` (its type may come from the
   value), or `b?: T`, which is `T | null` and `null` when missing. A default
   value is computed at each call that omits it, after the given arguments,
-  and can use the parameters before it. A last rest parameter `...xs: T[]`
+  and can use the parameters before it and any declaration of the module,
+  such as a class declared further down (`o: Options = new Options()`; a
+  value that constructs a class needs the type annotation). A last rest parameter `...xs: T[]`
   receives the extra arguments as an array; `f(...array)` passes an array as
   all of them. As values, such functions take all their parameters, and
   closures cannot have optional or rest parameters.

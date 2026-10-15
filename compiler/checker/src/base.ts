@@ -250,10 +250,12 @@ export abstract class CheckerBase {
     const left = ts.isQualifiedName(name) ? name.left : ts.isPropertyAccessExpression(name) ? name.expression : undefined
     const right = ts.isQualifiedName(name) ? name.right : ts.isPropertyAccessExpression(name) ? name.name : undefined
     const module = left && ts.isIdentifier(left) ? scope.lookupValue(left.text) : undefined
-    if (module?.k !== "module" || !right || !ts.isIdentifier(right)) return this.error(name, "Only types of modules imported with '* as' can be qualified."), undefined
+    // A type of a built-in namespace implemented in Ore, such as `fs.FileInfo`.
+    const exports = module?.k === "module" ? module.exports : module?.k === "namespace" ? module.module : undefined
+    if ((module?.k !== "module" && module?.k !== "namespace") || !exports || !right || !ts.isIdentifier(right)) return this.error(name, "Only types of modules imported with '* as' can be qualified."), undefined
     this.info.definitions.set(left as ts.Identifier, module.decl)
-    const symbol = module.exports(right.text)?.type
-    if (!symbol) return this.error(right, `Module '${module.name}' has no exported type '${right.text}'.`), undefined
+    const symbol = exports(right.text)?.type
+    if (!symbol) return this.error(right, module.k === "namespace" ? `'${module.name}' has no type '${right.text}'.` : `Module '${module.name}' has no exported type '${right.text}'.`), undefined
     this.info.definitions.set(right, symbol.decl)
     return symbol
   }

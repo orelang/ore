@@ -456,13 +456,23 @@ export abstract class CallChecker extends ExpressionChecker {
       const call = this.genericCall(symbol.generic, ctorDecl?.parameters ?? [], node.typeArguments, node.arguments ?? [], node, scope)
       if (!call) return errorOperand
       const instance = call.instance as StructType
-      return this.callFunc(instance.ctor!, node.arguments ?? [], node, scope, `Constructor of '${instance.name}'`, undefined, call.operands.length > 0 ? call.operands : undefined)
+      if (!instance.ctor) return this.fail(node, this.earlyConstruction(instance.name ?? name))
+      return this.callFunc(instance.ctor, node.arguments ?? [], node, scope, `Constructor of '${instance.name}'`, undefined, call.operands.length > 0 ? call.operands : undefined)
     }
     const type = symbol?.type
     if (!type || type.kind !== "struct" || !type.nominal) return this.fail(node.expression, `'${name}' is not a class.`)
     if (node.typeArguments) return this.fail(node.typeArguments[0]!, `Class '${name}' is not generic.`)
     if (ts.isIdentifier(node.expression)) this.info.definitions.set(node.expression, symbol.decl)
-    return this.callFunc(type.ctor!, node.arguments ?? [], node, scope, `Constructor of '${name}'`)
+    if (!type.ctor) return this.fail(node, this.earlyConstruction(name))
+    return this.callFunc(type.ctor, node.arguments ?? [], node, scope, `Constructor of '${name}'`)
+  }
+
+  /**
+   * The error for a class constructed while declarations are resolved, before
+   * its constructor is known: the default value of a parameter without a type.
+   */
+  protected earlyConstruction(name: string): string {
+    return `Class '${name}' cannot be constructed in the default value of a parameter without a type. Annotate the parameter: 'x: ${name} = new ${name}(...)'.`
   }
 
   /** A checked call of a function or method with arguments converted to its parameters. */

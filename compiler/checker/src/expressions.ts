@@ -618,6 +618,13 @@ export abstract class ExpressionChecker extends StatementChecker {
     if (!ts.isPropertyAccessExpression(node) || !ts.isIdentifier(node.expression)) return undefined
     const module = scope.lookupValue(node.expression.text)
     if (module?.k === "namespace") {
+      // An export of the module implementing the namespace in Ore, such as `fs.stat`.
+      const exported = module.module?.(node.name.text)?.value
+      if (exported) {
+        this.info.definitions.set(node.expression, module.decl)
+        if (ts.isIdentifier(node.name)) this.info.definitions.set(node.name, exported.decl)
+        return exported
+      }
       // A constant of a built-in namespace, such as `Math.PI`.
       const member = module.members.get(node.name.text)
       if (member?.k !== "const") return undefined

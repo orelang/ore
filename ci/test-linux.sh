@@ -9,7 +9,7 @@ for platform in $platforms; do
     echo "== $platform"
     # A clean copy of the sources, without dependencies and build output of the host.
     docker run --rm --platform "$platform" -v "$PWD:/src:ro" "$tag" sh -c '
-        tar -C /src --exclude=./node_modules --exclude=./dist --exclude="*/node_modules" --exclude=./runtime/third_party/bdwgc/.git -cf - . | tar -xf - &&
+        tar -C /src --exclude=./node_modules --exclude=./dist --exclude="*/node_modules" --exclude=./.claude -cf - . | tar -xf - &&
         bun install --frozen-lockfile --ignore-scripts >/dev/null &&
         bun run typecheck >/dev/null &&
         bun test --timeout 120000 2>&1 | tail -40'

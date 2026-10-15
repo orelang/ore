@@ -9,7 +9,7 @@ The whole runtime is Ore, in [`runtime/core`](../runtime/core): strings,
 arrays, maps, number formatting (Ryu), JSON, the scheduler with its context
 switch in assembly, channels and `select`, the network poller and sockets,
 printing, panics, the `ore test` runner, files and the program's entry point.
-Only libc and the Boehm GC are outside Ore. Most of it is faster than the C it
+Only libc is outside Ore. Most of it is faster than the C it
 replaced, since it inlines into the program (array indexing 17 times,
 float formatting 44 times), and it agrees with JavaScript where the C did
 not (`toFixed`, `parseFloat`, number layout).
@@ -40,7 +40,25 @@ This comes before the GC and async, so that both are written once, in Ore.
 
 ## 3. Own garbage collector
 
-A precise collector in Ore, with LLVM stack maps, replacing Boehm.
+The architecture of Go's collector, in Ore
+([`runtime/core/gc.ore`](../runtime/core/gc.ore)). Done: a non-moving
+mark-sweep collector that replaced Boehm, with size-classed spans, a page
+table for interior pointers, per-thread allocation without locks, stopping
+the world with a signal, conservative scanning of stacks and precise roots
+for globals. Next, in order:
+
+- Marking on every worker in parallel.
+- A precise heap: the compiler emits a bitmap of pointer words per type, as
+  Go's `gcdata`, and allocation takes it.
+- Concurrent marking: a hybrid write barrier emitted on every store of a
+  pointer into the heap (and in bulk copies of the runtime), the world
+  stopped only to turn it on and to finish; mark assists for tasks that
+  allocate, and a pacer (`GOGC`, a memory limit).
+- Concurrent and lazy sweeping; returning free pages to the system.
+
+Stacks stay scanned conservatively: precise stack maps in LLVM need
+statepoints around every call, which keep LLVM from inlining Ore calls, and
+the collector does not move objects, so it does not need them.
 
 ## 4. Promises and async/await
 
