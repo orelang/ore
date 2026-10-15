@@ -8,6 +8,10 @@ before 1.0, a minor version may change the language.
 - The language server runs the checker: type errors, hover with the
   signature or type and the JSDoc comment, go to definition (also into the
   standard library), completion after `.`, references and rename.
+- The editor extensions are released with Ore and carry its version: each
+  release has `ore-vscode-vX.Y.Z.vsix`, also published to the Visual Studio
+  Marketplace and Open VSX, and `ore-zed-vX.Y.Z.zip`, to install in Zed as a
+  dev extension.
 
 - Tuples `[A, B]`: literals in their context, constant indexing, `length`,
   destructuring (an array literal destructured by an array pattern is one),
