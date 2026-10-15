@@ -1,0 +1,126 @@
+// The LLVM C API (llvm-c/*.h) that the compiler calls to turn LLVM IR text
+// into an object file: the declarations, the constants of its enums, and
+// helpers for its strings and out-parameters. Linked as -lLLVM (see the
+// "ore" section of compiler/next/package.json); LLVM 19 or newer.
+//
+// Handles (LLVMContextRef, LLVMModuleRef, ...) are `ptr`. `char **` and
+// `LLVMModuleRef *` out-parameters point into a buffer from `outs()`.
+// Messages LLVM allocates are returned as `ptr` and read with `message()`,
+// which also frees them.
+
+// Core.h: contexts, modules, messages.
+
+export declare function LLVMContextCreate(): ptr
+export declare function LLVMContextDispose(context: ptr): void
+export declare function LLVMDisposeModule(module: ptr): void
+export declare function LLVMSetTarget(module: ptr, triple: string): void
+export declare function LLVMSetModuleDataLayout(module: ptr, layout: ptr): void
+export declare function LLVMDisposeMessage(message: ptr): void
+/** A memory buffer holding a copy of `length` bytes at `data`; `name` names it in diagnostics. */
+export declare function LLVMCreateMemoryBufferWithMemoryRangeCopy(data: ptr, length: u64, name: string): ptr
+
+// IRReader.h: LLVM IR text. Takes ownership of the buffer; 0 on success,
+// otherwise a message such as "name:LINE:COL: error: ...".
+
+export declare function LLVMParseIRInContext(context: ptr, buffer: ptr, module: ptr, message: ptr): i32
+
+// Analysis.h
+
+/** `LLVMReturnStatusAction`: report a broken module by the result and the message. */
+export const verifierReturnStatus = i32(2)
+export declare function LLVMVerifyModule(module: ptr, action: i32, message: ptr): i32
+
+// Target.h and TargetMachine.h: targets and target machines.
+
+export declare function LLVMInitializeAArch64TargetInfo(): void
+export declare function LLVMInitializeAArch64Target(): void
+export declare function LLVMInitializeAArch64TargetMC(): void
+export declare function LLVMInitializeAArch64AsmPrinter(): void
+export declare function LLVMInitializeAArch64AsmParser(): void
+export declare function LLVMInitializeX86TargetInfo(): void
+export declare function LLVMInitializeX86Target(): void
+export declare function LLVMInitializeX86TargetMC(): void
+export declare function LLVMInitializeX86AsmPrinter(): void
+export declare function LLVMInitializeX86AsmParser(): void
+
+export declare function LLVMGetDefaultTargetTriple(): ptr
+export declare function LLVMGetHostCPUName(): ptr
+export declare function LLVMGetHostCPUFeatures(): ptr
+/** The target of a triple into `*target`; 0 on success, otherwise a message. */
+export declare function LLVMGetTargetFromTriple(triple: string, target: ptr, message: ptr): i32
+export declare function LLVMCreateTargetMachine(target: ptr, triple: string, cpu: string, features: string, level: i32, reloc: i32, model: i32): ptr
+export declare function LLVMDisposeTargetMachine(machine: ptr): void
+export declare function LLVMCreateTargetDataLayout(machine: ptr): ptr
+export declare function LLVMDisposeTargetData(layout: ptr): void
+/** Writes the module as an object file or assembly; 0 on success, otherwise a message. */
+export declare function LLVMTargetMachineEmitToFile(machine: ptr, module: ptr, file: string, kind: i32, message: ptr): i32
+
+/** `LLVMCodeGenOptLevel`: `LLVMCodeGenLevelNone` and `LLVMCodeGenLevelDefault` (-O2). */
+export const codeGenLevelNone = i32(0)
+export const codeGenLevelDefault = i32(2)
+/** `LLVMRelocMode`: position-independent code, for PIE executables. */
+export const relocPic = i32(2)
+/** `LLVMCodeModel`: the target's default. */
+export const codeModelDefault = i32(0)
+/** `LLVMCodeGenFileType`: an object file. */
+export const objectFile = i32(1)
+
+// Transforms/PassBuilder.h and Error.h: the new pass manager.
+
+export declare function LLVMCreatePassBuilderOptions(): ptr
+export declare function LLVMDisposePassBuilderOptions(options: ptr): void
+/** Runs a pipeline such as "default<O2>"; null on success, otherwise an LLVMErrorRef. */
+export declare function LLVMRunPasses(module: ptr, passes: string, machine: ptr, options: ptr): ptr
+export declare function LLVMGetErrorMessage(error: ptr): ptr
+export declare function LLVMDisposeErrorMessage(message: ptr): void
+
+declare function strlen(s: ptr): u64
+
+/**
+ * Registers the target the compiler runs on, the one it compiles for: its
+ * code generator, and its assembly parser, which inline assembly needs.
+ */
+export function initializeTarget(): void {
+    if (target.arch === "arm64") {
+        LLVMInitializeAArch64TargetInfo()
+        LLVMInitializeAArch64Target()
+        LLVMInitializeAArch64TargetMC()
+        LLVMInitializeAArch64AsmPrinter()
+        LLVMInitializeAArch64AsmParser()
+    } else {
+        LLVMInitializeX86TargetInfo()
+        LLVMInitializeX86Target()
+        LLVMInitializeX86TargetMC()
+        LLVMInitializeX86AsmPrinter()
+        LLVMInitializeX86AsmParser()
+    }
+}
+
+/** A copy of a C string; "" for null. */
+export function cString(p: ptr): string {
+    if (unsafe.toInt(p) === 0) return ""
+    const n = i64(strlen(p))
+    const copy = unsafe.allocBytes(n)
+    unsafe.copy(copy, p, n)
+    return unsafe.makeString(copy, n)
+}
+
+/** A copy of a message LLVM allocated with malloc (`char *`), which is freed. */
+export function message(p: ptr): string {
+    const text = cString(p)
+    if (unsafe.toInt(p) !== 0) LLVMDisposeMessage(p)
+    return text
+}
+
+/** The message of an LLVMErrorRef, which is consumed. */
+export function errorMessage(error: ptr): string {
+    const p = LLVMGetErrorMessage(error)
+    const text = cString(p)
+    LLVMDisposeErrorMessage(p)
+    return text
+}
+
+/** Room for two pointer-sized out-parameters: `outs()` and `unsafe.add(outs, 8)`, read with `unsafe.load<ptr>`. */
+export function outs(): ptr {
+    return unsafe.allocBytes(16)
+}
