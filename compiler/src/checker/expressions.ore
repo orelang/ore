@@ -792,12 +792,69 @@ export function checkConditional(c: Checker, node: Node, scope: Scope, expected:
     )
 }
 
+/**
+ * An array literal with `...array` elements: the element type comes from the
+ * context, else from the first element (an array's element type for a
+ * spread); each spread must be an array of exactly that element type.
+ */
+function checkSpreadArray(c: Checker, node: Node, elems: Node[], scope: Scope, expected: Type | null): Operand {
+    // The element type, once known: a flag rather than null, so that no
+    // narrowing is involved, which stage 0 of the bootstrap does differently.
+    let elem: Type = types.i64
+    let known = false
+    if (expected !== null) {
+        for (const m of membersOf(expected)) {
+            if (m.kind === "array" && !known) {
+                elem = m.elem
+                known = true
+            }
+        }
+    }
+    const exprs: Expr[] = []
+    const spread: bool[] = []
+    for (const e of elems) {
+        if (e.kind === "SpreadElement") {
+            const inner = expression(e)
+            const value = checkExpr(c, inner, scope, known ? arrayOf(elem) : null)
+            if (value.k === "error") return errorOperand
+            if (value.k !== "typed" || value.expr.type.kind !== "array")
+                return c.fail(inner, "Only an array can be spread into an array.")
+            const t = value.expr.type
+            if (!known) {
+                elem = t.elem
+                known = true
+            }
+            if (!sameType(t.elem, elem))
+                return c.fail(
+                    inner,
+                    `An array of '${typeToString(t.elem)}' cannot be spread into an array of '${typeToString(elem)}'.`,
+                )
+            exprs.push(value.expr)
+            spread.push(true)
+        } else {
+            const value = checkExpr(c, e, scope, known ? elem : null)
+            if (value.k === "error") return errorOperand
+            if (!known) {
+                elem = value.k === "typed" ? value.expr.type : value.k === "untyped-float" ? types.f64 : types.i64
+                known = true
+            }
+            exprs.push(c.coerce(value, elem, e))
+            spread.push(false)
+        }
+    }
+    if (elem.kind === "void" || elem.kind === "never")
+        return c.fail(node, `An array cannot contain values of type '${elem.kind}'.`)
+    return typed(new ArrayLit(arrayOf(elem), exprs, spread))
+}
+
 export function checkArrayLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
     const elems = elements(node)
+    let spreads = false
     for (const e of elems) {
-        if (e.kind === "SpreadElement") return c.fail(e, "Spread elements are not supported yet.")
+        if (e.kind === "SpreadElement") spreads = true
         if (e.kind === "OmittedExpression") return c.fail(node, "Array holes are not supported.")
     }
+    if (spreads) return checkSpreadArray(c, node, elems, scope, expected)
     // The context gives the element type: an array type, or a union with exactly one array type (`T[] | null`).
     const arrays: ArrayType[] = []
     if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "array") arrays.push(m)

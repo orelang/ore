@@ -421,10 +421,13 @@ class Dumper {
                 if (end !== null) this.expr(end, d, "end")
                 return
             }
-            case "array":
+            case "array": {
                 this.exprHead(e, depth, role, "array")
-                this.all(e.elems, d, "elem")
+                const spread = e.spread
+                for (let i = 0; i < e.elems.length; i++)
+                    this.expr(e.elems[i], d, spread !== null && spread[i] ? "spread" : "elem")
                 return
+            }
             case "push":
                 this.exprHead(e, depth, role, "push")
                 this.expr(e.array, d, "array")

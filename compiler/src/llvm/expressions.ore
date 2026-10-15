@@ -169,6 +169,8 @@ export function expr(g: Emitter, e: Expr): V {
             const elem = g.mt(e.type.elem)
             const values: V[] = []
             for (const x of e.elems) values.push(expr(g, x))
+            const spread = e.spread
+            if (spread !== null) return spreadArray(g, e.type.elem, values, spread)
             const array = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, g.i64(values.length)])
             if (values.length === 0) return array
             const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
@@ -1127,4 +1129,44 @@ export function unionFieldInline(g: Emitter, u: UnionType, v: V, name: string, r
     g.b.terminate("unreachable")
     g.b.start(end)
     return g.b.value(ty, `load ${ty}, ptr ${result}`)
+}
+
+/**
+ * `[a, ...b, c]`: an array as long as its single elements and the spread
+ * arrays together, the single elements stored and the spread arrays' elements
+ * copied in, in order.
+ */
+function spreadArray(g: Emitter, elemType: Type, values: V[], spread: bool[]): V {
+    const elem = g.mt(elemType)
+    const size = sizeOf(elem)
+    // The length: the single elements, plus the length of each spread array.
+    let length = g.i64(0)
+    let singles = 0
+    for (let i = 0; i < values.length; i++) {
+        if (!spread[i]) {
+            singles++
+            continue
+        }
+        const n = g.b.value("i64", `load i64, ptr ${g.field(values[i].v, ARRAY, 1)}`)
+        length = g.b.value("i64", `add i64 ${length.v}, ${n.v}`)
+    }
+    length = g.b.value("i64", `add i64 ${length.v}, ${singles}`)
+    const array = g.rt("ore_rt_array_new", [{ ty: "i64", v: size }, length])
+    const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
+    let at = g.i64(0)
+    for (let i = 0; i < values.length; i++) {
+        const place = g.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${at.v}`)
+        if (!spread[i]) {
+            g.store(values[i], place.v, elemType)
+            at = g.b.value("i64", `add i64 ${at.v}, 1`)
+            continue
+        }
+        const n = g.b.value("i64", `load i64, ptr ${g.field(values[i].v, ARRAY, 1)}`)
+        const from = g.b.value("ptr", `load ptr, ptr ${g.field(values[i].v, ARRAY, 0)}`)
+        const bytes = g.b.value("i64", `mul i64 ${n.v}, ${size}`)
+        g.b.emit(`call void @llvm.memmove.p0.p0.i64(ptr ${place.v}, ptr ${from.v}, i64 ${bytes.v}, i1 false)`)
+        at = g.b.value("i64", `add i64 ${at.v}, ${n.v}`)
+    }
+    g.decls.set("@llvm.memmove.p0.p0.i64", "declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)")
+    return array
 }

@@ -1,0 +1,29 @@
+// `...array` in an array literal copies the array's elements in.
+const a = [1, 2, 3]
+const b = [0, ...a, 4, ...a]
+console.log(b.length, b.join(","))
+
+// The element type comes from the first element, a spread's array, or the context.
+const words = ["x", "y"]
+const more = [...words, "z"]
+console.log(more.join(" "))
+const empty: string[] = []
+const copy: string[] = [...empty, ...words]
+console.log(copy.length, copy[1])
+
+// A copy: changing it leaves the original.
+const twice = [...a]
+twice[0] = 9
+console.log(a[0], twice[0])
+
+// Arrays of references, and spreads of expressions evaluated once, in order.
+class Point {
+    constructor(readonly x: int) {}
+}
+let calls = 0
+function points(): Point[] {
+    calls++
+    return [new Point(calls), new Point(calls * 10)]
+}
+const all = [new Point(0), ...points(), ...points()]
+console.log(all.length, all[1].x, all[4].x, calls)

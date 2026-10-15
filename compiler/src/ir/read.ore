@@ -1068,8 +1068,23 @@ class Reader {
                 if (this.has(d, "end: ")) end = this.expr(d, "end")
                 return new Slice(type, value, start, end)
             }
-            case "array":
-                return new ArrayLit(this.arrayType(this.exprType(c)), this.exprs(d, "elem"))
+            case "array": {
+                const type = this.arrayType(this.exprType(c))
+                const elems: Expr[] = []
+                const spread: bool[] = []
+                let any = false
+                while (true) {
+                    if (this.has(d, "elem: ")) {
+                        elems.push(this.expr(d, "elem"))
+                        spread.push(false)
+                    } else if (this.has(d, "spread: ")) {
+                        elems.push(this.expr(d, "spread"))
+                        spread.push(true)
+                        any = true
+                    } else break
+                }
+                return new ArrayLit(type, elems, any ? spread : null)
+            }
             case "push": {
                 const type = this.intType(this.exprType(c))
                 return new Push(type, this.expr(d, "array"), this.exprs(d, "value"))
