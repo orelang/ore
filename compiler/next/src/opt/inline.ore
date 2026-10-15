@@ -44,6 +44,7 @@ import {
     LocalRef,
     Logical,
     MapOp,
+    SetOp,
     MethodCall,
     Not,
     NullLit,
@@ -278,6 +279,13 @@ function eachChild(e: Expr, expr: (x: Expr) => void, lvalue: (t: LValue) => void
             if (map !== null) expr(map)
             const key = e.key
             if (key !== null) expr(key)
+            const value = e.value
+            if (value !== null) expr(value)
+            return
+        }
+        case "set": {
+            const set = e.set
+            if (set !== null) expr(set)
             const value = e.value
             if (value !== null) expr(value)
             return
@@ -631,6 +639,13 @@ class Inliner {
                 if (value !== null) e.value = this.sub(value, depth)
                 return
             }
+            case "set": {
+                const set = e.set
+                if (set !== null) e.set = this.sub(set, depth)
+                const value = e.value
+                if (value !== null) e.value = this.sub(value, depth)
+                return
+            }
             case "call-value":
                 e.callee = this.sub(e.callee, depth)
                 this.subs(e.args, depth)
@@ -873,6 +888,8 @@ class Inliner {
                 return new Downcast(e.type, this.clone(e.value, values))
             case "map":
                 return new MapOp(e.op, e.type, e.mapType, this.cloneOrNull(e.map, values), this.cloneOrNull(e.key, values), this.cloneOrNull(e.value, values))
+            case "set":
+                return new SetOp(e.op, e.type, e.setType, this.cloneOrNull(e.set, values), this.cloneOrNull(e.value, values))
             case "func-ref":
                 return new FuncRef(e.type, e.func)
             case "closure":

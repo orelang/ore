@@ -257,6 +257,42 @@ export abstract class CollectionEmitter extends CallEmitter {
     }
   }
 
+  /** A set is a map whose values take no bytes. */
+  protected setOp(e: ir.SetOp): V {
+    const T = e.setType.elem
+    const t = this.mt(T)
+    switch (e.op) {
+      case "new": {
+        const { hash, eq } = this.keyFunctions(T)
+        const s = this.rt("ore_rt_map_new", [{ ty: "i64", v: sizeOf(t) }, this.i64(0), { ty: "ptr", v: hash }, { ty: "ptr", v: eq }])
+        if (e.value) this.rt("ore_rt_map_add_keys", [s, this.expr(e.value)])
+        return s
+      }
+      case "size":
+        return this.b.value("i64", `load i64, ptr ${this.field(this.expr(e.set!).v, MAP, 8)}`)
+      case "clear":
+        this.rt("ore_rt_map_clear", [this.expr(e.set!)])
+        return voidValue
+      case "values":
+        return this.rt("ore_rt_map_keys", [this.expr(e.set!)])
+    }
+    // The set, then the value, which needs an address.
+    const s = this.expr(e.set!)
+    const v = this.b.alloca(t)
+    this.store(this.expr(e.value!), v, T)
+    const value: V = { ty: "ptr", v }
+    switch (e.op) {
+      case "add":
+        // No bytes of value are copied: the value's address serves.
+        this.rt("ore_rt_map_set", [s, value, value])
+        return s
+      case "has":
+        return this.b.value("i1", `icmp ne ptr ${this.rt("ore_rt_map_get", [s, value]).v}, null`)
+      default:
+        return this.rtBool("ore_rt_map_delete", [s, value])
+    }
+  }
+
   protected chanOp(e: ir.ChanOp): V {
     const T = e.chanType.elem
     const t = this.mt(T)

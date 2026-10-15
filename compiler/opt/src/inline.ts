@@ -29,7 +29,7 @@ const maxSize = 40
 const maxDepth = 3
 
 /** Keys of IR nodes that refer to shared things rather than own subtrees. */
-const shared = new Set(["type", "func", "itab", "error", "member", "via", "mapType", "chanType", "method", "indices", "captures", "typeArgs"])
+const shared = new Set(["type", "func", "itab", "error", "member", "via", "mapType", "setType", "chanType", "method", "indices", "captures", "typeArgs"])
 
 /** Keys of IR nodes that hold locals. */
 const localKeys = new Set(["local", "binding"])

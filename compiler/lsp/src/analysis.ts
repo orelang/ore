@@ -283,6 +283,17 @@ function members(type: Type, inside: string | undefined): Completion[] {
         { label: "values", kind: "method", detail: `() => ${v}[]` },
       ]
     }
+    case "set": {
+      const e = typeToString(type.elem)
+      return [
+        { label: "size", kind: "field", detail: "i64" },
+        { label: "add", kind: "method", detail: `(value: ${e}) => ${typeToString(type)}` },
+        { label: "has", kind: "method", detail: `(value: ${e}) => bool` },
+        { label: "delete", kind: "method", detail: `(value: ${e}) => bool` },
+        { label: "clear", kind: "method", detail: "() => void" },
+        { label: "values", kind: "method", detail: `() => ${e}[]` },
+      ]
+    }
     default:
       return []
   }

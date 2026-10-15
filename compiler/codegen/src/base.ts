@@ -21,6 +21,7 @@ export abstract class EmitterBase {
   protected abstract helper(name: string, header: string, body: (e: this) => void): void
   protected abstract json(e: ir.BuiltinCall): V
   protected abstract mapOp(e: ir.MapOp): V
+  protected abstract setOp(e: ir.SetOp): V
   protected abstract stringMethod(e: ir.StringMethod): V
   protected abstract thunk(func: ir.Func): string
 
