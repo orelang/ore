@@ -47,6 +47,8 @@ export function foldUnary(op: string, a: Untyped): Operand | string {
 }
 
 const maxShift = bigOf(1024)
+const maxExponent = bigOf(4096)
+const one = bigOf(1)
 
 function foldInt(op: string, a: Big, b: Big): Operand | string {
     switch (op) {
@@ -60,6 +62,26 @@ function foldInt(op: string, a: Big, b: Big): Operand | string {
             return bigIsZero(b) ? "Division by zero." : new UntypedInt(bigDiv(a, b))
         case "%":
             return bigIsZero(b) ? "Division by zero." : new UntypedInt(bigRem(a, b))
+        case "**": {
+            // A negative exponent gives a fraction, as in JavaScript.
+            if (bigIsNeg(b)) return new UntypedFloat(Math.pow(bigToF64(a), bigToF64(b)))
+            let n = b
+            if (bigGt(b, maxExponent)) {
+                // Only 0, 1 and -1 have powers of any size.
+                if (bigIsZero(a) || bigEq(a, one)) return new UntypedInt(a)
+                if (!bigEq(a, bigNeg(one))) return `Exponent ${bigText(b)} is too large.`
+                n = bigRem(b, bigOf(2))
+            }
+            let result = one
+            let base = a
+            let count = bigToI64(n)
+            while (count > 0) {
+                if (count % 2 === 1) result = bigMul(result, base)
+                base = bigMul(base, base)
+                count = count / 2
+            }
+            return new UntypedInt(result)
+        }
         case "&":
             return new UntypedInt(bigAnd(a, b))
         case "|":
@@ -90,6 +112,8 @@ function foldFloat(op: string, a: f64, b: f64): Operand | string {
             return b === 0.0 ? "Division by zero." : new UntypedFloat(a / b)
         case "%":
             return b === 0.0 ? "Division by zero." : new UntypedFloat(a % b)
+        case "**":
+            return new UntypedFloat(Math.pow(a, b))
         case "&":
         case "|":
         case "^":

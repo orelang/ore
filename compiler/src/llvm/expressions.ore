@@ -503,6 +503,11 @@ export function arith(g: Emitter, op: ArithOp, l: V, r: V, type: IntType | Float
         else if (op === "*") ins = "fmul"
         else if (op === "/") ins = "fdiv"
         else if (op === "%") ins = "frem"
+        else if (op === "**") {
+            const f = `@llvm.pow.${ty === "float" ? "f32" : "f64"}`
+            g.decls.set(f, `declare ${ty} ${f}(${ty}, ${ty})`)
+            return g.b.value(ty, `call ${ty} ${f}(${ty} ${l.v}, ${ty} ${r.v})`)
+        }
         return g.b.value(ty, `${ins} ${ty} ${l.v}, ${r.v}`)
     }
     switch (op) {
@@ -522,11 +527,23 @@ export function arith(g: Emitter, op: ArithOp, l: V, r: V, type: IntType | Float
             return divide(g, "/", l, r, type)
         case "%":
             return divide(g, "%", l, r, type)
+        case "**":
+            return power(g, l, r, type)
         case "<<":
             return shift(g, "<<", l, r, type, rightType.kind === "int" ? rightType : type)
         case ">>":
             return shift(g, ">>", l, r, type, rightType.kind === "int" ? rightType : type)
     }
+}
+
+/** An integer power, which wraps like `*`; a negative exponent panics. */
+export function power(g: Emitter, l: V, r: V, type: IntType): V {
+    const ty = l.ty
+    if (type.signed) check(g, g.b.value("i1", `icmp sge ${ty} ${r.v}, 0`), "negative exponent of an integer")
+    const widen = (v: V): V =>
+        ty === "i64" ? v : g.b.value("i64", `${type.signed ? "sext" : "zext"} ${ty} ${v.v} to i64`)
+    const result = g.rt("ore_rt_pow", [widen(l), widen(r)])
+    return ty === "i64" ? result : g.b.value(ty, `trunc i64 ${result.v} to ${ty}`)
 }
 
 /** Integer division and remainder: by zero panics; MIN / -1 wraps (MIN % -1 is 0). */

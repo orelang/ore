@@ -64,6 +64,9 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
 - `>>` is arithmetic for signed and logical for unsigned types. `>>>` is
   rejected.
 - `%` on floats is the C `fmod`.
+- `a ** b` is a power: `pow` on floats; on integers it wraps like `*`, and a
+  negative exponent panics. Of untyped constants it is exact, and a negative
+  exponent gives a float (`2 ** -1` is `0.5`). `**=` assigns it.
 - Comparison uses `===` / `!==`. `==` and `!=` are rejected.
 
 ## Variables
