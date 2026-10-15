@@ -421,6 +421,22 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     const members = client.request("7", "textDocument/completion", at(1, 5))
     expect(members.includes(`"label":"toUpperCase"`)).toBe(true)
     expect(members.includes(`"label":"length"`)).toBe(true)
+
+    // A namespace nested in another: `process.` lists `command`, and
+    // `process.command.` its functions.
+    const edit = (version: int, text: string) => {
+        client.notify(
+            "textDocument/didChange",
+            `{"textDocument":{"uri":${JSON.stringify(uri)},"version":${version}},"contentChanges":[{"text":${JSON.stringify(text)}}]}`,
+        )
+        client.diagnostics(uri)
+    }
+    edit(3, "process.\n")
+    expect(client.request("12", "textDocument/completion", at(0, 8)).includes(`"label":"command"`)).toBe(true)
+    edit(4, "process.command.\n")
+    const commands = client.request("13", "textDocument/completion", at(0, 16))
+    expect(commands.includes(`"label":"spawn"`)).toBe(true)
+    expect(commands.includes(`"label":"getenv"`)).toBe(false)
     expect(client.close()).toBe(1)
 })
 
