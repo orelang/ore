@@ -54,7 +54,7 @@ export abstract class FunctionEmitter extends EmitterBase {
     if (func.attributes?.naked) {
       // Nothing but the assembly: no frame, no parameters in memory.
       for (const stmt of func.body.body) this.stmt(stmt)
-      return this.b.finish(this.signature(func, at), "unreachable")
+      return this.b.finish(this.signature(func, at), "unreachable", true)
     }
     for (const node of this.plan.slots.get(func) ?? []) this.slots.set(node, this.b.alloca(this.slotType(node)))
     // The runtime keeps no frames, as when it was C: stack traces show the program's code.
