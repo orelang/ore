@@ -34,7 +34,8 @@ Numeric literals are untyped constants (as in Go):
 ## Conversions
 
 There are no implicit conversions between distinct numeric types. Conversions
-are explicit calls of the type name:
+are explicit calls of the type name, or of an alias of it (`int(x)` is
+`i64(x)`, `uint(x)` is `u64(x)`, `byte(x)` is `u8(x)`):
 
 ```ts
 const a: i32 = 10
