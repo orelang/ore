@@ -1717,6 +1717,8 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         const field = findField(type, name)
         if (field !== null && field.type.kind === "func")
             return callValue(c, member(c, value, nameId, name), node, scope)
+        if (field !== null && membersOf(field.type).some((m) => m.kind === "func"))
+            return c.fail(nameId, `'${name}' may be null: call it with '${name}?.(...)'.`)
         if (field !== null) return c.fail(nameId, `Field '${name}' is not a method.`)
     }
     if (type.kind === "interface") {

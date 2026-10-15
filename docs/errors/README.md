@@ -259,6 +259,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE4074](ORE4074.md) | 'pop' expects no arguments, got …. |
 | [ORE4075](ORE4075.md) | 'slice' expects at most 2 arguments, got …. |
 | [ORE4076](ORE4076.md) | 'internal' is only for the standard library. Add '//ore:internal' at the top of the file to use it here. |
+| [ORE4077](ORE4077.md) | '…' may be null: call it with '…?.(...)'. |
 
 ## ORE5xxx: Classes and interfaces
 
