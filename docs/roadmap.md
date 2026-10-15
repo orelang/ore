@@ -58,8 +58,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   - `**` and `satisfies` (done), `bigint` literals (`10n`);
   - overloads (several signatures of one function; done for top-level
     functions);
-  - generic closures, nested generic functions, default type arguments
-    (`<T = X>`).
+  - generic closures, nested generic functions; default type arguments
+    (`<T = X>`, done).
 - Types:
   - `unknown`;
   - intersections `A & B`;

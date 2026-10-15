@@ -220,6 +220,9 @@ exhaustive: like a `default`, it lets a function end without `return`.
 
 ## Generics
 
+- Type parameters may have defaults (`<T, C = T[]>`), which can use the
+  parameters before them: a type or call that leaves the argument out, or
+  whose arguments do not bind it, takes the default.
 - Functions, classes, interfaces and type aliases may have type parameters,
   optionally constrained: `function longest<T extends Named>(items: T[]): T`.
 - Type arguments are written (`id<int>(5)`, `new Box<string>()`) or inferred

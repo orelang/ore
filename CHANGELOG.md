@@ -17,6 +17,7 @@ before 1.0, a minor version may change the language.
 - Static members of classes: `C.count`, `C.make()`.
 - Optional, default and rest parameters of closures and function types.
 - Overload signatures of top-level functions.
+- Default type arguments: `<T, C = T[]>`.
 - `typeof` of a function is `"function"`.
 - `JSON.stringify(value, null, space)` takes its arguments as in JavaScript;
   `JSON.stringify(value, 2)` is now an error.

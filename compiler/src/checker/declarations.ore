@@ -862,9 +862,11 @@ export function makeFunc(
 export function declareGeneric(c: Checker, decl: Node, scope: Scope) {
     const name = nameNode(decl).text
     const params = typeParameters(decl)
+    let defaults = false
     for (const p of params) {
         const d = defaultTypeNode(p)
-        if (d !== null) c.error(d, "Default type arguments are not supported yet.")
+        if (d !== null) defaults = true
+        else if (defaults) c.error(nameNode(p), "A type parameter without a default cannot follow one with a default.")
     }
     const generic = new Generic(name, decl, params, scope, new Map<string, Instance>())
     let declared: bool
@@ -875,6 +877,29 @@ export function declareGeneric(c: Checker, decl: Node, scope: Scope) {
             declared = scope.declareValue(name, new ClassSymbol(null, decl))
     }
     if (!declared) c.error(nameNode(decl), `Duplicate declaration '${name}'.`)
+}
+
+/**
+ * Type arguments with the defaults of the parameters left out (`<T, U = T[]>`),
+ * which can use the parameters before them; as given when a parameter left
+ * out has no default.
+ */
+export function withDefaults(c: Checker, generic: Generic, given: Type[]): Type[] {
+    if (given.length >= generic.params.length) return given
+    const scope = new Scope(generic.scope)
+    const args: Type[] = []
+    for (let i = 0; i < generic.params.length; i++) {
+        const p = generic.params[i]
+        if (i < given.length) args.push(given[i])
+        else {
+            const d = defaultTypeNode(p)
+            const resolved = d !== null ? c.resolveValueType(d, scope) : null
+            if (resolved === null) return given
+            args.push(resolved)
+        }
+        scope.declareType(nameNode(p).text, new TypeSymbol(args[i], p))
+    }
+    return args
 }
 
 /** A pending check of a generic instance, run with the instance named in its diagnostics. */
@@ -891,7 +916,8 @@ function inContext(c: Checker, label: string, check: () => void): () => void {
  * The instance of a generic for type arguments, created once: a function
  * (whose body is checked later), a class, an interface or a type.
  */
-export function instantiate(c: Checker, generic: Generic, args: Type[], node: Node): Instance | null {
+export function instantiate(c: Checker, generic: Generic, given: Type[], node: Node): Instance | null {
+    const args = withDefaults(c, generic, given)
     if (args.length !== generic.params.length) {
         c.error(node, `'${generic.name}' expects ${generic.params.length} type argument(s), got ${args.length}.`)
         return null
@@ -999,6 +1025,24 @@ export function inferTypeArgs(
         const annotation = typeNode(params[i])
         const argType = i < argTypes.length ? argTypes[i] : null
         if (annotation !== null && argType !== null) inferFrom(c, annotation, argType, names, bindings, generic.scope)
+    }
+    // Parameters that the arguments do not bind take their defaults.
+    const bound: Type[] = []
+    let complete = true
+    for (const n of names) {
+        const t = bindings.get(n)
+        if (t === null) complete = false
+        else if (complete) bound.push(t)
+    }
+    if (!complete && names.every((n, i) => bindings.has(n) || defaultTypeNode(generic.params[i]) !== null)) {
+        const all = withDefaults(c, generic, bound)
+        if (all.length === names.length) {
+            for (let i = 0; i < names.length; i++) {
+                const t = bindings.get(names[i])
+                if (t !== null) all[i] = t
+            }
+            return all
+        }
     }
     const missing = names.filter((n) => !bindings.has(n))
     if (missing.length > 0) {
