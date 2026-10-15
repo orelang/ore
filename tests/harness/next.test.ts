@@ -23,6 +23,7 @@
  * compiler/next/src/ir/read.ore and dumped again, must be the same text.
  */
 import { check } from "@ore/checker"
+import { emitModule } from "@ore/codegen"
 import { build } from "@ore/driver"
 import { dump } from "@ore/ir"
 import { loadProgram } from "@ore/project"
@@ -217,27 +218,72 @@ describe("next modules", () => {
 /** The valid programs whose IR the TypeScript checker builds: every one of tests/run, and the Ore compiler. */
 const checkedPrograms = [...entries(join(root, "tests/run")), join(root, "compiler/next/src/main.ore")]
 
-/** The IR module of a program, from @ore/checker, which every program of tests/run has. */
-function irModule(entry: string) {
-  const program = loadProgram(entry)
+/** What the TypeScript compiler makes of a program: the dump of its IR, a file holding it, and its LLVM IR. */
+type Compiled = { dump: string; path: string; debug: string; release: string }
+
+const compiledWork = mkdtempSync(join(tmpdir(), "ore-next-ir-"))
+const compiled = new Map<string, Compiled>()
+
+/**
+ * The IR module of a program from @ore/checker, which every program of
+ * tests/run has, its dump, and its LLVM IR from @ore/codegen; computed once
+ * for the IR and LLVM blocks.
+ */
+function compile(file: string): Compiled {
+  const known = compiled.get(file)
+  if (known) return known
+  // Relative to the working directory, as the command line gives it.
+  const program = loadProgram(relative(process.cwd(), file))
   expect(program.diagnostics.map((d) => d.message)).toEqual([])
   const checked = check(program)
   expect(checked.diagnostics.map((d) => d.message)).toEqual([])
-  return checked.module!
+  const module = checked.module!
+  const text = dump(module)
+  const path = join(compiledWork, `${relative(root, file).replaceAll("/", "_")}.txt`)
+  writeFileSync(path, text)
+  // Debug first: a release build inlines calls in the module itself.
+  const debug = emitModule(module, { debug: true })
+  const release = emitModule(module, { debug: false })
+  const result = { dump: text, path, debug, release }
+  compiled.set(file, result)
+  return result
 }
 
 describe("next ir", () => {
-  const work = mkdtempSync(join(tmpdir(), "ore-next-ir-"))
   for (const file of checkedPrograms) {
     test(relative(root, file), async () => {
-      const text = dump(irModule(relative(process.cwd(), file)))
-      const path = join(work, `${relative(root, file).replaceAll("/", "_")}.txt`)
-      writeFileSync(path, text)
+      const { dump: text, path } = compile(file)
       const { code, stdout, stderr } = await run("ir", path)
       expect(stderr).toBe("")
       expect(code).toBe(0)
       expect(stdout).toBe(text)
     }, 120_000)
+  }
+})
+
+/**
+ * Programs whose LLVM IR from `ore-next llvm` still differs from that of
+ * @ore/codegen, by path, with the reason; they are skipped. There are none:
+ * every program matches byte for byte.
+ */
+const llvmDifferences = new Map<string, string>()
+
+describe("next llvm", () => {
+  for (const file of checkedPrograms) {
+    const name = relative(root, file)
+    const reason = llvmDifferences.get(name)
+    for (const mode of ["release", "debug"] as const) {
+      const testOrSkip = reason === undefined ? test : test.skip
+      testOrSkip(`${name} (${mode})${reason === undefined ? "" : `: ${reason}`}`, async () => {
+        const result = compile(file)
+        const { code, stdout, stderr } = await run("llvm", result.path, ...(mode === "debug" ? ["--debug"] : []))
+        expect(stderr).toBe("")
+        expect(code).toBe(0)
+        // Line by line first, so that a failure shows where the texts differ.
+        if (stdout !== result[mode]) expect(stdout.split("\n")).toEqual(result[mode].split("\n"))
+        expect(stdout === result[mode]).toBe(true)
+      }, 120_000)
+    }
   }
 })
 
