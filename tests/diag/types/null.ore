@@ -39,3 +39,41 @@ let w: i32 | i64 = 1
 let x: i32 | u8 = 1 // error: Ambiguous constant for type 'i32 | u8'.
 let n: Node | null
 console.log(n.next) // error: The value may be null
+
+// Narrowing by assignment holds where every branch that goes on narrows.
+function make(): Node {
+    return new Node(0)
+}
+function onlyOne(flag: bool, n: Node | null): int {
+    if (flag) n = make()
+    return n.value // error: The value may be null
+}
+function reset(n: Node | null): int {
+    if (n === null) n = make()
+    else n = n.next
+    return n.value // error: The value may be null
+}
+function invalidated(n: Node | null): int {
+    if (n === null) n = make()
+    n = n.next
+    return n.value // error: The value may be null
+}
+// A loop forgets what it assigns, as the assignment may run before the next iteration.
+function looped(n: Node | null): int {
+    if (n === null) n = make()
+    for (let i = 0; i < 3; i++) {
+        console.log(n.value) // error: The value may be null
+        n = n.next // error: The value may be null
+    }
+    return 0
+}
+// A closure that assigns a variable does not know what is narrowed about it.
+function captured(n: Node | null): int {
+    if (n === null) n = make()
+    const f = (): int => {
+        const v = n.value // error: The value may be null
+        n = null
+        return v
+    }
+    return n.value + f()
+}

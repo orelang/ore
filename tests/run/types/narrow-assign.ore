@@ -1,0 +1,74 @@
+// An assignment narrows a variable or a field path to the assigned value's
+// type; where branches join, it stays narrowed if every branch narrows it.
+class Entry {
+    hits = 0
+    constructor(readonly key: string) {}
+}
+
+function make(key: string): Entry {
+    return new Entry(key)
+}
+
+const cache = new Map<string, Entry>()
+
+function lookup(key: string): Entry {
+    let entry = cache.get(key)
+    if (entry === null) {
+        entry = make(key)
+        cache.set(key, entry)
+    }
+    entry.hits++
+    return entry
+}
+lookup("a")
+lookup("b")
+console.log(lookup("a").hits, cache.size)
+
+// Both branches assign; a branch that exits does not count.
+function pick(flag: int): string {
+    let name: string | null = null
+    if (flag === 0) name = "zero"
+    else if (flag === 1) name = "one"
+    else return "many"
+    return name
+}
+console.log(pick(0), pick(1), pick(2))
+
+// Field paths, as in a lazily computed field.
+class Lazy {
+    value: Entry | null = null
+
+    get(): Entry {
+        if (this.value === null) this.value = make("lazy")
+        return this.value
+    }
+}
+console.log(new Lazy().get().key)
+
+// Inside a loop, a variable assigned in the loop is narrowed after the
+// assignment in each iteration.
+let last: Entry | null = null
+for (const key of ["x", "y"]) {
+    if (last === null || last.key !== key) last = make(key)
+    last.hits += 2
+}
+console.log(last === null ? "none" : `${last.key} ${last.hits}`)
+
+// Unions of classes narrow to the members the branches assign.
+class Circle {
+    constructor(readonly r: f64) {}
+}
+class Square {
+    constructor(readonly side: f64) {}
+}
+class Dot {}
+function area(s: Circle | Square): f64 {
+    return s instanceof Circle ? 3 * s.r * s.r : s.side * s.side
+}
+function shape(n: f64): f64 {
+    let s: Circle | Square | Dot = new Dot()
+    if (n > 0) s = new Circle(n)
+    else s = new Square(-n)
+    return area(s)
+}
+console.log(shape(2), shape(-3))

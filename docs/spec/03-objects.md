@@ -90,11 +90,21 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
   union.
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
-of `&&`, `||` and `?:`, `switch` clauses on a literal (clauses reached by
-falling through code are not narrowed), and after an `if` whose branch always
-exits (`if (x === null) return`). An assignment narrows to the assigned
-value's type until the next assignment. Loops forget facts about variables
-they assign.
+of `&&`, `||` and `?:`, and `switch` clauses on a literal (clauses reached by
+falling through code are not narrowed). An assignment narrows to the assigned
+value's type until the next assignment.
+
+Narrowing follows the flow of the code: after an `if`, a reference is
+narrowed to the union of its types at the ends of the branches that do not
+exit (with `return`, `break`, `continue` or a call that never returns, such
+as `process.exit`), and not at all if one of them leaves it unnarrowed. So
+after `if (x === null) return`, `x` is not null, and after
+`let x = map.get(k); if (x === null) { x = make(); map.set(k, x) }`,
+neither is it. What holds at the end of a block holds after it. Loops
+forget facts about variables they assign, and the body of a function
+literal knows only the facts about constants where it is created: a `let`
+it captures may be assigned by other code (or by the literal itself) when
+it runs.
 
 A narrowed read is checked at run time and panics if the value is not of the
 narrowed type, so a check made stale by a call cannot corrupt memory.
