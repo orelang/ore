@@ -6,8 +6,21 @@
   <a href="#getting-started">Getting started</a> ·
   <a href="docs/spec">Specification</a> ·
   <a href="docs/architecture.md">Architecture</a> ·
-  <a href="docs/roadmap.md">Roadmap</a>
+  <a href="docs/roadmap.md">Roadmap</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
+
+<p align="center">
+  <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/orelang/ore?label=release&color=c2410c"></a>
+  <a href="https://github.com/orelang/ore/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/orelang/ore/actions/workflows/release.yml/badge.svg"></a>
+  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-475569">
+  <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-c2410c">
+  <a href="#license"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-475569"></a>
+</p>
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/orelang/ore/main/install.sh | sh   # or: brew install orelang/tap/ore
+```
 
 **Ore** keeps the syntax of TypeScript and gives it native semantics: real
 `i32`, `u64` and `f32` types, untyped numeric constants, explicit conversions,
@@ -408,3 +421,12 @@ Every directory below has a README with the details.
 | `editors/zed` | Zed extension |
 | `editors/vscode` | VS Code extension |
 | `ci/` | Linux test environment and stress tests |
+
+## License
+
+Ore is licensed under either of the [MIT license](LICENSE-MIT) or the
+[Apache License, Version 2.0](LICENSE-APACHE), at your option.
+
+Unless you state otherwise, any contribution you submit for inclusion in Ore,
+as defined in the Apache License 2.0, is dual licensed as above, without any
+additional terms or conditions.
