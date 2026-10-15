@@ -14,10 +14,12 @@ import {
     type InterfaceType,
     type LiteralType,
     type MapType,
+    type NullType,
     type StringType,
     type StructType,
     type Type,
     type UnionType,
+    type VoidType,
 } from "./types"
 
 /**
@@ -727,10 +729,10 @@ export class IfaceCall {
     ) {}
 }
 
-/** `null` of a union type that contains `null`. */
+/** `null` of a union type that contains `null`; of type `null` itself before the context gives it a union type. */
 export class NullLit {
     readonly k: "null" = "null"
-    constructor(public type: UnionType) {}
+    constructor(public type: UnionType | NullType) {}
 }
 
 /**
@@ -763,7 +765,8 @@ export class IsNull {
 export class Optional {
     readonly k: "optional" = "optional"
     constructor(
-        public type: UnionType,
+        /** `void` when the access is a call of a method without a result. */
+        public type: UnionType | VoidType,
         public value: Expr,
         public binding: Local,
         public body: Expr,

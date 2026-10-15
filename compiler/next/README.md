@@ -4,8 +4,9 @@ The Ore compiler written in Ore, which will replace the TypeScript compiler
 (see the [roadmap](../../docs/roadmap.md)). So far it has the lexer
 and the parser, which build a tree in the shape of TypeScript's, the loading
 of a program's modules, the IR of `@ore/ir`, which the checker, the optimizer
-and the backend will share, the formatter, and the language server, which
-reports syntax errors until the checker is ported.
+and the backend share, the checker, which builds the IR of a program, the
+formatter, and the language server, which reports syntax errors until it uses
+the checker.
 
 | File | Contents |
 |---|---|
@@ -17,11 +18,26 @@ reports syntax errors until the checker is ported.
 | `syntax/diagnostic.ore` | Diagnostics and their `path:line:col: error: message` format |
 | `syntax/imports.ore` | Module specifiers, string literal values, text imports |
 | `syntax/parse.ore` | A file parsed into a `Source`, syntax errors as diagnostics |
+| `syntax/nodes.ore` | Typed accessors of the tree for the checker (`expression(node)`, `parameters(fn)`, ...), and what TypeScript keeps in flags and token kinds: `declarationKind`, `prefixOperator`, `leadingCommentRanges` |
 | `project/resolve.ore` | The `ore:` modules embedded in the compiler, the runtime's load order, import resolution |
 | `project/load.ore` | `loadProgram`: the entry file and every module it imports |
 | `ir/types.ore` | The type model (`compiler/ir/src/types.ts`): `Type`, `types`, `sameType`, `typeToString`, `typeKey`, `unionRepr` |
 | `ir/nodes.ore` | The IR nodes (`compiler/ir/src/nodes.ts`): `Module`, `Func`, `Local`, statements and expressions |
 | `ir/dump.ore` | `dump(module)`: the canonical text of a module, the same as `dump` of `compiler/ir/src/dump.ts` |
+| `checker/bigint.ore` | Untyped integer constants, `bigint` in TypeScript: sign and magnitude in 32-bit limbs |
+| `checker/operand.ore`, `fold.ore` | Operands (`untyped-int`, `untyped-float`, `typed`, `error`) and folding of constants |
+| `checker/symbols.ore` | Value and type symbols, generics, scopes |
+| `checker/context.ore` | The types shared by the layers: `CheckResult`, `FuncContext`, `ClassInfo`, facts... |
+| `checker/helpers.ore` | Tables and pure functions: operators, string and array methods, `terminates`, `visitLocals`, `jsonProblem` |
+| `checker/builtins.ore` | The root scope, from `runtime/std/builtin.d.ore` |
+| `checker/assigned.ore` | Definite assignment |
+| `checker/base.ore` | `Checker`: the state of a check, type resolution, unions and shapes, `coerce`, diagnostics |
+| `checker/declarations.ore` | Modules, imports and exports, directives, functions, generics and their instances, parameters |
+| `checker/classes.ore` | Classes, accessors, interfaces, conformance, itabs |
+| `checker/statements.ore` | Statements, destructuring, closures, narrowing |
+| `checker/expressions.ore` | Expressions: names, operators, assignments, literals, members |
+| `checker/calls.ore` | Calls of functions, methods, values, constructors and built-ins (`unsafe`, `JSON`), array, map, channel and string methods |
+| `checker/checker.ore` | `check(program)`: the passes over the modules of a program, into one IR module |
 | `fmt/doc.ore` | Documents (groups, indents, lines, ifBreak, fill...) and their printer, which fits groups in the width |
 | `fmt/estree.ore` | The syntax tree converted to the shape of typescript-estree's, and the comments of a file |
 | `fmt/comments.ore` | Comments attached to nodes (leading, trailing, dangling), with prettier's rules, and printed |
@@ -30,12 +46,14 @@ reports syntax errors until the checker is ported.
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
 | `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
 | `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
-| `main.ore` | `ore-next tokens\|tree\|roles\|modules\|fmt <file>`: prints the tokens, the tree, the modules of a program, or the file formatted; `ore-next lsp`: the language server on stdio |
+| `main.ore` | `ore-next tokens\|tree\|roles\|modules\|fmt <file>`: prints the tokens, the tree, the modules of a program, or the file formatted; `ore-next ir <entry>`: the dump of the checked program, or its diagnostics; `ore-next lsp`: the language server on stdio |
 
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
 equal those of the TypeScript scanner and parser; on every program of
-`tests/`, that the modules it loads equal those of `@ore/project`; and runs
+`tests/`, that the modules it loads equal those of `@ore/project`, and that
+`ore-next ir` prints the dump of the IR `@ore/checker` builds, or the same
+diagnostics (also on the compiler itself); and runs
 the tests of `test/*.test.ore` (also run by `bun run ore test compiler/next/test`).
 `test/ir-dump.test.ore` and `compiler/ir/test/dump.test.ts` build the same
 IR module by hand and check that their dumps both equal `test/ir-dump.txt`
@@ -53,7 +71,9 @@ Differences from the TypeScript packages: offsets are bytes of the UTF-8 text
 (columns still count UTF-16 code units, as TypeScript and LSP do); syntax
 errors have the parser's messages, not TypeScript's; I/O errors are values
 (`loadProgram` returns `Program | Error`), and an invalid package.json is a
-diagnostic at the import instead of an exception.
+diagnostic at the import instead of an exception. The checker gives the same
+IR and the same diagnostics as `@ore/checker`; it keeps no `CheckInfo` for
+nodes it does not visit.
 
 ## How TypeScript maps to Ore in this port
 
@@ -78,8 +98,20 @@ equivalent in Ore:
 | `T \| undefined` results (`findField`) | `T \| null` |
 | `readonly T[]` | `T[]` |
 | `try` / `finally` | explicit cleanup on every path |
+| a class hierarchy of layers (`CheckerBase` ... `CallChecker`) with `protected` methods | functions of each layer's module taking the `Checker` (`c`) first; modules import each other in a cycle |
+| `ts.isX(node)`, `node.x` of the TypeScript AST | `node.kind === "X"` and the accessors of `syntax/nodes.ore`; `node.getText()` is `c.text(node)`, the source of a node is `c.sourceOf(node)` (nodes have no parent) |
+| node flags (`NodeFlags.Const`), operator token kinds of unary expressions, `heritageClause.token` | read back from the source text: `declarationKind`, `prefixOperator`, `heritageToken` |
+| `ts.getLeadingCommentRanges(text, stmt.pos)` | `leadingCommentRanges(text, c.fullStart(stmt))` |
+| `WeakMap` / `Set` of objects | `Map<K, bool>`; maps of struct and interface types are keyed by their id |
+| `withFacts(facts, () => ...)` | `c.pushFacts(facts)` ... `c.popFacts()` |
+| a function's `.length` (`writeAccessor`'s `next`) | an explicit `usesOld` flag |
 
 Ore limitations to keep in mind: an array literal passed where `T[] | null` is
 expected takes its type from its first element, so declare it with a type
 first (`const args: Type[] = [...]`); a default parameter value that
 constructs a class needs a type annotation (`o: O = new O()`); union types cannot be `Map` keys (key by `typeKey(t)` or an id instead).
+Narrowing is lost when a `let` is assigned again, so `let x = map.get(k); if
+(x === null) { x = ...; map.set(k, x) }` fails: return early with a `const`
+instead (`const found = ...; if (found !== null) return found`). Conversions
+are the type names (`i64(x)`); `int(x)` does not exist. A release build of
+the compiler takes minutes, so the harness builds it in debug mode.

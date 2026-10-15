@@ -1,0 +1,528 @@
+// Classes and interfaces: members, constructors, accessors, conformance and
+// interface tables; see compiler/checker/src/classes.ts.
+
+import { type Expr, type Stmt, Alloc, Assign, Block, ExprStmt, FieldLValue, Func, Itab, LetStmt, Local, LocalRef, ReturnStmt } from "../ir/nodes"
+import {
+    type InterfaceMember,
+    type InterfaceType,
+    type StructType,
+    type Type,
+    Field,
+    FuncType,
+    InterfaceField,
+    InterfaceMethod,
+    InterfaceType as InterfaceTypeClass,
+    Method,
+    StructType as StructTypeClass,
+    findField,
+    findMethod,
+    sameType,
+    types,
+    typeToString,
+} from "../ir/types"
+import { type Node } from "../syntax/ast"
+import {
+    asteriskToken,
+    body,
+    exclamationToken,
+    expression,
+    hasModifier,
+    heritageClauses,
+    heritageToken,
+    initializer,
+    isIdentifier,
+    left,
+    members,
+    modifiers,
+    nameNode,
+    operatorToken,
+    parameters,
+    questionToken,
+    statements,
+    typeNode,
+    typeParameters,
+    types as typeNodes,
+} from "../syntax/nodes"
+import { type Checker } from "./base"
+import { type InterfaceInfo, Accessor, ClassInfo, FieldInitInfo, GenericMethod, InterfaceInfo as InterfaceInfoClass, MethodInfo, FuncContext } from "./context"
+import { declareGeneric, paramScope, prepend, resolveParams, checkReturns } from "./declarations"
+import { checkExpr } from "./expressions"
+import { cIdent, hasZeroValue } from "./helpers"
+import { checkBlock } from "./statements"
+import { type Generic, ClassSymbol, Generic as GenericClass, Scope, TypeSymbol } from "./symbols"
+
+export function declareClass(c: Checker, decl: Node, scope: Scope) {
+    const nameId = decl.child("name")
+    if (nameId === null) {
+        c.error(decl, "A class declaration must have a name.")
+        return
+    }
+    const name = nameId.text
+    if (typeParameters(decl).length > 0) {
+        declareGeneric(c, decl, scope)
+        return
+    }
+    for (const clause of heritageClauses(decl)) {
+        if (heritageToken(clause, c.sourceOf(decl).text) === "extends") c.error(clause, "Class inheritance is not supported in Ore. Use composition and interfaces.")
+    }
+    for (const mod of modifiers(decl)) {
+        if (mod.kind !== "ExportKeyword") c.error(mod, `Modifier '${c.text(mod)}' is not allowed on classes.`)
+    }
+    const type = new StructTypeClass(c.nextStructId++, name, true, [], [])
+    if (!scope.declareType(name, new TypeSymbol(type, decl)) || !scope.declareValue(name, new ClassSymbol(type, decl))) {
+        c.error(nameId, `Duplicate declaration '${name}'.`)
+        return
+    }
+    c.module.structs.push(type)
+    c.memberDecls.set(type.id, new Map<string, Node>())
+    const ctorThis = c.newLocal("this", type, false)
+    c.classes.push(new ClassInfo(decl, type, scope, c.prefix + cIdent(name), [], [], ctorThis, []))
+}
+
+/** Declares a member name of a class; false, with an error, when it is a duplicate. */
+function declareMember(c: Checker, decls: Map<string, Node>, name: string, node: Node, nameAt: Node): bool {
+    if (decls.has(name)) {
+        c.error(nameAt, `Duplicate member '${name}'.`)
+        return false
+    }
+    decls.set(name, node)
+    return true
+}
+
+export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
+    const decl = info.decl
+    const type = info.type
+    const className = type.name!
+    const decls = c.memberDecls.get(type.id)!
+
+    for (const member of members(decl)) {
+        if (member.kind === "SemicolonClassElement") continue
+        const flags = memberModifiers(c, member)
+        if (member.kind === "PropertyDeclaration") {
+            const name = c.memberName(nameNode(member))
+            if (name === null || !declareMember(c, decls, name, member, nameNode(member))) continue
+            const question = questionToken(member)
+            const exclamation = exclamationToken(member)
+            if (question !== null || exclamation !== null) c.error(question ?? exclamation!, "Optional and definitely-assigned fields are not supported.")
+            let fieldType: Type | null = null
+            const annotation = typeNode(member)
+            const init = initializer(member)
+            if (annotation !== null) fieldType = c.resolveValueType(annotation, scope)
+            else if (init === null) c.error(nameNode(member), `Field '${name}' needs a type annotation or an initializer.`)
+            if (init !== null) info.inits.push(new FieldInitInfo(name, init))
+            // A field without an annotation gets its type from the initializer later.
+            type.fields.push(new Field(name, fieldType ?? types.void, flags.isReadonly, flags.isPrivate))
+            if (fieldType !== null) c.info.types.set(nameNode(member), fieldType)
+        } else if (member.kind === "MethodDeclaration") {
+            const name = c.memberName(nameNode(member))
+            if (name === null || !declareMember(c, decls, name, member, nameNode(member))) continue
+            if (flags.isReadonly) c.error(member, "Methods cannot be 'readonly'.")
+            const asterisk = asteriskToken(member)
+            if (asterisk !== null) c.error(asterisk, "Generators are not supported in Ore.")
+            const question = questionToken(member)
+            if (question !== null) c.error(question, "Optional methods are not supported.")
+            if (body(member) === null) {
+                c.error(nameNode(member), "A method must have a body.")
+                continue
+            }
+            const typeParams = typeParameters(member)
+            if (typeParams.length > 0) {
+                for (const p of typeParams) {
+                    const d = p.child("default")
+                    if (d !== null) c.error(d, "Default type arguments are not supported yet.")
+                }
+                const generic = new GenericClass(name, member, typeParams, scope, new Map())
+                if (!c.genericMethods.has(type)) c.genericMethods.set(type, new Map<string, GenericMethod>())
+                c.genericMethods.get(type)!.set(name, new GenericMethod(generic, info, flags.isPrivate))
+                continue
+            }
+            const func = makeMethod(c, member, info, scope, `${className}.${name}`, `ore_m_${info.cname}_${cIdent(name)}`)
+            type.methods.push(new Method(name, func, flags.isPrivate))
+            info.methods.push(new MethodInfo(member, func))
+        } else if (member.kind === "Constructor") {
+            if (info.ctorDecl !== null) {
+                c.error(member, "A class can have only one constructor.")
+                continue
+            }
+            if (body(member) === null) {
+                c.error(member, "A constructor must have a body.")
+                continue
+            }
+            info.ctorDecl = member
+            // Parameters with modifiers declare fields: `constructor(private x: f64)`.
+            const params_ = parameters(member)
+            const params = resolveParams(c, params_, scope)
+            for (let i = 0; i < params_.length; i++) {
+                const p = params_[i]
+                const pflags = memberModifiers(c, p)
+                const pname = nameNode(p)
+                if (!pflags.any || !isIdentifier(pname) || i >= params.length) continue
+                if (!declareMember(c, decls, pname.text, p, pname)) continue
+                type.fields.push(new Field(pname.text, params[i].type, pflags.isReadonly, pflags.isPrivate))
+                info.paramProps.push(params[i])
+            }
+            type.ctor = ctorFunc(c, info, params, member)
+        } else if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
+            declareAccessor(c, member, info, scope, flags.isPrivate)
+        } else {
+            c.error(member, "This class member is not supported.")
+        }
+    }
+    if (type.ctor === null) type.ctor = ctorFunc(c, info, [], nameNode(decl))
+}
+
+export function ctorFunc(c: Checker, info: ClassInfo, params: Local[], node: Node): Func {
+    const func = new Func(`ore_new_${info.cname}`, `${info.type.name}.constructor`, c.line(node), new FuncType(params.map((p) => p.type), info.type), params, new Block([]), false)
+    c.module.functions.push(func)
+    return func
+}
+
+/** The modifiers of a class member or parameter. */
+export class MemberFlags {
+    isPrivate = false
+    isReadonly = false
+    any = false
+}
+
+export function memberModifiers(c: Checker, node: Node): MemberFlags {
+    const flags = new MemberFlags()
+    for (const mod of modifiers(node)) {
+        flags.any = true
+        switch (mod.kind) {
+            case "PrivateKeyword":
+                flags.isPrivate = true
+                break
+            case "ReadonlyKeyword":
+                flags.isReadonly = true
+                break
+            case "PublicKeyword":
+                break
+            case "ProtectedKeyword":
+                c.error(mod, "'protected' is not supported in Ore, which has no inheritance. Use 'private'.")
+                break
+            case "StaticKeyword":
+                c.error(mod, "Static members are not supported yet. Use top-level functions and constants.")
+                break
+            default:
+                c.error(mod, `Modifier '${c.text(mod)}' is not allowed here.`)
+        }
+    }
+    return flags
+}
+
+/** Checks field initializers and infers the types of fields without annotations. */
+export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope) {
+    // Initializers run before the constructor body but cannot use `this`.
+    c.facts = [new Map<string, Type>()]
+    c.fn = new FuncContext(types.void, [], 0, null, null, null, null, false, true)
+    for (const init of info.inits) {
+        let index = -1
+        for (let i = 0; i < info.type.fields.length; i++) if (index === -1 && info.type.fields[i].name === init.name) index = i
+        const field = info.type.fields[index]
+        const declared = field.type.kind === "void" ? null : field.type
+        const value = checkExpr(c, init.node, scope, declared)
+        if (declared !== null) init.value = c.coerce(value, declared, init.node)
+        else if (value.k !== "error") {
+            const expr = c.toDefault(value, init.node)
+            init.value = expr
+            info.type.fields[index] = new Field(field.name, expr.type, field.readonly, field.private)
+            const decl = c.memberDecls.get(info.type.id)!.get(init.name)!
+            c.info.types.set(nameNode(decl), expr.type)
+        }
+    }
+    c.fn = null
+}
+
+export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
+    const type = info.type
+    const ctor = type.ctor!
+    const self = info.ctorThis
+    const thisRef: Expr = new LocalRef(type, self)
+
+    // Constructor: allocate, assign parameter properties, run field initializers, then the body.
+    const body_: Stmt[] = [new LetStmt(self, new Alloc(type))]
+    for (const p of info.paramProps) body_.push(setField(thisRef, p.name, new LocalRef(p.type, p)))
+    for (const init of info.inits) {
+        const value = init.value
+        if (value !== null) body_.push(setField(thisRef, init.name, value))
+    }
+    const ctorDecl = info.ctorDecl
+    if (ctorDecl !== null) {
+        const prologue: Stmt[] = []
+        const scope = paramScope(c, parameters(ctorDecl), ctor.params, outer, prologue)
+        c.facts = [new Map<string, Type>()]
+        c.fn = new FuncContext(types.void, [], 0, null, null, self, type, true)
+        for (const s of prologue) body_.push(s)
+        for (const s of checkBlock(c, body(ctorDecl)!, scope).body) body_.push(s)
+        c.fn = null
+    }
+    body_.push(new ReturnStmt(thisRef))
+    ctor.body = new Block(body_)
+
+    // Fields of reference types have no zero value and must be set in the constructor.
+    const assigned = new Map<string, bool>()
+    for (const p of info.paramProps) assigned.set(p.name, true)
+    for (const i of info.inits) assigned.set(i.name, true)
+    const ctorBody = ctorDecl !== null ? body(ctorDecl) : null
+    if (ctorBody !== null) {
+        for (const stmt of statements(ctorBody)) {
+            if (stmt.kind !== "ExpressionStatement") continue
+            const e = expression(stmt)
+            if (e.kind !== "BinaryExpression") continue
+            const target = left(e)
+            if (operatorToken(e).kind === "EqualsToken" && target.kind === "PropertyAccessExpression" && expression(target).kind === "ThisKeyword") {
+                assigned.set(nameNode(target).text, true)
+            }
+        }
+    }
+    for (const field of type.fields) {
+        if (!hasZeroValue(field.type) && !assigned.has(field.name)) {
+            const decl = c.memberDecls.get(type.id)!.get(field.name)!
+            c.error(nameNode(decl), `Field '${field.name}' of type '${typeToString(field.type)}' must be initialized in its declaration or at the top level of the constructor.`)
+        }
+    }
+
+    for (const m of info.methods) checkMethodBody(c, m.decl, m.func, type, outer)
+}
+
+/** `this.name = value` as a statement of a constructor. */
+function setField(thisRef: Expr, name: string, value: Expr): Stmt {
+    return new ExprStmt(new Assign(value.type, new FieldLValue(thisRef, name), value))
+}
+
+/** A getter or setter: a method named `get_x` or `set_x`, called by reads and writes of property `x`. */
+export function declareAccessor(c: Checker, member: Node, info: ClassInfo, scope: Scope, isPrivate: bool) {
+    const name = c.memberName(nameNode(member))
+    if (name === null) return
+    const type = info.type
+    const decls = c.memberDecls.get(type.id)!
+    const known = c.accessors.get(type)
+    const accessors = known ?? new Map<string, Accessor>()
+    if (known === null) c.accessors.set(type, accessors)
+    const existing = accessors.get(name)
+    const getter = member.kind === "GetAccessor"
+    if ((decls.has(name) && existing === null) || (existing !== null && (getter ? existing.get !== null : existing.set !== null))) {
+        c.error(nameNode(member), `Duplicate member '${name}'.`)
+        return
+    }
+    decls.set(name, member)
+    if (body(member) === null) {
+        c.error(nameNode(member), "A getter or setter must have a body.")
+        return
+    }
+    if (getter && typeNode(member) === null) {
+        c.error(nameNode(member), `Getter '${name}' must have a return type annotation.`)
+        return
+    }
+    const params_ = parameters(member)
+    if (!getter && (params_.length !== 1 || typeNode(params_[0]) === null)) {
+        c.error(nameNode(member), `Setter '${name}' must take one parameter with a type annotation.`)
+        return
+    }
+    const kind = getter ? "get" : "set"
+    const func = makeMethod(c, member, info, scope, `${type.name}.${kind} ${name}`, `ore_m_${info.cname}_${kind}_${cIdent(name)}`)
+    info.methods.push(new MethodInfo(member, func))
+    const propertyType = getter ? func.type.result : func.type.params[0]
+    if (existing !== null && !sameType(existing.type, propertyType)) {
+        c.error(nameNode(member), `The getter and setter of '${name}' must have the same type, got '${typeToString(existing.type)}' and '${typeToString(propertyType)}'.`)
+        return
+    }
+    const property = existing ?? new Accessor(propertyType, isPrivate)
+    if (getter) property.get = func
+    else property.set = func
+    accessors.set(name, property)
+}
+
+/** The accessor property `name` of a struct, if any. */
+export function accessor(c: Checker, type: Type, name: string): Accessor | null {
+    if (type.kind !== "struct") return null
+    const accessors = c.accessors.get(type)
+    return accessors === null ? null : accessors.get(name)
+}
+
+/** A method with the signature of a declaration, resolved in `scope`; the body is checked later. */
+export function makeMethod(c: Checker, decl: Node, info: ClassInfo, scope: Scope, sourceName: string, cname: string): Func {
+    const params = resolveParams(c, parameters(decl), scope)
+    const annotation = typeNode(decl)
+    const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
+    const func = new Func(cname, sourceName, c.line(nameNode(decl)), new FuncType(params.map((p) => p.type), result), params, new Block([]), false, null, false, null, c.newLocal("this", info.type, false))
+    c.module.functions.push(func)
+    return func
+}
+
+export function checkMethodBody(c: Checker, decl: Node, func: Func, type: StructType, outer: Scope) {
+    const prologue: Stmt[] = []
+    const scope = paramScope(c, parameters(decl), func.params, outer, prologue)
+    c.facts = [new Map<string, Type>()]
+    c.fn = new FuncContext(func.type.result, [], 0, null, null, func.receiver, type)
+    func.body = checkBlock(c, body(decl)!, scope)
+    func.body.body = prepend(prologue, func.body.body)
+    c.fn = null
+    checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
+}
+
+/** Checks that a class has the members of the interfaces it `implements`. */
+export function checkImplements(c: Checker, info: ClassInfo, scope: Scope) {
+    for (const clause of heritageClauses(info.decl)) {
+        if (heritageToken(clause, c.sourceOf(info.decl).text) !== "implements") continue
+        for (const ref of typeNodes(clause)) {
+            const target = expression(ref)
+            const type = isIdentifier(target) ? scope.lookupType(target.text) : null
+            if (isIdentifier(target) && type !== null) c.info.definitions.set(target, type.decl)
+            if (type === null || type.type.kind !== "interface") {
+                c.error(ref, `'${c.text(target)}' is not an interface.`)
+                continue
+            }
+            const iface = type.type
+            const result = conformance(c, info.type, iface)
+            if (result.reason !== null) c.error(ref, `Class '${info.type.name}' does not implement '${iface.name}': ${result.reason}.`)
+        }
+    }
+}
+
+export function declareInterface(c: Checker, decl: Node, scope: Scope) {
+    const name = nameNode(decl).text
+    if (typeParameters(decl).length > 0) {
+        declareGeneric(c, decl, scope)
+        return
+    }
+    const type = new InterfaceTypeClass(c.nextStructId++, name, [])
+    if (!scope.declareType(name, new TypeSymbol(type, decl))) {
+        c.error(nameNode(decl), `Duplicate type '${name}'.`)
+        return
+    }
+    c.interfaces.set(type, new InterfaceInfoClass(decl, type, scope, "declared"))
+    c.memberDecls.set(type.id, new Map<string, Node>())
+}
+
+/** Adds a member to an interface being filled, unless it conflicts with an inherited one. */
+function addMember(c: Checker, found: InterfaceMember[], decls: Map<string, Node>, member: InterfaceMember, node: Node, decl: Node) {
+    let existing: InterfaceMember | null = null
+    for (const m of found) if (existing === null && m.name === member.name) existing = m
+    if (existing === null) {
+        found.push(member)
+        decls.set(member.name, decl)
+    } else if (existing.k !== member.k || !sameType(existing.type, member.type)) {
+        c.error(node, `Member '${member.name}' conflicts with an inherited member of a different type.`)
+    }
+}
+
+export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
+    if (info.state === "filled") return
+    if (info.state === "filling") {
+        c.error(nameNode(info.decl), `Interface '${info.type.name}' extends itself.`)
+        return
+    }
+    info.state = "filling"
+    const found: InterfaceMember[] = []
+    const decls = c.memberDecls.get(info.type.id)!
+
+    for (const clause of heritageClauses(info.decl)) {
+        for (const ref of typeNodes(clause)) {
+            const target = expression(ref)
+            const base = isIdentifier(target) ? scope.lookupType(target.text) : null
+            if (base === null || base.type.kind !== "interface") {
+                c.error(ref, "An interface can only extend interfaces.")
+                continue
+            }
+            const baseType = base.type
+            if (isIdentifier(target)) c.info.definitions.set(target, base.decl)
+            const baseInfo = c.interfaces.get(baseType)!
+            fillInterface(c, baseInfo, scope)
+            for (const m of baseType.members) addMember(c, found, decls, m, ref, c.memberDecls.get(baseType.id)!.get(m.name)!)
+        }
+    }
+    for (const member of members(info.decl)) {
+        const memberName = member.child("name")
+        if (memberName === null) {
+            c.error(member, "Call, construct and index signatures are not supported.")
+            continue
+        }
+        const name = c.memberName(memberName)
+        if (name === null) continue
+        const question = questionToken(member)
+        if (question !== null) c.error(question, "Optional members are not supported yet.")
+        if (member.kind === "PropertySignature") {
+            const annotation = typeNode(member)
+            if (annotation === null) {
+                c.error(memberName, `Property '${name}' must have a type annotation.`)
+                continue
+            }
+            const type = c.resolveValueType(annotation, scope)
+            const isReadonly = hasModifier(member, "ReadonlyKeyword")
+            if (type !== null) {
+                c.info.types.set(memberName, type)
+                addMember(c, found, decls, new InterfaceField(name, type, isReadonly), memberName, member)
+            }
+        } else if (member.kind === "MethodSignature") {
+            const typeParams = typeParameters(member)
+            if (typeParams.length > 0) c.error(typeParams[0], "Generic methods are not supported in interfaces: calls through an interface cannot pick an instance.")
+            const params = resolveParams(c, parameters(member), scope)
+            const annotation = typeNode(member)
+            const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
+            addMember(c, found, decls, new InterfaceMethod(name, new FuncType(params.map((p) => p.type), result)), memberName, member)
+        } else {
+            c.error(member, "This interface member is not supported.")
+        }
+    }
+    found.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    info.type.members = found
+    info.state = "filled"
+}
+
+/** Whether a struct or interface has the members of an interface: a reason it does not, or the member indices. */
+export class Conformance {
+    constructor(
+        readonly reason: string | null,
+        readonly indices: int[] | null,
+    ) {}
+}
+
+/**
+ * Whether a struct or interface has the members of an interface. For an
+ * interface source, `indices` maps each target member to a source member.
+ */
+export function conformance(c: Checker, from: StructType | InterfaceType, iface: InterfaceType): Conformance {
+    const indices: int[] = []
+    for (const member of iface.members) {
+        const what = `${member.k === "field" ? "property" : "method"} '${member.name}'`
+        if (from.kind === "interface") {
+            let index = -1
+            for (let i = 0; i < from.members.length; i++) if (index === -1 && from.members[i].name === member.name) index = i
+            const source = index === -1 ? null : from.members[index]
+            if (source === null || source.k !== member.k) return new Conformance(`${what} is missing`, null)
+            if (!sameType(source.type, member.type)) return new Conformance(`${what} has type '${typeToString(source.type)}' instead of '${typeToString(member.type)}'`, null)
+            if (source.k === "field" && member.k === "field" && source.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null)
+            indices.push(index)
+        } else if (member.k === "field") {
+            const field = findField(from, member.name)
+            if (field === null || field.private) return new Conformance(`${what} is missing`, null)
+            if (!sameType(field.type, member.type)) return new Conformance(`${what} has type '${typeToString(field.type)}' instead of '${typeToString(member.type)}'`, null)
+            if (field.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null)
+        } else {
+            const method = findMethod(from, member.name)
+            if (method === null || method.private) return new Conformance(`${what} is missing`, null)
+            if (!sameType(method.func.type, member.type)) return new Conformance(`${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'`, null)
+        }
+    }
+    return new Conformance(null, indices)
+}
+
+/** The interface table of a struct, created once per struct and interface. */
+export function itab(c: Checker, struct: StructType, iface: InterfaceType): Itab {
+    const key = `${struct.id}:${iface.id}`
+    const existing = c.itabs.get(key)
+    if (existing !== null) return existing
+    const table = new Itab(c.itabs.size, struct, iface)
+    c.itabs.set(key, table)
+    c.module.itabs.push(table)
+    return table
+}
+
+/** Reports access to a private member from outside its class. */
+export function checkAccess(c: Checker, struct: StructType, isPrivate: bool, name: string, node: Node): bool {
+    const fn = c.fn
+    if (!isPrivate || (fn !== null && fn.cls === struct)) return true
+    c.error(node, `'${name}' is private and only accessible inside class '${struct.name}'.`)
+    return false
+}

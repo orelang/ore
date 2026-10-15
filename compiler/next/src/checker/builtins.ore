@@ -1,0 +1,131 @@
+// The root scope: the declarations of runtime/std/builtin.d.ore; see
+// compiler/checker/src/builtins.ts.
+
+import builtinText from "../../../../runtime/std/builtin.d.ore" with { type: "text" }
+import { type Expr, BuiltinCall, FloatLit, StringLit } from "../ir/nodes"
+import { type Type, arrayOf, types } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { body, declarationList, declarations, isIdentifier, nameNode, optionalName, statements, typeNode } from "../syntax/nodes"
+import { parse } from "../syntax/parse"
+import { type Source } from "../syntax/source"
+import { Typed } from "./operand"
+import { type ValueSymbol, BuiltinSymbol, ConstSymbol, ConversionSymbol, NamespaceSymbol, Scope, TypeSymbol } from "./symbols"
+
+/** Values of built-in constants, declared without values in builtin.d.ore. */
+function constant(name: string): f64 | null {
+    if (name === "Math.PI") return Math.PI
+    if (name === "Math.E") return Math.E
+    return null
+}
+
+/** The platform the compiler builds for: the one it runs on. */
+function targetConstant(name: string): string | null {
+    if (name === "target.os") return target.os
+    if (name === "target.arch") return target.arch
+    return null
+}
+
+export class Builtins {
+    constructor(
+        readonly scope: Scope,
+        readonly source: Source,
+    ) {}
+}
+
+/**
+ * Builds the root scope from the type aliases and functions of
+ * `runtime/std/builtin.d.ore`. Its interfaces are declared by the checker.
+ */
+export function builtinScope(): Builtins {
+    const parsed = parse("runtime/std/builtin.d.ore", builtinText)
+    if (parsed.diagnostics.length > 0) process.panic(`invalid builtin.d.ore: ${parsed.diagnostics[0].message}`)
+    const source = parsed.source
+    const scope = new Scope()
+
+    for (const stmt of statements(source.ast)) {
+        if (stmt.kind === "TypeAliasDeclaration") {
+            const name = nameNode(stmt).text
+            const type = resolveBuiltinType(typeNode(stmt)!, scope, name)
+            if (type !== null) scope.declareType(name, new TypeSymbol(type, stmt))
+        } else if (stmt.kind === "FunctionDeclaration" && optionalName(stmt) !== null) {
+            const name = nameNode(stmt).text
+            const found = scope.lookupType(name)
+            if (found === null) process.panic(`unknown builtin function ${name}`)
+            scope.declareValue(name, new ConversionSymbol(found.type, stmt))
+        } else if (stmt.kind === "ModuleDeclaration" && isIdentifier(nameNode(stmt)) && body(stmt) !== null && body(stmt)!.kind === "ModuleBlock") {
+            const ns = nameNode(stmt).text
+            const members = new Map<string, ValueSymbol>()
+            for (const member of statements(body(stmt)!)) {
+                if (member.kind === "FunctionDeclaration" && optionalName(member) !== null) {
+                    members.set(nameNode(member).text, new BuiltinSymbol(`${ns}.${nameNode(member).text}`, member))
+                } else if (member.kind === "VariableStatement") {
+                    for (const d of declarations(declarationList(member))) {
+                        const short = nameNode(d).text
+                        const name = `${ns}.${short}`
+                        const value = constant(name)
+                        const text = targetConstant(name)
+                        // A value known only at run time, such as `process.args`, is a call of a built-in.
+                        let expr: Expr
+                        if (value !== null) expr = new FloatLit(types.f64, value)
+                        else if (text !== null) expr = new StringLit(types.string, text)
+                        else expr = new BuiltinCall(arrayOf(types.string), name, [])
+                        if (value === null && text === null && name !== "process.args") process.panic(`unknown builtin constant ${name}`)
+                        members.set(short, new ConstSymbol(new Typed(expr), expr.type, d))
+                    }
+                }
+            }
+            scope.declareValue(ns, new NamespaceSymbol(ns, members, stmt))
+        }
+    }
+    return new Builtins(scope, source)
+}
+
+function intrinsic(name: string): Type | null {
+    switch (name) {
+        case "i8":
+            return types.i8
+        case "i16":
+            return types.i16
+        case "i32":
+            return types.i32
+        case "i64":
+            return types.i64
+        case "u8":
+            return types.u8
+        case "u16":
+            return types.u16
+        case "u32":
+            return types.u32
+        case "u64":
+            return types.u64
+        case "f32":
+            return types.f32
+        case "f64":
+            return types.f64
+        case "bool":
+            return types.bool
+        case "SelectCase":
+            return types.SelectCase
+        case "ptr":
+            return types.ptr
+    }
+    return null
+}
+
+function resolveBuiltinType(node: Node, scope: Scope, name: string): Type | null {
+    // `type X = intrinsic` is parsed into a dedicated keyword node.
+    if (node.kind === "IntrinsicKeyword") {
+        const type = intrinsic(name)
+        if (type === null) process.panic(`unknown intrinsic type ${name}`)
+        return type
+    }
+    if (node.kind === "TypeReference") {
+        const ref = node.child("typeName")
+        if (ref !== null && isIdentifier(ref)) {
+            const symbol = scope.lookupType(ref.text)
+            return symbol === null ? null : symbol.type
+        }
+    }
+    // Pseudo types such as `numeric` exist only to document built-in signatures.
+    return null
+}
