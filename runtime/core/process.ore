@@ -371,7 +371,8 @@ function start(command: Command, capture: bool): Child | Error {
     // CLONE_VM | CLONE_VFORK); under Rosetta, which runs the amd64 tests on
     // Apple machines, the collector's stop signals during a spawn deadlock
     // the threads.
-    const call = unsafe.allocBytes(56)
+    // Scanned memory: it holds the only references to the C strings and arrays.
+    const call = unsafe.alloc(56)
     unsafe.store<ptr>(call, pid)
     unsafe.store<ptr>(unsafe.add(call, 8), cString(file))
     unsafe.store<ptr>(unsafe.add(call, 16), actions)
