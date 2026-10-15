@@ -2,6 +2,13 @@
  * Building textual LLVM IR: values, basic blocks and constants.
  */
 
+/**
+ * The attributes of every function but naked ones: a frame pointer, set in each
+ * frame, so that stacks can be walked (the runtime's watchdog prints the
+ * stacks of tasks that way).
+ */
+export const FRAME_POINTER = 'attributes #0 = { "frame-pointer"="all" }'
+
 /** An LLVM value: its type and its operand text (a register, a constant or a global). */
 export interface V {
   ty: string
@@ -79,10 +86,14 @@ export class FnBuilder {
     this.open = false
   }
 
-  /** The function definition with its body, closing an open last block with `close`. */
-  finish(header: string, close: string): string {
+  /**
+   * The function definition with its body, closing an open last block with
+   * `close`. It keeps a frame pointer (attribute group #0, `FRAME_POINTER`),
+   * unless naked.
+   */
+  finish(header: string, close: string, naked = false): string {
     if (this.open) this.code.push(`  ${close}`)
-    return [`${header} {`, "entry:", ...this.allocas, ...this.code, "}"].join("\n")
+    return [`${header}${naked ? "" : " #0"} {`, "entry:", ...this.allocas, ...this.code, "}"].join("\n")
   }
 }
 

@@ -54,7 +54,7 @@ export abstract class FunctionEmitter extends EmitterBase {
     if (func.attributes?.naked) {
       // Nothing but the assembly: no frame, no parameters in memory.
       for (const stmt of func.body.body) this.stmt(stmt)
-      return this.b.finish(this.signature(func, at), "unreachable")
+      return this.b.finish(this.signature(func, at), "unreachable", true)
     }
     for (const node of this.plan.slots.get(func) ?? []) this.slots.set(node, this.b.alloca(this.slotType(node)))
     // The runtime keeps no frames, as when it was C: stack traces show the program's code.
@@ -87,10 +87,23 @@ export abstract class FunctionEmitter extends EmitterBase {
 
   /**
    * The address of this thread's `ore_rt_top`, computed anew: a task may have
-   * moved to another OS thread since the function started.
+   * moved to another OS thread since the function started. LLVM takes
+   * `llvm.threadlocal.address` as constant within a function and may reuse it
+   * after a call that parked the task, so the address comes from `@ore.top`,
+   * which it cannot take as constant: never inlined, and with an empty
+   * assembly statement that has side effects.
    */
   protected top(): string {
-    return this.b.value("ptr", "call ptr @llvm.threadlocal.address.p0(ptr @ore_rt_top)").v
+    const name = "@ore.top"
+    if (!this.helpers.has(name)) {
+      this.helpers.set(name, "")
+      this.helper(name, `define internal ptr ${name}() noinline`, (e) => {
+        e.b.emit('call void asm sideeffect "", ""()')
+        const address = e.b.value("ptr", "call ptr @llvm.threadlocal.address.p0(ptr @ore_rt_top)")
+        e.b.terminate(`ret ptr ${address.v}`)
+      })
+    }
+    return this.b.value("ptr", `call ptr ${name}()`).v
   }
 
   protected slotType(node: ir.Expr | ir.Local): string {
