@@ -317,6 +317,7 @@ function significant(text: string, tokens: Token[]): string[] {
             if (isName(value)) name = "Identifier"
         }
         if (kind === "NumericLiteral") value = numberValue(value)
+        if (kind === "RegularExpressionLiteral") value = regexValue(value)
         out.push(`${name} ${value}`)
     }
     return out
@@ -339,6 +340,14 @@ function numberValue(literal: string): string {
     if (lower.startsWith("0x") || lower.startsWith("0b") || lower.startsWith("0o")) return lower
     const value = Number.parseFloat(lower.replaceAll("_", ""))
     return value === null ? lower : `${value}`
+}
+
+/** A regular expression literal with its flags sorted, as prettier writes them. */
+function regexValue(literal: string): string {
+    const close = literal.lastIndexOf("/")
+    const flags = literal.slice(close + 1).split("")
+    flags.sort()
+    return literal.slice(0, close + 1) + flags.join("")
 }
 
 /** The contents of a string literal with its quotes escaped or not, as they need not be in the other quotes. */
