@@ -57,6 +57,7 @@ import {
     findField,
     findMethod,
     isNumeric,
+    isSubclass,
     isStringLike,
     membersOf,
     sameType,
@@ -91,7 +92,7 @@ import {
 import { bigIsNeg, bigText } from "./bigint"
 import { type Checker, structOrInterface } from "./base"
 import { checkCall, checkNew } from "./calls"
-import { accessor, checkAccess, conformance } from "./classes"
+import { accessor, checkAccess, conformance, declaringClass, dispatch, genericMethod } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
 import { foldBinary, foldUnary } from "./fold"
 import { arithOps, numericType, poison, canBeNull, compareOps, compoundOps, fieldType, isNull, isString, nullOperand, numericLiteral, typed, typeOf, unknownName } from "./helpers"
@@ -142,6 +143,7 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         capture(self, fn!.thisCaptures ?? [])
         return typed(new LocalRef(self.type, self))
     }
+    if (k === "SuperKeyword") return c.fail(node, "'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'.")
     if (k === "NewExpression") return checkNew(c, node, scope, expected)
     if (k === "BinaryExpression") {
         const op = operatorToken(node).kind
@@ -342,7 +344,11 @@ export function compare(c: Checker, op: CompareOp, l: Operand, r: Operand, opNod
     if (!sameType(le.type, re.type) && re.type.kind === "union") le = c.coerce(typed(le), re.type, leftNode)
     else if (!sameType(le.type, re.type) && le.type.kind === "union") re = c.coerce(typed(re), le.type, rightNode)
     const type = typeOf(le)
-    if (!sameType(type, typeOf(re))) return c.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(re))}'.`)
+    // Instances of a class and of a subclass compare by identity.
+    const lt = le.type
+    const rt = re.type
+    const related = lt.kind === "struct" && rt.kind === "struct" && (isSubclass(lt, rt) || isSubclass(rt, lt))
+    if (!sameType(type, typeOf(re)) && !related) return c.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(re))}'.`)
     const ordered = op !== "===" && op !== "!=="
     if (ordered ? !(isNumeric(type) || type.kind === "string") : !isEquatable(type)) {
         return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
@@ -558,7 +564,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         if (!checkAccess(c, struct, field.private, name, nameId)) return null
         // A constructor may initialize the read-only fields of its own instance.
         const fn = c.fn
-        const initializing = fn !== null && fn.ctor && fn.cls === struct && object.k === "local" && object.local === fn.thisLocal
+        const initializing = fn !== null && fn.ctor && fn.cls === struct && declaringClass(c, struct, name) === struct && object.k === "local" && object.local === fn.thisLocal
         if (field.readonly && !initializing) {
             c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
             return null
@@ -878,10 +884,11 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
         const method = findMethod(type, name)
         if (method !== null) {
             if (!checkAccess(c, type, method.private, name, nameNode_)) return errorOperand
-            return typed(new BoundMethod(method.func.type, value, method.func))
+            const bound: Expr = new BoundMethod(method.func.type, value, method.func)
+            dispatch(c, bound, name)
+            return typed(bound)
         }
-        const generics = c.genericMethods.get(type)
-        if (generics !== null && generics.has(name)) return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
+        if (genericMethod(c, type, name) !== null) return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
     }
     if (type.kind === "interface") {
         defineMember(c, nameNode_, type.id, name)
@@ -945,7 +952,11 @@ export function checkInstanceOf(c: Checker, node: Node, scope: Scope): Operand {
 export function instanceTest(c: Checker, value: Expr, target: StructType | InterfaceType): Expr | null {
     const type = value.type
     if (sameType(type, target)) return new BoolLit(types.bool, true)
-    if (type.kind === "union" && type.members.some((m) => sameType(m, target))) return new Is(types.bool, value, target)
+    // An instance of a class is an instance of its base classes; one of a base class may be of a subclass.
+    const related = (m: Type): bool => m.kind === "struct" && target.kind === "struct" && (isSubclass(m, target) || isSubclass(target, m))
+    if (type.kind === "struct" && target.kind === "struct" && isSubclass(type, target)) return new BoolLit(types.bool, true)
+    if (type.kind === "struct" && related(type)) return new Is(types.bool, value, target)
+    if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m))) return new Is(types.bool, value, target)
     if (target.kind !== "struct") return null
     if (type.kind === "interface" && conformance(c, target, type).reason === null) return new Is(types.bool, value, target)
     const via = interfaceFor(c, type, target)

@@ -34,6 +34,7 @@ import {
     Push,
     Recast,
     ReturnStmt,
+    Seq,
     Slice,
     StringLit,
     StringMethod,
@@ -77,16 +78,17 @@ import {
 } from "../syntax/nodes"
 import { bigFromF64 } from "./bigint"
 import { type Checker } from "./base"
-import { checkAccess, itab } from "./classes"
+import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
 import { genericCall, isInternal } from "./declarations"
 import { checkExpr, checkIndex, defineMember, literalText, member, moduleMember, noProperty, optional, printable } from "./expressions"
 import { arrayMethods, numericType, isSymbolDispose, jsonProblem, stringMethods, typed, typeOf, unknownName } from "./helpers"
 import { type Operand, errorOperand, UntypedInt } from "./operand"
-import { checkClosure, disposeCall } from "./statements"
+import { capture, checkClosure, disposeCall } from "./statements"
 import { type ValueSymbol, LocalSymbol, Scope } from "./symbols"
 
 export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
     const callee = expression(node)
+    if (callee.kind === "SuperKeyword") return checkSuperCall(c, node, scope)
     const args = argsOf(node)
     const typeArgs = typeArguments(node)
     const symbolOfCallee = isIdentifier(callee) ? scope.lookupValue(callee.text) : moduleMember(c, callee, scope)
@@ -114,7 +116,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
         if (args.length > 0) return c.fail(node, "'[Symbol.dispose]' takes no arguments.")
         const target = checkExpr(c, expression(callee), scope)
         if (target.k !== "typed") return target.k === "error" ? target : c.fail(expression(callee), "A constant is not disposable.")
-        const call = disposeCall(target.expr)
+        const call = disposeCall(c, target.expr)
         return call !== null ? typed(call) : c.fail(callee, `Type '${typeToString(target.expr.type)}' has no '[Symbol.dispose]' method.`)
     }
     if (callee.kind === "PropertyAccessExpression" && symbolOfCallee !== null) {
@@ -612,6 +614,8 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         if (instance instanceof Func || instance.kind !== "struct") return errorOperand
         const ctor = instance.ctor
         if (ctor === null) return c.fail(node, earlyConstruction(instance.name ?? name))
+        const instanceInfo = c.classInfos.get(instance.id)
+        if (instanceInfo !== null && instanceInfo.abstract) return c.fail(node, `Cannot create an instance of an abstract class '${instance.name}'.`)
         return callFunc(c, ctor, args, node, scope, `Constructor of '${instance.name}'`, null, call.operands.length > 0 ? call.operands : null)
     }
     const type = symbol !== null ? symbol.type : null
@@ -620,7 +624,53 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
     if (isIdentifier(target)) c.info.definitions.set(target, symbol!.decl)
     const ctor = type.ctor
     if (ctor === null) return c.fail(node, earlyConstruction(name))
+    const info = c.classInfos.get(type.id)
+    if (info !== null && info.abstract) return c.fail(node, `Cannot create an instance of an abstract class '${name}'.`)
     return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`)
+}
+
+/**
+ * `super(...)` in the constructor of a class with a base class: the
+ * initialization of the base class on `this`, then the parameter
+ * properties and field initializers of the class.
+ */
+function checkSuperCall(c: Checker, node: Node, scope: Scope): Operand {
+    const fn = c.fn
+    const cls = fn === null ? null : fn.cls
+    const base = fn !== null && fn.ctor && cls !== null ? cls.base : null
+    const self = fn === null ? null : fn.thisLocal
+    if (fn === null || cls === null || base === null || self === null) return c.fail(node, "A 'super' call is only allowed in the constructor of a class that extends another class.")
+    if (fn.superCall !== node) return c.fail(node, "A 'super' call must be a statement at the top level of the constructor, and the only one.")
+    const receiver: Expr = new LocalRef(cls, self)
+    const call = callFunc(c, initOf(c, c.classInfos.get(base.id)!), argsOf(node), node, scope, `Constructor of '${base.name}'`, receiver)
+    const inits = fn.superInits ?? []
+    if (call.k !== "typed" || inits.length === 0) return call
+    const exprs: Expr[] = [call.expr]
+    for (const e of inits) exprs.push(e)
+    return typed(new Seq(inits[inits.length - 1].type, exprs))
+}
+
+/** `super.m(...)`: the method of the base class, called directly on `this`. */
+function superMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Operand {
+    const fn = c.fn
+    const self = fn === null ? null : fn.thisLocal
+    const cls = fn === null ? null : fn.cls
+    const base = cls === null ? null : cls.base
+    if (fn === null || self === null || cls === null || base === null) return c.fail(expression(callee), "'super' can only be used in the methods and constructor of a class that extends another class.")
+    capture(self, fn.thisCaptures ?? [])
+    const nameId = nameNode(callee)
+    const name = nameId.text
+    const typeArgs = typeArguments(node)
+    if (typeArgs.length > 0) return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
+    const method = findMethod(base, name)
+    if (method === null) {
+        return c.fail(nameId, genericMethod(c, base, name) !== null ? `Generic method '${name}' cannot be called through 'super' yet.` : `Method '${name}' does not exist on base class '${base.name}'.`)
+    }
+    defineMember(c, nameId, base.id, name)
+    if (!checkAccess(c, base, method.private, name, nameId)) return errorOperand
+    const owner = c.abstractMethods.get(method.func)
+    if (owner !== null) return c.fail(nameId, `Abstract method '${name}' in class '${owner.name}' cannot be accessed via super expression.`)
+    return callFunc(c, method.func, argsOf(node), node, scope, `Method '${base.name}.${name}'`, new LocalRef(cls, self))
 }
 
 /**
@@ -750,6 +800,7 @@ export function callFunc(c: Checker, func: Func, args: Node[], node: Node, scope
 }
 
 export function checkMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Operand {
+    if (expression(callee).kind === "SuperKeyword") return superMethodCall(c, node, callee, scope)
     const target = checkExpr(c, expression(callee), scope)
     if (target.k === "error") return target
     const value = c.toDefault(target, expression(callee))
@@ -830,8 +881,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     const typeArgs = typeArguments(node)
     const type = value.type
 
-    const generics = type.kind === "struct" ? c.genericMethods.get(type) : null
-    const generic = generics !== null ? generics.get(name) : null
+    const generic = type.kind === "struct" ? genericMethod(c, type, name) : null
     if (typeArgs.length > 0 && generic === null) return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
     if (type.kind === "struct" && generic !== null) {
         defineMember(c, nameId, type.id, name)
@@ -847,7 +897,9 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         if (method !== null) {
             defineMember(c, nameId, type.id, name)
             if (!checkAccess(c, type, method.private, name, nameId)) return errorOperand
-            return callFunc(c, method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
+            const call = callFunc(c, method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
+            if (call.k === "typed") dispatch(c, call.expr, name)
+            return call
         }
         const field = findField(type, name)
         if (field !== null && field.type.kind === "func") return callValue(c, member(c, value, nameId, name), node, scope)

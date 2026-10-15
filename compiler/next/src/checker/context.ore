@@ -1,6 +1,6 @@
 // Types shared by the layers of the checker; see compiler/checker/src/context.ts.
 
-import { type Expr, type Func, type Local, type LValue, type Module } from "../ir/nodes"
+import { type BoundMethod, type Expr, type Func, type Local, type LValue, type MethodCall, type Module } from "../ir/nodes"
 import { type InterfaceType, type StructType, type Type } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Diagnostic } from "../syntax/diagnostic"
@@ -81,6 +81,12 @@ export class FuncContext {
         /** Label of a labeled statement whose loop has not been entered yet. */
         public pendingLabel: string | null = null,
     ) {}
+
+    /** In the constructor of a class with a base class: the `super(...)` call it must make. */
+    superCall: Node | null = null
+
+    /** What `super(...)` runs after the base class's initialization: the parameter properties and field initializers of the class. */
+    superInits: Expr[] | null = null
 }
 
 /** A field initializer, checked before constructor bodies. */
@@ -116,6 +122,53 @@ export class ClassInfo {
         readonly ctorThis: Local,
         readonly methods: MethodInfo[],
         public ctorDecl: Node | null = null,
+    ) {}
+
+    /** The parameters of the constructor, which its body uses; once `init` exists, the constructor itself has copies. */
+    ctorParams: Local[] = []
+
+    /** Declared `abstract`: cannot be instantiated. */
+    abstract = false
+
+    /** The `extends` clause: not resolved yet, being resolved, or resolved into `type.base`. */
+    baseState: "none" | "resolving" | "done" = "none"
+
+    /** The members: not declared yet, being declared, or declared. */
+    members: "pending" | "declaring" | "done" = "pending"
+
+    /** Subclasses that wait for the members of this class, being declared, to declare theirs. */
+    waiting: ClassInfo[] = []
+
+    /** The field initializers are checked, and the types of fields without annotations known. */
+    initsChecked = false
+
+    /**
+     * For a class with subclasses: the initialization of an allocated instance
+     * (parameter properties, field initializers, constructor body), which the
+     * constructor and `super(...)` of the subclasses call.
+     */
+    init: Func | null = null
+
+    /** Names of the members declared `protected` by this class. */
+    readonly protected = new Map<string, bool>()
+}
+
+/** The modifiers of a class member or parameter. */
+export class MemberFlags {
+    isPrivate = false
+    isProtected = false
+    isReadonly = false
+    isAbstract = false
+    isOverride = false
+    /** Any modifier: a constructor parameter with one declares a field. */
+    any = false
+}
+
+/** A call or bound value of a class method, marked `virtual` once every class is known if a subclass overrides the method. */
+export class Dispatch {
+    constructor(
+        readonly node: MethodCall | BoundMethod,
+        readonly name: string,
     ) {}
 }
 

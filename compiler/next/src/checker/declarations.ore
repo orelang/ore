@@ -63,8 +63,8 @@ import { type Source } from "../syntax/source"
 import { leadingCommentRanges } from "../syntax/nodes"
 import { checkAssigned } from "./assigned"
 import { type Checker, structOrInterface } from "./base"
-import { conformance, checkClassBodies, checkFieldInitializers, checkImplements, checkMethodBody, declareClassMembers, fillInterface, makeMethod } from "./classes"
-import { type ClassInfo as ClassInfoType, type ModuleInfo, ClassInfo, Directive, InterfaceInfo, Signature } from "./context"
+import { conformance, checkClassBodies, checkFieldInitializers, checkImplements, checkMethodBody, classInfo, declareClassMembers, fillInterface, makeMethod, resolveBase } from "./classes"
+import { type ClassInfo as ClassInfoType, type ModuleInfo, Directive, InterfaceInfo, Signature } from "./context"
 import { checkExpr } from "./expressions"
 import { cIdent, directiveKind, directiveNames, fieldType, isCName, isLiteral, memberOf, mentions, methodType, paramName, terminates, visitLocals, typed } from "./helpers"
 import { type Operand, Typed } from "./operand"
@@ -708,7 +708,8 @@ export function instantiate(c: Checker, generic: Generic, args: Type[], node: No
     c.instanceOf.set(type.id, new InstanceInfo(generic, args))
     c.module.structs.push(type)
     c.memberDecls.set(type.id, new Map<string, Node>())
-    const info = new ClassInfo(decl, type, scope, cname, [], [], c.newLocal("this", type, false), [])
+    const info = classInfo(c, decl, type, scope, cname)
+    resolveBase(c, info)
     declareClassMembers(c, info, scope)
     c.pending.push(
         inContext(c, label, () => {
