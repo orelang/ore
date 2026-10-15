@@ -81,6 +81,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: out
@@ -92,9 +93,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ci/notes.sh "$GITHUB_REF_NAME" > notes.md
           gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
-            --notes "Install: \`curl -fsSL https://raw.githubusercontent.com/orelang/ore/main/install.sh | sh\`, or \`brew install orelang/tap/ore\`; update with \`ore update\`."
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md
       - uses: actions/upload-artifact@v4
         with:
           name: sums

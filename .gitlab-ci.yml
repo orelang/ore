@@ -54,7 +54,7 @@ release:
         curl -fsS --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$file" "$registry/$file"
         links=$(echo "$links" | jq --arg name "$file" --arg url "$registry/$file" '. + [{name: $name, url: $url, link_type: "package"}]')
       done
-      jq -n --arg tag "$CI_COMMIT_TAG" --argjson links "$links" \
-        '{tag_name: $tag, name: $tag, description: "ore \($tag): its LLVM and lld are included.", assets: {links: $links}}' > body.json
+      jq -n --arg tag "$CI_COMMIT_TAG" --argjson links "$links" --arg notes "$(ci/notes.sh "$CI_COMMIT_TAG")" \
+        '{tag_name: $tag, name: $tag, description: $notes, assets: {links: $links}}' > body.json
       curl -fsS --header "JOB-TOKEN: $CI_JOB_TOKEN" --header "Content-Type: application/json" \
         --data @body.json "$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases"
