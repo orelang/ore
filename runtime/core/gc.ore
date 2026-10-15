@@ -29,16 +29,15 @@ import {
     nanosleep,
     nil,
     nowNs,
+    writeNumber,
+    writeRaw,
     permanent,
     permanentMutex,
-    permanentRwlock,
     pthread_attr_destroy,
     pthread_attr_getstack,
     pthread_get_stackaddr_np,
     pthread_getattr_np,
     pthread_kill,
-    pthread_rwlock_unlock,
-    pthread_rwlock_wrlock,
     pthread_self,
     sigaction,
     unlock,
@@ -48,6 +47,8 @@ import {
 declare function ore_globals_table(): ptr
 declare function ore_globals_count(): i64
 declare function dprintf(fd: i32, format: string, ...args: i64[]): i32
+declare function dladdr(address: ptr, info: ptr): i32
+declare function strlen(s: ptr): u64
 
 const pageShift = 13
 const pageSize = 8192
@@ -92,7 +93,11 @@ const threadOwnBase = 56
 /** The span the thread allocates from, per size class, scanned and noscan apart. */
 /** The number of the last collection the thread stopped for. */
 const threadStoppedFor = 64
-const threadCache = 72
+/** Room for the return addresses of the thread's stack, when the watchdog asks for it (see `dumpThreads`). */
+const threadTrace = 72
+/** Set by the thread once it has printed its stack for the watchdog. */
+const threadDumped = 80
+const threadCache = 88
 const threadRecordSize = threadCache + maxClasses * 2 * 8
 
 let heapBase: ptr
@@ -121,6 +126,8 @@ let allocatedCell: ptr
 let nextCollection: int
 let liveBytes: int
 let collections: int
+/** Bytes allocated since the program started, as the threads reported them: the watchdog's sign of progress. */
+let allocatedEver: ptr
 
 let markStack: ptr
 let markTop: int
@@ -140,20 +147,40 @@ let generationCell: ptr
 let pause: ptr
 /** The scheduler's hook that scans the stacks of parked tasks: a closure cell, or null. */
 let stackRootsHook: ptr
+/** Memory outside the heap that holds pointers into it, such as the workers' blocks: {address, size} pairs, under `gcLock`. */
+let extraRoots: ptr
+let extraRootCount: int
+let extraRootCap: int
 /** 1 when ORE_GCTRACE is set: each collection prints a line to stderr. */
 let trace: int
 let clock: ptr
 
 /**
- * Taken for reading by a worker while it switches stacks, and for writing by
- * the collector before it stops the world, so that every stopped thread is on
- * the stack its record says. No code allocates while it holds the read side.
+ * A lock taken for reading by a worker while it switches stacks, and for
+ * writing by the collector before it stops the world, so that every stopped
+ * thread is on the stack its record says. No code allocates while it holds the
+ * read side. It is made of atomics: a reader blocked in the kernel on a
+ * pthread rwlock and interrupted by the stop signal could lose its wakeup on
+ * macOS, and every thread then waited for a writer that had long gone.
+ * The word holds the number of readers, and `switchWriter` while the
+ * collector holds or wants it.
  */
-let switchLock: ptr
+let switchState: ptr
 
-/** The lock that a worker holds for reading while it switches stacks. */
-export function stackSwitchLock(): ptr {
-    return switchLock
+const switchWriter = 1 << 62
+
+/** Takes the read side: before a worker leaves one stack for another. */
+export function enterSwitch(): void {
+    while (true) {
+        const state = unsafe.atomicLoad<i64>(switchState)
+        if ((state & switchWriter) === 0 && unsafe.atomicCompareExchange<i64>(switchState, state, state + 1)) return
+        nanosleep(pause, nil())
+    }
+}
+
+/** Releases the read side, on whichever stack the worker went on. */
+export function exitSwitch(): void {
+    unsafe.atomicSub<i64>(switchState, 1)
 }
 
 //ore:threadlocal
@@ -211,7 +238,7 @@ function meta(size: int): ptr {
 export function init(): void {
     gcLock = permanentMutex()
     heapLock = permanentMutex()
-    switchLock = permanentRwlock()
+    switchState = permanent(8)
     allocatedCell = permanent(8)
     stoppingCell = permanent(8)
     generationCell = permanent(8)
@@ -244,6 +271,7 @@ export function init(): void {
     markStack = mapMemory(markCap * 8)
     nextCollection = minHeap
     clock = permanent(16)
+    allocatedEver = permanent(8)
     installStopHandler()
 }
 
@@ -270,6 +298,7 @@ function stackBase(): ptr {
 /** Registers the calling thread: it may allocate from now on, and its stack is scanned. */
 export function registerThread(): void {
     const t = permanent(threadRecordSize)
+    setPointer(t, threadTrace, permanent(64))
     setPointer(t, threadId, pthread_self())
     const base = stackBase()
     setPointer(t, threadOwnBase, base)
@@ -283,6 +312,26 @@ export function registerThread(): void {
     unlock(gcLock)
     // The first thread reads the settings; getenv's argument is a copy, so the thread must be registered.
     if (threadCount === 1) trace = isNil(getenv("ORE_GCTRACE")) ? 0 : 1
+}
+
+/**
+ * Makes [address, address + size) a root: memory outside the heap, such as
+ * the scheduler's per-worker blocks, that may hold the only reference to an
+ * object. It must not allocate: it may run before the thread is registered.
+ */
+export function addRoot(address: ptr, size: int): void {
+    lock(gcLock)
+    if (extraRootCount === extraRootCap) {
+        const cap = extraRootCap === 0 ? 16 : extraRootCap * 2
+        const grown = permanent(cap * 16)
+        if (extraRootCount > 0) unsafe.copy(grown, extraRoots, extraRootCount * 16)
+        extraRoots = grown
+        extraRootCap = cap
+    }
+    setPointer(extraRoots, extraRootCount * 16, address)
+    setField(extraRoots, extraRootCount * 16 + 8, size)
+    extraRootCount++
+    unlock(gcLock)
 }
 
 /**
@@ -460,6 +509,7 @@ function allocLarge(size: int, noscan: bool): ptr {
 function flush(t: ptr): void {
     const allocated = field(t, threadAllocated)
     setField(t, threadAllocated, 0)
+    unsafe.atomicAdd<i64>(allocatedEver, allocated)
     if (unsafe.atomicAdd<i64>(allocatedCell, allocated) + allocated >= nextCollection) collect()
 }
 
@@ -523,6 +573,88 @@ function installStopHandler(): void {
         unsafe.store<i32>(unsafe.add(action, 136), 0x10000000)
     }
     if (sigaction(stopSignal(), action, nil()) !== 0) process.panic("gc: cannot install the stop signal")
+    const dump = permanent(256)
+    unsafe.store<ptr>(dump, unsafe.functionAddress(onDump))
+    unsafe.store<i32>(unsafe.add(dump, target.os === "darwin" ? 12 : 136), target.os === "darwin" ? 2 : 0x10000000)
+    if (sigaction(dumpSignal(), dump, nil()) !== 0) process.panic("gc: cannot install the dump signal")
+}
+
+// ---------------------------------------------------------------------------
+// Stacks for the watchdog
+
+const traceDepth = 64
+
+/** SIGUSR2: asks a thread to print its stack. */
+function dumpSignal(): i32 {
+    return target.os === "darwin" ? 31 : 12
+}
+
+/**
+ * The dump signal's handler: prints this thread's native stack to stderr,
+ * walking the chain of frame pointers itself, since libc's backtrace stops at
+ * the end of the thread's own stack and tasks run on stacks of their own. The
+ * walk ends at a null or misaligned frame pointer, or one that goes down: the
+ * first frame of a task has a null one.
+ */
+function onDump(signal: i32): void {
+    const t = threadRecord()
+    const scratch = pointerAt(t, threadTrace)
+    const info = unsafe.add(scratch, 32)
+    writeRaw(2, "thread ")
+    writeNumber(2, i64(unsafe.toInt(pointerAt(t, threadId))), true, scratch)
+    writeRaw(2, ":\n")
+    let fp = currentFp()
+    for (let depth = 0; depth < traceDepth; depth++) {
+        if (unsafe.toInt(fp) === 0 || (unsafe.toInt(fp) & 7) !== 0) break
+        const ret = unsafe.load<ptr>(unsafe.add(fp, 8))
+        const next = unsafe.load<ptr>(fp)
+        writeRaw(2, "  ")
+        writeNumber(2, i64(unsafe.toInt(ret)), true, scratch)
+        if (dladdr(ret, info) !== 0 && !isNil(unsafe.load<ptr>(unsafe.add(info, 16)))) {
+            const name = unsafe.load<ptr>(unsafe.add(info, 16))
+            writeRaw(2, " ")
+            writeRaw(2, unsafe.makeString(name, i64(strlen(name))))
+            writeRaw(2, " + ")
+            writeNumber(2, unsafe.diff(ret, unsafe.load<ptr>(unsafe.add(info, 24))), false, scratch)
+        }
+        writeRaw(2, "\n")
+        if (unsafe.toInt(next) <= unsafe.toInt(fp)) break
+        fp = next
+    }
+    unsafe.atomicStore<i64>(unsafe.add(t, threadDumped), 1)
+}
+
+function currentFp(): ptr {
+    if (target.arch === "arm64") return unsafe.asm<ptr>("mov $0, x29", "=r")
+    return unsafe.asm<ptr>("movq %rbp, $0", "=r")
+}
+
+/**
+ * Prints the native stack of every registered thread, each printed by the
+ * thread itself in a signal handler; for the watchdog, when the program is
+ * stuck. Allocates nothing and takes no lock, since the program may hold any.
+ */
+export function dumpThreads(): void {
+    for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
+        unsafe.atomicStore<i64>(unsafe.add(t, threadDumped), 0)
+        pthread_kill(pointerAt(t, threadId), dumpSignal())
+        // A thread that does not answer within a second is reported as such.
+        let waited = 0
+        while (unsafe.atomicLoad<i64>(unsafe.add(t, threadDumped)) === 0 && waited < 50000) {
+            nanosleep(pause, nil())
+            waited++
+        }
+        if (waited >= 50000) {
+            writeRaw(2, "thread ")
+            writeNumber(2, i64(unsafe.toInt(pointerAt(t, threadId))), true, pointerAt(t, threadTrace))
+            writeRaw(2, ": no answer\n")
+        }
+    }
+}
+
+/** Bytes allocated since the program started (as reported every 128 KB per thread). */
+export function allocatedTotal(): int {
+    return unsafe.atomicLoad<i64>(allocatedEver)
 }
 
 /** The stop signal's handler: the thread stops here, unless it is allocating, in which case it stops after. */
@@ -623,7 +755,8 @@ export function collect(): void {
     const self = threadRecord()
     const start = nowNs(clock)
     // No worker is between two stacks while the collector holds the write side.
-    pthread_rwlock_wrlock(switchLock)
+    unsafe.atomicOr<i64>(switchState, switchWriter)
+    while ((unsafe.atomicLoad<i64>(switchState) & ~switchWriter) !== 0) nanosleep(pause, nil())
     const generation = unsafe.atomicAdd<i64>(generationCell, 1) + 1
     unsafe.atomicStore<i64>(stoppingCell, 1)
     let others = 0
@@ -651,6 +784,7 @@ export function collect(): void {
         const hook = unsafe.load<() => void>(stackRootsHook)
         hook()
     }
+    for (let i = 0; i < extraRootCount; i++) scan(pointerAt(extraRoots, i * 16), field(extraRoots, i * 16 + 8))
     const globals = ore_globals_table()
     const count = ore_globals_count()
     for (let i = 0; i < count; i++) scan(pointerAt(globals, i * 16), field(globals, i * 16 + 8))
@@ -658,7 +792,7 @@ export function collect(): void {
     sweep()
 
     unsafe.atomicStore<i64>(stoppingCell, 0)
-    pthread_rwlock_unlock(switchLock)
+    unsafe.atomicAnd<i64>(switchState, ~switchWriter)
     const end = nowNs(clock)
     const number = collections
     unlock(gcLock)
