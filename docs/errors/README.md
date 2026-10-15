@@ -5,6 +5,33 @@ the command line and with a link by the language server; each code has a page
 here. The code is found by the message ([`compiler/src/syntax/codes.ore`](../../compiler/src/syntax/codes.ore)):
 a code keeps its number once given.
 
+```console
+$ ore check main.ore
+main.ore:2:25: error[ORE3022]: Only strings can be concatenated with '+'. Use a template literal: `${a}${b}`.
+  const label = "items: " + count
+                          ^
+  see https://github.com/orelang/ore/blob/main/docs/errors/ORE3022.md
+```
+
+Each page gives the message, with `…` for the parts that vary (names, types,
+numbers), then:
+
+- **What it means**: the rule behind the message, and why Ore has it. Many
+  errors come from places where Ore differs from TypeScript on purpose — no
+  `any`, no exceptions, explicit numeric conversions, nominal classes; the
+  [differences](../spec/10-differences.md) list them all.
+- **Example**: a short program that produces the error.
+- **How to fix**: the usual fixes, each with a corrected program.
+
+The examples and fixes are whole programs, checked with `ore check`: an
+example reports its page's code, and a fix reports no error. (A few
+messages are not produced by the compiler at present; their pages say so.) A line
+`// file: name.ore` starts another file of the same example, next to the
+first one. The link after the group on each page leads to the section of
+the [specification](../spec) that states the rule.
+
+The codes are grouped by the part of the language they concern:
+
 ## ORE1xxx: Syntax
 
 | Code | Message |
