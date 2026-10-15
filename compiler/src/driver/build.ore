@@ -222,7 +222,8 @@ function buildIn(
 /**
  * The object file of a part of the IR: from the cache if it has it, else
  * compiled by LLVM into the cache (written under a temporary name, then
- * renamed), or into `output` without a cache.
+ * renamed); into `output` without a cache, or when the cache cannot be
+ * written.
  */
 function partObject(
     ir: string,
@@ -231,24 +232,17 @@ function partObject(
     options: BuildOptions,
     name: string,
 ): PartObject | Error {
-    if (cache === null) {
-        const times = emitObject(ir, new ObjectOptions(output, options.release, targetTriple(), name))
-        if (times instanceof Error) return times
-        return new PartObject(output, times)
+    if (cache !== null) {
+        const key = cache.key(ir)
+        const path = cache.path(key)
+        if (fs.isFile(path)) return new PartObject(path, null)
+        const temporary = cache.temporary(key)
+        const cached = emitObject(ir, new ObjectOptions(temporary, options.release, targetTriple(), name))
+        if (cached instanceof Error) fs.remove(temporary)
+        else if (fs.rename(temporary, path) === null) return new PartObject(path, cached)
+        else fs.remove(temporary)
     }
-    const key = cache.key(ir)
-    const path = cache.path(key)
-    if (fs.isFile(path)) return new PartObject(path, null)
-    const temporary = cache.temporary(key)
-    const times = emitObject(ir, new ObjectOptions(temporary, options.release, targetTriple(), name))
-    if (times instanceof Error) {
-        fs.remove(temporary)
-        return times
-    }
-    const renamed = fs.rename(temporary, path)
-    if (renamed !== null) {
-        fs.remove(temporary)
-        return renamed
-    }
-    return new PartObject(path, times)
+    const times = emitObject(ir, new ObjectOptions(output, options.release, targetTriple(), name))
+    if (times instanceof Error) return times
+    return new PartObject(output, times)
 }
