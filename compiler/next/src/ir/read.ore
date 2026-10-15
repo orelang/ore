@@ -49,6 +49,7 @@ import {
     IfaceCall,
     IfaceField,
     IfaceFieldLValue,
+    UnionFieldLValue,
     IfStmt,
     IncDec,
     Index,
@@ -890,6 +891,12 @@ class Reader {
                 const index = c.int()
                 this.next(c)
                 return new IfaceFieldLValue(this.expr(d, "value"), index)
+            }
+            case "union-field": {
+                c.expect(" ")
+                const name = c.word()
+                this.next(c)
+                return new UnionFieldLValue(this.expr(d, "value"), name)
             }
             default:
                 this.fail(`unknown target ${JSON.stringify(kind)}`)

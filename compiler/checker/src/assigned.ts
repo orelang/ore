@@ -163,7 +163,7 @@ class Flow {
         const target = e.target
         if (target.k === "field") s = this.expr(target.object, s)
         else if (target.k === "element") s = this.expr(target.index, this.expr(target.array, s))
-        else if (target.k === "iface-field") s = this.expr(target.value, s)
+        else if (target.k === "iface-field" || target.k === "union-field") s = this.expr(target.value, s)
         s = this.expr(e.value, s)
         if (target.k === "local") s?.add(target.local)
         return s

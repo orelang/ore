@@ -27,6 +27,7 @@ import {
   nullOperand,
   unknownName,
   fieldType,
+  memberField,
   canBeNull,
   isNull,
   isString,
@@ -403,6 +404,7 @@ export abstract class ExpressionChecker extends StatementChecker {
         this.info.types.set(node, property.type)
         return { accessor: { object, property, name }, type: property.type }
       }
+      if (object.type.kind === "union") return this.unionFieldTarget(node, object, name)
       const struct = object.type.kind === "struct" ? object.type : undefined
       const field = struct && findField(struct, name)
       if (!struct || !field) return this.error(node.name, `Property '${name}' does not exist on type '${typeToString(object.type)}'.`), undefined
@@ -426,6 +428,20 @@ export abstract class ExpressionChecker extends StatementChecker {
     symbol.local.assigned = true
     this.info.types.set(node, symbol.local.type)
     return { lvalue: { k: "local", local: symbol.local }, type: symbol.local.type }
+  }
+
+  /** A field that every member of a union has, writable and of the same type in each: `stmt.line = 3`. */
+  protected unionFieldTarget(node: ts.PropertyAccessExpression, object: ir.Expr, name: string): AssignTarget | undefined {
+    const union = object.type as ir.UnionType
+    const fields = canBeNull(union) ? [] : union.members.map((m) => memberField(m, name))
+    if (fields.length === 0 || fields.some((f) => f === undefined)) return this.error(node.name, this.noProperty(union, name)), undefined
+    if (fields.some((f) => f!.readonly)) return this.error(node.name, `Cannot assign to '${name}' because it is a read-only property.`), undefined
+    const type = fields[0]!.type
+    if (fields.some((f) => !sameType(f!.type, type))) {
+      return this.error(node.name, `Cannot assign to '${name}': its type differs between the members of '${typeToString(union)}'.`), undefined
+    }
+    this.info.types.set(node, type)
+    return { lvalue: { k: "union-field", value: object, name }, type }
   }
 
   protected checkPrefixUnary(node: ts.PrefixUnaryExpression, scope: Scope): Operand {

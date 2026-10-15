@@ -23,6 +23,7 @@ import {
     FuncRef,
     IfaceField,
     IfaceFieldLValue,
+    UnionFieldLValue,
     IncDec,
     Index,
     IntLit,
@@ -95,7 +96,7 @@ import { checkCall, checkNew } from "./calls"
 import { accessor, checkAccess, conformance } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
 import { foldBinary, foldUnary } from "./fold"
-import { arithOps, numericType, poison, canBeNull, compareOps, compoundOps, fieldType, isNull, isString, nullOperand, numericLiteral, typed, typeOf, unknownName } from "./helpers"
+import { arithOps, numericType, poison, canBeNull, compareOps, compoundOps, fieldType, isNull, memberField, isString, nullOperand, numericLiteral, typed, typeOf, unknownName } from "./helpers"
 import { type Operand, errorOperand, Typed, untypedOf } from "./operand"
 import {
     addFacts,
@@ -549,6 +550,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
             c.info.types.set(node, property.type)
             return new AssignTargetClass(property.type, null, new AccessorTarget(object, property, name))
         }
+        if (ot.kind === "union") return unionFieldTarget(c, node, object, ot, name)
         const struct = ot.kind === "struct" ? ot : null
         const field = struct !== null ? findField(struct, name) : null
         if (struct === null || field === null) {
@@ -594,6 +596,28 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
     symbol.local.assigned = true
     c.info.types.set(node, symbol.local.type)
     return new AssignTargetClass(symbol.local.type, new LocalLValue(symbol.local))
+}
+
+/** A field that every member of a union has, writable and of the same type in each: `stmt.line = 3`. */
+function unionFieldTarget(c: Checker, node: Node, object: Expr, union: UnionType, name: string): AssignTarget | null {
+    const nameId = nameNode(node)
+    const fields: (Field | null)[] = []
+    if (!canBeNull(union)) for (const m of union.members) fields.push(memberField(m, name))
+    if (fields.length === 0 || fields.some((f) => f === null)) {
+        c.error(nameId, noProperty(union, name))
+        return null
+    }
+    if (fields.some((f) => f!.readonly)) {
+        c.error(nameId, `Cannot assign to '${name}' because it is a read-only property.`)
+        return null
+    }
+    const type = fields[0]!.type
+    if (fields.some((f) => !sameType(f!.type, type))) {
+        c.error(nameId, `Cannot assign to '${name}': its type differs between the members of '${typeToString(union)}'.`)
+        return null
+    }
+    c.info.types.set(node, type)
+    return new AssignTargetClass(type, new UnionFieldLValue(object, name))
 }
 
 export function checkPrefixUnary(c: Checker, node: Node, scope: Scope): Operand {

@@ -12,6 +12,7 @@ import {
     type Logical,
     type Optional,
     type UnionField,
+    type UnionFieldLValue,
 } from "../ir/nodes"
 import { findField, isStringLike, typeofName, typeToString, types, unionRepr, type FloatType, type IntType, type StructType, type Type, type UnionType } from "../ir/types"
 import { arrayMethod, chanOp, mapOp } from "./collections"
@@ -24,7 +25,7 @@ import { floatConstant, sizeOf, voidValue, type V } from "./ll"
 import { slot } from "./functions"
 
 /** A place other than a local: `Exclude<ir.LValue, { k: "local" }>` in TypeScript. */
-export type Place = ElementLValue | FieldLValue | IfaceFieldLValue
+export type Place = ElementLValue | FieldLValue | IfaceFieldLValue | UnionFieldLValue
 
 const I64_MAX = 9223372036854775807
 
@@ -377,6 +378,8 @@ export function placeParts(g: Emitter, target: Place): V[] {
             return [expr(g, target.object)]
         case "iface-field":
             return [expr(g, target.value)]
+        case "union-field":
+            return [expr(g, target.value)]
         case "element": {
             const array = expr(g, target.array)
             return [array, g.intToI64(expr(g, target.index), target.index.type)]
@@ -390,6 +393,8 @@ export function placePointer(g: Emitter, target: Place, parts: V[], type: Type):
             return fieldPtr(g, parts[0].v, structOf(target.object.type), target.name)
         case "iface-field":
             return ifaceField(g, parts[0], target.index)
+        case "union-field":
+            return unionFieldPtr(g, parts[0], unionOf(target.value.type), target.name)
         case "element":
             return g.rt("ore_rt_array_at", [parts[0], parts[1], { ty: "i64", v: sizeOf(g.mt(type)) }]).v
     }
@@ -718,6 +723,33 @@ export function optional(g: Emitter, e: Optional): V {
         },
         g.lt(u),
     )
+}
+
+/** The address of a field that every member of a union has, with the same type. */
+export function unionFieldPtr(g: Emitter, v: V, u: UnionType, name: string): string {
+    const end = g.b.label("ufield")
+    const incoming: string[] = []
+    for (let i = 0; i < u.members.length; i++) {
+        const m = u.members[i]
+        const here = g.b.label("umember")
+        const next = g.b.label("unext")
+        g.b.condBr(slotTest(g, u, v, i), here, next)
+        g.b.start(here)
+        const object = payload(g, u, v, i)
+        let ptr = ""
+        if (m.kind === "struct") ptr = fieldPtr(g, object.v, m, name)
+        else if (m.kind === "interface") {
+            let index = -1
+            for (let k = 0; k < m.members.length && index === -1; k++) if (m.members[k].name === name) index = k
+            ptr = ifaceField(g, object, index)
+        }
+        incoming.push(`[ ${ptr}, %${g.b.block} ]`)
+        g.b.br(end)
+        g.b.start(next)
+    }
+    g.b.terminate("unreachable")
+    g.b.start(end)
+    return g.b.value("ptr", `phi ptr ${incoming.join(", ")}`).v
 }
 
 export function unionField(g: Emitter, e: UnionField): V {

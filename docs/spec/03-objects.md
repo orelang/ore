@@ -67,6 +67,11 @@
 - A value converts implicitly to a union containing its type. A class or
   object converts to a union member that is an interface it implements, if
   exactly one does.
+- A field that every member of a union of classes, object types and
+  interfaces (without `null`) has, public, can be read without narrowing
+  (`stmt.line`); its type is the union of the members' field types. It can
+  be assigned (`stmt.line = 3`, `stmt.count++`) when it is writable and has
+  the same type in every member.
 - Representation: a reference type with `null` is a nullable reference; a
   union of string literals is a string; other unions are tagged values.
 
