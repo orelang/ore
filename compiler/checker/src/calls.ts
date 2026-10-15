@@ -515,8 +515,11 @@ export abstract class CallChecker extends ExpressionChecker {
     if (qualified && !symbol) return errorOperand
     if (name === "Chan" && !symbol) {
       let type: ChanType | undefined
-      if (node.typeArguments) type = this.resolveType(ts.factory.createTypeReferenceNode("Chan", node.typeArguments), scope) as ChanType | undefined
-      else if (expected?.kind === "chan") type = expected
+      if (node.typeArguments) {
+        if (node.typeArguments.length !== 1) return this.fail(node, "'Chan' expects exactly 1 type argument.")
+        const elem = this.resolveValueType(node.typeArguments[0]!, scope)
+        type = elem && { kind: "chan", elem }
+      } else if (expected?.kind === "chan") type = expected
       else return this.fail(node, "Cannot infer the type of the channel. Write 'new Chan<T>()' or annotate the variable.")
       const args = node.arguments ?? []
       if (args.length > 1) return this.fail(args[1]!, "'new Chan' takes at most a capacity.")
