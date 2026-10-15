@@ -27,6 +27,7 @@ import {
     LLVMRunPasses,
     LLVMSetModuleDataLayout,
     LLVMSetTarget,
+    LLVMSetTargetMachineGlobalISel,
     LLVMTargetMachineEmitToFile,
     LLVMVerifyModule,
     message,
@@ -119,6 +120,12 @@ function compile(module: ptr, options: ObjectOptions, started: int): ObjectTimes
         codeModelDefault,
     )
     if (unsafe.toInt(machine) === 0) return new Error(`target ${triple}: no target machine`)
+    // AArch64 selects instructions with GlobalISel at -O0, which reuses the
+    // address of a thread-local variable across calls in a function. A task
+    // may resume on another OS thread after a call, so the debug frames of
+    // `ore_rt_top` would be pushed on one thread and popped on another:
+    // SelectionDAG (FastISel at -O0), as clang uses, computes it at each use.
+    LLVMSetTargetMachineGlobalISel(machine, 0)
     LLVMSetTarget(module, triple)
     const layout = LLVMCreateTargetDataLayout(machine)
     LLVMSetModuleDataLayout(module, layout)
