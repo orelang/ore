@@ -259,18 +259,15 @@ inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
 
 `ore` needs LLVM 19 or newer (its library, `libLLVM`) and lld, and a C
 compiler only for packages with C sources: `apt install llvm-22 lld-22` on
-Linux, `brew install llvm lld` on macOS. Releases for Linux (amd64, arm64)
-and macOS (arm64) are on [GitHub](https://github.com/orelang/ore/releases):
+Linux, `brew install llvm lld` on macOS. The compiler in Ore builds itself
+(`ci/bootstrap.sh` checks that it reproduces itself); until it builds from a
+previous release, stage 1 comes from the TypeScript compiler, which needs
+[Bun](https://bun.sh) and clang:
 
 ```sh
-ln -sf "$(ci/fetch-ore.sh latest)" ~/.local/bin/ore   # the latest release, checked against its SHA256SUMS
-```
-
-To build it from source, the compiler in Ore builds itself from the previous
-release (`ci/bootstrap.sh` checks that it reproduces itself):
-
-```sh
-ORE=$(ci/fetch-ore.sh latest) ci/bootstrap.sh dist   # dist/ore
+bun install
+bun run build                        # dist/ore, the compiler in Ore
+ln -sf "$PWD/dist/ore" ~/.local/bin/ore
 ```
 
 Then:
