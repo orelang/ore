@@ -6,7 +6,7 @@ go to definition, completion after `.`, find references and rename.
 The extension runs `ore lsp`, so the `ore` binary must be on `PATH`, or set
 `ore.path` in the settings.
 
-Install "Ore" (`ore-lang.ore`) from the Visual Studio Marketplace or Open
+Install "Ore" (`orelang.ore`) from the Visual Studio Marketplace or Open
 VSX, or the `.vsix` of a [release](https://github.com/orelang/ore/releases):
 `code --install-extension ore-vscode-vX.Y.Z.vsix`.
 

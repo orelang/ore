@@ -26,7 +26,7 @@ Each archive carries its LLVM and lld.
 | Zed extension | \`ore-zed-$tag.zip\` |
 
 The editor extensions run \`ore lsp\`, so \`ore\` must be on \`PATH\`. VS Code:
-install "Ore" (\`ore-lang.ore\`) from the Marketplace or Open VSX, or
+install "Ore" (\`orelang.ore\`) from the Marketplace or Open VSX, or
 \`code --install-extension ore-vscode-$tag.vsix\`. Zed: unzip
 \`ore-zed-$tag.zip\` and pick its directory in \`zed: install dev extension\`
 (Zed builds it with Rust, which must be installed with rustup).

@@ -41,8 +41,8 @@ version. It bootstraps and tests on Linux (amd64, arm64) and macOS (arm64),
 packs the archives and the extensions, makes the GitHub Release with them
 and `SHA256SUMS`, updates `orelang/homebrew-tap` (secret `HOMEBREW_TAP_KEY`)
 and publishes the `.vsix` to the Visual Studio Marketplace (secret
-`VSCE_PAT`, publisher `ore-lang`) and to Open VSX (secret `OVSX_PAT`,
-namespace `ore-lang`); a publish whose secret is not set is skipped. The
+`VSCE_PAT`, publisher `orelang`) and to Open VSX (secret `OVSX_PAT`,
+namespace `orelang`); a publish whose secret is not set is skipped. The
 GitLab job waits for the GitHub Release, checks its files against
 `SHA256SUMS` and copies them to the package registry and a GitLab Release.
 
