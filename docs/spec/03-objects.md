@@ -83,8 +83,9 @@
 - `x instanceof B` checks the class of the instance at run time when `x` has
   type `A`, a union with a member related to `B`, or an interface type; it
   narrows `x` to `B`. On a union, `instanceof A` is also true for members
-  that are subclasses of `A`, which the true branch keeps
-  (`B | C | string` narrows to `B | C`), and the false branch removes them.
+  that are subclasses of `A`: the true branch narrows to the member if there
+  is one such member, else to `A` (`B | C | string` narrows to `A`), and the
+  false branch removes them. A union of subclasses of `A` converts to `A`.
 
 Representation. Every class that has a base class or a subclass in the
 program starts with a pointer to its class table: the class's type id
