@@ -1439,9 +1439,20 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             const r = condition(c, right(node), scope)
             c.popFacts()
             const expr: Expr = new Logical(types.bool, and ? "&&" : "||", l.expr, r.expr)
+            // `a && b` is false when a is, or when a is true and b false; `a || b` is true
+            // when a is, or when a is false and b true: a reference narrowed both ways has
+            // the union of the two types.
             return and
-                ? new Condition(expr, concatFacts(l.whenTrue, r.whenTrue), [])
-                : new Condition(expr, [], concatFacts(l.whenFalse, r.whenFalse))
+                ? new Condition(
+                      expr,
+                      concatFacts(l.whenTrue, r.whenTrue),
+                      eitherFacts(c, l.whenFalse, concatFacts(l.whenTrue, r.whenFalse)),
+                  )
+                : new Condition(
+                      expr,
+                      eitherFacts(c, l.whenTrue, concatFacts(l.whenFalse, r.whenTrue)),
+                      concatFacts(l.whenFalse, r.whenFalse),
+                  )
         }
         if (op === "EqualsEqualsEqualsToken" || op === "ExclamationEqualsEqualsToken") {
             const nullSide =
@@ -1495,6 +1506,28 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
         }
     }
     return new Condition(checkCondition(c, node, scope), [], [])
+}
+
+/** The facts true when either list is: for each reference both narrow, the union of its two types. */
+function eitherFacts(c: Checker, a: Fact[], b: Fact[]): Fact[] {
+    const out: Fact[] = []
+    const seen = new Set<string>()
+    for (const f of a) {
+        if (seen.has(f.key)) continue
+        seen.add(f.key)
+        const first = lastFact(a, f.key)
+        const second = lastFact(b, f.key)
+        if (first === null || second === null) continue
+        out.push(new Fact(f.key, c.unionOf([first, second])))
+    }
+    return out
+}
+
+/** The type the last fact about a reference gives it, or null. */
+function lastFact(facts: Fact[], key: string): Type | null {
+    let found: Type | null = null
+    for (const f of facts) if (f.key === key) found = f.type
+    return found
 }
 
 function concatFacts(a: Fact[], b: Fact[]): Fact[] {

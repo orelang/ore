@@ -1,0 +1,28 @@
+// || and && narrow a reference to the union of what each side narrows it to.
+type A = { kind: "a"; x: int }
+type B = { kind: "b"; y: int }
+type C = { kind: "c"; z: int }
+type Any = A | B | C
+function f(items: Any[]): int {
+    let total = 0
+    for (const o of items) {
+        if (o.kind !== "a" && o.kind !== "b") continue
+        total += o.kind === "a" ? o.x : o.y
+    }
+    return total
+}
+function g(o: Any): int {
+    if (o.kind === "a" || o.kind === "b") {
+        const ab: A | B = o
+        return ab.kind === "a" ? 1 : 2
+    }
+    return o.z
+}
+console.log(
+    f([
+        { kind: "a", x: 1 },
+        { kind: "c", z: 5 },
+        { kind: "b", y: 2 },
+    ]),
+    g({ kind: "c", z: 9 }),
+)

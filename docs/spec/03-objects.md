@@ -188,7 +188,8 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
   `x instanceof I` for an interface member of a union.
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
-of `&&`, `||` and `?:`, and `switch` clauses on a literal (clauses reached by
+of `&&`, `||` and `?:` (where `a || b` narrows a reference to the union of
+what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`), and `switch` clauses on a literal (clauses reached by
 falling through code are not narrowed). An assignment narrows to the assigned
 value's type until the next assignment; a `?:` keeps the union of its
 branches' types (`u = t !== null ? t : "none"` makes `u` a string).
