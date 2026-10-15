@@ -29,22 +29,59 @@ compiler in TypeScript, until it builds from its previous release; the test
 suite runs on it (`ci/test.sh`). The compiler in TypeScript, Bun and the
 oracle tests against TypeScript, prettier and Bun are gone.
 
-Next for the toolchain: releases of `ore` (built from the previous release),
-the language server on the checker (hover, definition, completion,
-references, rename), and a build cache.
+Releases of `ore` (built from the previous release, on GitHub and GitLab,
+with `install.sh`, Homebrew and `ore update`) are done.
 
-This comes before the GC and async, so that both are written once, in Ore.
+## 3. Closing the gaps with TypeScript
 
-## 3. Own garbage collector
+What TypeScript has and Ore should, before the GC changes the runtime under
+it. Not gaps but choices (Go's semantics): `any`, `undefined`, `var`, enums,
+namespaces, exceptions, generators, `delete`, `in`, `for...in`, default
+exports, type assertions (Ore converts: `i32(x)`).
+
+- Expressions and statements, in order:
+  - spread arguments: anywhere among the rest arguments and in `push`
+    (done), and a tuple spread into any parameters;
+  - tuples `[A, B]`: literals, constant indexing, `length`, destructuring,
+    JSON as arrays; `new Map(entries)` from any array of pairs;
+  - narrowing through `||` and by assigning with `?:`;
+  - object spread `{ ...o }`;
+  - methods and accessors in object literals;
+  - `static` members of classes;
+  - default values in destructuring, and `...rest` in object destructuring;
+  - optional, default and rest parameters of closures;
+  - `**`, `bigint` literals (`10n`), `satisfies`;
+  - overloads (several signatures of one function);
+  - generic closures, nested generic functions, default type arguments
+    (`<T = X>`).
+- Types:
+  - `unknown`;
+  - intersections `A & B`;
+  - methods in object types (`{ f(): void }`), optional members of
+    interfaces, generic methods in interfaces;
+  - `keyof`, `typeof x` as a type, indexed access `T["k"]`;
+  - conditional types, mapped types and template literal types, and with
+    them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...).
+- Regular expressions: literals `/re/` and an engine in the standard
+  library.
+
+## 4. Toolchain
+
+- A build cache in `~/.cache/ore`: the runtime compiled once per compiler
+  and target, objects of unchanged modules reused.
+- The language server on the checker: hover, go to definition, completion,
+  references, rename, signature help; JSDoc comments shown in hover and
+  completion.
+
+## 5. Own garbage collector
 
 The architecture of Go's collector, in Ore
 ([`runtime/core/gc.ore`](../runtime/core/gc.ore)). Done: a non-moving
 mark-sweep collector that replaced Boehm, with size-classed spans, a page
 table for interior pointers, per-thread allocation without locks, stopping
 the world with a signal, conservative scanning of stacks and precise roots
-for globals. Next, in order:
+for globals, marking on every worker in parallel. Next, in order:
 
-- Marking on every worker in parallel.
 - A precise heap: the compiler emits a bitmap of pointer words per type, as
   Go's `gcdata`, and allocation takes it.
 - Concurrent marking: a hybrid write barrier emitted on every store of a
@@ -57,7 +94,7 @@ Stacks stay scanned conservatively: precise stack maps in LLVM need
 statepoints around every call, which keep LLVM from inlining Ore calls, and
 the collector does not move objects, so it does not need them.
 
-## 4. Promises and async/await
+## 6. Promises and async/await
 
 - Promises and `async`/`await` in the JavaScript order of microtasks and
   timers, without exceptions: a promise only resolves, failures are values
@@ -84,4 +121,5 @@ the collector does not move objects, so it does not need them.
   bottleneck.
 - UDP, TLS and HTTP in the standard library.
 - Semantic tokens in the language server.
-- Methods in object literals, and `unshift` on arrays.
+- `unshift` on arrays.
+- Snap package; Windows.
