@@ -12,6 +12,8 @@ import {
     ServerNotInitialized,
     type Message,
 } from "./jsonrpc"
+import { dirname, join } from "ore:path"
+import { cacheRoot } from "../driver/cache"
 import { docsUrl } from "../syntax/codes"
 import { offsetAt, pathToUri, uriToPath, type Position, type Range } from "./text"
 
@@ -387,18 +389,16 @@ export class Server {
 
 /**
  * The URI of a location. Files without a path on disk (the embedded std) are
- * materialized into the cache, `$ORE_CACHE/lsp/<path>` (by default
- * `~/.cache/ore`).
- *
- * TODO(std): the directories of the cached file should be created first;
- * the std cannot create directories yet, so the file is written only where
- * its directory exists.
+ * written into the build cache, `<cache>/lsp/<path>` (see driver/cache), or
+ * into the temporary directory when the cache is off.
  */
 function locationUri(location: Location, current: string): string {
     const text = location.text
     if (text === null) return location.path === uriToPath(current) ? current : pathToUri(location.path)
-    const cache = process.getenv("ORE_CACHE") ?? `${process.getenv("HOME") ?? "/tmp"}/.cache/ore`
-    const path = `${cache}/lsp/${location.path}`
+    const root = cacheRoot()
+    const base = root !== "" ? root : join(fs.tempDir(), "ore")
+    const path = join(base, "lsp", location.path.replaceAll(":", "/"))
+    fs.mkdir(dirname(path), true)
     fs.writeFile(path, text)
     return pathToUri(path)
 }
