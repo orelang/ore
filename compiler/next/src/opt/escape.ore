@@ -463,7 +463,8 @@ class FuncAnalysis {
                 return
             }
             case "method-call": {
-                const summary = this.summaries.get(e.func)
+                // A call through a class table may run an override, which the summary does not describe.
+                const summary = e.virtual ? null : this.summaries.get(e.func)
                 this.expr(e.receiver, summary !== null && !summary.self ? safe : escapes)
                 for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], summary !== null && !this.escapesAt(summary, i) ? safe : escapes)
                 return

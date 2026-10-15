@@ -681,9 +681,13 @@ export class Alloc {
     constructor(public type: StructType) {}
 }
 
-/** A direct call of a class method. */
+/**
+ * A call of a class method: direct, or with `virtual` through the class
+ * table of the receiver, whose class may override the method.
+ */
 export class MethodCall {
     readonly k: "method-call" = "method-call"
+    public virtual: bool = false
     constructor(
         public type: Type,
         public func: Func,
@@ -878,10 +882,12 @@ export class CallValue {
 
 /**
  * A method bound to its receiver as a function value: a class method
- * (`func`), or method `index` of an interface value.
+ * (`func`, looked up in the class table of the receiver with `virtual`), or
+ * method `index` of an interface value.
  */
 export class BoundMethod {
     readonly k: "bound-method" = "bound-method"
+    public virtual: bool = false
     constructor(
         public type: FuncType,
         public receiver: Expr,

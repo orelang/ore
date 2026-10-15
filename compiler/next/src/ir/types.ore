@@ -107,6 +107,13 @@ export class StructType {
         /** The constructor of a class: returns a new instance. */
         public ctor: Func | null = null,
     ) {}
+
+    /**
+     * The base class of a class declared with `extends`: its fields come first
+     * in `fields`, and its methods first in `methods`, in the same order (the
+     * slots of the class table), each replaced by the override if there is one.
+     */
+    public base: StructType | null = null
 }
 
 /** A field member of an interface: `{ k: "field", ... }` in TypeScript. */
@@ -227,6 +234,51 @@ export function findField(t: StructType, name: string): Field | null {
 export function findMethod(t: StructType, name: string): Method | null {
     for (const m of t.methods) if (m.name === name) return m
     return null
+}
+
+/** Whether class `s` is `base` or a subclass of it. */
+export function isSubclass(s: StructType, base: StructType): bool {
+    if (s === base) return true
+    const parent = s.base
+    return parent !== null && isSubclass(parent, base)
+}
+
+/**
+ * The classes among `structs` whose instances start with a pointer to their
+ * class table: those with a base class or a subclass, by id.
+ */
+export function classTables(structs: StructType[]): Map<int, bool> {
+    const tables = new Map<int, bool>()
+    for (const s of structs) {
+        const base = s.base
+        if (base === null) continue
+        tables.set(s.id, true)
+        tables.set(base.id, true)
+    }
+    return tables
+}
+
+/** Whether a subclass of `s` among `structs` overrides its method `name`, so that calls of it on an `s` dispatch through the class table. */
+export function overridden(structs: StructType[], s: StructType, name: string): bool {
+    const own = findMethod(s, name)
+    for (const t of structs) {
+        if (t === s || t.base === null || !isSubclass(t, s)) continue
+        const method = findMethod(t, name)
+        const func = method === null ? null : method.func
+        if (func !== (own === null ? null : own.func)) return true
+    }
+    return false
+}
+
+/** The slot of a method in the class table of the class that declares or inherits it: its index in the methods of its receiver's class. */
+export function methodSlot(func: Func): int {
+    const receiver = func.receiver
+    if (receiver === null) return -1
+    const owner = receiver.type
+    if (owner.kind !== "struct") return -1
+    const methods = owner.methods
+    for (let i = 0; i < methods.length; i++) if (methods[i].func === func) return i
+    return -1
 }
 
 export function arrayOf(elem: Type): ArrayType {

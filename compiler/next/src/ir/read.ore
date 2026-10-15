@@ -1078,8 +1078,11 @@ class Reader {
             case "method-call": {
                 c.expect(" ")
                 const func = this.func(c.word(), c)
+                const isVirtual = c.eat(" virtual")
                 const type = this.exprType(c)
-                return new MethodCall(type, func, this.expr(d, "receiver"), this.exprs(d, "arg"))
+                const call = new MethodCall(type, func, this.expr(d, "receiver"), this.exprs(d, "arg"))
+                call.virtual = isVirtual
+                return call
             }
             case "to-iface": {
                 let itab: Itab | null = null
@@ -1173,8 +1176,11 @@ class Reader {
                 if (c.eat(" func=")) func = this.func(c.word(), c)
                 let index: int | null = null
                 if (c.eat(" index=")) index = c.int()
+                const isVirtual = c.eat(" virtual")
                 const type = this.funcType(this.exprType(c))
-                return new BoundMethod(type, this.expr(d, "receiver"), func, index)
+                const bound = new BoundMethod(type, this.expr(d, "receiver"), func, index)
+                bound.virtual = isVirtual
+                return bound
             }
             case "array-method": {
                 c.expect(" ")
@@ -1341,6 +1347,12 @@ class Reader {
             c.expect("#")
             const id = c.int()
             const nominal = c.eat(" nominal")
+            // The base class is read with the members, once every struct exists.
+            if (c.eat(" extends ")) {
+                this.typeName(c)
+                c.expect("#")
+                c.int()
+            }
             const s = new StructType(id, name === "" ? null : name, nominal, [], [])
             if (this.structs.has(id)) this.fail(`struct ${id} declared twice`)
             this.structs.set(id, s)
@@ -1390,6 +1402,7 @@ class Reader {
                     const c = this.open(0, "struct ")
                     const s = this.structType(this.type(c))
                     c.eat(" nominal")
+                    if (c.eat(" extends ")) s.base = this.structType(this.type(c))
                     this.next(c)
                     while (this.has(1, "field ")) {
                         const l = this.open(1, "field ")

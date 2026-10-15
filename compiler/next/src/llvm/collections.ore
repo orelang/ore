@@ -2,8 +2,8 @@
 // compiler/codegen/src/collections.ts.
 
 import { type ArrayMethod, type ChanOp, type Itab, type MapOp } from "../ir/nodes"
-import { findMethod, FuncType, isStringLike, typeKey, types, type Type, type UnionType } from "../ir/types"
-import { callClosure, helper, toStr } from "./calls"
+import { findMethod, FuncType, isStringLike, overridden, typeKey, types, type StructType, type Type, type UnionType } from "../ir/types"
+import { callClosure, helper, toStr, virtualThunk } from "./calls"
 import { ARRAY, FN, MAP, STR } from "./context"
 import { Emitter } from "./base"
 import { choose, compare, convert, equals, expr, inject, recast, unionOf } from "./expressions"
@@ -412,14 +412,21 @@ export function itab(g: Emitter, t: Itab): string {
     const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${typeId(t.struct)})`]
     for (const m of t.iface.members) {
         if (m.k === "field") {
-            let index = -1
-            for (let i = 0; i < t.struct.fields.length && index === -1; i++) if (t.struct.fields[i].name === m.name) index = i
-            all.push(`ptr getelementptr (${s}, ptr null, i32 0, i32 ${index})`)
+            all.push(`ptr getelementptr (${s}, ptr null, i32 0, i32 ${g.fieldIndex(t.struct, m.name)})`)
         } else {
             const method = findMethod(t.struct, m.name)
             if (method === null) process.panic(`no method ${m.name} for an itab`)
-            all.push(`ptr ${globalName(method.func.name)}`)
+            // A method that a subclass overrides is called through the class table of the instance.
+            if (g.tables.has(t.struct.id) && overridden(g.module.structs, t.struct, m.name)) all.push(`ptr ${virtualThunk(g, method.func)}`)
+            else all.push(`ptr ${globalName(method.func.name)}`)
         }
     }
     return `@itab.${t.id} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
+}
+
+/** The class table of a class with a base class or subclasses: its type id, then its methods by slot. */
+export function classTable(g: Emitter, s: StructType): string {
+    const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${typeId(s)})`]
+    for (const m of s.methods) all.push(`ptr ${globalName(m.func.name)}`)
+    return `@vt.${s.id} = internal constant [${all.length} x ptr] [${all.join(", ")}]`
 }

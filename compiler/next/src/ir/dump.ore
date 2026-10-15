@@ -102,7 +102,8 @@ class Dumper {
     }
 
     struct(s: StructType) {
-        this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}`)
+        const base = s.base
+        this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}${base !== null ? ` extends ${this.type(base)}` : ""}`)
         for (const f of s.fields) this.line(1, `field ${f.name}: ${this.type(f.type)}${f.readonly ? " readonly" : ""}${f.private ? " private" : ""}`)
         for (const m of s.methods) this.line(1, `method ${m.name}: ${this.ref(m.func)}${m.private ? " private" : ""}`)
         const ctor = s.ctor
@@ -423,7 +424,7 @@ class Dumper {
                 this.exprHead(e, depth, role, "alloc")
                 return
             case "method-call":
-                this.exprHead(e, depth, role, `method-call ${this.ref(e.func)}`)
+                this.exprHead(e, depth, role, `method-call ${this.ref(e.func)}${e.virtual ? " virtual" : ""}`)
                 this.expr(e.receiver, d, "receiver")
                 this.all(e.args, d, "arg")
                 return
@@ -494,7 +495,7 @@ class Dumper {
             case "bound-method": {
                 const func = e.func
                 const index = e.index
-                this.exprHead(e, depth, role, `bound-method${func !== null ? ` func=${this.ref(func)}` : ""}${index !== null ? ` index=${index}` : ""}`)
+                this.exprHead(e, depth, role, `bound-method${func !== null ? ` func=${this.ref(func)}` : ""}${index !== null ? ` index=${index}` : ""}${e.virtual ? " virtual" : ""}`)
                 this.expr(e.receiver, d, "receiver")
                 return
             }
