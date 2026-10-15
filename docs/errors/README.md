@@ -15,6 +15,8 @@ a code keeps its number once given.
 | [ORE1004](ORE1004.md) | Module specifier expected. |
 | [ORE1005](ORE1005.md) | Template continuation expected. |
 | [ORE1006](ORE1006.md) | Identifier expected. '…' is a reserved word in strict mode. … |
+| [ORE1007](ORE1007.md) | Unterminated regular expression literal. |
+| [ORE1008](ORE1008.md) | Invalid regular expression: …. |
 
 ## ORE2xxx: Types and constants
 
