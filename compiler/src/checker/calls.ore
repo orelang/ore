@@ -12,6 +12,7 @@ import {
     Alloc,
     Bind,
     BindLocal,
+    FieldGet,
     Block,
     BuiltinCall,
     BuiltinError,
@@ -25,6 +26,7 @@ import {
     Func,
     FuncRef,
     IfaceCall,
+    Index,
     IntLit,
     LetStmt,
     LocalRef,
@@ -123,15 +125,17 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
         if (call === null) return errorOperand
         const func = call.instance
         if (!(func instanceof Func)) return errorOperand
-        return callFunc(
-            c,
-            func,
-            args,
-            node,
-            scope,
-            `Function '${generic.name}'`,
-            null,
-            call.operands.length > 0 ? call.operands : null,
+        return call.bind(
+            callFunc(
+                c,
+                func,
+                call.args(args),
+                node,
+                scope,
+                `Function '${generic.name}'`,
+                null,
+                call.operands.length > 0 ? call.operands : null,
+            ),
         )
     }
     // Type arguments of a method call are checked with the method.
@@ -191,8 +195,8 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
         c.info.definitions.set(callee, symbol.decl)
     }
     const found = symbol
-    // Functions check spread arguments themselves, for rest parameters.
-    if (found.k !== "func")
+    // Functions, `console`, `Math.min` and `Math.max` check spread arguments themselves.
+    if (found.k !== "func" && !(found.k === "builtin" && spreadable(found.name)))
         for (const arg of args)
             if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
 
@@ -219,14 +223,54 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
         }
         case "builtin": {
             if (!found.name.startsWith("console.")) return builtinCall(c, found.name, found.decl, node, scope)
+            // Spread tuples print their elements, and spread arrays theirs, each value once, in order.
             const values: Expr[] = []
-            for (const arg of args) {
-                const value = checkExpr(c, arg, scope)
-                if (value.k === "error") continue
-                const expr = c.toDefault(value, arg)
-                if (printable(c, expr, arg)) values.push(expr)
+            const spread: bool[] = []
+            const locals: BindLocal[] = []
+            let spreads = false
+            const spreading = args.some((arg) => arg.kind === "SpreadElement")
+            const hold = (value: Expr): Expr => {
+                if (!spreading) return value
+                const local = c.newLocal("arg", value.type, false)
+                locals.push(new BindLocal(local, value))
+                return new LocalRef(value.type, local)
             }
-            return typed(new BuiltinCall(types.void, found.name, values))
+            for (const arg of args) {
+                const inner = arg.kind === "SpreadElement" ? expression(arg) : arg
+                const value = checkExpr(c, inner, scope)
+                if (value.k === "error") continue
+                const expr = c.toDefault(value, inner)
+                const type = expr.type
+                if (arg.kind === "SpreadElement" && type.kind === "struct" && type.tuple) {
+                    const tuple = hold(expr)
+                    for (const f of type.fields) {
+                        const part = new FieldGet(f.type, tuple, f.name)
+                        if (printable(c, part, inner)) {
+                            values.push(part)
+                            spread.push(false)
+                        }
+                    }
+                    continue
+                }
+                if (arg.kind === "SpreadElement") {
+                    if (type.kind !== "array") {
+                        c.error(inner, "Only an array or a tuple can be spread into arguments.")
+                        continue
+                    }
+                    if (printable(c, new Index(type.elem, expr, new IntLit(types.i64, 0)), inner)) {
+                        values.push(hold(expr))
+                        spread.push(true)
+                        spreads = true
+                    }
+                    continue
+                }
+                if (printable(c, expr, inner)) {
+                    values.push(hold(expr))
+                    spread.push(false)
+                }
+            }
+            const call = new BuiltinCall(types.void, found.name, values, null, null, spreads ? spread : null)
+            return bindAround(locals, typed(call))
         }
         case "func":
             return callFunc(c, found.func, args, node, scope, `Function '${found.func.sourceName}'`)
@@ -380,8 +424,102 @@ export function callback(
  * Checks a call of a built-in function by its declaration in builtin.d.ore;
  * `Math.abs`, `min` and `max` take and return any one numeric type.
  */
+/** Whether a built-in takes spread arguments. */
+function spreadable(name: string): bool {
+    return name.startsWith("console.") || name === "Math.min" || name === "Math.max"
+}
+
+/**
+ * `Math.min` and `Math.max` of any number of values of one numeric type, with
+ * arrays and tuples spread in; each value is evaluated once, in order.
+ */
+function minMax(c: Checker, name: string, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    if (args.length === 0) return c.fail(node, `'${name}' expects at least 1 argument(s), got 0.`)
+    const spreading = args.some((arg) => arg.kind === "SpreadElement")
+    const locals: BindLocal[] = []
+    const hold = (value: Expr): Expr => {
+        if (!spreading) return value
+        const local = c.newLocal("arg", value.type, false)
+        locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    // The values, with the node of each, and whether it is an array.
+    const operands: Operand[] = []
+    const nodes: Node[] = []
+    const spread: bool[] = []
+    for (const arg of args) {
+        if (arg.kind !== "SpreadElement") {
+            const value = checkExpr(c, arg, scope)
+            if (value.k === "error") return errorOperand
+            operands.push(value.k === "typed" ? typed(hold(value.expr)) : value)
+            nodes.push(arg)
+            spread.push(false)
+            continue
+        }
+        const inner = expression(arg)
+        const value = checkExpr(c, inner, scope)
+        if (value.k === "error") return errorOperand
+        const expr = c.toDefault(value, inner)
+        const type = expr.type
+        if (type.kind === "struct" && type.tuple) {
+            const tuple = hold(expr)
+            for (const f of type.fields) {
+                operands.push(typed(new FieldGet(f.type, tuple, f.name)))
+                nodes.push(inner)
+                spread.push(false)
+            }
+            continue
+        }
+        if (type.kind !== "array") return c.fail(inner, "Only an array or a tuple can be spread into arguments.")
+        operands.push(typed(hold(expr)))
+        nodes.push(inner)
+        spread.push(true)
+    }
+    // The type of the first typed value (an array's element type), or the default type of the constants.
+    let type: Type | null = null
+    for (let i = 0; i < operands.length; i++) {
+        const o = operands[i]
+        if (type === null && o.k === "typed") {
+            const t = o.expr.type
+            type = spread[i] && t.kind === "array" ? t.elem : t
+        }
+    }
+    if (type === null) {
+        let pick = operands[0]
+        for (const o of operands)
+            if (o.k === "untyped-float") {
+                pick = o
+                break
+            }
+        type = c.defaultType(pick)
+    }
+    const t = type
+    if (!isNumeric(t)) return c.fail(nodes[0], `'${name}' needs numbers, got '${typeToString(t)}'.`)
+    const values: Expr[] = []
+    for (let i = 0; i < operands.length; i++) {
+        const o = operands[i]
+        if (!spread[i]) {
+            values.push(c.coerce(o, t, nodes[i]))
+            continue
+        }
+        const array = o.k === "typed" ? o.expr : null
+        if (array === null) return errorOperand
+        const at = array.type
+        if (at.kind !== "array" || !sameType(at.elem, t))
+            return c.fail(
+                nodes[i],
+                `An array of '${typeToString(at)}' cannot be spread into '${name}' of '${typeToString(t)}'.`,
+            )
+        values.push(array)
+    }
+    const call = new BuiltinCall(t, name, values, null, null, spread.some((x) => x) ? spread : null)
+    return bindAround(locals, typed(call))
+}
+
 export function builtinCall(c: Checker, name: string, decl: Node, node: Node, scope: Scope): Operand {
     if (name === "JSON.stringify" || name === "JSON.parse") return jsonCall(c, name, node, scope)
+    if (name === "Math.min" || name === "Math.max") return minMax(c, name, node, scope)
     const generic = typeParameters(decl).length > 0
     if (name.startsWith("unsafe.") && generic) return unsafeCall(c, name, node, scope)
     const args = argsOf(node)
@@ -644,6 +782,78 @@ export function unsafeCall(c: Checker, name: string, node: Node, scope: Scope): 
     return c.fail(node, `Unknown function '${name}'.`)
 }
 
+/**
+ * Arguments with spread tuples taken apart: a node and an operand for each
+ * position. The arguments up to the last spread are checked and held in
+ * `locals` in order (after the receiver), so that each is evaluated once and
+ * in order; the operands of the later ones are null, for the caller to check.
+ */
+export class Expanded {
+    readonly nodes: Node[] = []
+    readonly operands: (Operand | null)[] = []
+    readonly locals: BindLocal[] = []
+    receiver: Expr | null = null
+}
+
+export function expandArgs(
+    c: Checker,
+    args: Node[],
+    scope: Scope,
+    typeAt: (i: int) => Type | null,
+    receiver: Expr | null,
+): Expanded | null {
+    const out = new Expanded()
+    const hold = (value: Expr): Expr => {
+        const local = c.newLocal("arg", value.type, false)
+        out.locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    if (receiver !== null) out.receiver = hold(receiver)
+    let last = -1
+    for (let i = 0; i < args.length; i++) if (args[i].kind === "SpreadElement") last = i
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+        if (arg.kind !== "SpreadElement") {
+            out.nodes.push(arg)
+            if (i > last) {
+                out.operands.push(null)
+                continue
+            }
+            const type = typeAt(out.nodes.length - 1)
+            const value = checkExpr(c, arg, scope, type)
+            if (value.k === "error") return null
+            out.operands.push(typed(hold(type !== null ? c.coerce(value, type, arg) : c.toDefault(value, arg))))
+            continue
+        }
+        const inner = expression(arg)
+        const value = checkExpr(c, inner, scope)
+        if (value.k === "error") return null
+        const tuple = c.toDefault(value, inner)
+        const tt = tuple.type
+        if (tt.kind !== "struct" || !tt.tuple) {
+            c.error(
+                arg,
+                tt.kind === "array"
+                    ? "A spread argument must be a tuple, or be passed to a rest parameter."
+                    : "Only an array or a tuple can be spread into arguments.",
+            )
+            return null
+        }
+        const held = hold(tuple)
+        for (const f of tt.fields) {
+            out.nodes.push(inner)
+            out.operands.push(typed(new FieldGet(f.type, held, f.name)))
+        }
+    }
+    return out
+}
+
+/** The call in `call`, after the locals that hold its arguments. */
+export function bindAround(locals: BindLocal[], call: Operand): Operand {
+    if (locals.length === 0 || call.k !== "typed") return call
+    return typed(new Bind(call.expr.type, locals, call.expr))
+}
+
 /** Calls a function value with arguments converted to its parameters. */
 export function callValue(c: Checker, callee: Operand, node: Node, scope: Scope): Operand {
     if (callee.k !== "typed")
@@ -651,15 +861,27 @@ export function callValue(c: Checker, callee: Operand, node: Node, scope: Scope)
     const type = callee.expr.type
     if (type.kind !== "func")
         return c.fail(expression(node), `A value of type '${typeToString(type)}' is not a function.`)
-    const args = argsOf(node)
-    for (const arg of args)
-        if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
+    let args = argsOf(node)
+    let fn = callee.expr
+    let operands: (Operand | null)[] = []
+    let locals: BindLocal[] = []
+    if (args.some((arg) => arg.kind === "SpreadElement")) {
+        const params = type.params
+        const expanded = expandArgs(c, args, scope, (i) => (i < params.length ? params[i] : null), fn)
+        if (expanded === null) return errorOperand
+        args = expanded.nodes
+        operands = expanded.operands
+        locals = expanded.locals
+        fn = expanded.receiver!
+    }
     if (args.length !== type.params.length)
         return c.fail(node, `This function expects ${type.params.length} argument(s), got ${args.length}.`)
     const values: Expr[] = []
-    for (let i = 0; i < args.length; i++)
-        values.push(c.coerce(checkExpr(c, args[i], scope, type.params[i]), type.params[i], args[i]))
-    return typed(new CallValue(type.result, callee.expr, values))
+    for (let i = 0; i < args.length; i++) {
+        const o = i < operands.length ? operands[i] : null
+        values.push(c.coerce(o ?? checkExpr(c, args[i], scope, type.params[i]), type.params[i], args[i]))
+    }
+    return bindAround(locals, typed(new CallValue(type.result, fn, values)))
 }
 
 /** `Chan<T>` or `Map<K, V>` from the type arguments of `new`, as the type reference would resolve them. */
@@ -691,8 +913,7 @@ function newMap(c: Checker, node: Node, scope: Scope, expected: Type | null): Op
     const typeArgs = typeArguments(node)
     if (args.length > 1) return c.fail(args[1], "'new Map' takes at most one argument: an array of [key, value] pairs.")
     const entries = args.length > 0 ? args[0] : null
-    if (entries !== null && entries.kind !== "ArrayLiteralExpression")
-        return c.fail(entries, "The entries of 'new Map' must be an array literal of [key, value] pairs.")
+    if (entries !== null && !literalPairs(entries)) return newMapFrom(c, node, entries, scope, expected)
     const pairs: Node[] = entries !== null ? elements(entries) : []
     for (const pair of pairs) {
         const kv: Node[] = pair.kind === "ArrayLiteralExpression" ? elements(pair) : []
@@ -738,6 +959,53 @@ function newMap(c: Checker, node: Node, scope: Scope, expected: Type | null): Op
         map = new MapOp("set", type, type, map, key, value)
     }
     return typed(map)
+}
+
+/** Whether the entries of `new Map` are an array literal of `[key, value]` literals. */
+function literalPairs(entries: Node): bool {
+    if (entries.kind !== "ArrayLiteralExpression") return false
+    for (const pair of elements(entries)) if (pair.kind !== "ArrayLiteralExpression") return false
+    return true
+}
+
+/** `new Map(entries)` from an array of `[K, V]` tuples, or a map whose entries it copies. */
+function newMapFrom(c: Checker, node: Node, entries: Node, scope: Scope, expected: Type | null): Operand {
+    const typeArgs = typeArguments(node)
+    let type: MapType | null = null
+    if (typeArgs.length > 0) {
+        const resolved = builtinGeneric(c, "Map", typeArgs, node, scope)
+        if (resolved === null || resolved.kind !== "map") return errorOperand
+        type = resolved
+    } else if (expected !== null && expected.kind === "map") {
+        type = expected
+    }
+    const context = type !== null ? arrayOf(c.tupleOf([type.key, type.value])) : null
+    const operand = checkExpr(c, entries, scope, context)
+    if (operand.k === "error") return errorOperand
+    const value = c.toDefault(operand, entries)
+    const vt = value.type
+    if (vt.kind === "map") {
+        // A copy of another map: its entries as tuples.
+        const mapType = type !== null ? type : vt
+        const from = c.coerce(typed(value), mapType, entries)
+        return typed(
+            new MapOp(
+                "new",
+                mapType,
+                mapType,
+                null,
+                null,
+                new MapOp("entries", arrayOf(c.tupleOf([mapType.key, mapType.value])), mapType, from),
+            ),
+        )
+    }
+    const pair = vt.kind === "array" ? vt.elem : null
+    if (pair === null || pair.kind !== "struct" || !pair.tuple || pair.fields.length !== 2)
+        return c.fail(entries, `'new Map' takes an array of [key, value] pairs, got '${typeToString(vt)}'.`)
+    if (type === null) type = c.mapOf(pair.fields[0].type, pair.fields[1].type, entries)
+    if (type === null) return errorOperand
+    const array = c.coerce(typed(value), arrayOf(c.tupleOf([type.key, type.value])), entries)
+    return typed(new MapOp("new", type, type, null, null, array))
 }
 
 /**
@@ -833,15 +1101,17 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         const instanceInfo = c.classInfos.get(instance.id)
         if (instanceInfo !== null && instanceInfo.abstract)
             return c.fail(node, `Cannot create an instance of an abstract class '${instance.name}'.`)
-        return callFunc(
-            c,
-            ctor,
-            args,
-            node,
-            scope,
-            `Constructor of '${instance.name}'`,
-            null,
-            call.operands.length > 0 ? call.operands : null,
+        return call.bind(
+            callFunc(
+                c,
+                ctor,
+                call.args(args),
+                node,
+                scope,
+                `Constructor of '${instance.name}'`,
+                null,
+                call.operands.length > 0 ? call.operands : null,
+            ),
         )
     }
     const type = symbol !== null ? symbol.type : null
@@ -996,10 +1266,8 @@ export function callFunc(
     const rest = signature !== null && signature.rest
     const fixed = rest ? params.length - 1 : params.length
     const required = signature !== null ? signature.required : params.length
+    if (args.some((arg) => arg.kind === "SpreadElement")) return spreadCall(c, func, args, node, scope, what, receiver)
     const given = args.slice(0, fixed)
-    for (const arg of given)
-        if (arg.kind === "SpreadElement")
-            return c.fail(arg, "Spread arguments are only supported for a rest parameter.")
     if (args.length < required || (!rest && args.length > fixed)) {
         const count = rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
         return c.fail(node, `${what} expects ${count} argument(s), got ${args.length}.`)
@@ -1011,27 +1279,131 @@ export function callFunc(
         values.push(c.coerce(operand_, params[i], given[i]))
     }
 
-    // Extra arguments form the rest array, unless a single `...array` is passed on.
+    // Extra arguments form the rest array.
     if (rest) {
         const array = params[fixed]
         if (array.kind !== "array") process.panic("callFunc: rest parameter is not an array")
-        const extra = args.slice(fixed)
-        if (extra.length === 1 && extra[0].kind === "SpreadElement") {
-            const spread = expression(extra[0])
-            values.push(c.coerce(checkExpr(c, spread, scope, array), array, spread))
-        } else if (extra.some((arg) => arg.kind === "SpreadElement")) {
-            // Arguments and spread arrays together, as in an array literal.
-            const elems = checkSpreadArray(c, node, extra, scope, array)
-            if (elems.k === "error") return errorOperand
-            values.push(c.coerce(elems, array, node))
-        } else {
-            const elems: Expr[] = []
-            for (const arg of extra) elems.push(c.coerce(checkExpr(c, arg, scope, array.elem), array.elem, arg))
-            // Before default values, which come only when there are no extra arguments.
-            if (values.length === fixed) values.push(new ArrayLit(array, elems))
+        const elems: Expr[] = []
+        for (let i = fixed; i < args.length; i++) {
+            const arg = args[i]
+            const operand_ =
+                operands !== null && i < operands.length ? operands[i] : checkExpr(c, arg, scope, array.elem)
+            elems.push(c.coerce(operand_, array.elem, arg))
         }
+        // Before default values, which come only when there are no extra arguments.
+        if (values.length === fixed) values.push(new ArrayLit(array, elems))
     }
+    return finishCall(c, func, values, receiver)
+}
 
+/**
+ * A call with spread arguments: arrays spread into the rest parameter, and
+ * tuples spread into any parameters. The arguments are held in locals in
+ * order, so that each is evaluated once, before the call.
+ */
+function spreadCall(
+    c: Checker,
+    func: Func,
+    args: Node[],
+    node: Node,
+    scope: Scope,
+    what: string,
+    receiver: Expr | null,
+): Operand {
+    const params = func.type.params
+    const signature = c.signatures.get(func.params)
+    const rest = signature !== null && signature.rest
+    const fixed = rest ? params.length - 1 : params.length
+    const required = signature !== null ? signature.required : params.length
+    // The rest array's type; a flag rather than null, as stage 0 of the bootstrap narrows differently.
+    const restType = rest ? params[fixed] : types.void
+    const array = restType.kind === "array" ? restType : arrayOf(types.i64)
+    const locals: BindLocal[] = []
+    const hold = (value: Expr): Expr => {
+        const local = c.newLocal("arg", value.type, false)
+        locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    const self = receiver !== null ? hold(receiver) : null
+    const values: Expr[] = []
+    const elems: Expr[] = []
+    const spread: bool[] = []
+    let spreads = false
+    let count = 0
+    // The type of the argument at the next position, or null past the parameters.
+    const next = (): Type | null => {
+        if (count < fixed) return params[count]
+        return rest ? array.elem : null
+    }
+    const put = (value: Expr) => {
+        if (count < fixed) values.push(value)
+        else {
+            elems.push(value)
+            spread.push(false)
+        }
+        count++
+    }
+    for (const arg of args) {
+        if (arg.kind !== "SpreadElement") {
+            const type = next()
+            if (type === null) {
+                count++
+                continue
+            }
+            const value = checkExpr(c, arg, scope, type)
+            if (value.k === "error") return errorOperand
+            put(hold(c.coerce(value, type, arg)))
+            continue
+        }
+        const inner = expression(arg)
+        const operand_ = checkExpr(c, inner, scope, count >= fixed && rest ? array : null)
+        if (operand_.k === "error") return errorOperand
+        const value = c.toDefault(operand_, inner)
+        const vt = value.type
+        if (vt.kind === "struct" && vt.tuple) {
+            const tuple = hold(value)
+            for (const f of vt.fields) {
+                const type = next()
+                if (type === null) {
+                    count++
+                    continue
+                }
+                put(c.coerce(typed(new FieldGet(f.type, tuple, f.name)), type, inner))
+            }
+            continue
+        }
+        if (vt.kind !== "array") return c.fail(inner, "Only an array or a tuple can be spread into arguments.")
+        if (count < fixed || !rest)
+            return c.fail(arg, "A spread argument must be a tuple, or be passed to a rest parameter.")
+        if (!sameType(vt.elem, array.elem))
+            return c.fail(
+                inner,
+                `An array of '${typeToString(vt.elem)}' cannot be spread into an array of '${typeToString(array.elem)}'.`,
+            )
+        elems.push(hold(value))
+        spread.push(true)
+        spreads = true
+    }
+    if (count < required || (!rest && count > fixed)) {
+        const expects = rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
+        return c.fail(node, `${what} expects ${expects} argument(s), got ${count}.`)
+    }
+    if (rest && values.length === fixed) {
+        // A single spread array is passed on; otherwise the rest array is built.
+        if (elems.length === 1 && spreads) values.push(elems[0])
+        else values.push(new ArrayLit(array, elems, spreads ? spread : null))
+    }
+    const call = finishCall(c, func, values, self)
+    if (call.k !== "typed") return call
+    return typed(new Bind(call.expr.type, locals, call.expr))
+}
+
+/** A call of `func` with `values`, and the default values of the parameters left. */
+function finishCall(c: Checker, func: Func, values: Expr[], receiver: Expr | null): Operand {
+    const params = func.type.params
+    const signature = c.signatures.get(func.params)
+    const rest = signature !== null && signature.rest
+    const fixed = rest ? params.length - 1 : params.length
     if (values.length >= params.length) {
         if (receiver !== null) return typed(new MethodCall(func.type.result, func, receiver, values))
         return typed(new Call(func.type.result, func, values))
@@ -1116,6 +1488,8 @@ function mapArity(name: string): int {
             return 0
         case "values":
             return 0
+        case "entries":
+            return 0
     }
     return -1
 }
@@ -1134,6 +1508,8 @@ function mapOpName(name: string): MapOpName {
             return "clear"
         case "keys":
             return "keys"
+        case "entries":
+            return "entries"
         default:
             return "values"
     }
@@ -1180,19 +1556,22 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     if (type.kind === "struct" && generic !== null) {
         defineMember(c, nameId, type, name)
         if (!checkAccess(c, type, generic.private, name, nameId)) return errorOperand
-        const call = genericCall(c, generic.generic, parameters(generic.generic.decl), typeArgs, args, node, scope)
+        const params = parameters(generic.generic.decl)
+        const call = genericCall(c, generic.generic, params, typeArgs, args, node, scope, value)
         if (call === null) return errorOperand
         const instance = call.instance
         if (!(instance instanceof Func)) return errorOperand
-        return callFunc(
-            c,
-            instance,
-            args,
-            node,
-            scope,
-            `Method '${type.name}.${name}'`,
-            value,
-            call.operands.length > 0 ? call.operands : null,
+        return call.bind(
+            callFunc(
+                c,
+                instance,
+                call.args(args),
+                node,
+                scope,
+                `Method '${type.name}.${name}'`,
+                call.self(value),
+                call.operands.length > 0 ? call.operands : null,
+            ),
         )
     }
     if (type.kind === "struct") {
@@ -1215,18 +1594,30 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             if (m.name !== name) continue
             if (m.k === "method") {
                 defineMember(c, nameId, type, name)
-                for (const arg of args)
-                    if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
                 const params = m.type.params
-                if (args.length !== params.length)
+                let given = args
+                let self = value
+                let operands: (Operand | null)[] = []
+                let locals: BindLocal[] = []
+                if (args.some((arg) => arg.kind === "SpreadElement")) {
+                    const expanded = expandArgs(c, args, scope, (i) => (i < params.length ? params[i] : null), value)
+                    if (expanded === null) return errorOperand
+                    given = expanded.nodes
+                    operands = expanded.operands
+                    locals = expanded.locals
+                    self = expanded.receiver!
+                }
+                if (given.length !== params.length)
                     return c.fail(
                         node,
-                        `Method '${type.name}.${name}' expects ${params.length} argument(s), got ${args.length}.`,
+                        `Method '${type.name}.${name}' expects ${params.length} argument(s), got ${given.length}.`,
                     )
                 const values: Expr[] = []
-                for (let i = 0; i < args.length; i++)
-                    values.push(c.coerce(checkExpr(c, args[i], scope, params[i]), params[i], args[i]))
-                return typed(new IfaceCall(m.type.result, value, index, m.type, values))
+                for (let i = 0; i < given.length; i++) {
+                    const o = i < operands.length ? operands[i] : null
+                    values.push(c.coerce(o ?? checkExpr(c, given[i], scope, params[i]), params[i], given[i]))
+                }
+                return bindAround(locals, typed(new IfaceCall(m.type.result, self, index, m.type, values)))
             }
             if (m.type.kind === "func") return callValue(c, member(c, value, nameId, name), node, scope)
             return c.fail(nameId, `Field '${name}' is not a method.`)
@@ -1265,6 +1656,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         else if (op === "has" || op === "delete") result = types.bool
         else if (op === "keys") result = arrayOf(type.key)
         else if (op === "values") result = arrayOf(type.value)
+        else if (op === "entries") result = arrayOf(c.tupleOf([type.key, type.value]))
         else result = types.void
         return typed(new MapOp(op, result, type, value, key, val))
     }

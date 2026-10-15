@@ -394,7 +394,9 @@ class Dumper {
                 const error = e.error
                 if (error !== null) text += ` error=${this.ref(error.ctor)} itab=${error.itab.id}`
                 this.exprHead(e, depth, role, text)
-                this.all(e.args, d, "arg")
+                const spread = e.spread
+                for (let i = 0; i < e.args.length; i++)
+                    this.expr(e.args[i], d, spread !== null && spread[i] ? "spread" : "arg")
                 return
             }
             case "cond":

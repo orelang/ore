@@ -1,6 +1,7 @@
 // Modules, directives, declarations of functions and types, generics, classes
 // and interfaces.
 
+import { bindAround, type Expanded, expandArgs } from "./calls"
 import { type Expr, type Stmt, Block, Func, FuncAttributes, Local, LocalRef } from "../ir/nodes"
 import {
     type InterfaceType,
@@ -94,7 +95,7 @@ import {
     typed,
 } from "./helpers"
 import { type Operand, Typed } from "./operand"
-import { checkBlock, checkClosure, bindPattern } from "./statements"
+import { checkBlock, checkClosure, checkTupleOf, bindPattern } from "./statements"
 import {
     type Exported,
     type Instance,
@@ -949,6 +950,12 @@ export function inferFrom(
         if (type.kind === "array") inferFrom(c, elementType(n), type.elem, names, bindings, scope)
         return
     }
+    if (n.kind === "TupleType") {
+        const elems = n.list("elements")
+        if (type.kind === "struct" && type.tuple && type.fields.length === elems.length)
+            for (let i = 0; i < elems.length; i++) inferFrom(c, elems[i], type.fields[i].type, names, bindings, scope)
+        return
+    }
     if (n.kind === "TypeReference" && isIdentifier(n.child("typeName")!)) {
         const name = n.child("typeName")!.text
         const typeArgs = typeArguments(n)
@@ -1053,7 +1060,28 @@ export class GenericCall {
     constructor(
         readonly instance: Instance,
         readonly operands: Operand[],
+        /** With spread tuples: the arguments per position, and the locals that hold them (see `Expanded`). */
+        readonly expanded: Expanded | null = null,
     ) {}
+
+    /** The arguments, one per position. */
+    args(given: Node[]): Node[] {
+        const expanded = this.expanded
+        return expanded !== null ? expanded.nodes : given
+    }
+
+    /** The call, after the locals that hold its arguments. */
+    bind(call: Operand): Operand {
+        const expanded = this.expanded
+        return expanded !== null ? bindAround(expanded.locals, call) : call
+    }
+
+    /** The receiver of a method call, held before the arguments. */
+    self(given: Expr): Expr {
+        const expanded = this.expanded
+        const receiver = expanded !== null ? expanded.receiver : null
+        return receiver !== null ? receiver : given
+    }
 }
 
 /** Whether an argument is a function literal for a parameter such as `f: (x: T) => U`, checked after the others. */
@@ -1076,17 +1104,27 @@ export function genericCall(
     generic: Generic,
     params: Node[],
     typeArgs: Node[],
-    args: Node[],
+    given: Node[],
     node: Node,
     scope: Scope,
+    receiver: Expr | null = null,
 ): GenericCall | null {
-    for (const arg of args) {
-        if (arg.kind === "SpreadElement") {
-            c.error(arg, "Spread arguments are not supported yet.")
-            return null
-        }
-    }
     const names = generic.params.map((p) => nameNode(p).text)
+    // Spread tuples are taken apart first, unless the type arguments are given: then the call checks them.
+    let args = given
+    let expanded: Expanded | null = null
+    const held: (Operand | null)[] = []
+    if (typeArgs.length === 0 && given.some((arg) => arg.kind === "SpreadElement")) {
+        const typeAt = (i: int): Type | null => {
+            const p = i < params.length ? typeNode(params[i]) : null
+            return p !== null && !mentions(p, names) ? c.resolveType(p, generic.scope) : null
+        }
+        const found = expandArgs(c, given, scope, typeAt, receiver)
+        if (found === null) return null
+        expanded = found
+        args = found.nodes
+        for (const o of found.operands) held.push(o)
+    }
     if (typeArgs.length > 0) {
         // With explicit type arguments, the arguments are checked against the instance.
         const explicit: Type[] = []
@@ -1104,12 +1142,25 @@ export function genericCall(
     const found: (Operand | null)[] = []
     for (let i = 0; i < args.length; i++) {
         const p = i < params.length ? typeNode(params[i]) : null
+        const o = i < held.length ? held[i] : null
+        if (o !== null) {
+            found.push(o)
+            continue
+        }
         if (deferred(args[i], p, names)) {
             found.push(null)
             continue
         }
         const expected = p !== null && !mentions(p, names) ? c.resolveType(p, generic.scope) : null
-        found.push(checkExpr(c, args[i], scope, expected))
+        // An array literal for a tuple parameter such as `[A, B]` is a tuple of its elements' types.
+        const tuple =
+            expected === null &&
+            p !== null &&
+            p.kind === "TupleType" &&
+            args[i].kind === "ArrayLiteralExpression" &&
+            elements(args[i]).length === p.list("elements").length &&
+            elements(args[i]).every((e) => e.kind !== "SpreadElement")
+        found.push(tuple ? checkTupleOf(c, args[i], scope) : checkExpr(c, args[i], scope, expected))
     }
     const bindings = new Map<string, Type>()
     for (let i = 0; i < args.length; i++) bindArg(c, generic, params, found, i, names, bindings)
@@ -1145,7 +1196,7 @@ export function genericCall(
     const typeArgsResolved = inferTypeArgs(c, generic, params, argTypes, node)
     if (typeArgsResolved === null) return null
     const instance = instantiate(c, generic, typeArgsResolved, node)
-    return instance !== null ? new GenericCall(instance, operands) : null
+    return instance !== null ? new GenericCall(instance, operands, expanded) : null
 }
 
 /** Binds the type parameters mentioned by the parameter of argument `i` from the argument's type. */

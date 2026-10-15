@@ -2,9 +2,9 @@
 // inline assembly).
 
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
-import { typeKey, type FuncType, type Type, type UnionType } from "../ir/types"
-import { json } from "./json"
-import { FN, IFACE, STR } from "./context"
+import { intRange, typeKey, type FuncType, type Type, type UnionType } from "../ir/types"
+import { counted, json } from "./json"
+import { ARRAY, FN, IFACE, STR } from "./context"
 import { Emitter } from "./base"
 import { choose, expr, inject, payload, slotTest, unionOf } from "./expressions"
 import { externType, slot } from "./functions"
@@ -337,15 +337,58 @@ const libm = [
     "trunc",
 ]
 
+/** The start of `Math.max` (or `Math.min`) over no values: -Infinity (Infinity), or the integer type's extreme. */
+function identity(max: bool, t: Type): string {
+    if (t.kind === "float") return max ? "0xFFF0000000000000" : "0x7FF0000000000000"
+    if (t.kind !== "int") return "0"
+    const range = intRange(t)
+    if (t.signed) return max ? `${range.min}` : `${range.max}`
+    // All ones: the largest unsigned value.
+    return max ? "0" : "-1"
+}
+
 export function builtin(g: Emitter, e: BuiltinCall): V {
     const name = e.name
     if (name === "console.log" || name === "console.error" || name === "console.write") {
         const values: V[] = []
         for (const a of e.args) values.push(expr(g, a))
         if (name === "console.error") g.rt("ore_rt_print_to", [g.i64(2)])
-        for (let i = 0; i < values.length; i++) {
-            if (i > 0) g.rt("ore_rt_print_space", [])
-            print(g, values[i], e.args[i].type)
+        const spread = e.spread
+        if (spread === null) {
+            for (let i = 0; i < values.length; i++) {
+                if (i > 0) g.rt("ore_rt_print_space", [])
+                print(g, values[i], e.args[i].type)
+            }
+        } else {
+            // A space before every value but the first printed, which a spread empty array leaves unknown until run time.
+            const first = g.b.alloca("i1")
+            g.b.emit(`store i1 true, ptr ${first}`)
+            const one = (v: V, type: Type) => {
+                const space = g.b.label("space")
+                const after = g.b.label("printed")
+                g.b.condBr(g.b.value("i1", `load i1, ptr ${first}`), after, space)
+                g.b.start(space)
+                g.rt("ore_rt_print_space", [])
+                g.b.br(after)
+                g.b.start(after)
+                g.b.emit(`store i1 false, ptr ${first}`)
+                print(g, v, type)
+            }
+            for (let i = 0; i < values.length; i++) {
+                const at = e.args[i].type
+                if (!spread[i] || at.kind !== "array") {
+                    one(values[i], at)
+                    continue
+                }
+                const elem = at.elem
+                const array = values[i]
+                const n = g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
+                counted(g, n, (k) => {
+                    const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
+                    const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${k.v}`)
+                    one(g.load(place.v, elem), elem)
+                })
+            }
         }
         if (name !== "console.write") g.rt("ore_rt_print_newline", [])
         if (name === "console.error") g.rt("ore_rt_print_to", [g.i64(1)])
@@ -389,21 +432,46 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
             )
         case "Math.min":
         case "Math.max": {
-            const x = a[0]
-            const y = a[1]
             const isFloat = t.kind === "float"
             const signed = t.kind === "int" && t.signed
             let pick: string
             if (name === "Math.min") pick = isFloat ? "olt" : signed ? "slt" : "ult"
             else pick = isFloat ? "ogt" : signed ? "sgt" : "ugt"
-            // `b_ < a_ ? b_ : a_`, with NaN if either is NaN.
-            const yWins = g.b.value("i1", `${isFloat ? "fcmp" : "icmp"} ${pick} ${ty} ${y.v}, ${x.v}`)
-            let r = g.b.value(ty, `select i1 ${yWins.v}, ${ty} ${y.v}, ${ty} ${x.v}`)
-            if (isFloat) {
-                const nan = g.b.value("i1", `fcmp uno ${ty} ${x.v}, ${y.v}`)
-                r = g.b.value(ty, `select i1 ${nan.v}, ${ty} 0x7FF8000000000000, ${ty} ${r.v}`)
+            // `y < x ? y : x`, with NaN if either is NaN.
+            const better = (x: V, y: V): V => {
+                const yWins = g.b.value("i1", `${isFloat ? "fcmp" : "icmp"} ${pick} ${ty} ${y.v}, ${x.v}`)
+                let r = g.b.value(ty, `select i1 ${yWins.v}, ${ty} ${y.v}, ${ty} ${x.v}`)
+                if (isFloat) {
+                    const nan = g.b.value("i1", `fcmp uno ${ty} ${x.v}, ${y.v}`)
+                    r = g.b.value(ty, `select i1 ${nan.v}, ${ty} 0x7FF8000000000000, ${ty} ${r.v}`)
+                }
+                return r
             }
-            return r
+            const spread = e.spread
+            if (spread === null) {
+                let r = a[0]
+                for (let i = 1; i < a.length; i++) r = better(r, a[i])
+                return r
+            }
+            // From the identity (an infinity, or the extreme of the integer type), through every value and element.
+            const acc = g.b.alloca(ty)
+            g.b.emit(`store ${ty} ${identity(name === "Math.max", t)}, ptr ${acc}`)
+            const fold = (v: V) => {
+                g.b.emit(`store ${ty} ${better(g.b.value(ty, `load ${ty}, ptr ${acc}`), v).v}, ptr ${acc}`)
+            }
+            for (let i = 0; i < a.length; i++) {
+                if (!spread[i]) {
+                    fold(a[i])
+                    continue
+                }
+                const array = a[i]
+                const n = g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
+                counted(g, n, (k) => {
+                    const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
+                    fold(g.load(g.b.value("ptr", `getelementptr ${ty}, ptr ${data.v}, i64 ${k.v}`).v, t))
+                })
+            }
+            return g.b.value(ty, `load ${ty}, ptr ${acc}`)
         }
         case "Math.round":
             return g.rt("ore_rt_round", [a[0]])

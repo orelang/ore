@@ -16,7 +16,20 @@ import {
 import { callClosure, helper, toStr, virtualThunk } from "./calls"
 import { ARRAY, FN, MAP, STR } from "./context"
 import { Emitter } from "./base"
-import { choose, compare, convert, equals, expr, inject, payload, recast, slotTest, unionOf } from "./expressions"
+import {
+    choose,
+    compare,
+    convert,
+    equals,
+    expr,
+    fieldPtr,
+    inject,
+    payload,
+    recast,
+    slotTest,
+    unionOf,
+} from "./expressions"
+import { counted } from "./json"
 import { typeId } from "./helpers"
 import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
 
@@ -372,12 +385,31 @@ export function mapOp(g: Emitter, e: MapOp): V {
     switch (e.op) {
         case "new": {
             const keys = keyFunctions(g, K)
-            return g.rt("ore_rt_map_new", [
+            const m = g.rt("ore_rt_map_new", [
                 { ty: "i64", v: sizeOf(kt) },
                 { ty: "i64", v: sizeOf(vt) },
                 { ty: "ptr", v: keys.hash },
                 { ty: "ptr", v: keys.eq },
             ])
+            // With entries: an array of [key, value] tuples, set in order.
+            const entries = e.value
+            if (entries === null) return m
+            const at = entries.type
+            const pair = at.kind === "array" ? at.elem : at
+            if (pair.kind !== "struct") process.panic("new Map: entries are not tuples")
+            const array = expr(g, entries)
+            const n = g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
+            const k = g.b.alloca(kt)
+            const v = g.b.alloca(vt)
+            counted(g, n, (i) => {
+                const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
+                const place = g.b.value("ptr", `getelementptr ptr, ptr ${data.v}, i64 ${i.v}`)
+                const entry = g.b.value("ptr", `load ptr, ptr ${place.v}`)
+                g.store(g.load(fieldPtr(g, entry.v, pair, "0"), K), k, K)
+                g.store(g.load(fieldPtr(g, entry.v, pair, "1"), valueType), v, valueType)
+                g.rt("ore_rt_map_set", [m, { ty: "ptr", v: k }, { ty: "ptr", v }])
+            })
+            return m
         }
         case "size":
             if (map === null) process.panic("map.size without a map")
@@ -392,6 +424,30 @@ export function mapOp(g: Emitter, e: MapOp): V {
         case "values":
             if (map === null) process.panic("map.values without a map")
             return g.rt("ore_rt_map_values", [expr(g, map)])
+        case "entries": {
+            if (map === null) process.panic("map.entries without a map")
+            const at = e.type
+            const pair = at.kind === "array" ? at.elem : at
+            if (pair.kind !== "struct") process.panic("map.entries: not tuples")
+            const m = expr(g, map)
+            const out = g.rt("ore_rt_array_new", [g.i64(8), g.i64(0)])
+            const count = g.b.value("i64", `load i64, ptr ${g.field(m.v, MAP, 6)}`)
+            counted(g, count, (i) => {
+                const live = g.b.label("live")
+                const dead = g.b.label("dead")
+                g.b.condBr(g.rtBool("ore_rt_map_live", [m, i]), live, dead)
+                g.b.start(live)
+                const s = g.structType(pair)
+                const entry = g.alloc(s)
+                g.store(g.load(g.rt("ore_rt_map_key", [m, i]).v, K), fieldPtr(g, entry.v, pair, "0"), K)
+                const value = g.load(g.rt("ore_rt_map_value", [m, i]).v, valueType)
+                g.store(value, fieldPtr(g, entry.v, pair, "1"), valueType)
+                g.store(entry, g.rt("ore_rt_array_push", [out, g.i64(8)]).v, pair)
+                g.b.br(dead)
+                g.b.start(dead)
+            })
+            return out
+        }
         default:
             break
     }

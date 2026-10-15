@@ -1047,7 +1047,20 @@ class Reader {
                     error = new BuiltinError(ctor, this.itab(c.int(), c))
                 }
                 const type = this.exprType(c)
-                return new BuiltinCall(type, name, this.exprs(d, "arg"), error, typeArgs)
+                const args: Expr[] = []
+                const spread: bool[] = []
+                let any = false
+                while (true) {
+                    if (this.has(d, "arg: ")) {
+                        args.push(this.expr(d, "arg"))
+                        spread.push(false)
+                    } else if (this.has(d, "spread: ")) {
+                        args.push(this.expr(d, "spread"))
+                        spread.push(true)
+                        any = true
+                    } else break
+                }
+                return new BuiltinCall(type, name, args, error, typeArgs, any ? spread : null)
             }
             case "cond": {
                 const type = this.exprType(c)
@@ -1358,6 +1371,8 @@ class Reader {
                 return "keys"
             case "values":
                 return "values"
+            case "entries":
+                return "entries"
             default:
                 this.fail(`unknown map operation ${JSON.stringify(op)}`)
                 return "new"

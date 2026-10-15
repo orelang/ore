@@ -40,10 +40,13 @@ namespaces, exceptions, generators, `delete`, `in`, `for...in`, default
 exports, type assertions (Ore converts: `i32(x)`).
 
 - Expressions and statements, in order:
-  - spread arguments: anywhere among the rest arguments and in `push`
-    (done), and a tuple spread into any parameters;
+  - spread arguments: among the rest arguments, in `push`, `console.log`,
+    `Math.min`/`Math.max` (any number of values), and tuples into any
+    parameters (done);
   - tuples `[A, B]`: literals, constant indexing, `length`, destructuring,
-    JSON as arrays; `new Map(entries)` from any array of pairs;
+    JSON as arrays; `new Map(entries)` from any array of pairs (done);
+  - `NaN`, `Infinity` and the constants of `Number`;
+  - `JSON.stringify(value, replacer, space)` as in JavaScript;
   - narrowing through `||` and by assigning with `?:`;
   - object spread `{ ...o }`;
   - methods and accessors in object literals;
@@ -72,6 +75,10 @@ exports, type assertions (Ore converts: `i32(x)`).
 - The language server on the checker: hover, go to definition, completion,
   references, rename, signature help; JSDoc comments shown in hover and
   completion.
+- Diagnostics with codes (`ORE1234`) and a page per code in the
+  documentation, linked from the editor (`codeDescription`) and printed by
+  the command line; messages that explain the cause and the fix, with the
+  related places (`relatedInformation`).
 
 ## 5. Own garbage collector
 

@@ -550,6 +550,8 @@ export class BuiltinCall {
         public error?: BuiltinError,
         /** Type arguments, for `JSON.parse<T>` and the generic `unsafe` functions. */
         public typeArgs?: Type[],
+        /** For `console.log(...array)`: for each argument, whether it is an array whose elements are printed. */
+        public spread: bool[] | null = null,
     ) {}
 }
 
@@ -821,12 +823,13 @@ export class Downcast {
 }
 
 /** The operations of `MapOp` (an inline union in TypeScript). */
-export type MapOpName = "new" | "get" | "set" | "has" | "delete" | "clear" | "size" | "keys" | "values"
+export type MapOpName = "new" | "get" | "set" | "has" | "delete" | "clear" | "size" | "keys" | "values" | "entries"
 
 /**
  * An operation of `Map`: `new Map()`, `map.get(key)` (the value or null),
  * `map.set(key, value)` (the map), `has`, `delete`, `clear`, `size`, and
- * `keys` / `values` as arrays in insertion order.
+ * `keys` / `values` / `entries` (`[key, value]` tuples) as arrays in
+ * insertion order. `new` with `value`, an array of tuples, sets them in order.
  */
 export class MapOp {
     readonly k: "map" = "map"

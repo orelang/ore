@@ -13,6 +13,8 @@ import {
     ContinueStmt,
     Downcast,
     ExprStmt,
+    FieldGet,
+    FieldInit,
     ForOfStmt,
     Func,
     IfaceCall,
@@ -26,6 +28,7 @@ import {
     LocalRef,
     LoopStmt as LoopStmtClass,
     MethodCall,
+    ObjectLit,
     Not,
     Recast,
     ReturnStmt,
@@ -483,7 +486,10 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
                 continue
             }
             const declared = annotation !== null ? c.resolveValueType(annotation, scope) : null
-            const value = checkExpr(c, init_, scope, declared)
+            const value =
+                declared === null && patternTuple(nameId, init_)
+                    ? checkTupleOf(c, init_, scope)
+                    : checkExpr(c, init_, scope, declared)
             if (value.k === "error") continue
             const init = declared !== null ? c.coerce(value, declared, init_) : c.toDefault(value, init_)
             bindPattern(c, nameId, init, !isConst, scope, out)
@@ -605,11 +611,23 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
         return
     }
     const array = whole.type
+    const elems = elements(name)
+    if (array.kind === "struct" && array.tuple) {
+        const parts = tupleParts(c, name, array, whole, elems, (e) => dotDotDotToken(e) !== null)
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i]
+            const e = elems[i]
+            if (part === null || e.kind === "OmittedExpression") continue
+            const init = initializer(e)
+            if (init !== null) c.error(init, "Default values in destructuring are not supported.")
+            bindPattern(c, nameNode(e), part, mutable, scope, out)
+        }
+        return
+    }
     if (array.kind !== "array") {
         c.error(name, `Type '${typeToString(array)}' cannot be destructured as an array.`)
         return
     }
-    const elems = elements(name)
     for (let i = 0; i < elems.length; i++) {
         const e = elems[i]
         if (e.kind === "OmittedExpression") continue
@@ -620,6 +638,44 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
             dotDotDotToken(e) !== null ? new Slice(array, whole, index) : new Index(array.elem, whole, index)
         bindPattern(c, nameNode(e), part, mutable, scope, out)
     }
+}
+
+/**
+ * The parts of a tuple for the elements of an array pattern: the element at
+ * each position, and for a rest element a new tuple of the elements left.
+ */
+function tupleParts(
+    c: Checker,
+    pattern: Node,
+    tuple: StructType,
+    whole: Expr,
+    elems: Node[],
+    isRest: (e: Node) => bool,
+): (Expr | null)[] {
+    const parts: (Expr | null)[] = []
+    const n = tuple.fields.length
+    for (let i = 0; i < elems.length; i++) {
+        const e = elems[i]
+        if (isRest(e)) {
+            const fields: FieldInit[] = []
+            const types_: Type[] = []
+            for (let j = i; j < n; j++) {
+                const f = tuple.fields[j]
+                fields.push(new FieldInit(`${j - i}`, new FieldGet(f.type, whole, f.name)))
+                types_.push(f.type)
+            }
+            parts.push(new ObjectLit(c.tupleOf(types_), fields))
+            continue
+        }
+        if (i >= n) {
+            c.error(e, `Tuple type '${typeToString(tuple)}' of length ${n} has no element at index ${i}.`)
+            parts.push(null)
+            continue
+        }
+        const f = tuple.fields[i]
+        parts.push(new FieldGet(f.type, whole, f.name))
+    }
+    return parts
 }
 
 export function declareBinding(c: Checker, name: Node, init: Expr, mutable: bool, scope: Scope, out: Stmt[]) {
@@ -643,9 +699,41 @@ class Destructuring {
     }
 }
 
+/**
+ * Whether an array literal destructured by an array pattern is a tuple, as
+ * the pattern's context makes it in TypeScript: `[a, b] = [b, a]`, `const
+ * [n, s] = [1, "one"]`. Not with a rest element or a spread.
+ */
+function patternTuple(pattern: Node, value: Node): bool {
+    if (value.kind !== "ArrayLiteralExpression") return false
+    if (pattern.kind !== "ArrayBindingPattern" && pattern.kind !== "ArrayLiteralExpression") return false
+    for (const e of elements(pattern))
+        if (e.kind === "SpreadElement" || (e.kind === "BindingElement" && dotDotDotToken(e) !== null)) return false
+    for (const e of elements(value)) if (e.kind === "SpreadElement" || e.kind === "OmittedExpression") return false
+    return true
+}
+
+/** An array literal as a tuple of the default types of its elements. */
+export function checkTupleOf(c: Checker, node: Node, scope: Scope): Operand {
+    const values: Expr[] = []
+    for (const e of elements(node)) {
+        const value = checkExpr(c, e, scope)
+        if (value.k === "error") return value
+        const expr = c.toDefault(value, e)
+        if (expr.type.kind === "void" || expr.type.kind === "never")
+            return c.fail(e, `A tuple cannot contain values of type '${expr.type.kind}'.`)
+        values.push(expr)
+    }
+    const fields: FieldInit[] = []
+    for (let i = 0; i < values.length; i++) fields.push(new FieldInit(`${i}`, values[i]))
+    return typed(new ObjectLit(c.tupleOf(values.map((v) => v.type)), fields))
+}
+
 /** `[a, b] = value` or `({ a, b } = value)`: assigns the parts of the value; evaluates to the value. */
 export function checkDestructuringAssign(c: Checker, node: Node, scope: Scope): Operand {
-    const operand_ = checkExpr(c, right(node), scope)
+    const operand_ = patternTuple(left(node), right(node))
+        ? checkTupleOf(c, right(node), scope)
+        : checkExpr(c, right(node), scope)
     if (operand_.k === "error") return operand_
     const value = c.toDefault(operand_, right(node))
     const state = new Destructuring()
@@ -662,6 +750,17 @@ function destructure(c: Checker, state: Destructuring, target: Node, part: Expr,
     if (target.kind === "ArrayLiteralExpression") {
         const whole = state.hold(c, part)
         const array = whole.type
+        if (array.kind === "struct" && array.tuple) {
+            const elems = elements(target)
+            const parts = tupleParts(c, target, array, whole, elems, (e) => e.kind === "SpreadElement")
+            for (let i = 0; i < parts.length; i++) {
+                const p = parts[i]
+                const e = elems[i]
+                if (p === null || e.kind === "OmittedExpression") continue
+                destructure(c, state, e.kind === "SpreadElement" ? expression(e) : e, p, scope)
+            }
+            return
+        }
         if (array.kind !== "array") {
             c.error(target, `Type '${typeToString(array)}' cannot be destructured as an array.`)
             return

@@ -3,6 +3,16 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
+## Unreleased
+
+- Tuples `[A, B]`: literals in their context, constant indexing, `length`,
+  destructuring (an array literal destructured by an array pattern is one),
+  inference of generic parameters, JSON as arrays. `new Map(entries)` from
+  any array of `[K, V]` tuples or another map, and `map.entries()`.
+- Spread arguments: arrays among the rest arguments (`f(1, ...xs, 2)`) and
+  into `push`, `console.log`, `Math.min` and `Math.max`, which take any number
+  of values; tuples into any parameters, array literals and tuples.
+
 ## 0.1.1
 
 - Code is generated for the baseline CPU of the architecture instead of the

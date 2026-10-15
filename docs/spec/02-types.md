@@ -86,8 +86,11 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
   `function f({ x, y }: Point)`, `for (const [k, v] of pairs)`,
   `[a, b] = [b, a]`. Object patterns read fields of classes, object types and
   interfaces; array patterns read elements of arrays, with bounds checks, and
-  `...rest` is a copy of the remaining elements. Default values and rest
-  elements in object patterns are not supported.
+  `...rest` is a copy of the remaining elements, or elements of
+  [tuples](#tuples), where `...rest` is a tuple of the elements left. An
+  array literal destructured by an array pattern without a rest element is
+  a tuple: `const [n, s] = [1, "one"]`. Default values and rest elements in
+  object patterns are not supported.
 
 ## Built-in namespaces
 
@@ -107,7 +110,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.cpus()` | the number of CPUs online |
 | `process.run(program, args?)`, `process.output(program, args?)`, `new process.Command(program, args?)` | other programs (below) |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
-| `Math.abs(x)`, `Math.min(a, b)`, `Math.max(a, b)` | for any numeric type, keeping it |
+| `Math.abs(x)`, `Math.min(...values)`, `Math.max(...values)` | for any numeric type, keeping it; `min` and `max` take one or more values, arrays and tuples spread in, and of only empty arrays give an infinity or the integer type's extreme |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
 | `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
 | `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
@@ -249,9 +252,27 @@ functions.
 - `a[i]` reads and writes elements; an index of any integer type is allowed
   and an index out of range panics. Compound assignments (`a[i] += 1`,
   `a[i]++`) evaluate `a` and `i` once.
-- `a.push(...values)` appends and returns the new length. `a.pop()` removes
+- `a.push(...values)` appends and returns the new length; arrays spread in
+  (`a.push(...b)`) append all their elements. `a.pop()` removes
   and returns the last element and panics on an empty array.
   `a.slice(start?, end?)` returns a copy with JavaScript offsets.
 - `let a: T[]` without an initializer is a new empty array.
 - `for (const x of a)` iterates elements; the length is re-read on every
   iteration, so elements pushed during the loop are visited.
+
+## Tuples
+
+- `[A, B]` is a tuple type: a reference to a fixed number of elements, each
+  of its own type. Like an array, assigning it shares it.
+- An array literal is a tuple in the context of a tuple type with as many
+  elements (`const p: [string, int] = ["x", 1]`, a return value, an
+  argument), where `...t` spreads another tuple's elements in; and when
+  destructured by an array pattern (see [variables](#variables)). Generic
+  parameters such as `t: [A, B]` infer from tuples.
+- `t[0]` reads and writes an element; the index must be a constant within
+  the tuple. `t.length` is a constant.
+- Tuples are the entries of maps: `new Map(entries)` takes an array of
+  `[K, V]` tuples (or another map), and `map.entries()` returns them.
+- `...t` spreads a tuple's elements into the arguments of any call and into
+  array literals. JSON encodes a tuple as an array and decodes an array of
+  exactly its length.

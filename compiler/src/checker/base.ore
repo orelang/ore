@@ -280,6 +280,15 @@ export class Checker {
             const elem = this.resolveValueType(elementType(node), scope)
             return elem === null ? null : arrayOf(elem)
         }
+        if (node.kind === "TupleType") {
+            const elems: Type[] = []
+            for (const e of node.list("elements")) {
+                const type = this.resolveValueType(e, scope)
+                if (type === null) return null
+                elems.push(type)
+            }
+            return this.tupleOf(elems)
+        }
         if (node.kind === "TypeReference") {
             const name = typeName(node)
             const typeArgs = typeArguments(node)
@@ -548,6 +557,21 @@ export class Checker {
         let struct = this.shapes.get(key)
         if (struct === null) {
             struct = new StructType(this.nextStructId++, null, false, sorted, [])
+            this.shapes.set(key, struct)
+            this.module.structs.push(struct)
+        }
+        return struct
+    }
+
+    /** The interned tuple type of these element types. */
+    tupleOf(elems: Type[]): StructType {
+        const key = `[${elems.map(typeKey).join(",")}]`
+        let struct = this.shapes.get(key)
+        if (struct === null) {
+            const fields: Field[] = []
+            for (let i = 0; i < elems.length; i++) fields.push(new Field(`${i}`, elems[i], false))
+            struct = new StructType(this.nextStructId++, null, false, fields, [])
+            struct.tuple = true
             this.shapes.set(key, struct)
             this.module.structs.push(struct)
         }

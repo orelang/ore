@@ -224,11 +224,13 @@ exhaustive: like a `default`, it lets a function end without `return`.
 - `new Map([[k1, v1], [k2, v2]])` creates a map from an array literal of
   `[key, value]` pairs, set in order (a repeated key keeps its first place
   and its last value). Without type arguments or a context, the key and
-  value types are those of the first pair. Ore has no tuple types, so the
-  entries must be written as such a literal.
+  value types are those of the first pair. Any other array of `[K, V]`
+  [tuples](02-types.md#tuples) works the same, and `new Map(other)` copies
+  another map.
 - `get(key)` returns `V | null`; `set(key, value)` returns the map;
   `has`, `delete` (returns whether the key was present), `clear`, `size`.
-  `keys()` and `values()` return arrays in insertion order.
+  `keys()`, `values()` and `entries()` (`[key, value]` tuples) return arrays
+  in insertion order.
 - `for (const [key, value] of map)` iterates entries in insertion order.
 - Keys compare like SameValueZero: numbers and strings by value (`NaN`
   equals `NaN`, `-0` equals `0`), objects, arrays, maps, sets and interface

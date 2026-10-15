@@ -27,8 +27,9 @@
   such as a class declared further down (`o = new Options()`, whose type is
   the class's, or `new Box<string>(...)` with the type arguments given or
   inferred from the arguments). A last rest parameter `...xs: T[]`
-  receives the extra arguments as an array; `f(...array)` passes an array as
-  all of them. As values, such functions take all their parameters, and
+  receives the extra arguments as an array, where `...array` spreads in an
+  array's elements (`f(1, ...xs, 2)`; `f(...xs)` alone passes `xs` itself).
+  A [tuple](02-types.md#tuples) spreads into any parameters: `f(...t)`. As values, such functions take all their parameters, and
   closures cannot have optional or rest parameters.
 
 ## Array methods

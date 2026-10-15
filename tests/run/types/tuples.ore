@@ -1,0 +1,68 @@
+// Tuples: fixed-length lists whose elements have their own types; a tuple
+// is a reference, as an array is.
+function divmod(a: int, b: int): [int, int] {
+    return [a / b, a % b]
+}
+const d = divmod(17, 5)
+console.log(d[0], d[1], d.length)
+
+const entry: [string, int, bool] = ["x", 3, true]
+entry[1] = 4
+console.log(entry[0], entry[1], entry[2])
+const alias = entry
+alias[0] = "y"
+console.log(entry[0])
+
+// Destructuring, with a rest element as a shorter tuple.
+const [name, count, flag] = entry
+console.log(name, count, flag)
+const [head, ...tail] = entry
+console.log(head, tail.length, tail[0], tail[1])
+
+// An array literal destructured by an array pattern is a tuple.
+let a = 1
+let b = "one"
+const [n, s] = [2, "two"]
+;[a, b] = [n, s]
+console.log(a, b)
+let x = 1
+let y = 2
+;[x, y] = [y, x]
+console.log(x, y)
+
+// Generic functions infer from tuples.
+function swap<A, B>(t: [A, B]): [B, A] {
+    return [t[1], t[0]]
+}
+const swapped = swap(["k", 1.5])
+console.log(swapped[0], swapped[1])
+
+// Arrays of tuples, and maps built from them.
+const pairs: [string, int][] = [
+    ["a", 1],
+    ["b", 2],
+]
+pairs.push(["c", 3])
+for (const [key, value] of pairs) console.log(key, value)
+const map = new Map(pairs)
+map.delete("b")
+console.log(map.size, map.get("c"))
+for (const [key, value] of map.entries()) console.log(key, value)
+const copy = new Map(map)
+copy.set("d", 4)
+console.log(copy.size, map.size)
+
+// JSON: a tuple is an array.
+console.log(JSON.stringify(entry))
+const parsed = JSON.parse<[string, int][]>('[["p", 1], ["q", 2]]')
+if (parsed instanceof Error) console.log(parsed.message)
+else console.log(parsed[1][0], parsed[1][1])
+const short = JSON.parse<[string, int]>('["p"]')
+if (short instanceof Error) console.log(short.message)
+const wrong = JSON.parse<[string, int]>('["p", "q"]')
+if (wrong instanceof Error) console.log(wrong.message)
+
+// Tuples spread into tuples.
+const pre: [string, int] = ["n", 1]
+const longer: [bool, string, int, f64] = [false, ...pre, 2.5]
+console.log(longer[1], longer[2], longer[3])

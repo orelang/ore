@@ -112,6 +112,9 @@ export class StructType {
      * slots of the class table), each replaced by the override if there is one.
      */
     public base: StructType | null = null
+
+    /** A tuple `[A, B]`: an anonymous struct whose fields are named "0", "1", ... in order. */
+    public tuple = false
 }
 
 /** A field member of an interface: `{ k: "field", ... }` in TypeScript. */
@@ -389,6 +392,7 @@ export function typeToString(t: Type): string {
             return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
         case "struct": {
             if (t.name !== null) return t.name
+            if (t.tuple) return `[${t.fields.map((f) => typeToString(f.type)).join(", ")}]`
             const fields: string[] = []
             for (const f of t.fields) fields.push(`${f.readonly ? "readonly " : ""}${f.name}: ${typeToString(f.type)}`)
             return `{ ${fields.join("; ")} }`

@@ -31,3 +31,64 @@ console.log(xs.length, xs.join(","))
 const words: string[] = []
 words.push(...["a", "b"], "c")
 console.log(words.join(""))
+
+// A tuple spreads into any parameters: of functions, function values,
+// constructors, generic functions and methods, and interface methods.
+function point(x: int, y: int, label = "p"): string {
+    return `${label}(${x}, ${y})`
+}
+const xy: [int, int] = [1, 2]
+const yl: [int, string] = [5, "r"]
+console.log(point(...xy), point(...xy, "q"), point(0, ...yl))
+const named: [string, int] = ["s", 1]
+console.log(sum(...named, 2, ...a))
+const add = (p: int, q: int): int => p + q
+console.log(add(...xy))
+class Pair<T> {
+    constructor(
+        readonly first: T,
+        readonly second: T,
+    ) {}
+    with<U>(x: U, y: U): [U, T] {
+        return [y, this.first]
+    }
+}
+const pair = new Pair(...xy)
+const kl: [string, string] = ["k", "l"]
+const w = pair.with(...kl)
+console.log(pair.second, w[0], w[1])
+interface Adder {
+    add(p: int, q: int): int
+}
+class Times {
+    add(p: int, q: int): int {
+        return p * q
+    }
+}
+const adder: Adder = new Times()
+console.log(adder.add(...xy))
+
+// Arguments are evaluated once, in order, around a spread tuple.
+let order = ""
+function mark(s: string): string {
+    order += s
+    return s
+}
+function letters(): [string, string] {
+    order += "t"
+    return ["b", "c"]
+}
+function three(p: string, q: string, r: string): string {
+    return p + q + r
+}
+console.log(three(mark("a"), ...letters()), order)
+
+// Tuples and arrays spread into array literals, `console.log`, `Math.min` and `Math.max`.
+console.log([0, ...xy, 3].join(","))
+const none: int[] = []
+console.log(...words)
+console.log("x", ...none, "y")
+console.log(...xy, ...[2.5])
+console.log(Math.max(...xy), Math.min(4, ...a, 9), Math.max(1, 5, 3))
+const floats: f64[] = []
+console.log(Math.max(...floats), Math.min(...floats), Math.max(...none))
