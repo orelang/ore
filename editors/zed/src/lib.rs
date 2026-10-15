@@ -30,8 +30,9 @@ impl zed::Extension for OreExtension {
         let command = match configured_path.or_else(|| worktree.which("ore")) {
             Some(path) => path,
             None => {
-                return Err("`ore` was not found on PATH. Build it with `bun run build` in the Ore \
-                     repository and put dist/ore on PATH, or set `lsp.ore.binary.path` in settings."
+                return Err("`ore` was not found on PATH. Install it (curl -fsSL \
+                     https://raw.githubusercontent.com/orelang/ore/main/install.sh | sh), or set \
+                     `lsp.ore.binary.path` in settings."
                     .to_string())
             }
         };

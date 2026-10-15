@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- The language server runs the checker: type errors, hover with the
+  signature or type and the JSDoc comment, go to definition (also into the
+  standard library), completion after `.`, references and rename.
+
 - Tuples `[A, B]`: literals in their context, constant indexing, `length`,
   destructuring (an array literal destructured by an array pattern is one),
   inference of generic parameters, JSON as arrays. `new Map(entries)` from

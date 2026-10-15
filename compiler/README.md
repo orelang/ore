@@ -26,7 +26,8 @@ tool, 2 for a wrong command line):
 
 Without a file, `run`, `build` and `check` take the `main` of the nearest
 package.json. `ore test` prints a file's output once it is done (its stdout,
-then its stderr); the language server has no checker yet. Programs are built from the sources every time; a cache would
+then its stderr). The language server checks the program of each open
+document with its unsaved text. Programs are built from the sources every time; a cache would
 go under `$ORE_CACHE` (`~/.cache/ore`), keyed by a hash of the compiler and
 the modules a program loads, in `buildCommand` of `cli/commands.ore`.
 
@@ -75,7 +76,7 @@ the modules a program loads, in `buildCommand` of `cli/commands.ore`.
 | `driver/build.ore` | `compileToIr(entry, debug)` and `build(entry, options)` of `compiler/driver/src/build.ts`: load, check, emit, object, link; `buildIr` for IR already emitted |
 | `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
-| `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
+| `lsp/analysis.ore` | What the server knows of a document, from the checker: diagnostics, hover (signature or type, and the JSDoc comment), definition, completion after `.`, references and rename |
 | `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
 | `cli/main.ore` | The `ore` command: the usage, and the dispatch to the commands |
 | `cli/commands.ore` | `ore build`, `run`, `check`, `init`: the entry of a program (a file or package.json's `main`), errors and statuses |

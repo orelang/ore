@@ -270,12 +270,15 @@ test("syntax diagnostics with UTF-16 ranges, through full and incremental change
     const opened = client.diagnostics(uri)
     expect(opened.length > 0).toBe(true)
     expect(JSON.stringify(opened[0])).toBe(
-        `{"message":"Identifier expected, got 'CloseParenToken'","range":${range(1, 17, 1, 18)},"severity":1,"source":"ore"}`,
+        `{"message":"Identifier expected.","range":${range(1, 17, 1, 18)},"severity":1,"source":"ore"}`,
     )
 
     // Replace `)` with `1`: ranges after the emoji are in UTF-16 units.
     change(2, `[{"range":${range(1, 17, 1, 18)},"text":"1"}]`)
-    expect(client.diagnostics(uri).length).toBe(0)
+    // It parses now, and the checker finds the string and the number added.
+    const checked = client.diagnostics(uri)
+    expect(checked.length).toBe(1)
+    expect(checked[0].message.startsWith("Only strings can be concatenated")).toBe(true)
 
     // Insert after the surrogate pair of line 0, then break line 1 at its end, in one change set.
     change(3, `[{"range":${range(0, 13, 0, 13)},"text":"ü"},{"range":${range(1, 18, 1, 18)},"text":" *"}]`)
@@ -289,7 +292,7 @@ test("syntax diagnostics with UTF-16 ranges, through full and incremental change
     expect(full.length > 0).toBe(true)
     expect(JSON.stringify(full[0].range)).toBe(range(1, 10, 1, 11))
 
-    // Features that need the checker answer empty for now.
+    // A document that does not parse has no types: nothing to tell.
     const at = `"textDocument":{"uri":${JSON.stringify(uri)}},"position":{"line":0,"character":6}`
     expect(client.request("5", "textDocument/hover", `{${at}}`)).toBe(message(`"id":5,"result":null`))
     expect(client.request("6", "textDocument/completion", `{${at}}`)).toBe(message(`"id":6,"result":[]`))
@@ -300,6 +303,71 @@ test("syntax diagnostics with UTF-16 ranges, through full and incremental change
     client.notify("textDocument/didClose", `{"textDocument":{"uri":${JSON.stringify(uri)}}}`)
     expect(client.diagnostics(uri).length).toBe(0)
     expect(client.errorCode("9", "textDocument/hover", `{"textDocument":{"uri":"file:///x.ore"}}`)).toBe(-32602)
+    expect(client.close()).toBe(1)
+})
+
+test("the checker's diagnostics, hover with JSDoc, definition, completion, references and rename", () => {
+    const client = new Client()
+    client.initialize()
+    const text = [
+        "/**",
+        " * Adds two numbers.",
+        " * @param a the first",
+        " */",
+        "function add(a: int, b: int): int {",
+        "    return a + b",
+        "}",
+        "const total = add(1, 2)",
+        'const bad: int = "x"',
+        "console.log(total)",
+        "",
+    ].join("\n")
+    client.send(didOpen(text))
+    const errors = client.diagnostics(uri)
+    expect(errors.length).toBe(1)
+    expect(JSON.stringify(errors[0])).toBe(
+        `{"message":"Type 'string' is not assignable to type 'i64'.","range":${range(8, 17, 8, 20)},"severity":1,"source":"ore"}`,
+    )
+    const at = (line: int, character: int) =>
+        `{"textDocument":{"uri":${JSON.stringify(uri)}},"position":{"line":${line},"character":${character}}}`
+    // `add` in `add(1, 2)`: its signature and its documentation.
+    expect(client.request("2", "textDocument/hover", at(7, 15))).toBe(
+        message(
+            `"id":2,"result":{"contents":{"kind":"markdown","value":${JSON.stringify("```ore\nfunction add(a: int, b: int): int\n```\n\n---\n\nAdds two numbers.\n\n*@param* `a` — the first")}},"range":${range(7, 14, 7, 17)}}`,
+        ),
+    )
+    // The parameter `a` in the body: its type and its `@param`.
+    expect(client.request("3", "textDocument/hover", at(5, 11))).toBe(
+        message(
+            `"id":3,"result":{"contents":{"kind":"markdown","value":${JSON.stringify("```ore\n(parameter) a: i64\n```\n\n---\n\nthe first")}},"range":${range(5, 11, 5, 12)}}`,
+        ),
+    )
+    expect(client.request("4", "textDocument/definition", at(9, 14))).toBe(
+        message(`"id":4,"result":{"range":${range(7, 6, 7, 11)},"uri":${JSON.stringify(uri)}}`),
+    )
+    const references = client.request(
+        "5",
+        "textDocument/references",
+        `${at(7, 8).slice(0, -1)},"context":{"includeDeclaration":true}}`,
+    )
+    expect(references).toBe(
+        message(
+            `"id":5,"result":[{"range":${range(7, 6, 7, 11)},"uri":${JSON.stringify(uri)}},{"range":${range(9, 12, 9, 17)},"uri":${JSON.stringify(uri)}}]`,
+        ),
+    )
+    const renamed = client.request("6", "textDocument/rename", `${at(9, 14).slice(0, -1)},"newName":"sum"}`)
+    expect(renamed.includes(`"newText":"sum"`)).toBe(true)
+
+    // Members after a dot, while the line does not parse yet.
+    const typing = 'const word = "abc"\nword.\n'
+    client.notify(
+        "textDocument/didChange",
+        `{"textDocument":{"uri":${JSON.stringify(uri)},"version":2},"contentChanges":[{"text":${JSON.stringify(typing)}}]}`,
+    )
+    client.diagnostics(uri)
+    const members = client.request("7", "textDocument/completion", at(1, 5))
+    expect(members.includes(`"label":"toUpperCase"`)).toBe(true)
+    expect(members.includes(`"label":"length"`)).toBe(true)
     expect(client.close()).toBe(1)
 })
 

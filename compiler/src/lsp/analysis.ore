@@ -1,13 +1,21 @@
-// What the language server knows of a document, behind a small interface.
-// For now only the parser runs:
-// diagnostics are syntax errors. The parts that need the checker (hover,
-// definition, completion, references, rename) are marked TODO(checker), with
-// the signatures they will have.
+// What the language server knows of a document: the program it belongs to,
+// loaded with the document's text and checked, so that its diagnostics are
+// the checker's, and hover, definition, references, rename and completion
+// come from the checker's facts (the type of each expression, the
+// declaration of each identifier, the source of each node).
 //
 // Positions are zero-based UTF-16 offsets, as in LSP (see ./text).
 
+import { isAbsolute, resolve } from "ore:path"
+import { check } from "../checker/checker"
+import { type CheckInfo } from "../checker/context"
+import { arrayMethods, stringMethods } from "../checker/helpers"
+import { typeToString, type Type } from "../ir/types"
+import { LoadOptions, loadProgram } from "../project/load"
+import { type Node } from "../syntax/ast"
 import { parse } from "../syntax/parser"
-import { rangeOf, type Position, type Range } from "./text"
+import { type Source } from "../syntax/source"
+import { offsetAt, rangeOf, type Position, type Range } from "./text"
 
 /** A problem in the document, with its span in bytes. */
 export type Diagnostic = { message: string; severity: "error" | "warning"; start: int; end: int }
@@ -67,17 +75,89 @@ export interface Analysis {
     definition(position: Position): Location | null
 }
 
-/** An analysis from the parser alone: syntax errors, and nothing that needs types. */
-class SyntaxAnalysis {
+/** Kinds of nodes whose leading comment documents the declaration inside them. */
+const documented = [
+    "VariableStatement",
+    "FunctionDeclaration",
+    "ClassDeclaration",
+    "InterfaceDeclaration",
+    "TypeAliasDeclaration",
+    "ModuleDeclaration",
+    "MethodDeclaration",
+    "MethodSignature",
+    "PropertyDeclaration",
+    "PropertySignature",
+    "GetAccessor",
+    "SetAccessor",
+    "Constructor",
+    "Parameter",
+    "EnumDeclaration",
+]
+
+/** Kinds of declarations whose hover shows their text up to the body. */
+const headed = [
+    "FunctionDeclaration",
+    "MethodDeclaration",
+    "MethodSignature",
+    "ClassDeclaration",
+    "InterfaceDeclaration",
+    "TypeAliasDeclaration",
+    "ModuleDeclaration",
+    "GetAccessor",
+    "SetAccessor",
+    "Constructor",
+]
+
+/** The parent of each node of a tree. */
+class Parents {
+    readonly of = new Map<Node, Node>()
+
+    constructor(root: Node) {
+        this.add(root)
+    }
+
+    private add(node: Node) {
+        for (const child of node.children) {
+            this.of.set(child, node)
+            this.add(child)
+        }
+    }
+}
+
+/** An analysis from the checker, or from the parser alone when the program does not load or parse. */
+class CheckedAnalysis {
     private readonly errors: Diagnostic[] = []
+    /** The document's module, once loaded. */
+    private source: Source | null = null
+    private info: CheckInfo | null = null
+    private readonly parents = new Map<Source, Parents>()
 
     constructor(
         readonly path: string,
         readonly text: string,
     ) {
-        const parser = parse(text)
-        for (const e of parser.diagnostics)
-            this.errors.push({ message: e.message, severity: "error", start: e.start, end: e.end })
+        const absolute = isAbsolute(path) ? path : resolve(path)
+        const options = new LoadOptions()
+        options.overrides.set(absolute, text)
+        options.absolutePaths = true
+        const loaded = loadProgram(absolute, options)
+        if (loaded instanceof Error) {
+            const parser = parse(text)
+            for (const e of parser.diagnostics)
+                this.errors.push({ message: e.message, severity: "error", start: e.start, end: e.end })
+            return
+        }
+        const entry = loaded.entry
+        this.source = entry
+        for (const d of loaded.diagnostics)
+            if (d.source === entry)
+                this.errors.push({ message: d.message, severity: d.severity, start: d.start, end: d.start + d.length })
+        if (loaded.syntaxErrors) return
+        const result = check(loaded)
+        this.info = result.info
+        for (const d of result.diagnostics)
+            if (d.source === entry)
+                this.errors.push({ message: d.message, severity: d.severity, start: d.start, end: d.start + d.length })
     }
 
     diagnostics(): Diagnostic[] {
@@ -88,50 +168,439 @@ class SyntaxAnalysis {
         return rangeOf(this.text, start, end)
     }
 
-    // TODO(checker): the declaration the checker resolved for the identifier at
-    // the position (CheckInfo.definitions), or the declaration it names; the
-    // key is `${file}:${offset of its name}`, `builtin` when the file is not
-    // absolute (the embedded std).
+    /** The identifier of the document at a position (or just before it, at its end). */
+    private identifierAt(position: Position): Node | null {
+        const source = this.source
+        if (source === null) return null
+        const offset = offsetAt(this.text, position)
+        return identifierIn(source.ast, offset)
+    }
+
+    /** The parents of the nodes of a module, computed once. */
+    private parentsOf(source: Source): Parents {
+        const known = this.parents.get(source)
+        if (known !== null) return known
+        const parents = new Parents(source.ast)
+        this.parents.set(source, parents)
+        return parents
+    }
+
+    /** The declaration an identifier refers to, or the declaration it names. */
+    private declarationOf(identifier: Node): Node | null {
+        const info = this.info
+        if (info === null) return null
+        const decl = info.definitions.get(identifier)
+        if (decl !== null) return decl
+        // The name of a declaration refers to that declaration.
+        const source = this.source
+        if (source === null) return null
+        const parent = this.parentsOf(source).of.get(identifier)
+        if (parent !== null && parent.child("name") === identifier) return parent
+        if (info.types.has(identifier)) return identifier
+        return null
+    }
+
+    /** The name of a declaration: its `name`, or itself for an identifier. */
+    private nameOf(decl: Node): Node {
+        if (decl.kind === "Identifier") return decl
+        return decl.child("name") ?? decl
+    }
+
+    private sourceOf(node: Node): Source | null {
+        const info = this.info
+        return info === null ? null : info.sources.get(node)
+    }
+
     symbolAt(position: Position): SymbolAt | null {
-        return null
+        const identifier = this.identifierAt(position)
+        if (identifier === null) return null
+        const decl = this.declarationOf(identifier)
+        if (decl === null) return null
+        const name = this.nameOf(decl)
+        const source = this.sourceOf(name)
+        if (source === null) return null
+        return {
+            key: `${source.path}:${name.start}`,
+            name: identifier.text,
+            range: this.range(identifier.start, identifier.end),
+            builtin: !isAbsolute(source.path),
+        }
     }
 
-    // TODO(checker): the identifier at the offset of the key in its module,
-    // and every identifier whose definition has that key, with the prefix and
-    // suffix of shorthand properties and binding elements.
     references(key: string): Reference[] {
-        return []
+        const found: Reference[] = []
+        const source = this.source
+        const info = this.info
+        if (source === null || info === null) return found
+        const parents = this.parentsOf(source)
+        const identifiers: Node[] = []
+        collectIdentifiers(source.ast, identifiers)
+        for (const identifier of identifiers) {
+            const decl = this.declarationOf(identifier)
+            if (decl === null) continue
+            const name = this.nameOf(decl)
+            const declSource = this.sourceOf(name)
+            if (declSource === null || `${declSource.path}:${name.start}` !== key) continue
+            // A shorthand property `{ x }` keeps its key or its value when renamed.
+            const parent = parents.of.get(identifier)
+            let prefix = ""
+            let suffix = ""
+            if (parent !== null && parent.kind === "ShorthandPropertyAssignment") {
+                if (decl === identifier || name === identifier) suffix = `: ${identifier.text}`
+                else prefix = `${identifier.text}: `
+            }
+            found.push({
+                path: source.path,
+                range: this.range(identifier.start, identifier.end),
+                prefix,
+                suffix,
+                declaration: name === identifier,
+            })
+        }
+        return found
     }
 
-    // TODO(checker): "```ore\n...\n```" with the signature of a function,
-    // method or constructor, `type`, `class` and `interface` text, `(property)
-    // Owner.name: T`, or `const|let|(parameter) name: T` from CheckInfo.types.
     hover(position: Position): Hover | null {
-        return null
+        const identifier = this.identifierAt(position)
+        const info = this.info
+        if (identifier === null || info === null) return null
+        const decl = this.declarationOf(identifier)
+        const type = info.types.get(identifier)
+        let code = ""
+        let doc = ""
+        if (decl !== null) {
+            const source = this.sourceOf(decl)
+            if (source !== null) {
+                code = this.header(source, decl, identifier.text, type)
+                doc = this.docOf(source, decl)
+            }
+        }
+        if (code === "" && type !== null) code = `${identifier.text}: ${typeToString(type)}`
+        if (code === "") return null
+        const contents = doc === "" ? "```ore\n" + code + "\n```" : "```ore\n" + code + "\n```\n\n---\n\n" + doc
+        return { contents, range: this.range(identifier.start, identifier.end) }
     }
 
-    // TODO(checker): for the property access around the position, the
-    // functions of a built-in namespace, or the members of the type of the
-    // expression: fields and methods of structs (private ones only inside the
-    // class), interface members, and the built-in members of arrays, strings,
-    // channels and maps.
+    /** The code shown for a declaration: its text up to the body, or `kind name: T`. */
+    private header(source: Source, decl: Node, name: string, type: Type | null): string {
+        if (headed.includes(decl.kind)) {
+            const body = decl.child("body")
+            let end = decl.end
+            if (body !== null) end = body.start
+            else if (decl.kind === "ClassDeclaration" || decl.kind === "InterfaceDeclaration") {
+                const open = source.text.indexOf("{", decl.start)
+                if (open >= 0 && open < decl.end) end = open
+            }
+            return collapse(source.text.slice(decl.start, end))
+        }
+        const parents = this.parentsOf(source)
+        let what = ""
+        let node: Node | null = decl
+        while (node !== null && what === "") {
+            const k = node.kind
+            if (k === "Parameter") what = "(parameter) "
+            else if (k === "PropertyDeclaration" || k === "PropertySignature") what = "(property) "
+            else if (k === "VariableDeclarationList") {
+                const text = source.text.slice(node.start, node.end)
+                what = text.startsWith("const") ? "const " : text.startsWith("let") ? "let " : "var "
+            } else if (documented.includes(k) || k === "Block" || k === "SourceFile") what = " "
+            node = parents.of.get(node)
+        }
+        const shown = type !== null ? typeToString(type) : null
+        if (shown === null) {
+            const annotation = decl.child("type")
+            if (annotation === null) return ""
+            return `${what.trim() === "" ? "" : what}${name}: ${source.text.slice(annotation.start, annotation.end)}`
+        }
+        return `${what.trim() === "" ? "" : what}${name}: ${shown}`
+    }
+
+    /** The JSDoc comment of a declaration, as Markdown, or "". */
+    private docOf(source: Source, decl: Node): string {
+        const parents = this.parentsOf(source)
+        // A parameter without a comment of its own has the `@param` of its function.
+        let param = ""
+        let node: Node | null = decl
+        while (node !== null) {
+            if (documented.includes(node.kind)) {
+                const comment = jsdocBefore(source.text, node.start)
+                if (comment !== "") return param === "" ? renderJsdoc(comment) : paramDoc(comment, param)
+                if (node.kind !== "Parameter") return ""
+                const name = node.child("name")
+                if (name !== null && name.kind === "Identifier") param = name.text
+            }
+            node = parents.of.get(node)
+        }
+        return ""
+    }
+
     completions(position: Position): Completion[] {
-        return []
+        const offset = offsetAt(this.text, position)
+        // The start of the name being typed after the dot.
+        let start = offset
+        while (start > 0 && isNameByte(this.text[start - 1])) start--
+        const dot = start - 1
+        if (dot < 0 || this.text[dot] !== 46) return []
+        // `a.` alone does not parse: the members come from the program with a name after the dot.
+        if (start === offset && (this.info === null || this.source === null)) {
+            const patched = new CheckedAnalysis(this.path, this.text.slice(0, offset) + "x" + this.text.slice(offset))
+            return patched.membersBefore(dot)
+        }
+        return this.membersBefore(dot)
     }
 
-    // TODO(checker): the name of the declaration the identifier refers to,
-    // with the text of `runtime/std/builtin.d.ore`, which is not on disk.
+    /** The members of the expression that ends at the dot at `dot`. */
+    membersBefore(dot: int): Completion[] {
+        const source = this.source
+        const info = this.info
+        const found: Completion[] = []
+        if (source === null || info === null) return found
+        const target = expressionEndingAt(source.ast, dot, info)
+        if (target === null) return found
+        // A namespace (`Math.`), a module imported as `* as m`, or a class's static members.
+        const decl = target.kind === "Identifier" ? info.definitions.get(target) : null
+        if (decl !== null && !info.types.has(target)) {
+            const declSource = info.sources.get(decl)
+            if (declSource !== null) membersOfDeclaration(decl, declSource, found)
+            return found
+        }
+        const type = info.types.get(target)
+        if (type !== null) membersOfType(type, found)
+        return found
+    }
+
     definition(position: Position): Location | null {
-        return null
+        const identifier = this.identifierAt(position)
+        if (identifier === null) return null
+        const decl = this.declarationOf(identifier)
+        if (decl === null) return null
+        const name = this.nameOf(decl)
+        const source = this.sourceOf(name)
+        if (source === null) return null
+        const onDisk = isAbsolute(source.path)
+        return {
+            path: source.path,
+            text: onDisk ? null : source.text,
+            range: rangeOf(source.text, name.start, name.end),
+        }
     }
 }
 
-/**
- * Analyzes a document. TODO(checker): load the program with the modules the
- * document imports, read from the disk with `text` for `path`, check it, and
- * report the document's own diagnostics; with syntax errors, only those, with
- * types still collected for completion where possible.
- */
+function isNameByte(b: u8): bool {
+    return (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b === 95 || b === 36 || b >= 128
+}
+
+/** The outermost expression that ends at a byte offset and has a type or a declaration. */
+function expressionEndingAt(node: Node, end: int, info: CheckInfo): Node | null {
+    if (node.start > end || node.end < end) return null
+    if (node.end === end && (info.types.has(node) || info.definitions.has(node))) return node
+    for (const child of node.children) {
+        const found = expressionEndingAt(child, end, info)
+        if (found !== null) return found
+    }
+    return null
+}
+
+/** The members of a namespace declaration, a module, or the static members of a class. */
+function membersOfDeclaration(decl: Node, source: Source, out: Completion[]) {
+    if (decl.kind === "ClassDeclaration") {
+        for (const m of decl.list("members")) {
+            const name = m.child("name")
+            if (name === null || !source.text.slice(m.start, name.start).includes("static")) continue
+            if (source.text.slice(m.start, name.start).includes("private")) continue
+            out.push({ label: name.text, kind: m.kind === "MethodDeclaration" ? "method" : "field", detail: "" })
+        }
+        return
+    }
+    const body = decl.child("body")
+    const statements = body !== null ? body.list("statements") : decl.list("statements")
+    for (const st of statements) {
+        if (st.kind === "FunctionDeclaration") {
+            const name = st.child("name")
+            if (name !== null) out.push({ label: name.text, kind: "method", detail: "" })
+        } else if (st.kind === "VariableStatement") {
+            const list = st.child("declarationList")
+            if (list === null) continue
+            for (const d of list.list("declarations")) {
+                const name = d.child("name")
+                if (name !== null && name.kind === "Identifier")
+                    out.push({ label: name.text, kind: "field", detail: "" })
+            }
+        } else if (st.kind === "ClassDeclaration" || st.kind === "InterfaceDeclaration") {
+            const name = st.child("name")
+            if (name !== null) out.push({ label: name.text, kind: "field", detail: "" })
+        }
+    }
+}
+
+/** The members of a value of a type: fields and methods, or the built-in members of arrays, strings and collections. */
+function membersOfType(type: Type, out: Completion[]) {
+    switch (type.kind) {
+        case "struct":
+            for (const f of type.fields)
+                if (!f.private) out.push({ label: f.name, kind: "field", detail: typeToString(f.type) })
+            for (const m of type.methods)
+                if (!m.private) out.push({ label: m.name, kind: "method", detail: typeToString(m.func.type) })
+            if (type.tuple) out.push({ label: "length", kind: "field", detail: "int" })
+            return
+        case "interface":
+            for (const m of type.members)
+                out.push({ label: m.name, kind: m.k === "method" ? "method" : "field", detail: typeToString(m.type) })
+            return
+        case "array":
+            out.push({ label: "length", kind: "field", detail: "int" })
+            for (const name of ["push", "pop", "slice"]) out.push({ label: name, kind: "method", detail: "" })
+            for (const [name, _] of arrayMethods) out.push({ label: name, kind: "method", detail: "" })
+            return
+        case "string":
+        case "literal":
+            out.push({ label: "length", kind: "field", detail: "int" })
+            for (const [name, sig] of stringMethods)
+                out.push({ label: name, kind: "method", detail: typeToString(sig.result) })
+            return
+        case "map":
+            out.push({ label: "size", kind: "field", detail: "int" })
+            for (const name of ["get", "set", "has", "delete", "clear", "keys", "values", "entries"])
+                out.push({ label: name, kind: "method", detail: "" })
+            return
+        case "set":
+            out.push({ label: "size", kind: "field", detail: "int" })
+            for (const name of ["add", "has", "delete", "clear", "values"])
+                out.push({ label: name, kind: "method", detail: "" })
+            return
+        case "chan":
+            for (const name of ["send", "receive", "close", "onReceive", "onSend"])
+                out.push({ label: name, kind: "method", detail: "" })
+            return
+        case "union": {
+            // The members that every member of the union has, by name.
+            const each: Completion[][] = []
+            for (const m of type.members) {
+                if (m.kind === "null") continue
+                const members: Completion[] = []
+                membersOfType(m, members)
+                each.push(members)
+            }
+            if (each.length === 0) return
+            for (const c of each[0]) if (each.every((ms) => ms.some((x) => x.label === c.label))) out.push(c)
+            return
+        }
+        default:
+            return
+    }
+}
+
+/** The innermost identifier at a byte offset, or ending there. */
+function identifierIn(node: Node, offset: int): Node | null {
+    if (offset < node.start || offset > node.end) return null
+    for (const child of node.children) {
+        const found = identifierIn(child, offset)
+        if (found !== null) return found
+    }
+    return node.kind === "Identifier" ? node : null
+}
+
+function collectIdentifiers(node: Node, out: Node[]) {
+    if (node.kind === "Identifier") out.push(node)
+    for (const child of node.children) collectIdentifiers(child, out)
+}
+
+/** Text on one line: runs of white space as one space. */
+function collapse(text: string): string {
+    let out = ""
+    let space = false
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i]
+        if (c === 32 || c === 9 || c === 10 || c === 13) {
+            space = true
+            continue
+        }
+        if (space && out.length > 0) out += " "
+        space = false
+        out += text.slice(i, i + 1)
+    }
+    return out
+}
+
+/** The `/** ... *\/` comment that ends right before `pos`, past white space, or "". */
+function jsdocBefore(text: string, pos: int): string {
+    let i = pos
+    while (i > 0) {
+        const c = text[i - 1]
+        if (c === 32 || c === 9 || c === 10 || c === 13) i--
+        else break
+    }
+    if (i < 2 || text[i - 1] !== 47 || text[i - 2] !== 42) return ""
+    const start = text.slice(0, i - 2).lastIndexOf("/**")
+    if (start < 0) return ""
+    // Not the end of a comment that starts earlier.
+    const inner = text.slice(start + 3, i - 2)
+    if (inner.includes("*/")) return ""
+    return inner
+}
+
+/** The `@param` description of a parameter in a JSDoc comment, or "". */
+function paramDoc(inner: string, name: string): string {
+    let found = ""
+    let collecting = false
+    for (const raw of inner.split("\n")) {
+        let line = raw.trim()
+        if (line.startsWith("*")) line = line.slice(1).trim()
+        if (line.startsWith("@")) {
+            collecting = false
+            const words = line.split(" ")
+            if (words.length >= 2 && words[0] === "@param" && (words[1] === name || words[1] === `{${name}}`)) {
+                collecting = true
+                let rest = line.slice(words[0].length + 1 + words[1].length).trim()
+                if (rest.startsWith("- ")) rest = rest.slice(2)
+                found = rest
+            }
+        } else if (collecting && line !== "") found = `${found} ${line}`
+    }
+    return found.trim()
+}
+
+/** The text of a JSDoc comment as Markdown: the description, then its tags. */
+function renderJsdoc(inner: string): string {
+    const lines: string[] = []
+    for (const raw of inner.split("\n")) {
+        let line = raw.trim()
+        if (line.startsWith("*")) line = line.slice(1)
+        if (line.startsWith(" ")) line = line.slice(1)
+        lines.push(line.trimEnd())
+    }
+    const description: string[] = []
+    const tags: string[] = []
+    let inTags = false
+    for (const line of lines) {
+        if (line.startsWith("@")) inTags = true
+        if (!inTags) {
+            description.push(line)
+            continue
+        }
+        if (!line.startsWith("@")) {
+            if (tags.length > 0 && line !== "") tags[tags.length - 1] = `${tags[tags.length - 1]} ${line}`
+            continue
+        }
+        const space = line.indexOf(" ")
+        const tag = space < 0 ? line.slice(1) : line.slice(1, space)
+        let rest = space < 0 ? "" : line.slice(space + 1).trim()
+        if (tag === "param" || tag === "throws" || tag === "template") {
+            const nameEnd = rest.indexOf(" ")
+            const name = nameEnd < 0 ? rest : rest.slice(0, nameEnd)
+            rest = nameEnd < 0 ? "" : rest.slice(nameEnd + 1).trim()
+            if (rest.startsWith("- ")) rest = rest.slice(2)
+            tags.push(`*@${tag}* \`${name}\`${rest === "" ? "" : ` — ${rest}`}`)
+        } else {
+            tags.push(`*@${tag}*${rest === "" ? "" : ` — ${rest}`}`)
+        }
+    }
+    let text = description.join("\n").trim()
+    if (tags.length > 0) text = text === "" ? tags.join("\n\n") : `${text}\n\n${tags.join("\n\n")}`
+    return text
+}
+
+/** Analyzes a document: loads its program with `text` for `path`, and checks it. */
 export function analyze(path: string, text: string): Analysis {
-    return new SyntaxAnalysis(path, text)
+    return new CheckedAnalysis(path, text)
 }

@@ -256,8 +256,10 @@ export class Server {
         return text instanceof Error ? null : text
     }
 
-    /** Analyzes the current text of a document, or null if it cannot be read. */
+    /** The analysis of the current text of a document (kept for an open one), or null if it cannot be read. */
     private fresh(uri: string): Analysis | null {
+        const kept = this.analyses.get(uri)
+        if (kept !== null) return kept
         const path = uriToPath(uri)
         const open = this.documents.get(uri)
         const text = open !== null ? open.text : this.textOf(path)
