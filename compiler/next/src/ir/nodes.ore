@@ -18,6 +18,7 @@ import {
     type StructType,
     type Type,
     type UnionType,
+    type VoidType,
 } from "./types"
 
 /**
@@ -759,11 +760,13 @@ export class IsNull {
 /**
  * Optional chaining `value?.…`: `null` if `value` is null, else `body`
  * evaluated with `binding` set to the non-null value and converted to `type`.
+ * The type is `void` when the body is, as for `x?.m()` of a method returning
+ * nothing (the TypeScript checker casts `types.void` to `UnionType` there).
  */
 export class Optional {
     readonly k: "optional" = "optional"
     constructor(
-        public type: UnionType,
+        public type: UnionType | VoidType,
         public value: Expr,
         public binding: Local,
         public body: Expr,

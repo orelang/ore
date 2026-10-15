@@ -35,7 +35,9 @@ import type { InterfaceType, StructType, Type } from "./types"
  * struct or interface name that is not an identifier, such as the
  * `Stack<string>` of a generic instance, is quoted too: `"Stack<string>"#20`.
  * A local is `$id name: T` with its flags; a reference to it is `$id name`.
- * Functions are referred to by `name`, itabs by id. Integer constants are
+ * Functions are referred to by `name`, or by `name#k` for the k-th (from 0)
+ * of the functions sharing a name, such as two external declarations of one
+ * C function with different parameters; itabs by id. Integer constants are
  * decimal (`u64` values unsigned), floats as JavaScript prints them (`-0`
  * for negative zero).
  *
@@ -70,8 +72,17 @@ class Dumper {
   lines: string[] = []
   /** Interfaces referred to so far, written at the end. */
   ifaces: InterfaceType[] = []
+  /** For the functions that share their name with others: `name#k`. */
+  refs = new Map<Func, string>()
 
   module(m: Module): string {
+    const named = new Map<string, Func[]>()
+    for (const f of m.functions) {
+      const list = named.get(f.name)
+      if (list === undefined) named.set(f.name, [f])
+      else if (!list.includes(f)) list.push(f)
+    }
+    for (const list of named.values()) if (list.length > 1) list.forEach((f, k) => this.refs.set(f, `${f.name}#${k}`))
     this.line(0, `module ${quote(m.file)}`)
     for (const s of m.structs) this.struct(s)
     for (const u of m.unions) this.line(0, `union ${this.type(u)}${u.name !== undefined ? ` name=${quote(u.name)}` : ""}`)
@@ -87,11 +98,16 @@ class Dumper {
     this.lines.push(`${"  ".repeat(depth)}${text}`)
   }
 
+  /** A reference to a function: its name, with `#k` when others share it. */
+  ref(f: Func): string {
+    return this.refs.get(f) ?? f.name
+  }
+
   struct(s: StructType) {
     this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}`)
     for (const f of s.fields) this.line(1, `field ${f.name}: ${this.type(f.type)}${f.readonly ? " readonly" : ""}${f.private ? " private" : ""}`)
-    for (const m of s.methods) this.line(1, `method ${m.name}: ${m.func.name}${m.private ? " private" : ""}`)
-    if (s.ctor !== undefined) this.line(1, `ctor: ${s.ctor.name}`)
+    for (const m of s.methods) this.line(1, `method ${m.name}: ${this.ref(m.func)}${m.private ? " private" : ""}`)
+    if (s.ctor !== undefined) this.line(1, `ctor: ${this.ref(s.ctor)}`)
   }
 
   iface(t: InterfaceType) {
@@ -281,13 +297,13 @@ class Dumper {
         this.expr(e.value, d, "value")
         return
       case "call":
-        head(`call ${e.func.name}`)
+        head(`call ${this.ref(e.func)}`)
         all(e.args, "arg")
         return
       case "builtin": {
         let text = `builtin ${e.name}`
         if (e.typeArgs !== undefined) text += ` typeArgs=<${e.typeArgs.map((t) => this.type(t)).join(", ")}>`
-        if (e.error !== undefined) text += ` error=${e.error.ctor.name} itab=${e.error.itab.id}`
+        if (e.error !== undefined) text += ` error=${this.ref(e.error.ctor)} itab=${e.error.itab.id}`
         head(text)
         all(e.args, "arg")
         return
@@ -338,7 +354,7 @@ class Dumper {
         head("alloc")
         return
       case "method-call":
-        head(`method-call ${e.func.name}`)
+        head(`method-call ${this.ref(e.func)}`)
         this.expr(e.receiver, d, "receiver")
         all(e.args, "arg")
         return
@@ -389,7 +405,7 @@ class Dumper {
         return
       case "func-ref":
       case "closure":
-        head(`${e.k} ${e.func.name}`)
+        head(`${e.k} ${this.ref(e.func)}`)
         return
       case "call-value":
         head("call-value")
@@ -397,7 +413,7 @@ class Dumper {
         all(e.args, "arg")
         return
       case "bound-method":
-        head(`bound-method${e.func !== undefined ? ` func=${e.func.name}` : ""}${e.index !== undefined ? ` index=${e.index}` : ""}`)
+        head(`bound-method${e.func !== undefined ? ` func=${this.ref(e.func)}` : ""}${e.index !== undefined ? ` index=${e.index}` : ""}`)
         this.expr(e.receiver, d, "receiver")
         return
       case "array-method":

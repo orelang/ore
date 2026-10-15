@@ -275,10 +275,12 @@ class Reader {
     unions = new Map<int, UnionType>()
     ifaces = new Map<int, InterfaceType>()
     locals = new Map<int, Local>()
-    /** Functions by name; the first of two external declarations of one C function. */
+    /** Functions by name, and by `name#k` for the k-th of the functions of a name. */
     funcs = new Map<string, Func>()
     /** The function of each `func` or `init` line, by line index. */
     heads = new Map<int, Func>()
+    /** How many `func` lines have each name so far. */
+    sameName = new Map<string, int>()
     /** For an `init` line that repeats a `func` line, the function of that line. */
     repeats = new Map<int, Func>()
 
@@ -1112,7 +1114,8 @@ class Reader {
             case "null":
                 return new NullLit(this.unionType(this.exprType(c)))
             case "optional": {
-                const type = this.unionType(this.exprType(c))
+                const t = this.exprType(c)
+                const type = t.kind === "void" ? t : this.unionType(t)
                 const value = this.expr(d, "value")
                 const binding = this.localLine(d, "binding: ")
                 return new Optional(type, value, binding, this.expr(d, "body"))
@@ -1357,6 +1360,12 @@ class Reader {
             // line is the function of a `func` line with the same name, dumped again.
             const known = this.funcs.get(f.name)
             if (!isFunc && known !== null) this.repeats.set(i, known)
+            if (isFunc) {
+                // Functions sharing a name are referred to as `name#k`.
+                const k = this.sameName.get(f.name) ?? 0
+                this.sameName.set(f.name, k + 1)
+                this.funcs.set(`${f.name}#${k}`, f)
+            }
             if (!this.funcs.has(f.name)) this.funcs.set(f.name, f)
             this.heads.set(i, f)
         }

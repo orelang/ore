@@ -62,8 +62,23 @@ class Dumper {
     lines: string[] = []
     /** Interfaces referred to so far, written at the end. */
     ifaces: InterfaceType[] = []
+    /** For the functions that share their name with others: `name#k`. */
+    refs = new Map<Func, string>()
 
     module(m: Module): string {
+        const names: string[] = []
+        const named = new Map<string, Func[]>()
+        for (const f of m.functions) {
+            const list = named.get(f.name)
+            if (list === null) {
+                names.push(f.name)
+                named.set(f.name, [f])
+            } else if (!list.includes(f)) list.push(f)
+        }
+        for (const name of names) {
+            const list = named.get(name) ?? []
+            if (list.length > 1) for (let k = 0; k < list.length; k++) this.refs.set(list[k], `${name}#${k}`)
+        }
         this.line(0, `module ${quote(m.file)}`)
         for (const s of m.structs) this.struct(s)
         for (const u of m.unions) this.line(0, `union ${this.type(u)}${u.name !== null ? ` name=${quote(u.name)}` : ""}`)
@@ -72,21 +87,25 @@ class Dumper {
         for (const f of m.inits) this.func("init", f)
         // Interfaces found while writing interfaces are appended to the list.
         for (let i = 0; i < this.ifaces.length; i++) this.iface(this.ifaces[i])
-        let text = ""
-        for (const l of this.lines) text += `${l}\n`
-        return text
+        this.lines.push("")
+        return this.lines.join("\n")
     }
 
     line(depth: int, text: string) {
         this.lines.push(`${"  ".repeat(depth)}${text}`)
     }
 
+    /** A reference to a function: its name, with `#k` when others share it. */
+    ref(f: Func): string {
+        return this.refs.get(f) ?? f.name
+    }
+
     struct(s: StructType) {
         this.line(0, `struct ${this.type(s)}${s.nominal ? " nominal" : ""}`)
         for (const f of s.fields) this.line(1, `field ${f.name}: ${this.type(f.type)}${f.readonly ? " readonly" : ""}${f.private ? " private" : ""}`)
-        for (const m of s.methods) this.line(1, `method ${m.name}: ${m.func.name}${m.private ? " private" : ""}`)
+        for (const m of s.methods) this.line(1, `method ${m.name}: ${this.ref(m.func)}${m.private ? " private" : ""}`)
         const ctor = s.ctor
-        if (ctor !== null) this.line(1, `ctor: ${ctor.name}`)
+        if (ctor !== null) this.line(1, `ctor: ${this.ref(ctor)}`)
     }
 
     iface(t: InterfaceType) {
@@ -337,7 +356,7 @@ class Dumper {
                 this.expr(e.value, d, "value")
                 return
             case "call":
-                this.exprHead(e, depth, role, `call ${e.func.name}`)
+                this.exprHead(e, depth, role, `call ${this.ref(e.func)}`)
                 this.all(e.args, d, "arg")
                 return
             case "builtin": {
@@ -349,7 +368,7 @@ class Dumper {
                     text += ` typeArgs=<${names.join(", ")}>`
                 }
                 const error = e.error
-                if (error !== null) text += ` error=${error.ctor.name} itab=${error.itab.id}`
+                if (error !== null) text += ` error=${this.ref(error.ctor)} itab=${error.itab.id}`
                 this.exprHead(e, depth, role, text)
                 this.all(e.args, d, "arg")
                 return
@@ -403,7 +422,7 @@ class Dumper {
                 this.exprHead(e, depth, role, "alloc")
                 return
             case "method-call":
-                this.exprHead(e, depth, role, `method-call ${e.func.name}`)
+                this.exprHead(e, depth, role, `method-call ${this.ref(e.func)}`)
                 this.expr(e.receiver, d, "receiver")
                 this.all(e.args, d, "arg")
                 return
@@ -461,10 +480,10 @@ class Dumper {
                 return
             }
             case "func-ref":
-                this.exprHead(e, depth, role, `func-ref ${e.func.name}`)
+                this.exprHead(e, depth, role, `func-ref ${this.ref(e.func)}`)
                 return
             case "closure":
-                this.exprHead(e, depth, role, `closure ${e.func.name}`)
+                this.exprHead(e, depth, role, `closure ${this.ref(e.func)}`)
                 return
             case "call-value":
                 this.exprHead(e, depth, role, "call-value")
@@ -474,7 +493,7 @@ class Dumper {
             case "bound-method": {
                 const func = e.func
                 const index = e.index
-                this.exprHead(e, depth, role, `bound-method${func !== null ? ` func=${func.name}` : ""}${index !== null ? ` index=${index}` : ""}`)
+                this.exprHead(e, depth, role, `bound-method${func !== null ? ` func=${this.ref(func)}` : ""}${index !== null ? ` index=${index}` : ""}`)
                 this.expr(e.receiver, d, "receiver")
                 return
             }

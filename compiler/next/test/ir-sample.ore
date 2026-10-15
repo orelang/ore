@@ -160,6 +160,8 @@ export function sample(): Module {
     const itab = new Itab(0, point, shape)
 
     const puts = new Func("puts", "puts", 1, fn([tString], types.i32), [new Local(2, "s", tString, false)], block([]), false, "c.ore", true, types.ptr)
+    // Another declaration of the C function, as another module may make: references say which one.
+    const putsPtr = new Func("puts", "puts", 2, fn([types.ptr], types.i32), [new Local(3, "p", types.ptr, false)], block([]), false, "d.ore", true)
 
     const n = new Local(10, "n", tI64, true, true, true)
     const xs = new Local(11, "xs", arrayOf(tI64), false)
@@ -206,6 +208,7 @@ export function sample(): Module {
         new Unary(tI64, "~", ref(n)),
         new Convert(tF64, ref(n)),
         new Call(types.i32, puts, [str("hi")]),
+        new Call(types.i32, putsPtr, []),
         new BuiltinCall(voidType, "console.log", [ref(n)]),
         new BuiltinCall(tI64, "JSON.parse", [str("1")], new BuiltinError(ctor, itab), typeArgs),
         new Conditional(tI64, bool(true), int(1), int(2)),
@@ -283,5 +286,5 @@ export function sample(): Module {
     main.attributes = new FuncAttributes(true, true, true, "ore_main", "main", true)
     const init = new Func("init_test", "<init>", 1, fn([], voidType), [], block([withLine(new LetStmt(g, int(1)), 1)]), false)
     init.attributes = new FuncAttributes()
-    return new Module("test.ore", [norm, ctor, puts, closure, main], [init], [point, anon, pair], [itab], [maybe, mixed])
+    return new Module("test.ore", [norm, ctor, puts, putsPtr, closure, main], [init], [point, anon, pair], [itab], [maybe, mixed])
 }
