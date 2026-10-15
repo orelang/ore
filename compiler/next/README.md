@@ -4,8 +4,9 @@ The Ore compiler written in Ore, which will replace the TypeScript compiler
 (see the [roadmap](../../docs/roadmap.md)). So far it has the lexer
 and the parser, which build a tree in the shape of TypeScript's, the loading
 of a program's modules, the IR of `@ore/ir`, which the checker, the optimizer
-and the backend will share, and the language server, which reports syntax
-errors until the checker is ported.
+and the backend share, the optimizer and the LLVM backend, which emit the
+same LLVM IR as `@ore/opt` and `@ore/codegen`, and the language server, which
+reports syntax errors until the checker is ported.
 
 | File | Contents |
 |---|---|
@@ -23,11 +24,14 @@ errors until the checker is ported.
 | `ir/nodes.ore` | The IR nodes (`compiler/ir/src/nodes.ts`): `Module`, `Func`, `Local`, statements and expressions |
 | `ir/dump.ore` | `dump(module)`: the canonical text of a module, the same as `dump` of `compiler/ir/src/dump.ts` |
 | `ir/read.ore` | `readModule(text)`: the module of a dump, so that `dump(readModule(dump(m)))` is `dump(m)`; how the backend gets the IR of the TypeScript checker until the checker is ported |
+| `opt/inline.ore` | `inlineCalls(module)`: calls of small functions replaced by their bodies (`compiler/opt/src/inline.ts`) |
+| `opt/escape.ore` | `planStack(module)`: escape analysis, the allocations placed on the stack (`compiler/opt/src/escape.ts`) |
+| `codegen/*.ore` | `emitModule(module, options)` of `codegen/emit.ore`: the LLVM IR text of a module, ported file by file from `compiler/codegen/src` (`ll`, `context`, `helpers`, `base`, `functions`, `expressions`, `calls`, `collections`, `json`, `emit`) |
 | `lsp/jsonrpc.ore` | JSON-RPC over the LSP base protocol: `Content-Length` framing, a reader task, cancellation, error codes |
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
 | `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
 | `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
-| `main.ore` | `ore-next tokens\|tree\|roles\|modules <file>`: prints the tokens, the tree, or the modules of a program; `ore-next ir <dump.txt>`: reads a dump and writes it again; `ore-next lsp`: the language server on stdio |
+| `main.ore` | `ore-next tokens\|tree\|roles\|modules <file>`: prints the tokens, the tree, or the modules of a program; `ore-next ir <dump.txt>`: reads a dump and writes it again; `ore-next llvm <dump.txt> [--debug]`: the LLVM IR of the module of a dump, inlined unless `--debug`; `ore-next lsp`: the language server on stdio |
 
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
@@ -36,7 +40,10 @@ equal those of the TypeScript scanner and parser; on every program of
 the tests of `test/*.test.ore` (also run by `bun run ore test compiler/next/test`);
 and, on every program of `tests/run` and on the compiler itself, that the dump
 of the IR of `@ore/checker`, read by `ore-next ir` and dumped again, is the
-same text.
+same text, and that `ore-next llvm` on it prints the LLVM IR of `@ore/codegen`
+byte for byte, in release and debug builds (the bootstrap criterion of the
+roadmap). Until the checker is ported, the dump is how the backend in Ore gets
+its IR.
 `test/ir-dump.test.ore` and `compiler/ir/test/dump.test.ts` build the same
 IR module by hand and check that their dumps both equal `test/ir-dump.txt`
 (`UPDATE=1 bun test compiler/ir` rewrites it after a change of the format).
@@ -72,6 +79,8 @@ equivalent in Ore:
 | `T \| undefined` results (`findField`) | `T \| null` |
 | `readonly T[]` | `T[]` |
 | `try` / `finally` | explicit cleanup on every path |
+| a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `codegen/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names |
+| `Map` keyed by a union (`Map<ir.Expr \| ir.Local, string>`) | one map per class of key (`SlotMap`, `NodeIds`) |
 
 Ore limitations to keep in mind: an array literal passed where `T[] | null` is
 expected takes its type from its first element, so declare it with a type

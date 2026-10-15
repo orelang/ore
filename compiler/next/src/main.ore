@@ -9,8 +9,12 @@
 //                                 ("text <specifier> <bytes>"), then the diagnostics
 //   ore-next ir <dump.txt>        reads the dump of an IR module (compiler/ir/src/dump.ts) and
 //                                 writes it again: the round trip of ir/read.ore
+//   ore-next llvm <dump.txt> [--debug]
+//                                 the LLVM IR of the module of a dump, from opt/ and codegen/:
+//                                 inlined unless --debug, which keeps frames for stack traces
 //   ore-next lsp                  the language server on stdin and stdout
 
+import { emitModule, EmitOptions } from "./codegen/emit"
 import { dump as dumpModule } from "./ir/dump"
 import { readModule } from "./ir/read"
 import { serve } from "./lsp/server"
@@ -24,12 +28,13 @@ const version = "0.1.0-next"
 
 if (process.args.length === 1 && process.args[0] === "lsp") process.exit(i32(serve(version)))
 
-const mode = process.args.length === 2 ? process.args[0] : ""
-if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "ir") {
-    console.error("usage: ore-next tokens|tree|roles|modules <file.ore> | ore-next ir <dump.txt> | ore-next lsp")
+const llvm = process.args.length >= 2 && process.args.length <= 3 && process.args[0] === "llvm" && (process.args.length === 2 || process.args[2] === "--debug")
+const mode = llvm ? "llvm" : process.args.length === 2 ? process.args[0] : ""
+if (mode !== "tokens" && mode !== "tree" && mode !== "roles" && mode !== "modules" && mode !== "ir" && mode !== "llvm") {
+    console.error("usage: ore-next tokens|tree|roles|modules <file.ore> | ore-next ir <dump.txt> | ore-next llvm <dump.txt> [--debug] | ore-next lsp")
     process.exit(2)
 }
-if (mode === "ir") {
+if (mode === "ir" || mode === "llvm") {
     const text = fs.readFile(process.args[1])
     if (text instanceof Error) {
         console.error(text.message)
@@ -40,7 +45,8 @@ if (mode === "ir") {
         console.error(module.message)
         process.exit(1)
     }
-    console.write(dumpModule(module))
+    if (mode === "ir") console.write(dumpModule(module))
+    else console.write(emitModule(module, new EmitOptions(process.args.length === 3)))
     process.exit(0)
 }
 if (mode === "modules") {
