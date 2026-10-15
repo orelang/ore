@@ -365,7 +365,7 @@ declare namespace process {
     /** Runs a program and waits, collecting its stdout and stderr. */
     function output(program: string, args?: string[]): Output | Error
 
-    /** A program to run, with its arguments: set the fields, then call `run()` or `output()`. */
+    /** A program to run, with its arguments: set the fields, then call `run()`, `output()` or `spawn()`. */
     class Command {
         constructor(program: string, args?: string[])
         readonly program: string
@@ -382,6 +382,17 @@ declare namespace process {
         run(): int | Error
         /** Runs and waits, collecting stdout and stderr; a failing status is no Error. */
         output(): Output | Error
+        /** Starts with this process's stdio, as `run()`, without waiting: see `Child`. */
+        spawn(): Child | Error
+    }
+
+    /** A program started by `Command.spawn()`, running alongside this one. */
+    class Child {
+        readonly pid: int
+        /** Waits for it to end (once more: the same status); returns the exit status (128 + signal if killed). */
+        wait(): int | Error
+        /** Sends a signal: SIGTERM (15) by default, 9 for SIGKILL; nothing once `wait()` has collected it. */
+        kill(signal?: int): Error | null
     }
 
     /** What `output()` returns. */

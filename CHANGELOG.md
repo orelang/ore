@@ -5,6 +5,8 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `process.Command.spawn()` starts a program without waiting for it: a
+  `process.Child` with `pid`, `wait()` and `kill(signal)`.
 - Diagnostics have codes (`error[ORE2033]`) and a page each in
   `docs/errors`, linked from the command line and the language server.
 - The language server runs the checker: type errors, hover with the

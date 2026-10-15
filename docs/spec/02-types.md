@@ -115,7 +115,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.cwd()` | the working directory, as an absolute path |
 | `process.env()` | the environment variables, as a `Map<string, string>` |
 | `process.cpus()` | the number of CPUs online |
-| `process.run(program, args?)`, `process.output(program, args?)`, `new process.Command(program, args?)` | other programs (below) |
+| `process.run(program, args?)`, `process.output(program, args?)`, `new process.Command(program, args?)` | other programs (below), also started without waiting: `process.Child` |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
 | `Math.abs(x)`, `Math.min(...values)`, `Math.max(...values)` | for any numeric type, keeping it; `min` and `max` take one or more values, arrays and tuples spread in, and of only empty arrays give an infinity or the integer type's extreme |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
@@ -188,6 +188,22 @@ const code = cc.run()   // with this program's stdin, stdout and stderr
   program could not be started (`cannot run cc: not found in PATH`) or
   waited for. A child killed by a signal has the status 128 plus the
   signal's number, as in shells, and `Output.signal` names it.
+- `spawn()` starts the command as `run()` does and returns at once a
+  `process.Child`, which runs alongside this program: `pid`, `wait()` (the
+  exit status, as `run()` returns it; the same again when called again) and
+  `kill(signal = 15)` (SIGTERM; 9 is SIGKILL and 2 SIGINT on macOS and Linux
+  alike), which sends nothing once `wait()` has collected the child. To wait
+  with a timeout, wait in another task and `task.select` on its result and
+  `task.after`:
+
+  ```ts
+  const server = new process.Command("./server").spawn()
+  if (server instanceof Error) process.panic(server.message)
+  server.kill()
+  const exited = new Chan<int | Error>(1)
+  task.spawn(() => exited.send(server.wait()))
+  task.select([exited.onReceive((status) => {}), task.after(1000, () => server.kill(9))])
+  ```
 - A `Command` has `cwd` (`""` for this program's directory), `env`
   (variables set over the inherited environment), `clearEnv` (start from an
   empty environment) and `stdin` (text written to the child's standard

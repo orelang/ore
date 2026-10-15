@@ -1,0 +1,51 @@
+// Programs running alongside this one: started by `Command.spawn()`, waited
+// for, and stopped by a signal.
+
+function started(command: process.Command): process.Child {
+    const child = command.spawn()
+    if (child instanceof Error) process.panic(child.message)
+    return child
+}
+
+function status(child: process.Child): int {
+    const code = child.wait()
+    if (code instanceof Error) process.panic(code.message)
+    return code
+}
+
+// It runs while this program goes on, with this program's standard output.
+console.log("before")
+const quick = started(new process.Command("sh", ["-c", "echo from the child; exit 3"]))
+console.log(quick.pid > 0)
+console.log("status", status(quick))
+// Waited for again: the same status; a signal is no longer sent.
+console.log("again", status(quick), quick.kill() === null)
+
+// Standard input, as for `run()`.
+const cat = new process.Command("cat")
+cat.stdin = "fed to cat\n"
+console.log("cat", status(started(cat)))
+
+// Stopped by SIGTERM: 128 + 15.
+const sleeper = started(new process.Command("sleep", ["10"]))
+console.log("kill", sleeper.kill() === null)
+console.log("terminated", status(sleeper))
+
+// A child that ignores SIGTERM, waited for with a timeout, then killed.
+const stubborn = started(new process.Command("sh", ["-c", "trap '' TERM; echo ready; exec sleep 10"]))
+task.sleep(100)
+stubborn.kill(15)
+const exits = new Chan<int>(1)
+task.spawn(() => exits.send(status(stubborn)))
+let waited = "exited"
+task.select([
+    exits.onReceive((code) => console.log("unexpected exit", code)),
+    task.after(200, () => (waited = "timed out")),
+])
+console.log(waited)
+stubborn.kill(9)
+console.log("killed", exits.receive())
+
+// A program that cannot start is an Error, as for `run()`.
+const missing = new process.Command("ore-surely-not-a-program").spawn()
+console.log(missing instanceof Error ? missing.message : "started")
