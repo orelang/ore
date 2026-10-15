@@ -101,6 +101,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.exit(code)` | exits with a status code |
 | `process.args` | the command-line arguments after the program name |
 | `process.getenv(name)` | an environment variable, or `null` |
+| `process.env()` | the environment variables, as a `Map<string, string>` |
+| `process.run(program, args?)`, `process.output(program, args?)`, `new process.Command(program, args?)` | other programs (below) |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
 | `Math.abs(x)`, `Math.min(a, b)`, `Math.max(a, b)` | for any numeric type, keeping it |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
@@ -108,11 +110,75 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
+| `fs.readDir(path)` | the names in a directory, sorted, or an `Error` |
+| `fs.mkdir(path, recursive?)`, `fs.remove(path, recursive?)`, `fs.rename(from, to)` | `null`, or an `Error` |
+| `fs.stat(path)`, `fs.lstat(path)` | an `fs.FileInfo`, or an `Error` |
+| `fs.isFile(path)`, `fs.isDir(path)` | whether `path` is a file, a directory |
+| `fs.realpath(path)` | the absolute path without links, `.` and `..`, or an `Error` |
+| `fs.tempDir()`, `fs.mkdtemp(prefix?, dir?)` | `$TMPDIR` or `/tmp`; a new uniquely named directory in it |
 | `Date.now()` | milliseconds since the Unix epoch |
 | `JSON.stringify(value, indent?)` | the JSON text of a value |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
+
+`fs` and `process` are partly written in Ore (`runtime/core/fs.ore` and
+`runtime/core/process.ore`): the exports of these modules are members of
+the namespaces, classes included, so `fs.FileInfo` and `process.Command`
+are types and `new process.Command(...)` creates one.
+
+### Files and directories
+
+Errors are values whose message names the operation, the path and the
+system's reason: `cannot remove out/a: Directory not empty`. A file system
+call blocks only its OS thread; the scheduler runs the other tasks on
+another one.
+
+- `fs.mkdir(path, true)` creates the missing parents too, and a directory
+  that exists already is no error; without it, an existing path is an error.
+- `fs.remove(path)` removes a file, a symbolic link or an empty directory;
+  `fs.remove(path, true)` removes a directory with everything in it, without
+  following links. A missing path is an error in both cases.
+- `fs.stat` follows symbolic links, `fs.lstat` does not. An `fs.FileInfo`
+  has `isFile`, `isDir`, `isSymlink`, `size` (bytes), `mtime` (milliseconds
+  since the Unix epoch) and `mode` (the permission bits).
+- `fs.mkdtemp(prefix = "ore-", dir = fs.tempDir())` creates a directory
+  named `prefix` and six random characters, and returns its path.
+
+### Running programs
+
+```ts
+const out = process.output("git", ["status", "--short"])
+if (out instanceof Error) process.panic(out.message)   // it could not start
+if (!out.ok) console.error(out.stderr)
+console.log(out.stdout)
+
+const cc = new process.Command("cc", ["-c", "main.c"])
+cc.cwd = "build"
+cc.env.set("LANG", "C")
+const code = cc.run()   // with this program's stdin, stdout and stderr
+```
+
+- The program is found in `PATH` unless its name has a slash. Arguments are
+  passed as they are, without a shell.
+- `output()` collects standard output and error into an `process.Output`
+  with `stdout`, `stderr`, `code` and `ok`; its standard input is empty.
+  `run()` gives the child this program's standard input, output and error
+  (what this program printed before is written out first) and returns the
+  exit status. A status other than 0 is no `Error`: an `Error` means the
+  program could not be started (`cannot run cc: not found in PATH`) or
+  waited for. A child killed by a signal has the status 128 plus the
+  signal's number, as in shells, and `Output.signal` names it.
+- A `Command` has `cwd` (`""` for this program's directory), `env`
+  (variables set over the inherited environment), `clearEnv` (start from an
+  empty environment) and `stdin` (text written to the child's standard
+  input, which is then closed). It can run several times.
+- Waiting for a child occupies no OS thread: the pipes are non-blocking, and
+  a task waiting for output or for the child's exit parks until the
+  runtime's poller sees it (kqueue, or epoll with a pidfd on Linux), as for
+  sockets. Standard output and error are read at once, so a child that
+  fills one while this program reads the other cannot deadlock. Many tasks
+  can run programs at the same time.
 
 Printed values are numbers, `bool`, strings and unions of them (`null` prints
 as `null`). Floats are printed in the shortest form that round-trips, like
