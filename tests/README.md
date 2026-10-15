@@ -66,6 +66,10 @@ The other cases of the runner:
 - `watchdog/`: `ORE_WATCHDOG` reports a program blocked on its input.
 - `object/`: an executable from LLVM IR and C sources, and IR that does not
   verify.
+- `watch/`: `ore run --watch`, as the runner runs itself as `ore`
+  (`runner --ore ARGS...`): a program runs again when a module or a text it
+  imports changes, a build error is reported and the program runs once it
+  is fixed, and the running program is stopped when a file changes.
 - `cache/`: the build cache: a second build takes every object from it and
   works, another program takes the runtime's, editing one file of a program
   recompiles that file's part only, and a release build takes its object.

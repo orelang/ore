@@ -17,6 +17,7 @@
 
 import { Mutex } from "ore:sync"
 import { test } from "ore:test"
+import { main as ore } from "../../compiler/src/cli/main"
 import { initializeLLVM } from "../../compiler/src/llvm/object"
 import { Case, read } from "./cases"
 import { fmtCases, fmtProblems, variantOf } from "./fmt"
@@ -31,6 +32,7 @@ import {
     unitCases,
     watchdogCases,
 } from "./golden"
+import { watchCases } from "./watch"
 
 function usage(message: string): never {
     console.error(message)
@@ -44,6 +46,9 @@ function positive(value: string | null, what: string): int {
     if (n === null || n <= 0) usage(`${what}: not a positive number: ${value}`)
     return n
 }
+
+// `runner --ore ARGS...`: the command `ore`, for the cases of `ore run --watch`.
+if (process.args.length > 0 && process.args[0] === "--ore") process.exit(ore(process.args.slice(1)))
 
 // `runner --variant NAME FILE`: a variant of a file that the formatting cases check, such as "with block comments".
 if (process.args.length === 3 && process.args[0] === "--variant") {
@@ -105,6 +110,7 @@ const groups = [
     watchdogCases(settings),
     objectCases(settings),
     cacheCases(settings),
+    watchCases(settings, self),
     asyncCases(settings),
 ]
 for (const group of groups) for (const c of group) all.push(c)
