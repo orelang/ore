@@ -1,0 +1,674 @@
+// Escape analysis, ported from compiler/opt/src/escape.ts: the same rules and
+// the same order, so that the backend places the same allocations on the
+// stack.
+//
+// Allocations are told apart by identity. Ore cannot key a `Map` by a union
+// such as `Expr | Local`, so the nodes of the analysis get indices
+// (`NodeIds`), and the plan keeps one map per kind of node (`SlotNodes`).
+
+import {
+    Call,
+    Closure,
+    ObjectLit,
+    type Expr,
+    type Func,
+    type Local,
+    type LValue,
+    type Module,
+    type Stmt,
+} from "../ir/nodes"
+import { type StructType, type Type } from "../ir/types"
+
+/** An allocation or a boxed local placed on the stack: `ir.Expr | ir.Local` in TypeScript. */
+export type SlotNode = ObjectLit | Call | Closure | Local
+
+/**
+ * Escape analysis: finds allocations that never outlive the call of the
+ * function creating them, so that they can live in its stack frame instead of
+ * the garbage-collected heap.
+ *
+ * An allocation is an object literal, a constructor call, a closure with an
+ * environment, or the box of a local that closures capture and assign. A
+ * value escapes when it may be reachable after its function returns: it is
+ * returned, stored in a field, an array, a map or a channel, captured by a
+ * closure, converted to an interface, passed to a parameter that escapes, or
+ * used in any other way not known to be safe. Safe uses are reading a field,
+ * comparing, calling a method or function whose parameter does not escape,
+ * and calling a closure.
+ *
+ * Every stack allocation gets one slot for the whole function call. A slot is
+ * reused when its allocation runs again in a loop, which is sound because the
+ * previous object is unreachable by then: it is bound only to locals of the
+ * previous iteration, to objects created after it, or to arguments of calls
+ * that have returned. Field assignments therefore always make the assigned
+ * value escape, so an older object never refers to a newer one.
+ */
+export class StackPlan {
+    /** Allocations and boxed locals placed on the stack, by the function owning their slot. */
+    slots = new Map<Func, SlotNode[]>()
+    /** Constructors called with a slot to initialize instead of allocating. */
+    ctorsAt = new Map<Func, bool>()
+}
+
+/** Largest object placed on the stack, and the most stack slots one call may use, in bytes (estimated). */
+const maxObject = 256
+const maxFrame = 1024
+
+/** Which parameters of a function escape; `self` is `this` of a method or the instance of a constructor. */
+class Summary {
+    constructor(
+        public params: bool[],
+        public self: bool,
+    ) {}
+}
+
+/**
+ * Where a value goes (`Flow` in TypeScript): into the group of a node, by its
+ * index (0 or more), nowhere it could outlive the call (`safe`), or anywhere
+ * (`escapes`).
+ */
+const safe = -1
+const escapes = -2
+
+export function planStack(module: Module): StackPlan {
+    const funcs: Func[] = []
+    for (const f of module.functions) if (!f.extern) funcs.push(f)
+    const summaries = new Map<Func, Summary>()
+    for (const func of funcs) {
+        const params: bool[] = []
+        for (const _ of func.params) params.push(false)
+        summaries.set(func, new Summary(params, false))
+    }
+    // Start from "nothing escapes" and grow until stable: the least solution, so recursion is precise.
+    let changed = true
+    while (changed) {
+        changed = false
+        for (const func of funcs) {
+            const summary = new FuncAnalysis(func, summaries).summary()
+            const old = summaries.get(func)
+            if (old === null) continue
+            let differs = old.self !== summary.self
+            for (let i = 0; i < old.params.length; i++) if (old.params[i] !== summary.params[i]) differs = true
+            if (differs) {
+                summaries.set(func, summary)
+                changed = true
+            }
+        }
+    }
+
+    const plan = new StackPlan()
+    const stackClosures = new Map<Closure, bool>()
+    const closuresOf = new Map<Local, Closure[]>()
+    const boxFuncs: Func[] = []
+    const boxes = new Map<Func, Local[]>()
+    for (const func of funcs) {
+        const analysis = new FuncAnalysis(func, summaries)
+        analysis.summary()
+        let frame = 0
+        const placed: SlotNode[] = []
+        for (const site of analysis.sites) {
+            if (analysis.leaked(analysis.ids.of(site))) continue
+            const size = siteSize(site)
+            if (size > maxObject || frame + size > maxFrame) continue
+            frame += size
+            placed.push(site)
+            if (site instanceof Closure) stackClosures.set(site, true)
+            if (site instanceof Call) plan.ctorsAt.set(site.func, true)
+        }
+        plan.slots.set(func, placed)
+        for (const site of analysis.closures) {
+            const captures = site.func.captures
+            if (captures === null) continue
+            for (const c of captures) {
+                const list = closuresOf.get(c)
+                if (list === null) closuresOf.set(c, [site])
+                else list.push(site)
+            }
+        }
+        if (!boxes.has(func)) boxFuncs.push(func)
+        boxes.set(func, analysis.boxed)
+    }
+    // A box can live in the frame of its function when every closure capturing it does not escape.
+    for (const func of boxFuncs) {
+        const locals = boxes.get(func) ?? []
+        const slots = plan.slots.get(func)
+        if (slots === null) continue
+        for (const local of locals) {
+            let all = true
+            for (const c of closuresOf.get(local) ?? []) if (!stackClosures.has(c)) all = false
+            if (all) slots.push(local)
+        }
+    }
+    return plan
+}
+
+/** Whether a function is the constructor of the class it returns. */
+export function isCtor(func: Func): bool {
+    const result = func.type.result
+    return result.kind === "struct" && result.ctor === func
+}
+
+/** Whether a call creates an instance with a constructor. */
+function isCtorCall(e: Expr): bool {
+    return e.k === "call" && isCtor(e.func)
+}
+
+/** An allocation the analysis may place on the stack: an object literal, a constructor call or a closure with an environment. */
+function siteOf(e: Expr): ObjectLit | Call | Closure | null {
+    switch (e.k) {
+        case "object":
+            return e
+        case "call":
+            return isCtor(e.func) ? e : null
+        case "closure": {
+            const captures = e.func.captures
+            return captures !== null && captures.length > 0 ? e : null
+        }
+        default:
+            return null
+    }
+}
+
+function siteSize(site: SlotNode): int {
+    if (site instanceof Closure) return 16 * (site.func.captures ?? []).length
+    if (site instanceof ObjectLit) return 16 * Math.max(1, site.type.fields.length)
+    if (site instanceof Call) {
+        const t = site.type
+        if (t.kind === "struct") return 16 * Math.max(1, t.fields.length)
+    }
+    return 16
+}
+
+/** Types whose values may refer to an allocation: field reads of these carry the object's contents. */
+function isReference(type: Type): bool {
+    switch (type.kind) {
+        case "struct":
+            return true
+        case "func":
+            return true
+        case "interface":
+            return true
+        case "union":
+            for (const m of type.members) if (isReference(m)) return true
+            return false
+        default:
+            return false
+    }
+}
+
+/** Indices of the nodes of an analysis: locals and allocation sites, by identity. */
+export class NodeIds {
+    count = 0
+    locals = new Map<Local, int>()
+    objects = new Map<ObjectLit, int>()
+    calls = new Map<Call, int>()
+    closures = new Map<Closure, int>()
+
+    of(node: SlotNode): int {
+        if (node instanceof ObjectLit) return this.objects.get(node) ?? this.add(this.objects, node)
+        if (node instanceof Call) return this.calls.get(node) ?? this.add(this.calls, node)
+        if (node instanceof Closure) return this.closures.get(node) ?? this.add(this.closures, node)
+        return this.locals.get(node) ?? this.add(this.locals, node)
+    }
+
+    add<T>(map: Map<T, int>, node: T): int {
+        const id = this.count++
+        map.set(node, id)
+        return id
+    }
+}
+
+class FuncAnalysis {
+    ids = new NodeIds()
+    parent: int[] = []
+    leakedRoots: bool[] = []
+    /** Allocation sites in this function, in source order. */
+    readonly sites: SlotNode[] = []
+    /** Closures with an environment created in this function. */
+    readonly closures: Closure[] = []
+    /** Locals declared in this function that live in boxes. */
+    readonly boxed: Local[] = []
+    self: Local | null
+    ctor: bool
+
+    constructor(
+        public func: Func,
+        public summaries: Map<Func, Summary>,
+    ) {
+        this.ctor = isCtor(func)
+        this.self = func.receiver
+        const body = func.body.body
+        if (this.ctor && body.length > 0) {
+            const first = body[0]
+            if (first.k === "let") {
+                const init = first.init
+                if (init !== null && init.k === "alloc") this.self = first.local
+            }
+        }
+    }
+
+    summary(): Summary {
+        this.block(this.func.body.body)
+        const params: bool[] = []
+        for (const p of this.func.params) params.push(this.leaked(this.id(p)))
+        const self = this.self
+        return new Summary(params, self !== null ? this.leaked(this.id(self)) : true)
+    }
+
+    /** The index of a node, growing the union-find arrays for a new one. */
+    id(node: SlotNode): int {
+        const id = this.ids.of(node)
+        while (this.parent.length <= id) {
+            this.parent.push(this.parent.length)
+            this.leakedRoots.push(false)
+        }
+        return id
+    }
+
+    leaked(node: int): bool {
+        if (node >= this.parent.length) return false
+        return this.leakedRoots[this.find(node)]
+    }
+
+    find(node: int): int {
+        let root = node
+        while (this.parent[root] !== root) root = this.parent[root]
+        if (root !== node) this.parent[node] = root
+        return root
+    }
+
+    union(a: int, b: int) {
+        const ra = this.find(a)
+        const rb = this.find(b)
+        if (ra === rb) return
+        this.parent[ra] = rb
+        if (this.leakedRoots[ra]) {
+            this.leakedRoots[ra] = false
+            this.leakedRoots[rb] = true
+        }
+    }
+
+    leak(node: int) {
+        this.leakedRoots[this.find(node)] = true
+    }
+
+    /** Whether a local is ever bound to something other than its initializer. */
+    rebound(local: Local): bool {
+        return local.assigned || local.captured
+    }
+
+    declared(local: Local) {
+        if (local.captured && local.assigned && !this.func.params.includes(local)) this.boxed.push(local)
+    }
+
+    block(stmts: Stmt[]) {
+        for (const s of stmts) this.stmt(s)
+    }
+
+    stmt(s: Stmt) {
+        switch (s.k) {
+            case "block":
+                this.block(s.body)
+                return
+            case "let": {
+                this.declared(s.local)
+                const init = s.init
+                if (init === null || init.k === "alloc") return
+                this.expr(init, this.binding(s.local))
+                return
+            }
+            case "expr":
+                this.expr(s.expr, safe)
+                return
+            case "if": {
+                this.expr(s.cond, safe)
+                this.stmt(s.then)
+                const otherwise = s.else
+                if (otherwise !== null) this.stmt(otherwise)
+                return
+            }
+            case "loop": {
+                const cond = s.cond
+                if (cond !== null) this.expr(cond, safe)
+                const update = s.update
+                if (update !== null) this.expr(update, safe)
+                this.stmt(s.body)
+                return
+            }
+            case "for-of": {
+                this.declared(s.local)
+                const value = s.value
+                if (value !== null) this.declared(value)
+                this.expr(s.iterable, escapes)
+                this.stmt(s.body)
+                return
+            }
+            case "switch":
+                this.declared(s.local)
+                this.expr(s.value, escapes)
+                for (const c of s.clauses) {
+                    const test = c.test
+                    if (test !== null) this.expr(test, safe)
+                    this.block(c.body)
+                }
+                return
+            case "using":
+                this.declared(s.local)
+                this.expr(s.init, escapes)
+                this.stmt(s.dispose)
+                this.block(s.body)
+                return
+            case "break":
+                return
+            case "continue":
+                return
+            case "return": {
+                const value = s.value
+                if (value === null) return
+                // A constructor returns its instance to the caller, who decided where it lives.
+                if (this.ctor && value.k === "local" && value.local === this.self) return
+                this.expr(value, escapes)
+                return
+            }
+        }
+    }
+
+    /** Where the initial value of a local flows: into the local, unless it is bound to other values later. */
+    binding(local: Local): int {
+        return this.rebound(local) || local.global ? escapes : this.id(local)
+    }
+
+    /** Records that a value flows to `to`. */
+    flow(node: int, to: int) {
+        if (to === escapes) this.leak(node)
+        else if (to !== safe) this.union(node, to)
+    }
+
+    /** Visits an expression whose value flows to `to`. */
+    expr(e: Expr, to: int) {
+        const site = siteOf(e)
+        if (site !== null) {
+            this.sites.push(site)
+            this.flow(this.id(site), to)
+        }
+        switch (e.k) {
+            case "local":
+                this.flow(this.id(e.local), to)
+                return
+            case "field": {
+                // The value read may be another object stored in this one, so it goes where that one goes.
+                const root = rootOf(e.object)
+                if (!isReference(e.type) || to === safe) {
+                    this.expr(e.object, safe)
+                    return
+                }
+                if (root === null) {
+                    this.expr(e.object, escapes)
+                    return
+                }
+                this.expr(e.object, safe)
+                this.flow(this.id(root), to)
+                return
+            }
+            case "assign":
+                this.target(e.target)
+                this.expr(e.value, escapes)
+                return
+            case "incdec":
+                this.target(e.target)
+                return
+            case "compare":
+                this.expr(e.left, safe)
+                this.expr(e.right, safe)
+                return
+            case "is-null":
+                this.expr(e.value, safe)
+                return
+            case "is":
+                this.expr(e.value, safe)
+                return
+            case "typeof":
+                this.expr(e.value, safe)
+                return
+            case "cond":
+                this.expr(e.cond, safe)
+                this.expr(e.then, to)
+                this.expr(e.else, to)
+                return
+            case "coalesce":
+                this.expr(e.value, to)
+                this.expr(e.fallback, to)
+                return
+            case "recast":
+                this.expr(e.value, to)
+                return
+            case "bind":
+                for (const b of e.locals) {
+                    this.declared(b.local)
+                    this.expr(b.init, this.binding(b.local))
+                }
+                this.expr(e.body, to)
+                return
+            case "seq":
+                for (let i = 0; i < e.exprs.length; i++) this.expr(e.exprs[i], i === e.exprs.length - 1 ? to : safe)
+                return
+            case "optional":
+                this.expr(e.value, this.binding(e.binding))
+                this.expr(e.body, to)
+                return
+            case "call": {
+                const summary = e.func.extern ? null : this.summaries.get(e.func)
+                if (isCtor(e.func) && (summary === null || summary.self)) this.leak(this.id(e))
+                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], summary !== null && !this.escapesAt(summary, i) ? safe : escapes)
+                return
+            }
+            case "method-call": {
+                const summary = this.summaries.get(e.func)
+                this.expr(e.receiver, summary !== null && !summary.self ? safe : escapes)
+                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], summary !== null && !this.escapesAt(summary, i) ? safe : escapes)
+                return
+            }
+            case "call-value":
+                this.expr(e.callee, safe)
+                for (const a of e.args) this.expr(a, escapes)
+                return
+            case "array-method":
+                // The runtime keeps neither the callbacks nor the values searched for; the initial value of reduce is returned.
+                this.expr(e.array, safe)
+                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], e.method === "reduce" && i === 1 ? escapes : safe)
+                return
+            case "object": {
+                // Objects stored in a new object share its fate.
+                const id = this.id(e)
+                for (const f of e.fields) this.expr(f.value, id)
+                return
+            }
+            case "closure": {
+                const captures = e.func.captures
+                if (captures !== null && captures.length > 0) this.closures.push(e)
+                // Captured values are copied into the environment, which may outlive them.
+                if (captures !== null) for (const c of captures) this.leak(this.id(c))
+                return
+            }
+            default:
+                for (const child of children(e)) this.expr(child, escapes)
+        }
+    }
+
+    /** `summary.params[i]`, which is undefined (so not escaping) past the parameters in TypeScript. */
+    escapesAt(summary: Summary, i: int): bool {
+        return i < summary.params.length && summary.params[i]
+    }
+
+    target(t: LValue) {
+        switch (t.k) {
+            case "local":
+                return
+            case "element":
+                this.expr(t.array, safe)
+                this.expr(t.index, safe)
+                return
+            case "field":
+                this.expr(t.object, safe)
+                return
+            case "iface-field":
+                this.expr(t.value, escapes)
+                return
+        }
+    }
+}
+
+/** The local or allocation at the root of a chain of field reads. */
+function rootOf(start: Expr): SlotNode | null {
+    let e = start
+    while (e.k === "field") e = e.object
+    if (e.k === "local") return e.local
+    return siteOf(e)
+}
+
+/** The subexpressions of an expression, for uses with no special rule. */
+export function children(e: Expr): Expr[] {
+    const out: Expr[] = []
+    switch (e.k) {
+        case "arith":
+            out.push(e.left, e.right)
+            return out
+        case "compare":
+            out.push(e.left, e.right)
+            return out
+        case "logical":
+            out.push(e.left, e.right)
+            return out
+        case "unary":
+            out.push(e.operand)
+            return out
+        case "not":
+            out.push(e.operand)
+            return out
+        case "convert":
+            out.push(e.value)
+            return out
+        case "len":
+            out.push(e.value)
+            return out
+        case "recast":
+            out.push(e.value)
+            return out
+        case "is-null":
+            out.push(e.value)
+            return out
+        case "union-field":
+            out.push(e.value)
+            return out
+        case "typeof":
+            out.push(e.value)
+            return out
+        case "is":
+            out.push(e.value)
+            return out
+        case "downcast":
+            out.push(e.value)
+            return out
+        case "to-iface":
+            out.push(e.value)
+            return out
+        case "iface-field":
+            out.push(e.value)
+            return out
+        case "call":
+            for (const a of e.args) out.push(a)
+            return out
+        case "builtin":
+            for (const a of e.args) out.push(a)
+            return out
+        case "cond":
+            out.push(e.cond, e.then, e.else)
+            return out
+        case "concat":
+            for (const p of e.parts) out.push(p)
+            return out
+        case "index":
+            out.push(e.target, e.index)
+            return out
+        case "slice": {
+            out.push(e.value)
+            const start = e.start
+            if (start !== null) out.push(start)
+            const end = e.end
+            if (end !== null) out.push(end)
+            return out
+        }
+        case "array":
+            for (const x of e.elems) out.push(x)
+            return out
+        case "push":
+            out.push(e.array)
+            for (const v of e.values) out.push(v)
+            return out
+        case "pop":
+            out.push(e.array)
+            return out
+        case "object":
+            for (const f of e.fields) out.push(f.value)
+            return out
+        case "field":
+            out.push(e.object)
+            return out
+        case "method-call":
+            out.push(e.receiver)
+            for (const a of e.args) out.push(a)
+            return out
+        case "iface-call":
+            out.push(e.value)
+            for (const a of e.args) out.push(a)
+            return out
+        case "optional":
+            out.push(e.value, e.body)
+            return out
+        case "coalesce":
+            out.push(e.value, e.fallback)
+            return out
+        case "map": {
+            const map = e.map
+            if (map !== null) out.push(map)
+            const key = e.key
+            if (key !== null) out.push(key)
+            const value = e.value
+            if (value !== null) out.push(value)
+            return out
+        }
+        case "call-value":
+            out.push(e.callee)
+            for (const a of e.args) out.push(a)
+            return out
+        case "bound-method":
+            out.push(e.receiver)
+            return out
+        case "array-method":
+            out.push(e.array)
+            for (const a of e.args) out.push(a)
+            return out
+        case "string-method":
+            out.push(e.value)
+            for (const a of e.args) out.push(a)
+            return out
+        case "chan": {
+            const chan = e.chan
+            if (chan !== null) out.push(chan)
+            const value = e.value
+            if (value !== null) out.push(value)
+            const handler = e.handler
+            if (handler !== null) out.push(handler)
+            return out
+        }
+        case "bind":
+            for (const b of e.locals) out.push(b.init)
+            out.push(e.body)
+            return out
+        case "seq":
+            for (const x of e.exprs) out.push(x)
+            return out
+        default:
+            return out
+    }
+}

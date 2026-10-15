@@ -16,7 +16,7 @@ function sample(): Module {
   const int = (value: bigint, type = i64): Expr => ({ k: "int", type, value })
   const ref = (local: Local): Expr => ({ k: "local", type: local.type, local })
 
-  const other: InterfaceType = { kind: "interface", id: 6, name: "Other", members: [] }
+  const other: InterfaceType = { kind: "interface", id: 6, name: "Other<i64>", members: [] }
   const shape: InterfaceType = {
     kind: "interface",
     id: 3,
@@ -28,6 +28,7 @@ function sample(): Module {
   }
   const point: StructType = { kind: "struct", id: 1, name: "Point", nominal: true, fields: [], methods: [] }
   const anon: StructType = { kind: "struct", id: 2, name: undefined, nominal: false, fields: [{ name: "a", type: string, readonly: false }], methods: [] }
+  const pair: StructType = { kind: "struct", id: 9, name: "Pair<i64, string>", nominal: false, fields: [{ name: "a", type: i64, readonly: true }, { name: "b", type: string, readonly: false }], methods: [] }
   const maybe: UnionType = { kind: "union", id: 7, members: [i64, types.null], name: "MaybeInt" }
   const mixed: UnionType = {
     kind: "union",
@@ -77,6 +78,18 @@ function sample(): Module {
     body: block([]),
     exported: false,
   }
+  // Another declaration of the C function, as another module may make: references say which one.
+  const putsPtr: Func = {
+    name: "puts",
+    sourceName: "puts",
+    line: 2,
+    file: "d.ore",
+    extern: true,
+    type: fn([types.ptr], types.i32),
+    params: [{ id: 3, name: "p", type: types.ptr, mutable: false }],
+    body: block([]),
+    exported: false,
+  }
 
   const n: Local = { id: 10, name: "n", type: i64, mutable: true, assigned: true, captured: true }
   const xs: Local = { id: 11, name: "xs", type: arrayOf(i64), mutable: false }
@@ -122,6 +135,7 @@ function sample(): Module {
     { k: "unary", type: i64, op: "~", operand: ref(n) },
     { k: "convert", type: f64, value: ref(n) },
     { k: "call", type: types.i32, func: puts, args: [{ k: "string", type: string, value: "hi" }] },
+    { k: "call", type: types.i32, func: putsPtr, args: [] },
     { k: "builtin", type: voidType, name: "console.log", args: [ref(n)] },
     { k: "builtin", type: i64, name: "JSON.parse", args: [{ k: "string", type: string, value: "1" }], error: { ctor, itab }, typeArgs: [i64, maybe] },
     { k: "cond", type: i64, cond: { k: "bool", type: bool, value: true }, then: int(1n), else: int(2n) },
@@ -230,9 +244,9 @@ function sample(): Module {
   }
   return {
     file: "test.ore",
-    functions: [norm, ctor, puts, closure, main],
+    functions: [norm, ctor, puts, putsPtr, closure, main],
     inits: [init],
-    structs: [point, anon],
+    structs: [point, anon, pair],
     itabs: [itab],
     unions: [maybe, mixed],
   }

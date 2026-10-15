@@ -258,7 +258,7 @@ beforeAll(async () => {
   // A debug build: a release build of the compiler, with its checker, takes minutes.
   const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
   expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 120_000)
+}, 600_000)
 
 for (const [name, variant] of Object.entries(variants)) {
   describe(`fmt, ${name}`, () => {
