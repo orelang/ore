@@ -12,6 +12,7 @@ declare function ore_entry(): void
 
 let argCount: i32
 let argValues: ptr
+let envValues: ptr
 
 /** The NUL-terminated bytes at `p`, copied into a string. */
 function copyCString(p: ptr): string {
@@ -24,9 +25,10 @@ function copyCString(p: ptr): string {
 
 /** The process starts here: the GC and the output, then the top-level code as the first task. */
 //ore:export main
-function main(argc: i32, argv: ptr): i32 {
+function main(argc: i32, argv: ptr, envp: ptr): i32 {
     argCount = argc
     argValues = argv
+    envValues = envp
     GC_init()
     initOutput()
     runMain(unsafe.functionAddress(ore_entry))
@@ -39,6 +41,11 @@ function args(): string[] {
     const out: string[] = []
     for (let i = 1; i < i64(argCount); i++) out.push(copyCString(unsafe.load<ptr>(unsafe.add(argValues, i * 8))))
     return out
+}
+
+/** The environment the process started with: a NULL-terminated array of "NAME=value" C strings. */
+export function environment(): ptr {
+    return envValues
 }
 
 // ---------------------------------------------------------------------------

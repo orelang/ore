@@ -279,7 +279,11 @@ declare namespace internal {
     function netPort(fd: int): int
 }
 
-/** The running process. */
+/**
+ * The running process, and other programs it runs. The members from `env`
+ * on are written in Ore, in runtime/core/process.ore, whose exports are
+ * members of the namespace: these declarations document them.
+ */
 declare namespace process {
     /** The command-line arguments after the program name. */
     const args: string[]
@@ -292,6 +296,44 @@ declare namespace process {
 
     /** Exits the program with a status code. */
     function exit(code: i32): never
+
+    /** The environment variables, by name. */
+    function env(): Map<string, string>
+    /** Runs a program (found in PATH) with this process's stdin, stdout and stderr, and waits; returns its exit status. */
+    function run(program: string, args?: string[]): int | Error
+    /** Runs a program and waits, collecting its stdout and stderr. */
+    function output(program: string, args?: string[]): Output | Error
+
+    /** A program to run, with its arguments: set the fields, then call `run()` or `output()`. */
+    class Command {
+        constructor(program: string, args?: string[])
+        readonly program: string
+        readonly args: string[]
+        /** The working directory; "" for this process's. */
+        cwd: string
+        /** Variables set over the inherited environment. */
+        env: Map<string, string>
+        /** Whether to start from an empty environment. */
+        clearEnv: bool
+        /** Text for the standard input, then closed; null for none (empty for `output()`, inherited for `run()`). */
+        stdin: string | null
+        /** Runs with this process's stdio and waits; returns the exit status (128 + signal if killed). */
+        run(): int | Error
+        /** Runs and waits, collecting stdout and stderr; a failing status is no Error. */
+        output(): Output | Error
+    }
+
+    /** What `output()` returns. */
+    class Output {
+        /** The exit status, or 128 plus the number of the signal that killed it. */
+        readonly code: int
+        readonly stdout: string
+        readonly stderr: string
+        /** The signal that killed it, or 0. */
+        readonly signal: int
+        /** Whether it exited with status 0. */
+        readonly ok: bool
+    }
 }
 
 /** Conversion between values and JSON text. */

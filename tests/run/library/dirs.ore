@@ -1,0 +1,77 @@
+// Directories and file metadata: a tree made, listed, inspected, renamed and removed.
+
+function check(e: Error | null): void {
+    if (e !== null) process.panic(e.message)
+}
+
+const root = fs.mkdtemp("ore-dirs-")
+if (root instanceof Error) process.panic(root.message)
+const other = fs.mkdtemp()
+if (other instanceof Error) process.panic(other.message)
+console.log(root !== other, root.startsWith(fs.tempDir()), fs.isDir(root), fs.isFile(root))
+// Paths in messages, without the random name.
+const clean = (e: Error | null) => (e === null ? "ok" : e.message.replaceAll(root, "<root>"))
+
+// mkdir: one level, or with the missing parents.
+console.log(clean(fs.mkdir(`${root}/a/b/c`)))
+check(fs.mkdir(`${root}/a/b/c`, true))
+console.log(clean(fs.mkdir(`${root}/a/b/c`)))
+check(fs.mkdir(`${root}/a/b/c/`, true))
+console.log(fs.isDir(`${root}/a/b/c`))
+
+// Files, listed in sorted order.
+check(fs.writeFile(`${root}/a/zeta.txt`, "last"))
+check(fs.writeFile(`${root}/a/alpha.txt`, "first file"))
+check(fs.writeFile(`${root}/a/Upper.txt`, ""))
+const names = fs.readDir(`${root}/a`)
+console.log(names instanceof Error ? names.message : names.join(" "))
+console.log(clean(fs.mkdir(`${root}/a/alpha.txt/x`, true)))
+
+// stat and lstat.
+const info = fs.stat(`${root}/a/alpha.txt`)
+if (info instanceof Error) process.panic(info.message)
+const now = Date.now()
+console.log(info.isFile, info.isDir, info.isSymlink, info.size, info.mtime > now - 60000 && info.mtime <= now + 1000)
+const dirInfo: fs.FileInfo | Error = fs.stat(`${root}/a/b`)
+if (dirInfo instanceof Error) process.panic(dirInfo.message)
+console.log(dirInfo.isFile, dirInfo.isDir, dirInfo.mode & 0o700)
+const link = process.output("ln", ["-s", "alpha.txt", `${root}/a/link`])
+if (link instanceof Error || !link.ok) process.panic("ln failed")
+const followed = fs.stat(`${root}/a/link`)
+const own = fs.lstat(`${root}/a/link`)
+if (followed instanceof Error || own instanceof Error) process.panic("stat failed")
+console.log(followed.isFile, followed.size, own.isSymlink, own.isFile)
+const missing = fs.stat(`${root}/nothing`)
+console.log(missing instanceof Error ? clean(missing) : "found")
+console.log(fs.exists(`${root}/nothing`), fs.isFile(`${root}/nothing`), fs.isDir(`${root}/nothing`))
+
+// realpath resolves links, "." and "..".
+const real = fs.realpath(`${root}/a/b/../link`)
+const realRoot = fs.realpath(root)
+if (real instanceof Error || realRoot instanceof Error) process.panic("realpath failed")
+console.log(real === `${realRoot}/a/alpha.txt`)
+const unresolved = fs.realpath(`${root}/nothing`)
+console.log(unresolved instanceof Error ? clean(unresolved) : unresolved)
+
+// rename: files and directories.
+check(fs.rename(`${root}/a/zeta.txt`, `${root}/a/b/omega.txt`))
+check(fs.rename(`${root}/a/b`, `${root}/moved`))
+const moved = fs.readDir(`${root}/moved`)
+const omega = fs.readFile(`${root}/moved/omega.txt`)
+console.log(moved instanceof Error ? moved.message : moved.join(" "), omega instanceof Error ? omega.message : omega)
+console.log(clean(fs.rename(`${root}/nothing`, `${root}/else`)))
+
+// remove: files, empty directories, and whole trees; links are not followed.
+console.log(clean(fs.remove(`${root}/moved`)))
+check(fs.remove(`${root}/moved/omega.txt`))
+check(fs.remove(`${root}/moved/c`))
+check(fs.remove(`${root}/moved`))
+check(fs.mkdir(`${root}/deep/1/2/3/4`, true))
+for (let i = 0; i < 50; i++) check(fs.writeFile(`${root}/deep/1/2/file${i}`, `${i}`))
+check(fs.remove(`${root}/a/link`))
+console.log(fs.exists(`${root}/a/alpha.txt`))
+check(fs.remove(root, true))
+check(fs.remove(other))
+console.log(fs.exists(root), fs.exists(other), clean(fs.remove(root, true)))
+const gone = fs.readDir(root)
+console.log(gone instanceof Error ? clean(gone) : "listed")

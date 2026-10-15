@@ -10,6 +10,7 @@ import {
     newPoller,
     nil,
     permanent,
+    pollExitOnce,
     pollOnce,
     pollWait,
     startThread,
@@ -68,4 +69,42 @@ export function netWait(fd: i32, write: bool): void {
         enqueueLocked(t)
         unlock(s.lock)
     })
+}
+
+declare function syscall(number: i64, ...args: i64[]): i64
+declare function close(fd: i32): i32
+
+/**
+ * Parks the current task until process `pid` exits, without occupying a
+ * worker: on a pidfd on Linux (pidfd_open, Linux 5.3), with EVFILT_PROC on
+ * macOS. False if the poller cannot watch the process, as on older kernels;
+ * the caller then waits for it by blocking. It may return before the
+ * process exits; the caller checks with waitpid(WNOHANG).
+ */
+export function exitWait(pid: i32): bool {
+    if (target.os === "linux") {
+        // pidfd_open has the same number on every architecture.
+        const fd = i32(syscall(434, i64(pid), 0))
+        if (fd < 0) return false
+        netWait(fd, false)
+        close(fd)
+        return true
+    }
+    startPoller()
+    const t = current()
+    const s = scheduler()
+    lock(s.lock)
+    addNetWaiterLocked(1)
+    unlock(s.lock)
+    let watched = true
+    park(() => {
+        if (pollExitOnce(pollerFd, pid, unsafe.addressOf(t))) return
+        // The process exited before it could be watched, or cannot be.
+        watched = false
+        lock(s.lock)
+        addNetWaiterLocked(-1)
+        enqueueLocked(t)
+        unlock(s.lock)
+    })
+    return watched
 }
