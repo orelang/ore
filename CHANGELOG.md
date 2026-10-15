@@ -9,7 +9,9 @@ before 1.0, a minor version may change the language.
   `docs/errors`, linked from the command line and the language server.
 - The language server runs the checker: type errors, hover with the
   signature or type and the JSDoc comment, go to definition (also into the
-  standard library), completion after `.`, references and rename.
+  standard library), completion after `.` with the members' comments,
+  signature help, references and rename across the workspace, formatting,
+  the outline, and the inferred types of variables as inlay hints.
 - A build cache in `~/.cache/ore` (`$ORE_CACHE`, `$XDG_CACHE_HOME`;
   `ORE_CACHE=off` turns it off): LLVM's object files are kept by a hash of
   their IR, the compiler and the target. Debug builds are split by source

@@ -82,10 +82,11 @@ exports, type assertions (Ore converts: `i32(x)`).
 - A build cache in `~/.cache/ore`: the runtime compiled once per compiler
   and target, objects of unchanged modules reused (done; loading, checking
   and emitting still run on every build).
-- The language server on the checker: diagnostics, hover with JSDoc, go to
-  definition, completion, references and rename (done); signature help,
-  JSDoc in completion, workspace-wide references, analysis off the
-  keystroke path.
+- The language server on the checker: diagnostics with codes, hover with
+  JSDoc, go to definition, completion with JSDoc, signature help,
+  references and rename across the workspace, formatting, the outline,
+  inlay hints of inferred types (done); semantic tokens, quick fixes, and
+  checking the runtime once rather than on every change.
 - Diagnostics with codes (`ORE1234`) and a page per code in the
   documentation, linked from the editor (`codeDescription`) and printed by
   the command line; messages that explain the cause and the fix, with the

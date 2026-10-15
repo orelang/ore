@@ -244,7 +244,7 @@ test("lifecycle: initialize, shutdown and exit", () => {
     const init = client.initialize()
     const capabilities =
         `{"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,` +
-        `"documentFormattingProvider":true,"documentSymbolProvider":true,"hoverProvider":true,` +
+        `"documentFormattingProvider":true,"documentSymbolProvider":true,"hoverProvider":true,"inlayHintProvider":true,` +
         `"referencesProvider":true,"renameProvider":{"prepareProvider":true},` +
         `"signatureHelpProvider":{"triggerCharacters":["(",","]},"textDocumentSync":2}`
     expect(init).toBe(
@@ -372,6 +372,15 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     const help = client.request("8", "textDocument/signatureHelp", at(7, 21))
     expect(help.includes(`"label":"function add(a: int, b: int): int"`)).toBe(true)
     expect(help.includes(`"activeParameter":1`)).toBe(true)
+
+    // The type of a variable declared without one, after its name.
+    const range = `"range":${range(0, 0, 11, 0)}`
+    const hints = client.request(
+        "11",
+        "textDocument/inlayHint",
+        `{"textDocument":{"uri":${JSON.stringify(uri)}},${range}}`,
+    )
+    expect(hints.includes(`{"kind":1,"label":": i64","paddingLeft":false,"position":${position(7, 11)}}`)).toBe(true)
 
     // The outline, and the document formatted.
     const outline = client.request(

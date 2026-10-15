@@ -17,7 +17,7 @@ import { type Node } from "../syntax/ast"
 import { parse as parseFile } from "../syntax/parse"
 import { parse } from "../syntax/parser"
 import { type Source } from "../syntax/source"
-import { offsetAt, rangeOf, type Position, type Range } from "./text"
+import { offsetAt, positionAt, rangeOf, type Position, type Range } from "./text"
 
 /** A problem in the document, with its span in bytes. */
 export type Diagnostic = { message: string; severity: "error" | "warning"; start: int; end: int; code: string }
@@ -72,6 +72,9 @@ export class DocumentSymbol {
     ) {}
 }
 
+/** A type shown after a name that has none written: `const total` shows `: i64`. */
+export type InlayHint = { position: Position; label: string }
+
 /** Markdown hover text and the range of the identifier it describes. */
 export type Hover = { contents: string; range: Range }
 
@@ -95,6 +98,8 @@ export interface Analysis {
     signatureHelp(position: Position): SignatureHelp | null
     /** The declarations of the document, for its outline. */
     symbols(): DocumentSymbol[]
+    /** The inferred types of the variables and parameters declared without one in a range. */
+    inlayHints(range: Range): InlayHint[]
 }
 
 // LSP's SymbolKind.
@@ -469,6 +474,30 @@ class CheckedAnalysis {
             parameters,
             active,
         }
+    }
+
+    inlayHints(range: Range): InlayHint[] {
+        const found: InlayHint[] = []
+        const source = this.source
+        const info = this.info
+        if (source === null || info === null) return found
+        const start = offsetAt(this.text, range.start)
+        const end = offsetAt(this.text, range.end)
+        this.hintsIn(source.ast, start, end, info, found)
+        return found
+    }
+
+    private hintsIn(node: Node, start: int, end: int, info: CheckInfo, out: InlayHint[]) {
+        if (node.end < start || node.start > end) return
+        const k = node.kind
+        // A variable, or a parameter of a function literal, without a type annotation.
+        if ((k === "VariableDeclaration" || k === "Parameter") && node.child("type") === null) {
+            const name = node.child("name")
+            const type = name !== null && name.kind === "Identifier" ? info.types.get(name) : null
+            if (name !== null && type !== null && (k === "VariableDeclaration" || node.child("initializer") === null))
+                out.push({ position: positionAt(this.text, name.end), label: `: ${typeToString(type)}` })
+        }
+        for (const child of node.children) this.hintsIn(child, start, end, info, out)
     }
 
     symbols(): DocumentSymbol[] {

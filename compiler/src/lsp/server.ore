@@ -164,6 +164,18 @@ export class Server {
             case "textDocument/formatting":
                 this.formatting(m)
                 return
+            case "textDocument/inlayHint": {
+                const p = params<{ textDocument: TextDocumentIdentifier; range: Range }>(m)
+                if (p instanceof Error) return this.invalid(m, p)
+                const analysis = this.analysisOf(p.textDocument.uri)
+                // kind 1: a type, after the name.
+                const hints: { position: Position; label: string; kind: int; paddingLeft: bool }[] = []
+                if (analysis !== null)
+                    for (const h of analysis.inlayHints(p.range))
+                        hints.push({ position: h.position, label: h.label, kind: 1, paddingLeft: false })
+                this.connection.respond(m.id, JSON.stringify(hints))
+                return
+            }
             case "textDocument/documentSymbol": {
                 const p = params<{ textDocument: TextDocumentIdentifier }>(m)
                 if (p instanceof Error) return this.invalid(m, p)
@@ -223,6 +235,7 @@ export class Server {
                 signatureHelpProvider: { triggerCharacters: ["(", ","] },
                 documentFormattingProvider: true,
                 documentSymbolProvider: true,
+                inlayHintProvider: true,
             },
             serverInfo: { name: "ore", version: this.version },
         }
