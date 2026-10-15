@@ -21,13 +21,17 @@ export function targetTriple(): string {
 function macosVersion(): string {
     const deployment = process.getenv("MACOSX_DEPLOYMENT_TARGET")
     if (deployment !== null && deployment !== "") return deployment
-    const buffer = unsafe.allocBytes(64)
-    const length = unsafe.allocBytes(8)
-    unsafe.store<u64>(length, 64)
-    if (sysctlbyname("kern.osproductversion", buffer, length, unsafe.fromInt(0), 0) !== 0) return "11.0"
-    const n = i64(unsafe.load<u64>(length))
-    // The length counts the terminating NUL.
-    return unsafe.makeString(buffer, n > 0 && unsafe.load<u8>(unsafe.add(buffer, n - 1)) === 0 ? n - 1 : n)
+    // sysctlbyname is macOS's: the call compiles only there.
+    if (target.os !== "darwin") return ""
+    else {
+        const buffer = unsafe.allocBytes(64)
+        const length = unsafe.allocBytes(8)
+        unsafe.store<u64>(length, 64)
+        if (sysctlbyname("kern.osproductversion", buffer, length, unsafe.fromInt(0), 0) !== 0) return "11.0"
+        const n = i64(unsafe.load<u64>(length))
+        // The length counts the terminating NUL.
+        return unsafe.makeString(buffer, n > 0 && unsafe.load<u8>(unsafe.add(buffer, n - 1)) === 0 ? n - 1 : n)
+    }
 }
 
 /** Runs a tool, with an Error that has its output when it fails. */
