@@ -113,6 +113,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `Math.abs(x)`, `Math.min(...values)`, `Math.max(...values)` | for any numeric type, keeping it; `min` and `max` take one or more values, arrays and tuples spread in, and of only empty arrays give an infinity or the integer type's extreme |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
 | `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
+| `Number.NaN`, `Number.POSITIVE_INFINITY`, `Number.NEGATIVE_INFINITY`, `Number.MAX_VALUE`, `Number.MIN_VALUE`, `Number.EPSILON`, `Number.MAX_SAFE_INTEGER`, `Number.MIN_SAFE_INTEGER` | `f64` constants, as in JavaScript (no global `NaN` and `Infinity`) |
+| `Number.isNaN(x)`, `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)` | predicates on an `f64`, as in JavaScript |
 | `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |

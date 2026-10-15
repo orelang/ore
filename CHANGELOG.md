@@ -12,6 +12,9 @@ before 1.0, a minor version may change the language.
 - Spread arguments: arrays among the rest arguments (`f(1, ...xs, 2)`) and
   into `push`, `console.log`, `Math.min` and `Math.max`, which take any number
   of values; tuples into any parameters, array literals and tuples.
+- `??=`, `||=` and `&&=`; an assigned `?:` narrows to its branches' types.
+- `Number.NaN`, the infinities and the other constants of `Number`, and
+  `Number.isNaN`, `isFinite`, `isInteger`, `isSafeInteger`.
 
 ## 0.1.1
 

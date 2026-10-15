@@ -27,10 +27,22 @@ import {
     TypeSymbol,
 } from "./symbols"
 
+const constantZero = ""
+
 /** Values of built-in constants, declared without values in builtin.d.ore. */
 function constant(name: string): f64 | null {
     if (name === "Math.PI") return Math.PI
     if (name === "Math.E") return Math.E
+    // Computed, since the compiler that builds this one may not know these constants.
+    const zero = f64(constantZero.length)
+    if (name === "Number.NaN") return zero / zero
+    if (name === "Number.POSITIVE_INFINITY") return 1.0 / zero
+    if (name === "Number.NEGATIVE_INFINITY") return -1.0 / zero
+    if (name === "Number.MAX_VALUE") return 1.7976931348623157e308
+    if (name === "Number.MIN_VALUE") return 5e-324
+    if (name === "Number.EPSILON") return 2.220446049250313e-16
+    if (name === "Number.MAX_SAFE_INTEGER") return 9007199254740991.0
+    if (name === "Number.MIN_SAFE_INTEGER") return -9007199254740991.0
     return null
 }
 
@@ -49,11 +61,12 @@ export function namespaceModule(ns: string): string | null {
     if (ns === "String") return "ore:runtime/string"
     if (ns === "fs") return "ore:runtime/fs"
     if (ns === "process") return "ore:runtime/process"
+    if (ns === "Number") return "ore:runtime/number"
     return null
 }
 
 /** The namespaces that `namespaceModule` maps, in order. */
-export const namespaceNames = ["String", "fs", "process"]
+export const namespaceNames = ["String", "fs", "process", "Number"]
 
 export class Builtins {
     constructor(

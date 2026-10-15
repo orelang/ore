@@ -1,5 +1,7 @@
 // Numbers: Number.parseInt, Number.parseFloat and toFixed with JavaScript's
 // results, Math.round and Math.cbrt; and small helpers of the process.
+//
+// The exports of this module are members of the namespace `Number`.
 
 import { big, strFromF64 } from "ore:runtime/float"
 
@@ -153,4 +155,24 @@ function boxCopy(p: ptr, size: int): ptr {
     const box = unsafe.alloc(size)
     unsafe.copy(box, p, size)
     return box
+}
+
+/** Whether `x` is NaN. */
+export function isNaN(x: f64): bool {
+    return x !== x
+}
+
+/** Whether `x` is neither NaN nor an infinity. */
+export function isFinite(x: f64): bool {
+    return x - x === 0
+}
+
+/** Whether `x` is finite and has no fraction. */
+export function isInteger(x: f64): bool {
+    return isFinite(x) && Math.trunc(x) === x
+}
+
+/** Whether `x` is an integer that an `f64` holds exactly: at most 2^53 - 1 in magnitude. */
+export function isSafeInteger(x: f64): bool {
+    return isInteger(x) && Math.abs(x) <= 9007199254740991.0
 }
