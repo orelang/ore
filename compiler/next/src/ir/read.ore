@@ -8,7 +8,8 @@
 // reference before the declaration gets a placeholder that the declaration
 // fills in), and functions by name: every `func` and `init` line is read
 // first, so that struct methods and calls can refer to functions defined
-// later in the text.
+// later in the text. An `init` named like a `func` is that function (the
+// checker lists the top-level code of each module among the functions too).
 
 import {
     Alloc,
@@ -278,6 +279,8 @@ class Reader {
     funcs = new Map<string, Func>()
     /** The function of each `func` or `init` line, by line index. */
     heads = new Map<int, Func>()
+    /** For an `init` line that repeats a `func` line, the function of that line. */
+    repeats = new Map<int, Func>()
 
     constructor(text: string) {
         this.lines = text.split("\n")
@@ -1350,6 +1353,10 @@ class Reader {
             this.i = i
             const f = this.funcHead(c)
             this.close(c)
+            // The top-level code of a module is also among the functions: an `init`
+            // line is the function of a `func` line with the same name, dumped again.
+            const known = this.funcs.get(f.name)
+            if (!isFunc && known !== null) this.repeats.set(i, known)
             if (!this.funcs.has(f.name)) this.funcs.set(f.name, f)
             this.heads.set(i, f)
         }
@@ -1423,10 +1430,12 @@ class Reader {
                         this.fail("function without a head")
                         break
                     }
+                    const repeated = this.repeats.get(this.i)
                     this.i++
+                    // A repeated function is read again, for the checks, but kept once.
                     this.funcBody(f)
                     if (kind === "func") functions.push(f)
-                    else inits.push(f)
+                    else inits.push(repeated ?? f)
                     break
                 }
                 case "interface": {
