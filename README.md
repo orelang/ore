@@ -257,11 +257,15 @@ inheritance, `enum`, `namespace`, `prototype`, `eval`, `delete`. See
 
 ## Getting started
 
-Requirements: [Bun](https://bun.sh) and clang.
+Requirements: LLVM 19 or newer (its library, `libLLVM`) and lld; a C
+compiler only for packages with C sources. Building `ore` the first time
+also needs [Bun](https://bun.sh) and clang, which run the bootstrap compiler
+in TypeScript.
 
 ```sh
+# macOS: brew install llvm lld    Debian: apt install llvm-dev lld clang
 bun install
-bun run build                       # the standalone compiler, dist/ore
+bun run build                       # the compiler in Ore, dist/ore
 ln -sf "$PWD/dist/ore" ~/.local/bin/ore
 ```
 
@@ -277,7 +281,13 @@ ore test                 # run the tests in *.test.ore files
 ore fmt                  # format .ore files: 4 spaces, no semicolons
 ```
 
-A single file works too: `ore run hello.ore`.
+A single file works too: `ore run hello.ore`. A debug build of a small
+program takes about 0.3 s (LLVM through its C API on every CPU, linked with
+lld), a release build about 1.4 s.
+
+`dist/ore` is the compiler written in Ore ([compiler/next](compiler/next)),
+built by the bootstrap compiler in TypeScript (`bun run ore ...`); it
+rebuilds itself with `ore build compiler/next/src/main.ore -o ore --release`.
 
 ## Projects and packages
 
@@ -308,8 +318,10 @@ Native code is declared in package.json, also by dependencies:
 
 ## Editor support
 
-Both extensions run `ore lsp` from `PATH`, which provides diagnostics, hover,
-go to definition, member completion, find references and rename.
+Both extensions run `ore lsp` from `PATH`. The language server of the
+bootstrap compiler (`bun run ore lsp`) provides diagnostics, hover, go to
+definition, member completion, find references and rename; that of
+`dist/ore` reports syntax errors so far.
 
 **Zed.** Run `zed: install dev extension` and select `editors/zed` (requires
 Rust installed with rustup). Another binary can be set in Zed settings:
@@ -386,8 +398,8 @@ Every directory below has a README with the details.
 | `compiler/codegen` | IR to LLVM IR, built by clang |
 | `compiler/driver` | Compilation pipeline, clang, runtime and GC cache |
 | `compiler/lsp` | Language server |
-| `compiler/cli` | The `ore` command, including `test` and `fmt` |
-| `compiler/next` | The compiler written in Ore, to replace the TypeScript one (so far the lexer, the parser and the loading of modules) |
+| `compiler/cli` | The `ore` command of the bootstrap compiler (`bun run ore`) |
+| `compiler/next` | The compiler written in Ore, `dist/ore`: the `ore` command, the checker, the LLVM backend and the build driver; it replaces the TypeScript one |
 | `runtime/core` | The runtime written in Ore (`ore:runtime/...`), part of every program |
 | `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`, `ore:path`) |
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
