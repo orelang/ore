@@ -621,12 +621,23 @@ export function checkExports(c: Checker, modules: ModuleInfo[]) {
                 if (type !== null) c.info.definitions.set(local, type.decl)
             }
         }
-        for (const [name, entry] of module.exports) {
-            if (entry.from === null && exportOf(c, module, name) === null) {
-                let node: Node | null = null
-                for (const s of c.statementsOf(module.source))
-                    if (node === null && s.kind === "ExportDeclaration") node = s
-                if (node !== null) c.error(node, `Cannot export '${entry.local}': it is not declared in this module.`)
+    }
+}
+
+/**
+ * Reports the names of `export { a }` that the module does not declare; after
+ * its top-level code, which declares its variables.
+ */
+export function checkExportsDeclared(c: Checker, modules: ModuleInfo[]) {
+    for (const module of modules) {
+        for (const stmt of c.statementsOf(module.source)) {
+            const clause = stmt.kind === "ExportDeclaration" ? exportClause(stmt) : null
+            if (moduleSpecifierNode(stmt) !== null || clause === null || clause.kind !== "NamedExports") continue
+            for (const e of elements(clause)) {
+                const name = nameNode(e).text
+                const entry = module.exports.get(name)
+                if (entry === null || entry.from !== null || exportOf(c, module, name) !== null) continue
+                c.error(e, `Cannot export '${entry.local}': it is not declared in this module.`)
             }
         }
     }
