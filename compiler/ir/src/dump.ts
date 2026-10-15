@@ -16,9 +16,10 @@ import type { InterfaceType, StructType, Type } from "./types"
  *   ctor: <func name>
  * union (A | B)%id [name="Alias"]        a union of `unions`
  * itab <id>: Name#id -> Name@id          an itab of `itabs`
- * func <name> "<source name>" line=N [file="..."] [extern] [variadic=T] [exported] : <type>
+ * func <name> "<source name>" line=N [file="..."] [extern] [variadic=T] [exported] [closure] : <type>
  *   attributes [noinline] [inline] [cold] [export="..."] [runtime="..."] [naked]
  *   receiver: <local>                    then `param:` and `capture:` locals
+ *                                        (`closure` marks `captures`, even empty)
  *   body: block line=N                   statements: kind, fields, `line=N`
  *     let $id name: T [mut] ... line=N   (a block's statements have no role)
  *       init: int 1 : i64                expressions: kind, fields, ` : type`
@@ -107,6 +108,7 @@ class Dumper {
     if (f.extern) head += " extern"
     if (f.variadic !== undefined) head += ` variadic=${this.type(f.variadic)}`
     if (f.exported) head += " exported"
+    if (f.captures !== undefined) head += " closure"
     this.line(0, `${head} : ${this.type(f.type)}`)
     const a = f.attributes
     if (a !== undefined) {

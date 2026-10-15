@@ -633,9 +633,15 @@ class Reader {
         let variadic: Type | null = null
         if (c.eat(" variadic=")) variadic = this.type(c)
         const exported = c.eat(" exported")
+        const closure = c.eat(" closure")
         c.expect(" : ")
         const type = this.funcType(this.type(c))
-        return new Func(name, sourceName, line, type, [], new Block([]), exported, file, extern, variadic)
+        const f = new Func(name, sourceName, line, type, [], new Block([]), exported, file, extern, variadic)
+        if (closure) {
+            const captures: Local[] = []
+            f.captures = captures
+        }
+        return f
     }
 
     attributes(c: Cursor): FuncAttributes {
@@ -668,14 +674,13 @@ class Reader {
             f.params.push(this.localDecl(c))
             this.next(c)
         }
-        if (this.has(1, "capture: ")) {
-            const captures: Local[] = []
-            while (this.has(1, "capture: ")) {
-                const c = this.open(1, "capture: ")
-                captures.push(this.localDecl(c))
-                this.next(c)
-            }
-            f.captures = captures
+        while (this.has(1, "capture: ")) {
+            const c = this.open(1, "capture: ")
+            const local = this.localDecl(c)
+            this.next(c)
+            const captures = f.captures
+            if (captures === null) this.fail("a capture of a function that is not a closure")
+            else captures.push(local)
         }
         const body = this.stmt(1, "body: ")
         if (body.k === "block") f.body = body
