@@ -4,6 +4,7 @@
 
 import { basename, dirname, join } from "ore:path"
 import { NativeCode } from "./native"
+import { executablePath } from "./self"
 
 declare function sysctlbyname(name: string, value: ptr, length: ptr, newValue: ptr, newLength: u64): i32
 
@@ -60,14 +61,20 @@ function findIn(name: string, dirs: string[]): string | null {
 }
 
 /**
- * The linker, `$ORE_LD` or `name` (ld64.lld or ld.lld): in PATH, beside
- * llvm-config, then where Homebrew and Debian's versioned LLVM packages put it
- * (/usr/lib/llvm-N/bin, the newest first).
+ * The linker, `$ORE_LD` or `name` (ld64.lld or ld.lld): the one a release
+ * ships beside `ore` (<prefix>/lib/ore/, for <prefix>/bin/ore), in PATH,
+ * beside llvm-config, then where Homebrew and Debian's versioned LLVM packages
+ * put it (/usr/lib/llvm-N/bin, the newest first).
  */
 export function findLinker(): string | Error {
     const given = process.getenv("ORE_LD")
     if (given !== null && given !== "") return given
     const name = target.os === "darwin" ? "ld64.lld" : "ld.lld"
+    const self = executablePath()
+    if (!(self instanceof Error)) {
+        const shipped = join(dirname(dirname(self)), "lib", "ore", name)
+        if (fs.isFile(shipped)) return shipped
+    }
     const dirs = (process.getenv("PATH") ?? "/usr/bin:/bin").split(":")
     const inPath = findIn(name, dirs)
     if (inPath !== null) return inPath

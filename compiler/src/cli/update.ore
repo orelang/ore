@@ -1,0 +1,127 @@
+// `ore update [--force]`: replaces the running `ore` with the latest release
+// of github.com/orelang/ore ($ORE_RELEASES names another repository). It
+// works on an `ore` installed by install.sh, laid out as
+//
+//   <root>/versions/<tag>/bin/ore       a release, with its lib/ beside bin/
+//   <root>/bin/ore -> ../versions/<tag>/bin/ore
+//
+// The archive of the release for this platform is downloaded with curl,
+// checked against the release's SHA256SUMS, unpacked beside the other
+// versions, and the link is switched to it at once (a rename); the version
+// that ran stays, for going back by hand.
+
+import { sha256 } from "ore:crypto"
+import { basename, dirname, join } from "ore:path"
+import { executablePath } from "../driver/self"
+import { version } from "./main"
+
+class Release {
+    constructor(readonly tag_name: string) {}
+}
+
+/** The platform part of a release's archive name, such as "linux-amd64". */
+function platform(): string {
+    const os = target.os === "darwin" ? "darwin" : "linux"
+    const arch = target.arch === "arm64" ? "arm64" : "amd64"
+    return `${os}-${arch}`
+}
+
+/** Runs curl; the downloaded text, or an Error with curl's message. */
+function curl(args: string[]): string | Error {
+    // Without `...args`: the stage 0 of the bootstrap may not have spread arrays yet.
+    const all = ["-fsSL"]
+    for (const arg of args) all.push(arg)
+    const result = process.output("curl", all)
+    if (result instanceof Error) return new Error(`cannot run curl: ${result.message}`)
+    if (!result.ok)
+        return new Error(result.stderr.trim() !== "" ? result.stderr.trim() : `curl failed with status ${result.code}`)
+    return result.stdout
+}
+
+export function updateCommand(args: string[]): i32 {
+    let force = false
+    for (const arg of args) {
+        if (arg === "--force") force = true
+        else {
+            console.error(`ore: unknown option '${arg}' for update`)
+            return 2
+        }
+    }
+    const error = update(force)
+    if (error !== null) {
+        console.error(`ore: ${error.message}`)
+        return 1
+    }
+    return 0
+}
+
+function update(force: bool): Error | null {
+    const self = executablePath()
+    if (self instanceof Error) return self
+    // <root>/versions/<tag>/bin/ore
+    const versionDir = dirname(dirname(self))
+    const root = dirname(dirname(versionDir))
+    if (basename(dirname(versionDir)) !== "versions") {
+        return new Error(`ore update updates an ore installed by install.sh; this one is ${self}`)
+    }
+    const repo = process.getenv("ORE_RELEASES") ?? "orelang/ore"
+    const latest = curl([`https://api.github.com/repos/${repo}/releases/latest`])
+    if (latest instanceof Error) return new Error(`cannot find the latest release of ${repo}: ${latest.message}`)
+    const release = JSON.parse<Release>(latest)
+    if (release instanceof Error) return new Error(`unexpected answer from GitHub: ${release.message}`)
+    const tag = release.tag_name
+    if (tag === `v${version}` && !force) {
+        console.log(`ore ${version} is the latest release`)
+        return null
+    }
+
+    // A temporary directory beside the versions, so that the unpacked release
+    // moves into place by a rename.
+    const versions = join(root, "versions")
+    const work = fs.mkdtemp("update-", versions)
+    if (work instanceof Error) return work
+    const result = install(repo, tag, root, work)
+    fs.remove(work, true)
+    if (result !== null) return result
+    console.log(`ore updated from ${version} to ${tag.startsWith("v") ? tag.slice(1) : tag}`)
+    return null
+}
+
+function install(repo: string, tag: string, root: string, work: string): Error | null {
+    const name = `ore-${tag}-${platform()}`
+    const base = `https://github.com/${repo}/releases/download/${tag}`
+    const archive = join(work, `${name}.tar.gz`)
+    console.log(`downloading ${name}`)
+    const downloaded = curl(["-o", archive, `${base}/${name}.tar.gz`])
+    if (downloaded instanceof Error) return new Error(`${name}.tar.gz: ${downloaded.message}`)
+    const sums = curl([`${base}/SHA256SUMS`])
+    if (sums instanceof Error) return new Error(`SHA256SUMS: ${sums.message}`)
+    let expected = ""
+    for (const line of sums.split("\n")) {
+        if (line.endsWith(`  ${name}.tar.gz`)) expected = line.slice(0, line.indexOf(" "))
+    }
+    if (expected === "") return new Error(`${tag} has no release for ${platform()}`)
+    const bytes = fs.readFile(archive)
+    if (bytes instanceof Error) return bytes
+    if (sha256(bytes) !== expected) return new Error(`${name}.tar.gz does not match its SHA-256 sum`)
+
+    const unpacked = process.run("tar", ["-xzf", archive, "-C", work])
+    if (unpacked instanceof Error) return unpacked
+    if (unpacked !== 0) return new Error(`cannot unpack ${name}.tar.gz`)
+    const destination = join(root, "versions", tag)
+    if (fs.exists(destination)) {
+        const removed = fs.remove(destination, true)
+        if (removed !== null) return removed
+    }
+    const moved = fs.rename(join(work, name), destination)
+    if (moved !== null) return moved
+
+    // The new link beside the old one, then renamed over it: never no `ore`.
+    const link = join(root, "bin", "ore")
+    const next = `${link}.next`
+    if (!(fs.lstat(next) instanceof Error)) fs.remove(next)
+    const linked = process.run("ln", ["-s", join("..", "versions", tag, "bin", "ore"), next])
+    if (linked instanceof Error) return linked
+    if (linked !== 0) return new Error(`cannot link ${next}`)
+    return fs.rename(next, link)
+}

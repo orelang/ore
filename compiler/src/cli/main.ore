@@ -4,8 +4,20 @@ import { serve } from "../lsp/server"
 import { buildCommand, checkCommand, initCommand, runCommand } from "./commands"
 import { fmtCommand } from "./fmt"
 import { testCommand } from "./test"
+import { updateCommand } from "./update"
+import packageText from "../../package.json" with { type: "text" }
 
-export const version = "0.1.0-dev"
+class Package {
+    constructor(readonly version: string) {}
+}
+
+/** The version of `ore`: that of compiler/package.json, read when the compiler is built. */
+function packageVersion(): string {
+    const parsed = JSON.parse<Package>(packageText)
+    return parsed instanceof Error ? "unknown" : parsed.version
+}
+
+export const version = packageVersion()
 
 export const usage = `Ore ${version}
 
@@ -22,6 +34,7 @@ Usage:
       --stdout                   Print the formatted files instead
   ore init [directory]           Create a project: package.json and src/main.ore
   ore lsp                        Start the language server on stdio
+  ore update [--force]           Update ore to its latest release
 
 Without a file, the program is the 'main' of the nearest package.json.
   ore version                    Print the version
@@ -47,6 +60,8 @@ export function main(args: string[]): i32 {
             return fmtCommand(rest)
         case "lsp":
             return i32(serve(version))
+        case "update":
+            return updateCommand(rest)
         case "version":
         case "--version":
             console.log(version)
