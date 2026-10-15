@@ -247,6 +247,68 @@ functions.
   A code point past U+10FFFF or negative panics (JavaScript throws a
   `RangeError`). Both take `int`s: convert a rune with `i64(r)`.
 
+## Regular expressions
+
+```ts
+const date = /(?<year>\d{4})-(?<month>\d\d)/
+const m = date.exec("due 2024-05-17")
+if (m !== null) console.log(m.at(0)!, m.index, m.groups.get("year")!)   // 2024-05 4 2024
+console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
+```
+
+- A regular expression literal `/pattern/flags` is read where an expression
+  can start: after an operand (a name, a literal, `)`, `]`, `}`) a `/` is a
+  division. It is `new RegExp("pattern", "flags")`, a new object at each
+  evaluation, and its errors (`Invalid regular expression: Unterminated
+  group.`) are compile-time errors. `new RegExp(pattern, flags = "")`
+  compiles a pattern at run time and panics on an invalid one.
+- The syntax and the matching are JavaScript's (ECMAScript with its Annex B,
+  without the `u` flag): characters and escapes (`\n`, `\x41`, `A`,
+  `\cJ`, `\0`, octal), `.`, classes `[a-z]`, `[^...]`, `\d \w \s \D \W \S`,
+  anchors `^ $`, `\b \B`, groups `( )`, `(?: )`, named groups
+  `(?<name> )`, alternation, quantifiers `* + ? {n} {n,} {n,m}` and their
+  lazy forms, backreferences `\1` and `\k<name>`, lookahead `(?= )` and
+  `(?! )`. Lookbehind and the flags `u`, `v` and `d` are errors for now.
+- Flags: `g` (global), `i` (ignore case), `m` (`^` and `$` at line breaks),
+  `s` (`.` matches line breaks too), `y` (sticky: a match only at
+  `lastIndex`). `re.flags` lists them in the order `gimsy`; `re.global`,
+  `ignoreCase`, `multiline`, `dotAll` and `sticky` tell each, `re.source` is
+  the pattern (with `/` escaped) and `re.toString()` is `/source/flags`.
+- The matcher backtracks over the UTF-8 bytes a character (a code point) at
+  a time: `.` and `[^a]` match a whole character, also one beyond U+FFFF
+  (JavaScript matches half of its surrogate pair). Positions — `index`,
+  `lastIndex`, `search` — are byte offsets, as for strings. Ignoring case
+  compares the uppercase of ASCII, Latin-1, Greek and Cyrillic letters.
+- `re.exec(s)` returns a `RegExpMatch` or `null`; with `g` or `y` it starts
+  at `re.lastIndex` and sets it past the match, or to 0 when there is none.
+  `re.test(s)` is whether `exec` finds a match.
+- A `RegExpMatch` stands for JavaScript's match array: `m.at(0)` is the
+  matched text and `m.at(i)` the text of group `i` (`null` when the group
+  did not take part; negative `i` count from the end), `m.length` their
+  number, `m.captures` the array of them, `m.index` and `m.input` as in
+  JavaScript, and `m.groups` a `Map<string, string | null>` of the named
+  groups (empty without names).
+- String methods that take a regular expression:
+  - `s.match(re)` is `re.exec(s)`; with `g` it is a `RegExpMatch` of every
+    matched text (`at(i)`, `length`; `index` is -1), or `null`.
+  - `s.matchAll(re)` is an array of the matches from `re.lastIndex` on;
+    `re` must have the `g` flag (a panic, as JavaScript's `TypeError`).
+  - `s.replace(re, replacement)` replaces the first match, or every one
+    with `g`; `s.replaceAll(re, replacement)` requires `g`. In the
+    replacement, `$&` is the match, `$1`..`$99` and `$<name>` the groups,
+    `` $` `` and `$'` the text before and after, `$$` a `$`. A function
+    `(matched: string, match: RegExpMatch) => string` computes each
+    replacement (JavaScript passes the groups, the index and the input
+    instead of the match).
+  - `s.split(re, limit?)` splits at the matches, with the text of the groups
+    of each match between the parts (`""` for a group that did not take
+    part, where JavaScript has `undefined`).
+  - `s.search(re)` is the offset of the first match, or -1.
+  - `match`, `matchAll` and `search` also take a pattern string, as
+    `new RegExp(pattern)` (with `g` for `matchAll`).
+- `RegExp` and `RegExpMatch` are classes of the runtime written in Ore
+  (`runtime/core/regexp.ore`), global names as in JavaScript.
+
 ## Arrays
 
 - `T[]` (or `Array<T>`) is a reference to a growable array, as in

@@ -20,6 +20,11 @@ before 1.0, a minor version may change the language.
 - `??=`, `||=` and `&&=`; an assigned `?:` narrows to its branches' types.
 - `Number.NaN`, the infinities and the other constants of `Number`, and
   `Number.isNaN`, `isFinite`, `isInteger`, `isSafeInteger`.
+- Regular expressions as in JavaScript: literals `/ab+c/gi` (their errors at
+  compile time), `new RegExp(pattern, flags)`, `test`, `exec` and `lastIndex`
+  with the flags `g`, `i`, `m`, `s` and `y`, and `match`, `matchAll`,
+  `replace`, `replaceAll` (with `$1`, `$<name>` and functions), `split` and
+  `search` on strings; a backtracking engine written in Ore in the runtime.
 
 ## 0.1.1
 

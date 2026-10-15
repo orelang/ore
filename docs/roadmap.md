@@ -66,8 +66,9 @@ exports, type assertions (Ore converts: `i32(x)`).
   - `keyof`, `typeof x` as a type, indexed access `T["k"]`;
   - conditional types, mapped types and template literal types, and with
     them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...).
-- Regular expressions: literals `/re/` and an engine in the standard
-  library.
+- Regular expressions: literals `/re/`, `RegExp` and the string methods
+  that take one, with a backtracking engine in the runtime (done; not
+  lookbehind and the `u`, `v` and `d` flags).
 
 ## 4. Toolchain
 
