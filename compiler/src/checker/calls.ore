@@ -525,10 +525,11 @@ function minMax(c: Checker, name: string, node: Node, scope: Scope): Operand {
         const array = o.k === "typed" ? o.expr : null
         if (array === null) return errorOperand
         const at = array.type
-        if (at.kind !== "array" || !sameType(at.elem, t))
+        if (at.kind !== "array") return c.fail(nodes[i], "Only an array or a tuple can be spread into arguments.")
+        if (!sameType(at.elem, t))
             return c.fail(
                 nodes[i],
-                `An array of '${typeToString(at)}' cannot be spread into '${name}' of '${typeToString(t)}'.`,
+                `An array of '${typeToString(at.elem)}' cannot be spread into '${name}' of '${typeToString(t)}'.`,
             )
         values.push(array)
     }
