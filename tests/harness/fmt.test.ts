@@ -255,7 +255,8 @@ async function prettierFormat(input: string): Promise<string | undefined> {
 }
 
 beforeAll(async () => {
-  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary, release: true })
+  // A debug build: a release build of the compiler, with its checker, takes minutes.
+  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
   expect(result.diagnostics.map((d) => d.message)).toEqual([])
 }, 120_000)
 
