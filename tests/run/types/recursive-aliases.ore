@@ -1,0 +1,32 @@
+// Type aliases can name aliases declared after them, and object types can refer
+// to themselves, directly or through other aliases.
+type Tree = { value: int; children: Tree[] }
+type Dept = { name: string; head: Person | null }
+type Person = { name: string; dept: Dept | null }
+type MaybeNode = Node | null
+type Node = { v: int; next: MaybeNode }
+function sum(t: Tree): int {
+    let s = t.value
+    for (const c of t.children) s += sum(c)
+    return s
+}
+const t: Tree = {
+    value: 1,
+    children: [
+        { value: 2, children: [] },
+        { value: 3, children: [{ value: 4, children: [] }] },
+    ],
+}
+console.log(sum(t), JSON.stringify(t))
+const d: Dept = { name: "r&d", head: null }
+const p: Person = { name: "ann", dept: d }
+d.head = p
+console.log(d.head?.name, p.dept?.name)
+const n: Node = { v: 1, next: { v: 2, next: null } }
+console.log(n.next?.v)
+const back = JSON.parse<Tree>('{"value": 5, "children": [{"value": 6, "children": []}]}')
+if (!(back instanceof Error)) console.log(sum(back))
+type A = { b: B; n: int }
+type B = { s: string }
+const a: A = { b: { s: "x" }, n: 1 }
+console.log(a.b.s)

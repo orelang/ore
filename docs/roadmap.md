@@ -59,7 +59,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   - overloads (several signatures of one function; done for top-level
     functions);
   - generic closures, nested generic functions; default type arguments
-    (`<T = X>`, done).
+    (`<T = X>`, done); type aliases in any order and recursive object types
+    (done).
 - Types:
   - `unknown`;
   - intersections `A & B`;

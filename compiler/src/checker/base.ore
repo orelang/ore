@@ -460,6 +460,24 @@ export class Checker {
     }
 
     resolveTypeLiteral(node: Node, scope: Scope): Type | null {
+        const shape = this.shape(this.literalFields(node, scope))
+        // The first declaration of a shape is where its fields are defined.
+        if (!this.memberDecls.has(shape)) this.memberDecls.set(shape, this.memberNodes(node))
+        return shape
+    }
+
+    /** The members of an object type by name, for go to definition. */
+    memberNodes(node: Node): Map<string, Node> {
+        const decls = new Map<string, Node>()
+        for (const m of members(node)) {
+            const n = m.child("name")
+            if (n !== null && isIdentifier(n)) decls.set(n.text, m)
+        }
+        return decls
+    }
+
+    /** The fields of an object type `{ ... }`, in the order written. */
+    literalFields(node: Node, scope: Scope): Field[] {
         const fields: Field[] = []
         for (const member of members(node)) {
             if (member.kind !== "PropertySignature") {
@@ -494,17 +512,7 @@ export class Checker {
                 this.info.types.set(nameNode(member), type)
             }
         }
-        const shape = this.shape(fields)
-        // The first declaration of a shape is where its fields are defined.
-        if (!this.memberDecls.has(shape)) {
-            const decls = new Map<string, Node>()
-            for (const m of members(node)) {
-                const n = m.child("name")
-                if (n !== null && isIdentifier(n)) decls.set(n.text, m)
-            }
-            this.memberDecls.set(shape, decls)
-        }
-        return shape
+        return fields
     }
 
     mapOf(key: Type, value: Type, node: Node): MapType | null {

@@ -31,7 +31,7 @@ import {
     declareExports,
     declareFunction,
     declareImport,
-    declareTypeAlias,
+    declareTypeAliases,
     exportOf,
     isConstantStatement,
     localizeGlobals,
@@ -116,9 +116,13 @@ export function check(program: Program): CheckResult {
 
     // Pass 2: type aliases, then signatures of functions and class members,
     // so that they can be used before their declaration and recursively.
-    each((stmt, m) => {
-        if (stmt.kind === "TypeAliasDeclaration") declareTypeAlias(c, stmt, m.scope)
-    })
+    for (const module of modules) {
+        c.prefix = module.prefix
+        const aliases: Node[] = []
+        for (const stmt of c.statementsOf(module.source)) if (stmt.kind === "TypeAliasDeclaration") aliases.push(stmt)
+        declareTypeAliases(c, aliases, module.scope)
+    }
+    c.prefix = ""
     for (const [_, info] of c.interfaces) fillInterface(c, info, info.scope)
     for (const info of c.classes) resolveBase(c, info)
     each((stmt, m) => {

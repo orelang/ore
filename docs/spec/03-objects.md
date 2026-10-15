@@ -7,6 +7,11 @@
   compares identity.
 - Object types are structural: two object types with the same fields (names,
   types and `readonly`) are the same type, regardless of field order.
+- A type alias can name aliases declared after it. An object type can refer
+  to itself, directly or through other aliases (`type Tree = { value: int;
+  children: Tree[] }`); such a recursive object type is a type of its own,
+  not the same as another with the same fields. A cycle of aliases needs an
+  object type in it.
 - An optional property `name?: T` has the type `T | null`: an object
   literal may leave it out, and then it is null; `JSON.stringify` leaves it
   out when it is null, as JavaScript leaves out `undefined`.

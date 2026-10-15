@@ -643,6 +643,125 @@ export function checkExportsDeclared(c: Checker, modules: ModuleInfo[]) {
     }
 }
 
+/**
+ * The type aliases of a module, in the order they depend on each other, so
+ * that one can name another declared after it. Object types that refer to
+ * themselves, directly or through other aliases (`type List = { next: List |
+ * null }`), are structs of their own, declared before their fields are
+ * resolved; other object types are shapes, the same for the same fields.
+ */
+export function declareTypeAliases(c: Checker, decls: Node[], scope: Scope) {
+    const plain: Node[] = []
+    for (const d of decls) {
+        if (typeParameters(d).length > 0) declareGeneric(c, d, scope)
+        else plain.push(d)
+    }
+    const index = new Map<string, int>()
+    for (let i = 0; i < plain.length; i++) index.set(nameNode(plain[i]).text, i)
+    // The aliases each one names in its type.
+    const edges: int[][] = []
+    for (const d of plain) {
+        const names: string[] = []
+        typeNames(typeNode(d)!, names)
+        const out: int[] = []
+        for (const n of names) {
+            const at = index.get(n)
+            if (at !== null && !out.includes(at)) out.push(at)
+        }
+        edges.push(out)
+    }
+    for (const component of stronglyConnected(edges)) {
+        const first = component[0]
+        const cyclic = component.length > 1 || edges[first].includes(first)
+        if (!cyclic) {
+            declareTypeAlias(c, plain[first], scope)
+            continue
+        }
+        // Object types of the cycle first, as structs without fields yet; then the other aliases; then the fields.
+        const structs: StructType[] = []
+        const literals: Node[] = []
+        for (const i of component) {
+            const d = plain[i]
+            const node = typeNode(d)!
+            if (node.kind !== "TypeLiteral") continue
+            const name = nameNode(d).text
+            const struct = new StructType(c.nextStructId++, name, false, [], [])
+            if (!scope.declareType(name, new TypeSymbol(struct, d))) c.error(nameNode(d), `Duplicate type '${name}'.`)
+            structs.push(struct)
+            literals.push(node)
+        }
+        if (structs.length === 0) {
+            for (const i of component)
+                c.error(
+                    nameNode(plain[i]),
+                    "A recursive type alias needs an object type in its cycle: '{ next: T | null }'.",
+                )
+            continue
+        }
+        for (const i of component) if (typeNode(plain[i])!.kind !== "TypeLiteral") declareTypeAlias(c, plain[i], scope)
+        for (let k = 0; k < structs.length; k++) {
+            const fields = c.literalFields(literals[k], scope)
+            fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+            structs[k].fields = fields
+            c.memberDecls.set(structs[k], c.memberNodes(literals[k]))
+            c.module.structs.push(structs[k])
+        }
+    }
+}
+
+/** The names of the type references in a type, such as `B` in `{ b: B[] }`. */
+function typeNames(node: Node, out: string[]) {
+    if (node.kind === "TypeReference") {
+        const name = node.child("typeName")
+        if (name !== null && isIdentifier(name)) out.push(name.text)
+    }
+    for (const child of node.children) typeNames(child, out)
+}
+
+/**
+ * The strongly connected components of a graph, by Tarjan's algorithm: each
+ * component comes after the components it has edges to.
+ */
+function stronglyConnected(edges: int[][]): int[][] {
+    const order: int[] = []
+    const low: int[] = []
+    const onStack: bool[] = []
+    for (let i = 0; i < edges.length; i++) {
+        order.push(-1)
+        low.push(0)
+        onStack.push(false)
+    }
+    const stack: int[] = []
+    const components: int[][] = []
+    let counter = 0
+    function visit(v: int): void {
+        order[v] = counter
+        low[v] = counter
+        counter++
+        stack.push(v)
+        onStack[v] = true
+        for (const w of edges[v]) {
+            if (order[w] < 0) {
+                visit(w)
+                low[v] = Math.min(low[v], low[w])
+            } else if (onStack[w]) low[v] = Math.min(low[v], order[w])
+        }
+        if (low[v] !== order[v]) return
+        const component: int[] = []
+        let done = false
+        while (!done) {
+            const w = stack.pop()
+            onStack[w] = false
+            component.push(w)
+            done = w === v
+        }
+        component.reverse()
+        components.push(component)
+    }
+    for (let i = 0; i < edges.length; i++) if (order[i] < 0) visit(i)
+    return components
+}
+
 export function declareTypeAlias(c: Checker, decl: Node, scope: Scope) {
     if (typeParameters(decl).length > 0) {
         declareGeneric(c, decl, scope)

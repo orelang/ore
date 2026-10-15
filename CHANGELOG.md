@@ -44,6 +44,8 @@ before 1.0, a minor version may change the language.
 - Optional, default and rest parameters of closures and function types.
 - Overload signatures of top-level functions.
 - Default type arguments: `<T, C = T[]>`.
+- Type aliases in any order, and recursive object types
+  (`type Tree = { value: int; children: Tree[] }`).
 - `typeof` of a function is `"function"`.
 - `JSON.stringify(value, null, space)` takes its arguments as in JavaScript;
   `JSON.stringify(value, 2)` is now an error.

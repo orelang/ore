@@ -389,6 +389,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6059](ORE6059.md) | Cannot infer type argument… of '…'. Specify them, e.g. '…<...>(...)'. |
 | [ORE6060](ORE6060.md) | A '//ore:naked' function can branch only on conditions known at compile time, such as 'target.arch'. |
 | [ORE6061](ORE6061.md) | A parameter property is only allowed in a constructor. |
+| [ORE6062](ORE6062.md) | A recursive type alias needs an object type in its cycle: '{ next: T \| null }'. |
 
 ## ORE7xxx: Statements
 
