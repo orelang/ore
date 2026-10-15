@@ -30,9 +30,23 @@
 - `new C(...)` allocates an instance, assigns parameter properties, runs
   field initializers in order, then the constructor body. Field initializers
   cannot use `this`.
-- A field without an initializer starts at its zero value. A field of a type
-  without a zero value (class, object or interface) must be assigned at the
-  top level of the constructor.
+- A field without an initializer starts at its zero value (`0`, `false`,
+  `""`, `[]`, a new map, or `null` for a type that includes it). A field of a
+  type without a zero value (class, object or interface) must be assigned at
+  the top level of the constructor.
+- An optional field `x?: T` has the type `T | null` and starts as `null`
+  unless it has an initializer; it needs a type annotation. An optional
+  constructor parameter, also a parameter property (`public note?: string`),
+  is `null` when the argument is left out. Definite assignment assertions
+  (`x!: T`) are not supported.
+- Members may be named with any word, reserved or not, as in TypeScript:
+  `else: Stmt | null`, `readonly readonly: bool`, `x.new`. Names that declare
+  bindings (parameters, parameter properties, variables, functions, classes)
+  cannot be reserved words, nor the words strict mode reserves (`implements`,
+  `interface`, `let`, `package`, `private`, `protected`, `public`, `static`,
+  `yield`): Ore modules are always in strict mode.
+- Index signatures (`[key: string]: T`) are not supported in interfaces,
+  object types and classes; use a `Map<K, V>`.
 - `private` members are accessible only inside the class that declares them,
   `protected` members inside that class and its subclasses. Neither counts
   for interfaces. `readonly` fields can be assigned only by the constructor
@@ -133,6 +147,11 @@ on that slot reads the class table.
 - A value converts implicitly to a union containing its type. A class or
   object converts to a union member that is an interface it implements, if
   exactly one does.
+- A field that every member of a union of classes, object types and
+  interfaces (without `null`) has, public, can be read without narrowing
+  (`stmt.line`); its type is the union of the members' field types. It can
+  be assigned (`stmt.line = 3`, `stmt.count++`) when it is writable and has
+  the same type in every member.
 - Representation: a reference type with `null` is a nullable reference; a
   union of string literals is a string; other unions are tagged values.
 
@@ -151,11 +170,21 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
   `x instanceof I` for an interface member of a union.
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
-of `&&`, `||` and `?:`, `switch` clauses on a literal (clauses reached by
-falling through code are not narrowed), and after an `if` whose branch always
-exits (`if (x === null) return`). An assignment narrows to the assigned
-value's type until the next assignment. Loops forget facts about variables
-they assign.
+of `&&`, `||` and `?:`, and `switch` clauses on a literal (clauses reached by
+falling through code are not narrowed). An assignment narrows to the assigned
+value's type until the next assignment.
+
+Narrowing follows the flow of the code: after an `if`, a reference is
+narrowed to the union of its types at the ends of the branches that do not
+exit (with `return`, `break`, `continue` or a call that never returns, such
+as `process.exit`), and not at all if one of them leaves it unnarrowed. So
+after `if (x === null) return`, `x` is not null, and after
+`let x = map.get(k); if (x === null) { x = make(); map.set(k, x) }`,
+neither is it. What holds at the end of a block holds after it. Loops
+forget facts about variables they assign, and the body of a function
+literal knows only the facts about constants where it is created: a `let`
+it captures may be assigned by other code (or by the literal itself) when
+it runs.
 
 A narrowed read is checked at run time and panics if the value is not of the
 narrowed type, so a check made stale by a call cannot corrupt memory.
@@ -192,10 +221,35 @@ exhaustive: like a `default`, it lets a function end without `return`.
   `new Map<K, V>()` creates one; the type arguments may come from the context
   (`const m: Map<string, int> = new Map()`). A variable without an
   initializer starts as a new empty map.
+- `new Map([[k1, v1], [k2, v2]])` creates a map from an array literal of
+  `[key, value]` pairs, set in order (a repeated key keeps its first place
+  and its last value). Without type arguments or a context, the key and
+  value types are those of the first pair. Ore has no tuple types, so the
+  entries must be written as such a literal.
 - `get(key)` returns `V | null`; `set(key, value)` returns the map;
   `has`, `delete` (returns whether the key was present), `clear`, `size`.
   `keys()` and `values()` return arrays in insertion order.
 - `for (const [key, value] of map)` iterates entries in insertion order.
 - Keys compare like SameValueZero: numbers and strings by value (`NaN`
-  equals `NaN`, `-0` equals `0`), objects, arrays and interface values by
-  identity. Unions cannot be keys yet.
+  equals `NaN`, `-0` equals `0`), objects, arrays, maps, sets and interface
+  values by identity. A union is a key type when each of its members is one or is
+  `null`: two union keys are the same key when they hold the same member
+  and the same value as keys of that member's type, so a `Map<A | B, V>` of
+  classes keys by identity, `null` is one key, and `1` as `i32` and `1` as
+  `int` are different keys of a `Map<i32 | int, V>`. Functions, channels and
+  `ptr` values cannot be keys.
+
+## Sets
+
+- `Set<T>` is a reference to a hash set that iterates in insertion order,
+  with the hashing and equality of `Map` keys (unions included). `new Set<T>()` creates one;
+  the type may come from the context; a variable or field without an
+  initializer starts as a new empty set.
+- `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`) or
+  of another set; without a type argument, `T` is their element type.
+- `add(value)` returns the set; `has`, `delete` (returns whether the value
+  was present), `clear`, `size`; `values()` returns an array in insertion
+  order.
+- `for (const x of set)` iterates the elements in insertion order, including
+  those added during the loop, as in JavaScript.
+- Sets cannot be converted to JSON.

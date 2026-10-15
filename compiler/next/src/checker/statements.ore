@@ -36,7 +36,6 @@ import {
     SwitchStmt,
     UsingStmt,
     Logical,
-    setLine,
 } from "../ir/nodes"
 import { type FuncType, type StructType, type Type, FuncType as FuncTypeClass, findMethod, isNumeric, isStringLike, isSubclass, membersOf, sameType, typeofName, types, typeToString } from "../ir/types"
 import { type Node } from "../syntax/ast"
@@ -80,7 +79,7 @@ import {
 import { type Checker } from "./base"
 import { dispatch } from "./classes"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
-import { directives, exportVariable, paramScope, prepend, checkReturns, threadLocal } from "./declarations"
+import { directives, exportVariable, paramScope, prepend, checkReturns, threadLocal, unsupportedTopLevel } from "./declarations"
 import { assignTarget, checkExpr, compare, interfaceFor, member, narrowTo, settle, writeAccessor } from "./expressions"
 import { disposeName, exits, fieldType, hasZeroValue, isTrue, paramName, poison, terminates, typed, typeOf, zeroValue } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
@@ -100,7 +99,7 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
     checkStatements(c, all.filter((s) => s.kind !== "FunctionDeclaration"), inner, stmts)
 
     const creations: Stmt[] = []
-    const captured = new Map<Local, bool>()
+    const captured = new Set<Local>()
     for (let i = 0; i < nested.length; i++) {
         const local = locals[i]
         if (local === null) continue
@@ -110,7 +109,7 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
         const expr = closure.expr
         if (expr.k === "closure") {
             const captures = expr.func.captures
-            if (captures !== null) for (const x of captures) captured.set(x, true)
+            if (captures !== null) for (const x of captures) captured.add(x)
         }
         const creation = new ExprStmt(new Assign(local.type, new LocalLValue(local), expr))
         creation.line = c.line(decl)
@@ -145,7 +144,7 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
     for (const s of boxes) out.push(s)
     for (const s of creations) out.push(s)
     for (const s of stmts) out.push(s)
-    c.popFacts()
+    c.popBlockFacts()
     return new Block(out)
 }
 
@@ -273,7 +272,7 @@ export function checkNested(c: Checker, stmt: Node, scope: Scope): Stmt {
     const out: Stmt[] = []
     c.pushFacts([])
     checkStmt(c, stmt, new Scope(scope), out)
-    c.popFacts()
+    c.popBlockFacts()
     return out.length === 1 ? out[0] : new Block(out)
 }
 
@@ -281,7 +280,7 @@ export function checkStmt(c: Checker, stmt: Node, scope: Scope, out: Stmt[]) {
     const before = out.length
     checkStmtInner(c, stmt, scope, out)
     const line = c.line(stmt)
-    for (let i = before; i < out.length; i++) if (out[i].line === null) setLine(out[i], line)
+    for (let i = before; i < out.length; i++) if (out[i].line === null) out[i].line = line
 }
 
 function findLoop(fn: FuncContext, name: string): LoopContext | null {
@@ -299,22 +298,27 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
         if (value.k === "typed") out.push(new ExprStmt(value.expr))
     } else if (k === "IfStatement") {
         const cond = condition(c, expression(stmt), scope)
+        // Each branch starts from the facts before the `if`, and ends with its own.
+        const before = copyFacts(c)
         c.pushFacts(cond.whenTrue)
         const then = checkNested(c, thenStatement(stmt), scope)
+        const thenEnd = flatFacts(c)
         c.popFacts()
+        c.facts = before
         const elseNode = elseStatement(stmt)
         let elseStmt: Stmt | null = null
-        if (elseNode !== null) {
-            c.pushFacts(cond.whenFalse)
-            elseStmt = checkNested(c, elseNode, scope)
-            c.popFacts()
-        }
+        c.pushFacts(cond.whenFalse)
+        if (elseNode !== null) elseStmt = checkNested(c, elseNode, scope)
+        const elseEnd = flatFacts(c)
+        c.popFacts()
         out.push(new IfStmt(cond.expr, then, elseStmt))
-        // After `if (x === null) return` (or continue, break), x is not null for the rest of the block.
-        const thenExits = exits(then)
-        const elseExits = elseStmt !== null && exits(elseStmt)
-        if (thenExits && !elseExits) addFacts(c, cond.whenFalse)
-        else if (elseExits && !thenExits) addFacts(c, cond.whenTrue)
+        // After the `if`, what holds at the end of each branch that does not exit:
+        // after `if (x === null) return`, x is not null; after
+        // `if (x === null) x = make()`, neither.
+        const ends: Map<string, Type>[] = []
+        if (!exits(then)) ends.push(thenEnd)
+        if (elseStmt === null || !exits(elseStmt)) ends.push(elseEnd)
+        joinFacts(c, ends)
     } else if (k === "WhileStatement") {
         invalidateAssigned(c, stmt, scope)
         const cond = condition(c, expression(stmt), scope)
@@ -382,6 +386,8 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
             fn.pendingLabel = name
         }
         checkStmt(c, inner, scope, out)
+    } else if (stmt.kind === "EnumDeclaration") {
+        c.error(stmt, unsupportedTopLevel(stmt))
     } else {
         c.error(stmt, "This statement is not supported yet.")
     }
@@ -448,7 +454,7 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
             }
             const local = c.newLocal(name, type, !isConst)
             // Its type is unknown: uses of it report nothing more.
-            if (declared === null && value !== null && value.k === "error") c.poisoned.set(local, true)
+            if (declared === null && value !== null && value.k === "error") c.poisoned.add(local)
             if (scope === c.globals) local.global = true
             if (scope === c.globals && stmt !== null) {
                 const found = directives(c, stmt)
@@ -463,10 +469,10 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
                 }
             }
             symbol = new LocalSymbol(local, decl)
-            if (declared === null && value === null) c.untyped.set(local, true)
+            if (declared === null && value === null) c.untyped.add(local)
             else c.info.types.set(nameId, type)
             if (unassigned) {
-                c.unassigned.set(local, true)
+                c.unassigned.add(local)
                 c.declNodes.set(local, nameId)
                 out.push(new LetStmt(local))
             } else if (local.global && value === null && (isNumeric(type) || type.kind === "bool" || type.kind === "ptr")) {
@@ -691,6 +697,7 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
         let elem: Type
         if (type.kind === "array") elem = type.elem
         else if (type.kind === "chan") elem = type.elem
+        else if (type.kind === "set") elem = type.elem
         else if (type.kind === "string") elem = types.i32
         else {
             c.error(expression(stmt), `Type '${typeToString(type)}' is not iterable.`)
@@ -747,16 +754,16 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
     let hasDefault = false
     // String literal cases narrow the subject: within a clause, the values of
     // the cases that lead to it without falling through code; in default, the rest.
-    const allCases = new Map<string, bool>()
+    const allCases = new Set<string>()
     for (const clause of caseClauses(stmt)) {
-        if (clause.kind === "CaseClause" && isStringLiteralNode(expression(clause))) allCases.set(stringText(expression(clause)), true)
+        if (clause.kind === "CaseClause" && isStringLiteralNode(expression(clause))) allCases.add(stringText(expression(clause)))
     }
-    let entering = new Map<string, bool>()
+    let entering = new Set<string>()
     let narrowable = true
     for (const clause of caseClauses(stmt)) {
         let facts: Fact[] = []
         if (clause.kind === "CaseClause") {
-            if (isStringLiteralNode(expression(clause))) entering.set(stringText(expression(clause)), true)
+            if (isStringLiteralNode(expression(clause))) entering.add(stringText(expression(clause)))
             else narrowable = false
             if (narrowable) facts = literalFacts(c, subject, entering, scope).yes
         } else if (narrowable && entering.size === 0) {
@@ -783,7 +790,7 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
         if (statements(clause).length > 0) {
             const last = clauseBody.length > 0 ? clauseBody[clauseBody.length - 1] : null
             const leaves = last !== null && (last.k === "break" || last.k === "continue" || terminates(last))
-            entering = new Map<string, bool>()
+            entering = new Set<string>()
             narrowable = leaves
         }
     }
@@ -1027,8 +1034,8 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             if (literalSide !== null) {
                 const subject = literalSide === right(node) ? left(node) : right(node)
                 const expr = checkCondition(c, node, scope)
-                const values = new Map<string, bool>()
-                values.set(stringText(literalSide), true)
+                const values = new Set<string>()
+                values.add(stringText(literalSide))
                 const pair = literalFacts(c, subject, values, scope)
                 return op === "EqualsEqualsEqualsToken" ? new Condition(expr, pair.yes, pair.no) : new Condition(expr, pair.no, pair.yes)
             }
@@ -1061,7 +1068,7 @@ function concatFacts(a: Fact[], b: Fact[]): Fact[] {
 }
 
 /** Whether a type's values are all in `values` ("yes"), none ("no"), or some ("both"). */
-function covers(type: Type, values: Map<string, bool>): string {
+function covers(type: Type, values: Set<string>): string {
     const members_ = membersOf(type)
     if (members_.every((m) => m.kind === "literal" && values.has(m.value))) return "yes"
     if (members_.every((m) => m.kind === "literal" && !values.has(m.value))) return "no"
@@ -1082,7 +1089,7 @@ function narrowFacts(c: Checker, target: Node, scope: Scope, matches: (member: T
  * `subject` is a variable of a literal union (`mode === "a"`), a field of a
  * union of objects (`shape.kind === "circle"`), or `typeof x`.
  */
-export function literalFacts(c: Checker, subject: Node, values: Map<string, bool>, scope: Scope): FactPair {
+export function literalFacts(c: Checker, subject: Node, values: Set<string>, scope: Scope): FactPair {
     if (subject.kind === "ParenthesizedExpression") return literalFacts(c, expression(subject), values, scope)
     if (subject.kind === "TypeOfExpression") return narrowFacts(c, expression(subject), scope, (m) => (values.has(typeofName(m)) ? "yes" : "no"))
     if (subject.kind === "PropertyAccessExpression" && questionDotToken(subject) === null) {
@@ -1153,6 +1160,52 @@ export function narrowConvert(c: Checker, expr: Expr, type: Type): Expr {
 export function addFacts(c: Checker, facts: Fact[]) {
     const frame = c.facts[c.facts.length - 1]
     for (const f of facts) frame.set(f.key, f.type)
+}
+
+/** The facts in effect, by key. */
+export function flatFacts(c: Checker): Map<string, Type> {
+    const flat = new Map<string, Type>()
+    for (const frame of c.facts) for (const [key, type] of frame) flat.set(key, type)
+    return flat
+}
+
+/** A copy of the frames of facts, to check another branch from the same point. */
+export function copyFacts(c: Checker): Map<string, Type>[] {
+    const frames: Map<string, Type>[] = []
+    for (const frame of c.facts) {
+        const copy = new Map<string, Type>()
+        for (const [key, type] of frame) copy.set(key, type)
+        frames.push(copy)
+    }
+    return frames
+}
+
+/**
+ * Sets the facts where branches join, from the facts at their ends: a key
+ * keeps a fact when every branch has one, with the union of their types, and
+ * loses it otherwise. With no branch (all exit), the facts are kept.
+ */
+export function joinFacts(c: Checker, ends: Map<string, Type>[]) {
+    if (ends.length === 0) return
+    const joined = new Map<string, Type>()
+    for (const [key, type] of ends[0]) {
+        let union: Type | null = type
+        for (const end of ends.slice(1)) {
+            const other = end.get(key)
+            if (other === null || union === null) union = null
+            else if (!sameType(other, union)) union = c.unionOf([union, other])
+        }
+        if (union !== null) joined.set(key, union)
+    }
+    const current = flatFacts(c)
+    for (const key of current.keys()) {
+        if (!joined.has(key)) for (const frame of c.facts) frame.delete(key)
+    }
+    const top = c.facts[c.facts.length - 1]
+    for (const [key, type] of joined) {
+        const known = current.get(key)
+        if (known === null || !sameType(known, type)) top.set(key, type)
+    }
 }
 
 /** Forgets facts about a variable or field path and paths through it, after it may have changed. */

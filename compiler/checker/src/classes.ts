@@ -4,7 +4,7 @@ import { findField, findMethod, isSubclass, overridden, sameType, types, typeToS
 import ts from "typescript"
 import { Scope, type Generic } from "./symbols"
 import type { ClassInfo, Accessor, InterfaceInfo, MemberFlags } from "./context"
-import { cIdent, findThis, hasZeroValue } from "./helpers"
+import { cIdent, findThis, hasZeroValue, indexSignatureMessage, zeroNeedsInit, zeroValue } from "./helpers"
 import { DeclarationChecker } from "./declarations"
 
 /** What a member of a class is, for messages about inherited members. */
@@ -142,10 +142,13 @@ export abstract class ClassChecker extends DeclarationChecker {
       if (ts.isPropertyDeclaration(member)) {
         const name = this.memberName(member.name)
         if (name === undefined || !this.checkInherited(info, name, "field", member.name, flags) || !declare(name, member, member.name)) continue
-        if (member.questionToken || member.exclamationToken) this.error(member.questionToken ?? member.exclamationToken!, "Optional and definitely-assigned fields are not supported.")
+        if (member.exclamationToken) this.error(member.exclamationToken, "Definitely-assigned fields are not supported.")
         let fieldType: Type | undefined
         if (member.type) fieldType = this.resolveValueType(member.type, scope)
+        else if (member.questionToken) this.error(member.name, `Optional field '${name}' needs a type annotation.`)
         else if (!member.initializer) this.error(member.name, `Field '${name}' needs a type annotation or an initializer.`)
+        // `x?: T` is `T | null`, null unless initialized.
+        if (fieldType && member.questionToken) fieldType = this.unionOf([fieldType, types.null])
         if (member.initializer) info.inits.push({ name, node: member.initializer })
         // A field without an annotation gets its type from the initializer later.
         type.fields.push({ name, type: fieldType ?? types.void, readonly: flags.readonly, private: flags.private || flags.protected })
@@ -219,7 +222,7 @@ export abstract class ClassChecker extends DeclarationChecker {
       } else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
         this.declareAccessor(member, info, scope, flags)
       } else {
-        this.error(member, "This class member is not supported.")
+        this.error(member, ts.isIndexSignatureDeclaration(member) ? indexSignatureMessage : "This class member is not supported.")
       }
     }
     if (!type.ctor && baseInfo) {
@@ -470,6 +473,12 @@ export abstract class ClassChecker extends DeclarationChecker {
     for (const p of info.paramProps) inits.push(setField(p.name, { k: "local", type: p.type, local: p }))
     for (const init of info.inits) if (init.value) inits.push(setField(init.name, init.value))
     const body: ir.Stmt[] = [{ k: "let", local: self, init: { k: "alloc", type } }]
+    // Other fields start at their zero value: the allocation is zeroed, which is not `""`, `[]` or `null` of every type.
+    // Inherited fields are the base class's initialization's.
+    const initialized = new Set([...info.paramProps.map((p) => p.name), ...info.inits.map((i) => i.name)])
+    for (const field of type.fields.slice(base?.fields.length ?? 0)) {
+      if (!initialized.has(field.name) && zeroNeedsInit(field.type)) body.push({ k: "expr", expr: setField(field.name, zeroValue(field.type)) })
+    }
     if (baseInfo && !info.ctorDecl) {
       const args = info.ctorParams.map((p): ir.Expr => ({ k: "local", type: p.type, local: p }))
       body.push({ k: "expr", expr: { k: "method-call", type: base!, func: this.initOf(baseInfo), receiver: thisRef, args } })
@@ -653,7 +662,7 @@ export abstract class ClassChecker extends DeclarationChecker {
     }
     for (const member of info.decl.members) {
       if (!member.name) {
-        this.error(member, "Call, construct and index signatures are not supported.")
+        this.error(member, ts.isIndexSignatureDeclaration(member) ? indexSignatureMessage : "Call and construct signatures are not supported.")
         continue
       }
       const name = this.memberName(member.name)

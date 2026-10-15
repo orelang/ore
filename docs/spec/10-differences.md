@@ -4,7 +4,8 @@
 
 `any`, `var`, `==` / `!=`, `eval`, `delete`, `with`, `arguments`,
 `prototype`, computed and dynamic property keys on structs, decorators,
-`enum` (use unions of literals), `namespace` (use modules), `throw` / `try`,
+`enum` and `const enum` (use unions of literals), index signatures (use
+`Map`), `namespace` (use modules), `throw` / `try`,
 `async` / `await`.
 
 `unknown` is allowed as an explicitly boxed value that must be narrowed before

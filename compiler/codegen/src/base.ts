@@ -21,6 +21,7 @@ export abstract class EmitterBase {
   protected abstract helper(name: string, header: string, body: (e: this) => void): void
   protected abstract json(e: ir.BuiltinCall): V
   protected abstract mapOp(e: ir.MapOp): V
+  protected abstract setOp(e: ir.SetOp): V
   protected abstract stringMethod(e: ir.StringMethod): V
   protected abstract thunk(func: ir.Func): string
 
@@ -150,11 +151,13 @@ export abstract class EmitterBase {
 
   protected unionType(u: UnionType): string {
     const name = `%U.${u.id}`
-    if (!this.defs.has(name)) {
-      const words = Math.max(1, ...u.members.map((m) => (this.lt(m) === STR || this.lt(m) === FN || this.lt(m) === IFACE ? 2 : 1)))
-      this.defs.set(name, `${name} = type { i32, [${words} x i64] }`)
-    }
+    if (!this.defs.has(name)) this.defs.set(name, `${name} = type { i32, [${this.unionWords(u)} x i64] }`)
     return name
+  }
+
+  /** The number of 64-bit words of the payload of a tagged union: two for strings, functions and interfaces. */
+  protected unionWords(u: UnionType): number {
+    return Math.max(1, ...u.members.map((m) => (this.lt(m) === STR || this.lt(m) === FN || this.lt(m) === IFACE ? 2 : 1)))
   }
 
   protected envType(func: ir.Func): string {
@@ -322,7 +325,12 @@ export abstract class EmitterBase {
     return local.exportName ? `@${local.exportName}` : globalName(`G.${local.name}.${local.id}`)
   }
 
-  /** The address of a global; a thread-local one is looked up on each access, since tasks move between threads. */
+  /**
+   * The address of a global; a thread-local one is looked up on each access,
+   * since tasks move between threads. LLVM may still reuse the address within
+   * a function, across calls: the runtime reads its thread-locals only in
+   * small functions that never park, and `top()` goes through a helper.
+   */
   protected globalPlace(local: ir.Local): string {
     if (!local.threadLocal) return this.globalOf(local)
     return this.b.value("ptr", `call ptr @llvm.threadlocal.address.p0(ptr ${this.globalOf(local)})`).v

@@ -1,7 +1,8 @@
 // Built-in declarations, implicitly visible in every Ore module.
 //
 // Types declared as `intrinsic` are primitive types implemented by the
-// compiler. Each numeric type name is also a conversion function: `i64(x)`.
+// compiler. Each numeric type name, and each alias of one, is also a
+// conversion function: `i64(x)`, `int(x)`.
 //
 // TypeScript keyword types are mapped by the compiler directly:
 // `string`, `void`, `never`, `boolean` (= bool), `number` (= f64).
@@ -39,6 +40,9 @@ declare function u32(x: numeric): u32
 declare function u64(x: numeric): u64
 declare function f32(x: numeric): f32
 declare function f64(x: numeric): f64
+declare function int(x: numeric): int
+declare function uint(x: numeric): uint
+declare function byte(x: numeric): byte
 
 /** Console output. Values are numbers, `bool`, strings and unions of them. */
 declare namespace console {
@@ -100,6 +104,24 @@ declare namespace Number {
     function parseInt(s: string, radix?: int): int | null
     /** Parses a decimal number at the start of `s`; null when there is none. */
     function parseFloat(s: string): f64 | null
+}
+
+/**
+ * Strings from character codes, as in JavaScript. Written in Ore, in
+ * runtime/core/string.ore, whose exports are members of the namespace.
+ */
+declare namespace String {
+    /**
+     * The string of UTF-16 code units, each taken modulo 2^16. A high
+     * surrogate followed by a low one is one character; a lone surrogate,
+     * which UTF-8 cannot encode, becomes U+FFFD.
+     */
+    function fromCharCode(...codes: int[]): string
+    /**
+     * The string of code points; one past U+10FFFF or negative panics.
+     * Surrogates combine as in `fromCharCode`.
+     */
+    function fromCodePoint(...points: int[]): string
 }
 
 /**
@@ -313,6 +335,9 @@ declare namespace process {
 
     /** The environment variables, by name. */
     function env(): Map<string, string>
+
+    /** The number of CPUs the system has online. */
+    function cpus(): int
     /** Runs a program (found in PATH) with this process's stdin, stdout and stderr, and waits; returns its exit status. */
     function run(program: string, args?: string[]): int | Error
     /** Runs a program and waits, collecting its stdout and stderr. */

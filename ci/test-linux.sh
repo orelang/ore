@@ -12,5 +12,5 @@ for platform in $platforms; do
         tar -C /src --exclude=./node_modules --exclude=./dist --exclude="*/node_modules" --exclude=./.claude -cf - . | tar -xf - &&
         bun install --frozen-lockfile --ignore-scripts >/dev/null &&
         bun run typecheck >/dev/null &&
-        bun test --timeout 120000 2>&1 | tail -40'
+        bun run test 2>&1 | tail -40'
 done

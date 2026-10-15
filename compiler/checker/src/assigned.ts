@@ -163,7 +163,7 @@ class Flow {
         const target = e.target
         if (target.k === "field") s = this.expr(target.object, s)
         else if (target.k === "element") s = this.expr(target.index, this.expr(target.array, s))
-        else if (target.k === "iface-field") s = this.expr(target.value, s)
+        else if (target.k === "iface-field" || target.k === "union-field") s = this.expr(target.value, s)
         s = this.expr(e.value, s)
         if (target.k === "local") s?.add(target.local)
         return s
@@ -255,6 +255,8 @@ function children(e: ir.Expr): ir.Expr[] {
       return [e.value, ...e.args]
     case "map":
       return [e.map, e.key, e.value].filter((x): x is ir.Expr => x !== undefined)
+    case "set":
+      return [e.set, e.value].filter((x): x is ir.Expr => x !== undefined)
     case "call-value":
       return [e.callee, ...e.args]
     case "bound-method":

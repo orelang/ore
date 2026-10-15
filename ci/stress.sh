@@ -15,7 +15,8 @@ for test in concurrency/parallel-channels concurrency/parallel-gc concurrency/ta
     expected="tests/run/$test.out"
     name=${test##*/}
     bun compiler/cli/src/main.ts build --release "$src" -o "$out/$name" >/dev/null || { echo "$name: build failed"; failed=1; continue; }
-    threads=$(sed -n 's|^// threads: *||p' "$src")
+    # The header is a number alone on its line: a comment may also start with "threads:".
+    threads=$(sed -n 's|^// threads: *\([0-9][0-9]*\) *$|\1|p' "$src" | head -1)
     threads=${threads:-1}
     settings=$threads
     [ "$threads" -gt 1 ] && settings="$threads 8"

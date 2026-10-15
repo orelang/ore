@@ -54,7 +54,7 @@ export abstract class FunctionEmitter extends EmitterBase {
     if (func.attributes?.naked) {
       // Nothing but the assembly: no frame, no parameters in memory.
       for (const stmt of func.body.body) this.stmt(stmt)
-      return this.b.finish(this.signature(func, at), "unreachable")
+      return this.b.finish(this.signature(func, at), "unreachable", true)
     }
     for (const node of this.plan.slots.get(func) ?? []) this.slots.set(node, this.b.alloca(this.slotType(node)))
     // The runtime keeps no frames, as when it was C: stack traces show the program's code.
@@ -87,10 +87,23 @@ export abstract class FunctionEmitter extends EmitterBase {
 
   /**
    * The address of this thread's `ore_rt_top`, computed anew: a task may have
-   * moved to another OS thread since the function started.
+   * moved to another OS thread since the function started. LLVM takes
+   * `llvm.threadlocal.address` as constant within a function and may reuse it
+   * after a call that parked the task, so the address comes from `@ore.top`,
+   * which it cannot take as constant: never inlined, and with an empty
+   * assembly statement that has side effects.
    */
   protected top(): string {
-    return this.b.value("ptr", "call ptr @llvm.threadlocal.address.p0(ptr @ore_rt_top)").v
+    const name = "@ore.top"
+    if (!this.helpers.has(name)) {
+      this.helpers.set(name, "")
+      this.helper(name, `define internal ptr ${name}() noinline`, (e) => {
+        e.b.emit('call void asm sideeffect "", ""()')
+        const address = e.b.value("ptr", "call ptr @llvm.threadlocal.address.p0(ptr @ore_rt_top)")
+        e.b.terminate(`ret ptr ${address.v}`)
+      })
+    }
+    return this.b.value("ptr", `call ptr ${name}()`).v
   }
 
   protected slotType(node: ir.Expr | ir.Local): string {
@@ -273,7 +286,7 @@ export abstract class FunctionEmitter extends EmitterBase {
       this.b.condBr(this.rtBool("ore_rt_chan_recv", [iterable, { ty: "ptr", v: slot }]), body, end)
       this.b.start(body)
       this.declare(stmt.local, this.load(slot, stmt.local.type))
-    } else if (kind === "map") {
+    } else if (kind === "map" || kind === "set") {
       const count = this.b.value("i64", `load i64, ptr ${this.field(iterable.v, MAP, 6)}`)
       const at = this.b.value("i64", `load i64, ptr ${i}`)
       this.b.condBr(this.b.value("i1", `icmp slt i64 ${at.v}, ${count.v}`), body, end)
@@ -283,10 +296,11 @@ export abstract class FunctionEmitter extends EmitterBase {
       const use = this.b.label("live")
       this.b.condBr(live, use, next)
       this.b.start(use)
+      // The elements of a set have no value.
       const key = this.rt("ore_rt_map_key", [iterable, at])
-      const value = this.rt("ore_rt_map_value", [iterable, at])
+      const value = stmt.value ? this.rt("ore_rt_map_value", [iterable, at]) : undefined
       this.declare(stmt.local, this.load(key.v, stmt.local.type))
-      this.declare(stmt.value!, this.load(value.v, stmt.value!.type))
+      if (stmt.value) this.declare(stmt.value, this.load(value!.v, stmt.value.type))
     } else {
       // The array length is read again on every iteration.
       const len = this.b.value("i64", `load i64, ptr ${this.field(iterable.v, ARRAY, 1)}`)

@@ -1,5 +1,5 @@
 /**
- * The formatter written in Ore (`ore-next fmt`, compiler/next/src/fmt/)
+ * The formatter written in Ore (`ore-next fmt --stdout`, compiler/next/src/fmt/)
  * checked against prettier with the options of `ore fmt` (formatOre in
  * compiler/cli/src/fmt.ts): on every .ore file of the repository its output
  * must equal prettier's.
@@ -22,10 +22,12 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import ts from "typescript"
+import { oreNext } from "./ore-next"
 
 const root = join(import.meta.dir, "../..")
 const work = mkdtempSync(join(tmpdir(), "ore-fmt-"))
-const binary = join(work, "ore-next")
+/** The compiler in Ore, shared by the test files (./ore-next.ts). */
+let binary = ""
 
 function oreFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -241,7 +243,7 @@ const variants: Record<string, (text: string) => string> = {
 async function oreFormat(input: string): Promise<{ code: number; stdout: string; stderr: string }> {
   const path = join(work, `input-${Math.random().toString(36).slice(2)}.ore`)
   writeFileSync(path, input)
-  const proc = Bun.spawn([binary, "fmt", path], { stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn([binary, "fmt", "--stdout", path], { stdout: "pipe", stderr: "pipe" })
   const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()])
   return { code, stdout, stderr }
 }
@@ -255,15 +257,13 @@ async function prettierFormat(input: string): Promise<string | undefined> {
 }
 
 beforeAll(async () => {
-  // A debug build: a release build of the compiler, with its checker, takes minutes.
-  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
-  expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 600_000)
+  binary = await oreNext()
+}, 900_000)
 
 for (const [name, variant] of Object.entries(variants)) {
   describe(`fmt, ${name}`, () => {
     for (const file of files) {
-      test(relative(root, file), async () => {
+      test.concurrent(relative(root, file), async () => {
         const input = variant(readFileSync(file, "utf8"))
         const expected = await prettierFormat(input)
         if (expected === undefined) return

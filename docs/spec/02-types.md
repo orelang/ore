@@ -34,7 +34,8 @@ Numeric literals are untyped constants (as in Go):
 ## Conversions
 
 There are no implicit conversions between distinct numeric types. Conversions
-are explicit calls of the type name:
+are explicit calls of the type name, or of an alias of it (`int(x)` is
+`i64(x)`, `uint(x)` is `u64(x)`, `byte(x)` is `u8(x)`):
 
 ```ts
 const a: i32 = 10
@@ -103,11 +104,13 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.getenv(name)` | an environment variable, or `null` |
 | `process.cwd()` | the working directory, as an absolute path |
 | `process.env()` | the environment variables, as a `Map<string, string>` |
+| `process.cpus()` | the number of CPUs online |
 | `process.run(program, args?)`, `process.output(program, args?)`, `new process.Command(program, args?)` | other programs (below) |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
 | `Math.abs(x)`, `Math.min(a, b)`, `Math.max(a, b)` | for any numeric type, keeping it |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
 | `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
+| `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
@@ -125,7 +128,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
 
-`fs` and `process` are partly written in Ore (`runtime/core/fs.ore` and
+`String`, `fs` and `process` are partly written in Ore
+(`runtime/core/string.ore`, `runtime/core/fs.ore` and
 `runtime/core/process.ore`): the exports of these modules are members of
 the namespaces, classes included, so `fs.FileInfo` and `process.Command`
 are types and `new process.Command(...)` creates one.
@@ -220,16 +224,28 @@ functions.
   `toUpperCase` and `toLowerCase` (ASCII letters), `replace` (the first
   occurrence), `replaceAll`, `repeat(n)`, `padStart(n, pad?)`,
   `padEnd(n, pad?)`, `substring(start, end?)`.
+- `s.codePointAt(i)` is the code point (`int | null`) of the character that
+  starts at byte `i`: U+FFFD if no valid character starts there, `null` if
+  `i` is out of range (JavaScript's `undefined`).
+- `String.fromCharCode(...codes)` makes a string of UTF-16 code units, each
+  taken modulo 2^16, and `String.fromCodePoint(...points)` of code points, as
+  in JavaScript: a high surrogate followed by a low surrogate is one
+  character (`String.fromCharCode(0xd83d, 0xde00)` is `"😀"`, 4 bytes). A lone
+  surrogate, which JavaScript keeps but UTF-8 cannot encode, becomes U+FFFD.
+  A code point past U+10FFFF or negative panics (JavaScript throws a
+  `RangeError`). Both take `int`s: convert a rune with `i64(r)`.
 
 ## Arrays
 
 - `T[]` (or `Array<T>`) is a reference to a growable array, as in
   TypeScript: assigning an array or passing it to a function shares it.
   `===` compares identity.
-- An array literal takes its element type from the context
-  (`let a: u8[] = [1, 2]`), else from its first typed element, else from the
-  default type of its constants (`[1, 2]` is `int[]`). `[]` requires a
-  context type.
+- An array literal takes its element type from the context: an array type
+  (`let a: u8[] = [1, 2]`), or a union with exactly one array type
+  (`let a: Shape[] | null = [new Square(2), new Circle(1)]`), each element
+  converting to it. Without one, it takes the type of its first typed
+  element, else the default type of its constants (`[1, 2]` is `int[]`).
+  `[]` requires a context type.
 - `a[i]` reads and writes elements; an index of any integer type is allowed
   and an index out of range panics. Compound assignments (`a[i] += 1`,
   `a[i]++`) evaluate `a` and `i` once.

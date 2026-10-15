@@ -1,4 +1,4 @@
-import type { ArrayType, BoolType, ChanType, FloatType, FuncType, IntType, InterfaceType, LiteralType, MapType, StringType, StructType, Type, UnionType } from "./types"
+import type { ArrayType, BoolType, ChanType, FloatType, FuncType, IntType, InterfaceType, LiteralType, MapType, SetType, StringType, StructType, Type, UnionType } from "./types"
 
 /**
  * Typed, name-resolved, structured IR produced by the checker.
@@ -259,6 +259,7 @@ export type Expr =
   | Is
   | Downcast
   | MapOp
+  | SetOp
   | FuncRef
   | Closure
   | CallValue
@@ -308,6 +309,8 @@ export type LValue =
   | { k: "field"; object: Expr; name: string }
   /** The field at `index` of an interface's members. */
   | { k: "iface-field"; value: Expr; index: number }
+  /** A field that every member of a union of structs and interfaces has, with the same type. */
+  | { k: "union-field"; value: Expr; name: string }
 
 /**
  * Assignment. With `op` it is a compound assignment `target op= value`, where
@@ -615,6 +618,20 @@ export interface MapOp {
   mapType: MapType
   map?: Expr
   key?: Expr
+  value?: Expr
+}
+
+/**
+ * An operation of `Set`: `new Set()` (with `value`, an array whose elements
+ * it adds), `set.add(value)` (the set), `has`, `delete`, `clear`, `size`, and
+ * `values` as an array in insertion order.
+ */
+export interface SetOp {
+  k: "set"
+  op: "new" | "add" | "has" | "delete" | "clear" | "size" | "values"
+  type: Type
+  setType: SetType
+  set?: Expr
   value?: Expr
 }
 

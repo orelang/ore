@@ -152,8 +152,14 @@ export interface MapType {
   readonly value: Type
 }
 
+/** `Set<T>`: a reference to a hash set that keeps insertion order: a map without values. */
+export interface SetType {
+  readonly kind: "set"
+  readonly elem: Type
+}
+
 export type PrimitiveType = IntType | FloatType | BoolType | StringType | VoidType | NeverType | NullType | LiteralType | PtrType | SelectCaseType
-export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType | MapType | ChanType
+export type Type = PrimitiveType | FuncType | ArrayType | StructType | InterfaceType | UnionType | MapType | SetType | ChanType
 
 export function findField(t: StructType, name: string): Field | undefined {
   return t.fields.find((f) => f.name === name)
@@ -248,6 +254,7 @@ export function sameType(a: Type, b: Type): boolean {
   if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
   if (a.kind === "array" && b.kind === "array") return sameType(a.elem, b.elem)
   if (a.kind === "map" && b.kind === "map") return sameType(a.key, b.key) && sameType(a.value, b.value)
+  if (a.kind === "set" && b.kind === "set") return sameType(a.elem, b.elem)
   if (a.kind === "chan" && b.kind === "chan") return sameType(a.elem, b.elem)
   if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b)
   if (a.kind === "union" && b.kind === "union") {
@@ -279,6 +286,8 @@ export function typeToString(t: Type): string {
       return JSON.stringify(t.value)
     case "map":
       return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
+    case "set":
+      return `Set<${typeToString(t.elem)}>`
     case "chan":
       return `Chan<${typeToString(t.elem)}>`
     case "select-case":
@@ -309,6 +318,8 @@ export function typeKey(type: Type): string {
       return JSON.stringify(type.value)
     case "map":
       return `Map<${typeKey(type.key)},${typeKey(type.value)}>`
+    case "set":
+      return `Set<${typeKey(type.elem)}>`
     case "chan":
       return `Chan<${typeKey(type.elem)}>`
     case "func":
@@ -320,7 +331,7 @@ export function typeKey(type: Type): string {
 
 /** Whether values of a type are references that can be null without a tag. */
 export function isReference(type: Type): boolean {
-  return ["struct", "array", "interface", "string", "map", "func", "chan"].includes(type.kind)
+  return ["struct", "array", "interface", "string", "map", "set", "func", "chan"].includes(type.kind)
 }
 
 /** Whether values of a type are strings: `string` or a string literal type. */

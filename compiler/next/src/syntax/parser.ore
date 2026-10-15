@@ -404,7 +404,9 @@ export class Parser {
                 this.next()
                 return this.make("EmptyStatement", start)
             case "VarKeyword":
+                return this.variableStatement([], start)
             case "ConstKeyword":
+                if (next.kind === "EnumKeyword") return this.declaration(this.modifiers(), start)
                 return this.variableStatement([], start)
             case "LetKeyword":
                 if (this.isIdentifier(next.kind) || next.kind === "OpenBraceToken" || next.kind === "OpenBracketToken")
@@ -735,9 +737,14 @@ export class Parser {
     }
 
     private parameters(): Node[] {
-        this.expect("OpenParenToken")
+        return this.parameterList("OpenParenToken", "CloseParenToken")
+    }
+
+    /** Parameters between `open` and `close`: parentheses, or the brackets of an index signature. */
+    private parameterList(open: Kind, close: Kind): Node[] {
+        this.expect(open)
         const list: Node[] = []
-        while (!this.at("CloseParenToken") && !this.at("EndOfFileToken")) {
+        while (!this.at(close) && !this.at("EndOfFileToken")) {
             const start = this.token().start
             const parameter = new Node("Parameter", start, start).addAll(this.modifiers(), "modifiers")
             if (this.at("DotDotDotToken")) parameter.add(this.tokenNode(), "dotDotDotToken")
@@ -748,8 +755,38 @@ export class Parser {
             list.push(this.finish(parameter, start))
             if (!this.eat("CommaToken")) break
         }
-        this.expect("CloseParenToken")
+        this.expect(close)
         return list
+    }
+
+    /**
+     * Whether `[` starts an index signature, `[key: string]: T`, rather than a
+     * computed property name: TypeScript's `isUnambiguouslyIndexSignature`.
+     */
+    private atIndexSignature(): bool {
+        if (!this.at("OpenBracketToken")) return false
+        let n = 1
+        let k = this.peek(n).kind
+        if (k === "DotDotDotToken" || k === "CloseBracketToken") return true
+        if (modifierKinds.includes(k)) {
+            n++
+            if (this.isIdentifier(this.peek(n).kind)) return true
+        } else if (!this.isIdentifier(k)) return false
+        n++
+        k = this.peek(n).kind
+        if (k === "ColonToken" || k === "CommaToken") return true
+        if (k !== "QuestionToken") return false
+        k = this.peek(n + 1).kind
+        return k === "ColonToken" || k === "CommaToken" || k === "CloseBracketToken"
+    }
+
+    /** `[key: K]: T` after its modifiers, in an interface, an object type or a class. */
+    private indexSignature(modifiers: Node[], start: int): Node {
+        const node = new Node("IndexSignature", start, start)
+            .addAll(modifiers, "modifiers")
+            .addAll(this.parameterList("OpenBracketToken", "CloseBracketToken"), "parameters")
+        if (this.eat("ColonToken")) node.add(this.type(), "type")
+        return node
     }
 
     private heritageClauses(node: Node) {
@@ -812,6 +849,11 @@ export class Parser {
             if (this.at("OpenBraceToken")) node.add(this.block(), "body")
             else this.semicolon()
             return this.finish(node, start)
+        }
+        if (this.atIndexSignature()) {
+            const signature = this.indexSignature(modifiers, start)
+            if (!this.eat("CommaToken")) this.semicolon()
+            return this.finish(signature, start)
         }
         const asterisk = this.at("AsteriskToken") ? this.tokenNode() : null
         const name = this.propertyName()
@@ -1624,6 +1666,13 @@ export class Parser {
             const start = this.token().start
             const before = this.i
             const modifiers = this.modifiers()
+            if (this.atIndexSignature()) {
+                const signature = this.indexSignature(modifiers, start)
+                // The separator belongs to the member.
+                if (!this.eat("SemicolonToken")) this.eat("CommaToken")
+                members.push(this.finish(signature, start))
+                continue
+            }
             const name = this.propertyName()
             const question = this.at("QuestionToken") ? this.tokenNode() : null
             const method = this.at("OpenParenToken") || this.at("LessThanToken")

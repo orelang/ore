@@ -13,10 +13,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
+import { oreNext } from "./ore-next"
 
 const root = join(import.meta.dir, "../..")
 const work = mkdtempSync(join(tmpdir(), "ore-build-next-"))
-const binary = join(work, "ore-next")
+/** The compiler in Ore, shared by the test files (./ore-next.ts). */
+let binary = ""
 process.on("exit", () => rmSync(work, { recursive: true, force: true }))
 
 /** Entry files of programs: NAME.ore, or NAME/main.ore for a program of several modules. */
@@ -51,9 +53,8 @@ async function expectRun(path: string, executable: string): Promise<void> {
 }
 
 beforeAll(async () => {
-  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
-  expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 120_000)
+  binary = await oreNext()
+}, 900_000)
 
 let buildTime = 0
 let built = 0
@@ -64,7 +65,7 @@ afterAll(() => {
 describe("ore-next build", () => {
   for (const path of entries(join(root, "tests/run"))) {
     const name = relative(join(root, "tests/run"), path)
-    test(name, async () => {
+    test.concurrent(name, async () => {
       const output = join(work, name.replace(/\.ore$/, "").replaceAll("/", "_"))
       const started = performance.now()
       const result = await spawn([binary, "build", relative(process.cwd(), path), "-o", output])

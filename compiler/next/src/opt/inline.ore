@@ -33,6 +33,7 @@ import {
     IfaceCall,
     IfaceField,
     IfaceFieldLValue,
+    UnionFieldLValue,
     IncDec,
     Index,
     IntLit,
@@ -44,6 +45,7 @@ import {
     LocalRef,
     Logical,
     MapOp,
+    SetOp,
     MethodCall,
     Not,
     NullLit,
@@ -282,6 +284,13 @@ function eachChild(e: Expr, expr: (x: Expr) => void, lvalue: (t: LValue) => void
             if (value !== null) expr(value)
             return
         }
+        case "set": {
+            const set = e.set
+            if (set !== null) expr(set)
+            const value = e.value
+            if (value !== null) expr(value)
+            return
+        }
         case "call-value":
             expr(e.callee)
             for (const a of e.args) expr(a)
@@ -330,6 +339,7 @@ function eachLValueChild(t: LValue, expr: (x: Expr) => void) {
             expr(t.object)
             return
         case "iface-field":
+        case "union-field":
             expr(t.value)
             return
     }
@@ -631,6 +641,13 @@ class Inliner {
                 if (value !== null) e.value = this.sub(value, depth)
                 return
             }
+            case "set": {
+                const set = e.set
+                if (set !== null) e.set = this.sub(set, depth)
+                const value = e.value
+                if (value !== null) e.value = this.sub(value, depth)
+                return
+            }
             case "call-value":
                 e.callee = this.sub(e.callee, depth)
                 this.subs(e.args, depth)
@@ -679,6 +696,9 @@ class Inliner {
                 t.object = this.sub(t.object, depth)
                 return
             case "iface-field":
+                t.value = this.sub(t.value, depth)
+                return
+            case "union-field":
                 t.value = this.sub(t.value, depth)
                 return
         }
@@ -775,6 +795,8 @@ class Inliner {
                 return new FieldLValue(this.clone(t.object, values), t.name)
             case "iface-field":
                 return new IfaceFieldLValue(this.clone(t.value, values), t.index)
+            case "union-field":
+                return new UnionFieldLValue(this.clone(t.value, values), t.name)
         }
     }
 
@@ -878,6 +900,8 @@ class Inliner {
                 return new Downcast(e.type, this.clone(e.value, values))
             case "map":
                 return new MapOp(e.op, e.type, e.mapType, this.cloneOrNull(e.map, values), this.cloneOrNull(e.key, values), this.cloneOrNull(e.value, values))
+            case "set":
+                return new SetOp(e.op, e.type, e.setType, this.cloneOrNull(e.set, values), this.cloneOrNull(e.value, values))
             case "func-ref":
                 return new FuncRef(e.type, e.func)
             case "closure":

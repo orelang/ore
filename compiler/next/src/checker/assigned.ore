@@ -16,46 +16,23 @@ import { type Block, type Expr, type Local, type Stmt } from "../ir/nodes"
  * operand of `&&`, `||` and `??` may not be evaluated, so their assignments
  * do not count after them.
  */
-export function checkAssigned(body: Block, tracked: Map<Local, bool>, report: (local: Local, at: Expr) => void) {
-    new Flow(tracked, report).block(body.body, new LocalSet())
-}
-
-/** A set of locals: `Set<ir.Local>` in TypeScript. */
-export class LocalSet {
-    readonly locals = new Map<Local, bool>()
-
-    has(local: Local): bool {
-        return this.locals.has(local)
-    }
-
-    add(local: Local) {
-        this.locals.set(local, true)
-    }
-
-    delete(local: Local) {
-        this.locals.delete(local)
-    }
-
-    copy(): LocalSet {
-        const s = new LocalSet()
-        for (const [local, _] of this.locals) s.add(local)
-        return s
-    }
+export function checkAssigned(body: Block, tracked: Set<Local>, report: (local: Local, at: Expr) => void) {
+    new Flow(tracked, report).block(body.body, new Set<Local>())
 }
 
 /** The variables certainly assigned at a point, or null where control cannot reach. */
-type State = LocalSet | null
+type State = Set<Local> | null
 
 function join(a: State, b: State): State {
     if (a === null) return b
     if (b === null) return a
-    const s = new LocalSet()
-    for (const [local, _] of a.locals) if (b.has(local)) s.add(local)
+    const s = new Set<Local>()
+    for (const local of a) if (b.has(local)) s.add(local)
     return s
 }
 
 function copy(s: State): State {
-    return s === null ? null : s.copy()
+    return s === null ? null : new Set(s)
 }
 
 /** A loop or switch around the current statement. */
@@ -77,8 +54,8 @@ class Within {
 
 class Flow {
     /** Tracked variables declared in this function; others belong to enclosing functions. */
-    private declared = new LocalSet()
-    private reported = new LocalSet()
+    private declared = new Set<Local>()
+    private reported = new Set<Local>()
     /** States at the `break` and `continue` statements of each loop or switch, by id. */
     private breaks = new Map<int, State>()
     private continues = new Map<int, State>()
@@ -86,7 +63,7 @@ class Flow {
     private targets: Target[] = []
 
     constructor(
-        private tracked: Map<Local, bool>,
+        private tracked: Set<Local>,
         private report: (local: Local, at: Expr) => void,
     ) {}
 
@@ -234,6 +211,7 @@ class Flow {
                 if (target.k === "field") after = this.expr(target.object, after)
                 else if (target.k === "element") after = this.expr(target.index, this.expr(target.array, after))
                 else if (target.k === "iface-field") after = this.expr(target.value, after)
+                else if (target.k === "union-field") after = this.expr(target.value, after)
                 after = this.expr(e.value, after)
                 if (target.k === "local" && after !== null) after.add(target.local)
                 return after
@@ -354,6 +332,14 @@ function children(e: Expr): Expr[] {
             if (map !== null) out.push(map)
             const key = e.key
             if (key !== null) out.push(key)
+            const value = e.value
+            if (value !== null) out.push(value)
+            return out
+        }
+        case "set": {
+            const out: Expr[] = []
+            const set = e.set
+            if (set !== null) out.push(set)
             const value = e.value
             if (value !== null) out.push(value)
             return out

@@ -1,8 +1,12 @@
 // Strings: a pointer to UTF-8 bytes and a length in bytes. The null of
 // `string | null` is a string with a null pointer.
 //
+// The exports of this module are the members of the namespace `String`.
+//
 // This code must not use the operations it implements: comparing strings in
 // strEq would call strEq. See README.md for how the runtime is put together.
+
+import { sliceOffset } from "ore:runtime/array"
 
 function isNull(p: ptr): bool {
     return unsafe.toInt(p) === 0
@@ -16,12 +20,6 @@ function view(p: ptr, start: int, length: int): string {
 /** Whether the `n` bytes of `sub` are at `p + at`. */
 function bytesAt(p: ptr, at: int, sub: ptr, n: int): bool {
     return n === 0 || unsafe.compare(unsafe.add(p, at), sub, n) === 0
-}
-
-/** A JavaScript `slice` offset resolved against a length: negative counts from the end, then clamped. */
-export function sliceOffset(offset: int, length: int): int {
-    const at = offset < 0 ? offset + length : offset
-    return at < 0 ? 0 : at > length ? length : at
 }
 
 /** The strings joined, with `sep` between them. */
@@ -130,6 +128,93 @@ function strDecode(s: string, pos: ptr): i32 {
     const r = decode(unsafe.add(unsafe.stringData(s), at), s.length - at)
     unsafe.store<int>(pos, at + (r & 7))
     return i32(r >> 3)
+}
+
+/** `s.codePointAt(at)`: the character that starts at byte `at`, U+FFFD if none does there, or null past the end. */
+//ore:runtime ore_rt_str_code_point_at
+function strCodePointAt(s: string, at: int): int | null {
+    if (at < 0 || at >= s.length) return null
+    return decode(unsafe.add(unsafe.stringData(s), at), s.length - at) >> 3
+}
+
+/** Writes the UTF-8 bytes of a code point at `p`; returns how many. */
+function encode(p: ptr, point: int): int {
+    if (point < 0x80) {
+        unsafe.store<u8>(p, u8(point))
+        return 1
+    }
+    if (point < 0x800) {
+        unsafe.store<u8>(p, u8(0xc0 | (point >> 6)))
+        unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | (point & 0x3f)))
+        return 2
+    }
+    if (point < 0x10000) {
+        unsafe.store<u8>(p, u8(0xe0 | (point >> 12)))
+        unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | ((point >> 6) & 0x3f)))
+        unsafe.store<u8>(unsafe.add(p, 2), u8(0x80 | (point & 0x3f)))
+        return 3
+    }
+    unsafe.store<u8>(p, u8(0xf0 | (point >> 18)))
+    unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | ((point >> 12) & 0x3f)))
+    unsafe.store<u8>(unsafe.add(p, 2), u8(0x80 | ((point >> 6) & 0x3f)))
+    unsafe.store<u8>(unsafe.add(p, 3), u8(0x80 | (point & 0x3f)))
+    return 4
+}
+
+/**
+ * The string of UTF-16 code units: a high surrogate followed by a low one is
+ * one character; a lone surrogate, which UTF-8 cannot encode, is U+FFFD.
+ */
+function fromUnits(units: int[]): string {
+    // At most 3 bytes per unit: a surrogate pair takes 4 for 2 units.
+    const out = unsafe.allocBytes(units.length * 3)
+    let n = 0
+    let i = 0
+    while (i < units.length) {
+        let point = units[i]
+        i++
+        if (point >= 0xd800 && point < 0xe000) {
+            const low = i < units.length ? units[i] : 0
+            if (point < 0xdc00 && low >= 0xdc00 && low < 0xe000) {
+                point = 0x10000 + ((point - 0xd800) << 10) + (low - 0xdc00)
+                i++
+            } else {
+                point = 0xfffd
+            }
+        }
+        n += encode(unsafe.add(out, n), point)
+    }
+    return unsafe.makeString(out, n)
+}
+
+/**
+ * `String.fromCharCode(...codes)`: the string of UTF-16 code units, as in
+ * JavaScript, each taken modulo 2^16. A surrogate pair is one character; a
+ * lone surrogate is U+FFFD, since Ore strings are UTF-8.
+ */
+export function fromCharCode(...codes: int[]): string {
+    const units: int[] = []
+    for (const code of codes) units.push(code & 0xffff)
+    return fromUnits(units)
+}
+
+/**
+ * `String.fromCodePoint(...points)`: the string of code points, as in
+ * JavaScript; a code point past U+10FFFF or negative panics (a RangeError in
+ * JavaScript). Surrogates combine as in `fromCharCode`.
+ */
+export function fromCodePoint(...points: int[]): string {
+    const units: int[] = []
+    for (const point of points) {
+        if (point < 0 || point > 0x10ffff) process.panic(`RangeError: Invalid code point ${point}`)
+        if (point < 0x10000) {
+            units.push(point)
+        } else {
+            units.push(0xd800 + ((point - 0x10000) >> 10))
+            units.push(0xdc00 + ((point - 0x10000) & 0x3ff))
+        }
+    }
+    return fromUnits(units)
 }
 
 //ore:runtime ore_rt_str_index_of

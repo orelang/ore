@@ -9,15 +9,16 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { oreNext } from "./ore-next"
 
 const root = join(import.meta.dir, "../..")
 const work = mkdtempSync(join(tmpdir(), "ore-next-lsp-"))
-const binary = join(work, "ore-next")
+/** The compiler in Ore, shared by the test files (./ore-next.ts). */
+let binary = ""
 
 beforeAll(async () => {
-  const result = await build(join(root, "compiler/next/src/main.ore"), { output: binary })
-  expect(result.diagnostics.map((d) => d.message)).toEqual([])
-}, 600_000)
+  binary = await oreNext()
+}, 900_000)
 
 afterAll(() => rmSync(work, { recursive: true, force: true }))
 

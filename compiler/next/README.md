@@ -8,7 +8,35 @@ and the backend share, the checker, which builds the IR of a program, the
 formatter, the optimizer and the LLVM backend, which emit the same LLVM IR as
 `@ore/opt` and `@ore/codegen`, the build driver, which compiles that IR
 through LLVM's C API and links with lld, without clang, and the language
-server, which reports syntax errors until it uses the checker.
+server, which reports syntax errors until it uses the checker, and the
+`ore` command (`cli/`), which `bun run build` builds into `dist/ore`.
+
+## The `ore` command
+
+`cli/` has the commands of `compiler/cli` with the same arguments, messages
+and exit statuses (0 on success, 1 for errors in the program or a failing
+tool, 2 for a wrong command line):
+
+| Command | |
+|---|---|
+| `ore run [file.ore] [args...]` | builds into a temporary directory and runs the program with the same stdio, with its exit status |
+| `ore build [file.ore] [-o out] [--release] [--emit-llvm f.ll] [--time]` | an executable named after the file or the package; `--time` prints the time of each step |
+| `ore check [file.ore \| paths...]` | the diagnostics of a program; given directories, of each `.ore` file in them as an entry, skipping files a program checked before has loaded, each diagnostic once |
+| `ore test [paths...]` | builds and runs every `*.test.ore` file below the paths (default `.`, without `node_modules` and hidden directories), in parallel, one task per CPU, each build in a child process of the same `ore`; prints each file's output in order, then `All N test file(s) passed.` or `F of N test file(s) failed.` (status 1) |
+| `ore fmt [--check] [--stdout] [paths...]` | formats `.ore` files in place; `--check` lists the unformatted ones (status 1), `--stdout` prints them formatted |
+| `ore init [dir]` | `package.json` (name from the directory) and `src/main.ore` |
+| `ore lsp`, `ore version`, `ore help` | |
+
+Without a file, `run`, `build` and `check` take the `main` of the nearest
+package.json. Differences from `compiler/cli`: `ore check` also takes
+directories; `ore test` runs files in parallel and prints a file's output
+once it is done (its stdout, then its stderr) rather than streaming it;
+`ore fmt` has `--stdout`; build failures of LLVM or lld are reported as
+`ore: <message>` where `compiler/cli` reported clang's; unknown options are
+an error with status 2 rather than an exception; the language server has no
+checker yet. Programs are built from the sources every time; a cache would
+go under `$ORE_CACHE` (`~/.cache/ore`), keyed by a hash of the compiler and
+the modules a program loads, in `buildCommand` of `cli/commands.ore`.
 
 | File | Contents |
 |---|---|
@@ -57,7 +85,12 @@ server, which reports syntax errors until it uses the checker.
 | `lsp/text.ore` | LSP positions (UTF-16) to byte offsets and back, file URIs |
 | `lsp/analysis.ore` | What the server knows of a document: syntax diagnostics now; hover, definition, completion and references are TODOs for the checker |
 | `lsp/server.ore` | The language server of `compiler/lsp`: lifecycle, documents with incremental changes, diagnostics and the language features |
-| `main.ore` | `ore-next tokens\|tree\|roles\|modules\|fmt <file>`: prints the tokens, the tree, the modules of a program, or the file formatted; `ore-next ir <entry>`: the dump of the checked program, or its diagnostics; `ore-next read <dump.txt>`: reads a dump and writes it again; `ore-next llvm <dump.txt> [--debug]`: the LLVM IR of the module of a dump, inlined unless `--debug`; `ore-next build <entry> -o <out> [--release] [--emit-llvm <f>] [--time]`: an executable; `ore-next object <in.ll> [<src.c>...] -o <out> [-c] [-l lib] [-L dir]`: an executable (or with `-c` an object file) from LLVM IR; `ore-next lsp`: the language server on stdio |
+| `cli/main.ore` | The `ore` command: the usage, and the dispatch to the commands and the oracle modes |
+| `cli/commands.ore` | `ore build`, `run`, `check`, `init`: the entry of a program (a file or package.json's `main`), errors and statuses |
+| `cli/test.ore`, `cli/fmt.ore`, `cli/files.ore` | `ore test`, `ore fmt`, and the `.ore` files below the paths they are given |
+| `cli/self.ore` | The path of the running executable (`/proc/self/exe`, `_NSGetExecutablePath`) |
+| `cli/oracles.ore` | The modes the harness compares with the TypeScript compiler: `ore tokens\|tree\|roles\|modules\|ir <file>`, `ore read <dump.txt>`, `ore llvm <dump.txt> [--debug]`, `ore object <in.ll> [<src.c>...] -o <out> [-c] [-l lib] [-L dir]` |
+| `main.ore` | `process.exit(main(process.args))` |
 
 [`tests/harness/next.test.ts`](../../tests/harness/next.test.ts) builds it
 and checks, on every `.ore` file of the repository, that its tokens and trees
@@ -69,7 +102,7 @@ and on the compiler, that the dump of `@ore/checker`, read by `ore-next read`
 and dumped again, is the same text, and that `ore-next llvm` on it prints the
 LLVM IR of `@ore/codegen` byte for byte, in release and debug builds (the
 bootstrap criterion of the roadmap); and runs
-the tests of `test/*.test.ore` (also run by `bun run ore test compiler/next/test`).
+the tests of `test/*.test.ore` (also run by `ore test compiler/next/test`).
 `test/ir-dump.test.ore` and `compiler/ir/test/dump.test.ts` build the same
 IR module by hand and check that their dumps both equal `test/ir-dump.txt`
 (`UPDATE=1 bun test compiler/ir` rewrites it after a change of the format).
@@ -78,8 +111,11 @@ builds every program of `tests/run` with `ore-next build` and checks its
 output, status and stderr as the golden tests do.
 [`tests/harness/lsp-next.test.ts`](../../tests/harness/lsp-next.test.ts) speaks
 LSP to `ore-next lsp`.
+[`tests/harness/cli-next.test.ts`](../../tests/harness/cli-next.test.ts) runs
+the commands as a user would (the behaviors of `compiler/cli/test`), and
+`ore test compiler/next/test`.
 [`tests/harness/fmt.test.ts`](../../tests/harness/fmt.test.ts) checks that
-`ore-next fmt` formats every `.ore` file of the repository as `ore fmt`
+`ore-next fmt --stdout` formats every `.ore` file of the repository as `ore fmt`
 (prettier) does, as written and in unformatted variants: lines joined or
 broken, names made longer or shorter, quotes, semicolons, parentheses and
 comments added. [`test/fmt-cases.ore`](test/fmt-cases.ore) has more syntax
@@ -104,10 +140,10 @@ equivalent in Ore:
 | `interface X { k: "a"; ... }`, a member of a discriminated union | `class X` with `readonly k: "a" = "a"`; the union is a union of classes, narrowed by `switch (x.k)`, `x.k === "a"` or `instanceof` |
 | object literal `{ k: "a", f, g }` | `new X(f, g)`: the constructor takes the required fields in declaration order, then the optional ones |
 | inline object types (`{ test?, body }`, `{ k: "field", ... }` of `InterfaceMember` or `LValue`) | a named class: `SwitchClause`, `InterfaceField` / `InterfaceMethod`, `LocalLValue` / `ElementLValue` / `FieldLValue` / `IfaceFieldLValue`, `FieldInit`, `BindLocal`, `BuiltinError`, `StringsRepr` / `NullableRepr` / `TaggedRepr` |
-| optional field `x?: T` | `x: T \| null`, a constructor parameter with default `null` (`undefined` checks become `!== null`) |
+| optional field `x?: T` of an object literal | `x?: T` (`T \| null`), an optional constructor parameter (`undefined` checks become `!== null`) |
 | optional flag `x?: boolean` | `x: bool`, default `false` |
-| `line?: number` of statements (`StmtBase`) | `line: int \| null = null`, not a constructor parameter; on a `Stmt` union use `setLine(stmt, line)`, since Ore reads but does not assign a field common to union members |
-| `readonly` field | `readonly` field; a field named with a reserved word (`else`, `readonly`, `private`) is declared in the class body and assigned by the constructor |
+| `line?: number` of statements (`StmtBase`) | `line?: int`, not a constructor parameter, assigned after creating the statement (`stmt.line = line` also on a `Stmt` union) |
+| `readonly` field | `readonly` field, also named with a reserved word (`readonly readonly: bool`); a field named `else` or `private`, which cannot name a parameter (in TypeScript neither), is declared in the class body and assigned by the constructor |
 | `number` (ids, lines, indices, arity) | `int` |
 | `bits: 8 \| 16 \| 32 \| 64` (numeric literal types) | `int` |
 | string literal unions (`IntName`, `ArithOp`, inline `op` unions) | kept; inline ones get a name (`MapOpName`, `ChanOpName`) |
@@ -120,20 +156,12 @@ equivalent in Ore:
 | `ts.isX(node)`, `node.x` of the TypeScript AST | `node.kind === "X"` and the accessors of `syntax/nodes.ore`; `node.getText()` is `c.text(node)`, the source of a node is `c.sourceOf(node)` (nodes have no parent) |
 | node flags (`NodeFlags.Const`), operator token kinds of unary expressions, `heritageClause.token` | read back from the source text: `declarationKind`, `prefixOperator`, `heritageToken` |
 | `ts.getLeadingCommentRanges(text, stmt.pos)` | `leadingCommentRanges(text, c.fullStart(stmt))` |
-| `WeakMap` / `Set` of objects | `Map<K, bool>`; maps of struct and interface types are keyed by their id |
-| `withFacts(facts, () => ...)` | `c.pushFacts(facts)` ... `c.popFacts()` |
+| `WeakMap` of objects | `Map` |
+| `withFacts(facts, () => ...)`, `inBlock(() => ...)` | `c.pushFacts(facts)` ... `c.popFacts()`, or `c.popBlockFacts()` for a block |
 | a function's `.length` (`writeAccessor`'s `next`) | an explicit `usesOld` flag |
 | a chain of classes, one per layer (`EmitterBase`, `FunctionEmitter`, ... of `@ore/codegen`) | one class with the state and the base methods (`Emitter` in `llvm/base.ore`), and the other layers as functions of the same names taking it as `g`, in files of the same names; also from before inheritance, and possible as classes now |
-| `Map` keyed by a union (`Map<ir.Expr \| ir.Local, string>`) | one map per class of key (`SlotMap`, `NodeIds`) |
 
-Ore limitations to keep in mind: an array literal passed where `T[] | null` is
-expected takes its type from its first element, so declare it with a type
-first (`const args: Type[] = [...]`); a default parameter value that
-constructs a class needs a type annotation (`o: O = new O()`); union types cannot be `Map` keys (key by `typeKey(t)` or an id instead).
-Narrowing is lost when a `let` is assigned again, so `let x = map.get(k); if
-(x === null) { x = ...; map.set(k, x) }` fails: return early with a `const`
-instead (`const found = ...; if (found !== null) return found`). Conversions
-are the type names (`i64(x)`); `int(x)` does not exist. A release build of
+A release build of
 the compiler takes minutes, so the harness builds it in debug mode.
 
 ## Building without clang

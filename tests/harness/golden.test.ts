@@ -54,7 +54,7 @@ describe("run", () => {
   process.on("exit", () => rmSync(work, { recursive: true, force: true }))
 
   for (const file of cases("run")) {
-    test(file, async () => {
+    test.concurrent(file, async () => {
       const path = join(import.meta.dir, "../run", file)
       const text = await Bun.file(path).text()
       const output = join(work, file.replace(/\.ore$/, "").replaceAll("/", "_"))
@@ -79,7 +79,7 @@ describe("run", () => {
 
 describe("diag", () => {
   for (const file of cases("diag")) {
-    test(file, async () => {
+    test.concurrent(file, async () => {
       const path = join(import.meta.dir, "../diag", file)
       const program = loadProgram(path)
       const diagnostics = program.syntaxErrors ? program.diagnostics : [...program.diagnostics, ...check(program).diagnostics]

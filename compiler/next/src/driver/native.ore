@@ -17,12 +17,12 @@ export class NativeCode {
 /** The native code of the packages of the modules at these paths ("ore:" modules have none). */
 export function nativeCode(paths: string[]): NativeCode | Error {
     const native = new NativeCode()
-    const roots = new Map<string, bool>()
+    const roots = new Set<string>()
     for (const path of paths) {
         if (path.startsWith("ore:")) continue
         const root = findPackageRoot(dirname(resolve(path)))
         if (root === null || roots.has(root)) continue
-        roots.set(root, true)
+        roots.add(root)
         const json = readPackageJson(root)
         if (json instanceof Error) return json
         if (json === null) continue

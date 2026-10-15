@@ -211,28 +211,7 @@ export function concat(g: Emitter, parts: Part[]): V {
 }
 
 export function toStr(g: Emitter, v: V, t: Type): V {
-    if (t.kind === "union") {
-        let result = g.str("")
-        // Members are tested in order; the first that matches wins.
-        const ty = STR
-        const s = g.b.alloca(ty)
-        g.b.emit(`store ${ty} ${result.v}, ptr ${s}`)
-        const end = g.b.label("tostr")
-        for (let i = 0; i < t.members.length; i++) {
-            const m = t.members[i]
-            const here = g.b.label("smember")
-            const next = g.b.label("snext")
-            g.b.condBr(slotTest(g, t, v, i), here, next)
-            g.b.start(here)
-            const text = m.kind === "null" ? g.str("null") : toStr(g, payload(g, t, v, i), m)
-            g.b.emit(`store ${ty} ${text.v}, ptr ${s}`)
-            g.b.br(end)
-            g.b.start(next)
-        }
-        g.b.start(end)
-        result = g.b.value(ty, `load ${ty}, ptr ${s}`)
-        return result
-    }
+    if (t.kind === "union") return g.b.value(STR, `call ${STR} ${unionToStr(g, t)}(${v.ty} ${v.v})`)
     switch (t.kind) {
         case "string":
             return v
@@ -249,21 +228,60 @@ export function toStr(g: Emitter, v: V, t: Type): V {
     }
 }
 
-export function print(g: Emitter, v: V, t: Type) {
-    if (t.kind === "union") {
-        const end = g.b.label("printed")
+/** The function formatting a value of a union, the first member that matches: `@ore.tostr.<union>`. */
+export function unionToStr(g: Emitter, t: UnionType): string {
+    const name = globalName(`ore.tostr.${t.id}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const uty = g.lt(t)
+    helper(g, name, `define internal ${STR} ${name}(${uty} %v)`, (e) => {
+        const v: V = { ty: uty, v: "%v" }
+        const end = e.b.label("tostr")
         for (let i = 0; i < t.members.length; i++) {
             const m = t.members[i]
-            const here = g.b.label("pmember")
-            const next = g.b.label("pnext")
-            g.b.condBr(slotTest(g, t, v, i), here, next)
-            g.b.start(here)
-            if (m.kind === "null") g.rt("ore_rt_print_string", [g.str("null")])
-            else print(g, payload(g, t, v, i), m)
-            g.b.br(end)
-            g.b.start(next)
+            const here = e.b.label("smember")
+            const next = e.b.label("snext")
+            e.b.condBr(slotTest(e, t, v, i), here, next)
+            e.b.start(here)
+            const s = m.kind === "null" ? e.str("null") : toStr(e, payload(e, t, v, i), m)
+            e.b.terminate(`ret ${STR} ${s.v}`)
+            e.b.start(next)
         }
-        g.b.start(end)
+        e.b.start(end)
+        e.b.terminate(`ret ${STR} ${e.str("").v}`)
+    })
+    return name
+}
+
+/** The function printing a value of a union: `@ore.print.<union>`. */
+export function unionPrinter(g: Emitter, t: UnionType): string {
+    const name = globalName(`ore.print.${t.id}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const uty = g.lt(t)
+    helper(g, name, `define internal void ${name}(${uty} %v)`, (e) => {
+        const v: V = { ty: uty, v: "%v" }
+        const end = e.b.label("printed")
+        for (let i = 0; i < t.members.length; i++) {
+            const m = t.members[i]
+            const here = e.b.label("pmember")
+            const next = e.b.label("pnext")
+            e.b.condBr(slotTest(e, t, v, i), here, next)
+            e.b.start(here)
+            if (m.kind === "null") e.rt("ore_rt_print_string", [e.str("null")])
+            else print(e, payload(e, t, v, i), m)
+            e.b.br(end)
+            e.b.start(next)
+        }
+        e.b.start(end)
+        e.b.terminate("ret void")
+    })
+    return name
+}
+
+export function print(g: Emitter, v: V, t: Type) {
+    if (t.kind === "union") {
+        g.b.emit(`call void ${unionPrinter(g, t)}(${v.ty} ${v.v})`)
         return
     }
     switch (t.kind) {
@@ -651,6 +669,8 @@ export function stringMethod(g: Emitter, e: StringMethod): V {
             return g.rt("ore_rt_str_pad", [s, a[0], a.length > 1 ? a[1] : space, yes])
         case "padEnd":
             return g.rt("ore_rt_str_pad", [s, a[0], a.length > 1 ? a[1] : space, no])
+        case "codePointAt":
+            return g.rt("ore_rt_str_code_point_at", [s, a[0]])
         default:
             return g.rt("ore_rt_str_substring", [s, a[0], a.length > 1 ? a[1] : g.i64(I64_MAX)])
     }

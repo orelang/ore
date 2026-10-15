@@ -2,9 +2,8 @@
 // the same order, so that the backend places the same allocations on the
 // stack.
 //
-// Allocations are told apart by identity. Ore cannot key a `Map` by a union
-// such as `Expr | Local`, so the nodes of the analysis get indices
-// (`NodeIds`), and the plan keeps one map per kind of node (`SlotNodes`).
+// Allocations are told apart by identity: the nodes of the analysis get
+// indices in a map keyed by node, for a union-find over arrays.
 
 import {
     Call,
@@ -47,7 +46,7 @@ export class StackPlan {
     /** Allocations and boxed locals placed on the stack, by the function owning their slot. */
     slots = new Map<Func, SlotNode[]>()
     /** Constructors called with a slot to initialize instead of allocating. */
-    ctorsAt = new Map<Func, bool>()
+    ctorsAt = new Set<Func>()
 }
 
 /** Largest object placed on the stack, and the most stack slots one call may use, in bytes (estimated). */
@@ -97,7 +96,7 @@ export function planStack(module: Module): StackPlan {
     }
 
     const plan = new StackPlan()
-    const stackClosures = new Map<Closure, bool>()
+    const stackClosures = new Set<Closure>()
     const closuresOf = new Map<Local, Closure[]>()
     const boxFuncs: Func[] = []
     const boxes = new Map<Func, Local[]>()
@@ -107,13 +106,13 @@ export function planStack(module: Module): StackPlan {
         let frame = 0
         const placed: SlotNode[] = []
         for (const site of analysis.sites) {
-            if (analysis.leaked(analysis.ids.of(site))) continue
+            if (analysis.leaked(analysis.id(site))) continue
             const size = siteSize(site)
             if (size > maxObject || frame + size > maxFrame) continue
             frame += size
             placed.push(site)
-            if (site instanceof Closure) stackClosures.set(site, true)
-            if (site instanceof Call) plan.ctorsAt.set(site.func, true)
+            if (site instanceof Closure) stackClosures.add(site)
+            if (site instanceof Call) plan.ctorsAt.add(site.func)
         }
         plan.slots.set(func, placed)
         for (const site of analysis.closures) {
@@ -196,30 +195,9 @@ function isReference(type: Type): bool {
     }
 }
 
-/** Indices of the nodes of an analysis: locals and allocation sites, by identity. */
-export class NodeIds {
-    count = 0
-    locals = new Map<Local, int>()
-    objects = new Map<ObjectLit, int>()
-    calls = new Map<Call, int>()
-    closures = new Map<Closure, int>()
-
-    of(node: SlotNode): int {
-        if (node instanceof ObjectLit) return this.objects.get(node) ?? this.add(this.objects, node)
-        if (node instanceof Call) return this.calls.get(node) ?? this.add(this.calls, node)
-        if (node instanceof Closure) return this.closures.get(node) ?? this.add(this.closures, node)
-        return this.locals.get(node) ?? this.add(this.locals, node)
-    }
-
-    add<T>(map: Map<T, int>, node: T): int {
-        const id = this.count++
-        map.set(node, id)
-        return id
-    }
-}
-
 class FuncAnalysis {
-    ids = new NodeIds()
+    /** Indices of the nodes of the analysis: locals and allocation sites, by identity. */
+    ids = new Map<SlotNode, int>()
     parent: int[] = []
     leakedRoots: bool[] = []
     /** Allocation sites in this function, in source order. */
@@ -257,7 +235,11 @@ class FuncAnalysis {
 
     /** The index of a node, growing the union-find arrays for a new one. */
     id(node: SlotNode): int {
-        const id = this.ids.of(node)
+        let id = this.ids.get(node)
+        if (id === null) {
+            id = this.ids.size
+            this.ids.set(node, id)
+        }
         while (this.parent.length <= id) {
             this.parent.push(this.parent.length)
             this.leakedRoots.push(false)
@@ -513,6 +495,7 @@ class FuncAnalysis {
                 this.expr(t.object, safe)
                 return
             case "iface-field":
+            case "union-field":
                 this.expr(t.value, escapes)
                 return
         }
@@ -634,6 +617,13 @@ export function children(e: Expr): Expr[] {
             if (map !== null) out.push(map)
             const key = e.key
             if (key !== null) out.push(key)
+            const value = e.value
+            if (value !== null) out.push(value)
+            return out
+        }
+        case "set": {
+            const set = e.set
+            if (set !== null) out.push(set)
             const value = e.value
             if (value !== null) out.push(value)
             return out

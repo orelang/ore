@@ -9,38 +9,12 @@
 // parameter `g`. Now that a class can extend a class, the layers can become
 // classes again.
 
-import { Call, Closure, ObjectLit, type Func, type Local, type Module } from "../ir/nodes"
+import { type Func, type Local, type Module } from "../ir/nodes"
 import { isSubclass, methodSlot, unionRepr, type IntType, type StructType, type Type, type UnionType } from "../ir/types"
 import { StackPlan, type SlotNode } from "../opt/escape"
 import { EmitOptions, FN, IFACE, STR, Storage, type Breakable, type Disposal } from "./context"
 import { boxed } from "./helpers"
 import { cString, FnBuilder, globalName, intConstant, sizeOf, voidValue, type V } from "./ll"
-
-/** Stack slots of the function being emitted, by allocation or boxed local: `Map<ir.Expr | ir.Local, string>` in TypeScript. */
-export class SlotMap {
-    objects = new Map<ObjectLit, string>()
-    calls = new Map<Call, string>()
-    closures = new Map<Closure, string>()
-    locals = new Map<Local, string>()
-
-    get(node: SlotNode): string | null {
-        if (node instanceof ObjectLit) return this.objects.get(node)
-        if (node instanceof Call) return this.calls.get(node)
-        if (node instanceof Closure) return this.closures.get(node)
-        return this.locals.get(node)
-    }
-
-    has(node: SlotNode): bool {
-        return this.get(node) !== null
-    }
-
-    set(node: SlotNode, slot: string) {
-        if (node instanceof ObjectLit) this.objects.set(node, slot)
-        else if (node instanceof Call) this.calls.set(node, slot)
-        else if (node instanceof Closure) this.closures.set(node, slot)
-        else this.locals.set(node, slot)
-    }
-}
 
 /** The saved state of the function being emitted, while a helper is emitted. */
 export class Saved {
@@ -49,7 +23,7 @@ export class Saved {
         public func: Func | null,
         public at: bool,
         public storage: Map<Local, Storage>,
-        public slots: SlotMap,
+        public slots: Map<SlotNode, string>,
         public breakables: Breakable[],
         public disposals: Disposal[],
         public frame: string | null,
@@ -70,7 +44,7 @@ export class Emitter {
 
     helpers = new Map<string, string>()
 
-    globals = new Map<Local, bool>()
+    globals = new Set<Local>()
 
     plan = new StackPlan()
 
@@ -91,7 +65,8 @@ export class Emitter {
 
     storage = new Map<Local, Storage>()
 
-    slots = new SlotMap()
+    /** Stack slots of the function being emitted, by allocation or boxed local. */
+    slots = new Map<SlotNode, string>()
 
     breakables: Breakable[] = []
 
@@ -195,15 +170,18 @@ export class Emitter {
 
     unionType(u: UnionType): string {
         const name = `%U.${u.id}`
-        if (!this.defs.has(name)) {
-            let words = 1
-            for (const m of u.members) {
-                const ty = this.lt(m)
-                if (ty === STR || ty === FN || ty === IFACE) words = 2
-            }
-            this.defs.set(name, `${name} = type { i32, [${words} x i64] }`)
-        }
+        if (!this.defs.has(name)) this.defs.set(name, `${name} = type { i32, [${this.unionWords(u)} x i64] }`)
         return name
+    }
+
+    /** The number of 64-bit words of the payload of a tagged union: two for strings, functions and interfaces. */
+    unionWords(u: UnionType): int {
+        let words = 1
+        for (const m of u.members) {
+            const ty = this.lt(m)
+            if (ty === STR || ty === FN || ty === IFACE) words = 2
+        }
+        return words
     }
 
     envType(func: Func): string {
@@ -369,7 +347,12 @@ export class Emitter {
         return exportName !== null && exportName !== "" ? `@${exportName}` : globalName(`G.${local.name}.${local.id}`)
     }
 
-    /** The address of a global; a thread-local one is looked up on each access, since tasks move between threads. */
+    /**
+     * The address of a global; a thread-local one is looked up on each access,
+     * since tasks move between threads. LLVM may still reuse the address within
+     * a function, across calls: the runtime reads its thread-locals only in
+     * small functions that never park, and `top()` goes through a helper.
+     */
     globalPlace(local: Local): string {
         if (!local.threadLocal) return this.globalOf(local)
         return this.b.value("ptr", `call ptr @llvm.threadlocal.address.p0(ptr ${this.globalOf(local)})`).v
@@ -452,7 +435,7 @@ export class Emitter {
         this.func = null
         this.at = false
         this.storage = new Map<Local, Storage>()
-        this.slots = new SlotMap()
+        this.slots = new Map<SlotNode, string>()
         this.breakables = []
         this.disposals = []
         this.frame = null

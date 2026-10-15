@@ -26,6 +26,7 @@ import {
     FuncType,
     LiteralType,
     MapType,
+    SetType,
     StructType,
     UnionType,
     arrayOf,
@@ -78,7 +79,7 @@ import {
     CheckInfo,
 } from "./context"
 import { instantiate } from "./declarations"
-import { disposeName, floatLit, isSymbolDispose, memberOf, poison, typeOf } from "./helpers"
+import { disposeName, floatLit, hashable, indexSignatureMessage, isSymbolDispose, memberOf, poison, typeOf } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
 import { type Generic, type TypeSymbol, Scope } from "./symbols"
 
@@ -127,9 +128,15 @@ export class Checker {
 
     /** Checks of generic instances, run after the other bodies. */
     readonly pending: (() => void)[] = []
+    /**
+     * Set when a class is constructed before its constructor is declared, in
+     * the default value of a parameter without a type: the value gives its type,
+     * and is checked once every declaration is known.
+     */
+    constructedEarly = false
 
-    /** The generic and type arguments of each instance type, by the type's id. */
-    readonly instanceOf = new Map<int, InstanceInfo>()
+    /** The generic and type arguments of each instance type. */
+    readonly instanceOf = new Map<Type, InstanceInfo>()
 
     instanceCount = 0
 
@@ -143,14 +150,14 @@ export class Checker {
 
     readonly itabs = new Map<string, Itab>()
 
-    /** Declarations of fields and methods, for tooling, by the id of the struct or interface. */
-    readonly memberDecls = new Map<int, Map<string, Node>>()
+    /** Declarations of fields and methods of structs and interfaces, for tooling. */
+    readonly memberDecls = new Map<StructType | InterfaceType, Map<string, Node>>()
 
     /** Variables declared without a value that must be assigned before they are read. */
-    readonly unassigned = new Map<Local, bool>()
+    readonly unassigned = new Set<Local>()
 
     /** Variables declared without a type or a value, typed by their first assignment. */
-    readonly untyped = new Map<Local, bool>()
+    readonly untyped = new Set<Local>()
 
     /** Where variables and closures were written, for messages about reads of unassigned variables. */
     readonly refNodes = new Map<LocalRef, Node>()
@@ -160,10 +167,10 @@ export class Checker {
     readonly declNodes = new Map<Local, Node>()
 
     /** Variables whose initializer has an error, so that their type is unknown. */
-    readonly poisoned = new Map<Local, bool>()
+    readonly poisoned = new Set<Local>()
 
     /** Variables already reported as read before assigned. */
-    readonly readEarly = new Map<Local, bool>()
+    readonly readEarly = new Set<Local>()
 
     /** Records the declarations that import specifiers refer to, once all are declared. */
     readonly specifiers: (() => void)[] = []
@@ -187,7 +194,7 @@ export class Checker {
     readonly signatures = new Map<Local[], Signature>()
 
     /** C names of exported variables. */
-    readonly exportedVariables = new Map<string, bool>()
+    readonly exportedVariables = new Set<string>()
 
     /** Functions by their `//ore:export` name. */
     readonly exportNames = new Map<string, Func>()
@@ -275,6 +282,14 @@ export class Checker {
                 const key = this.resolveValueType(typeArgs[0], scope)
                 const value = this.resolveValueType(typeArgs[1], scope)
                 return key !== null && value !== null ? this.mapOf(key, value, typeArgs[0]) : null
+            }
+            if (isIdentifier(name) && name.text === "Set" && scope.lookupType("Set") === null) {
+                if (typeArgs.length !== 1) {
+                    this.error(node, "'Set' expects exactly 1 type argument.")
+                    return null
+                }
+                const elem = this.resolveValueType(typeArgs[0], scope)
+                return elem !== null ? this.setOf(elem, typeArgs[0]) : null
             }
             if (isIdentifier(name) && name.text === "Chan" && scope.lookupType("Chan") === null) {
                 if (typeArgs.length !== 1) {
@@ -378,7 +393,12 @@ export class Checker {
         const fields: Field[] = []
         for (const member of members(node)) {
             if (member.kind !== "PropertySignature") {
-                this.error(member, member.kind === "MethodSignature" ? "Methods in object types are not supported yet. Use an interface." : "Only properties are supported in object types.")
+                this.error(
+                    member,
+                    member.kind === "MethodSignature" ? "Methods in object types are not supported yet. Use an interface."
+                    : member.kind === "IndexSignature" ? indexSignatureMessage
+                    : "Only properties are supported in object types.",
+                )
                 continue
             }
             const name = this.memberName(nameNode(member))
@@ -400,32 +420,39 @@ export class Checker {
         }
         const shape = this.shape(fields)
         // The first declaration of a shape is where its fields are defined.
-        if (!this.memberDecls.has(shape.id)) {
+        if (!this.memberDecls.has(shape)) {
             const decls = new Map<string, Node>()
             for (const m of members(node)) {
                 const n = m.child("name")
                 if (n !== null && isIdentifier(n)) decls.set(n.text, m)
             }
-            this.memberDecls.set(shape.id, decls)
+            this.memberDecls.set(shape, decls)
         }
         return shape
     }
 
     mapOf(key: Type, value: Type, node: Node): MapType | null {
-        const k = key.kind
-        const hashable = isNumeric(key) || k === "bool" || k === "string" || k === "literal" || k === "struct" || k === "array" || k === "interface" || k === "map"
-        if (!hashable) {
+        if (!hashable(key)) {
             this.error(node, `Type '${typeToString(key)}' cannot be a Map key.`)
             return null
         }
         return new MapType(key, value)
     }
 
+    setOf(elem: Type, node: Node): SetType | null {
+        if (!hashable(elem)) {
+            this.error(node, `Type '${typeToString(elem)}' cannot be an element of a Set.`)
+            return null
+        }
+        return new SetType(elem)
+    }
+
     literal(value: string): LiteralType {
-        const existing = this.literals.get(value)
-        if (existing !== null) return existing
-        const type = new LiteralType(value)
-        this.literals.set(value, type)
+        let type = this.literals.get(value)
+        if (type === null) {
+            type = new LiteralType(value)
+            this.literals.set(value, type)
+        }
         return type
     }
 
@@ -462,11 +489,12 @@ export class Checker {
         if (members_.length === 1) return members_[0]
         members_.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0))
         const key = members_.map(typeKey).join("|")
-        const existing = this.unions.get(key)
-        if (existing !== null) return existing
-        const union = new UnionType(this.unions.size, members_)
-        this.unions.set(key, union)
-        this.module.unions.push(union)
+        let union = this.unions.get(key)
+        if (union === null) {
+            union = new UnionType(this.unions.size, members_)
+            this.unions.set(key, union)
+            this.module.unions.push(union)
+        }
         return union
     }
 
@@ -484,11 +512,12 @@ export class Checker {
     shape(fields: Field[]): StructType {
         const sorted = fields.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         const key = sorted.map((f) => `${f.readonly ? "readonly " : ""}${f.name}:${typeKey(f.type)}`).join(";")
-        const existing = this.shapes.get(key)
-        if (existing !== null) return existing
-        const struct = new StructType(this.nextStructId++, null, false, sorted, [])
-        this.shapes.set(key, struct)
-        this.module.structs.push(struct)
+        let struct = this.shapes.get(key)
+        if (struct === null) {
+            struct = new StructType(this.nextStructId++, null, false, sorted, [])
+            this.shapes.set(key, struct)
+            this.module.structs.push(struct)
+        }
         return struct
     }
 
@@ -710,6 +739,13 @@ export class Checker {
         const frame = new Map<string, Type>()
         for (const f of facts) frame.set(f.key, f.type)
         this.facts.push(frame)
+    }
+
+    /** Ends a block, or a statement checked as one: the facts at its end hold after it (`inBlock`). */
+    popBlockFacts() {
+        const frame = this.facts.pop()
+        const parent = this.facts[this.facts.length - 1]
+        for (const [key, type] of frame) parent.set(key, type)
     }
 
     popFacts() {

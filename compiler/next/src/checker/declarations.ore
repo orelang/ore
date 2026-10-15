@@ -66,7 +66,7 @@ import { type Checker, structOrInterface } from "./base"
 import { conformance, checkClassBodies, checkFieldInitializers, checkImplements, checkMethodBody, classInfo, declareClassMembers, fillInterface, makeMethod, resolveBase } from "./classes"
 import { type ClassInfo as ClassInfoType, type ModuleInfo, Directive, InterfaceInfo, Signature } from "./context"
 import { checkExpr } from "./expressions"
-import { cIdent, directiveKind, directiveNames, fieldType, isCName, isLiteral, memberOf, mentions, methodType, paramName, terminates, visitLocals, typed } from "./helpers"
+import { cIdent, directiveKind, directiveNames, fieldType, isCName, isLiteral, memberOf, mentions, methodType, paramName, strictReserved, terminates, visitLocals, typed } from "./helpers"
 import { type Operand, Typed } from "./operand"
 import { checkBlock, checkClosure, bindPattern } from "./statements"
 import {
@@ -266,7 +266,7 @@ export function exportVariable(c: Checker, decl: Node, local: Local, name: strin
         c.error(nameNode(decl), `'${name}' is already exported.`)
         return
     }
-    c.exportedVariables.set(name, true)
+    c.exportedVariables.add(name)
     local.exportName = name
 }
 
@@ -287,10 +287,10 @@ export function threadLocal(c: Checker, decl: Node, local: Local) {
 
 /** Reports variables that may be read before they are assigned; see `checkAssigned`. */
 export function checkUnassigned(c: Checker) {
-    for (const [local, _] of c.untyped) {
+    for (const local of c.untyped) {
         if (!c.readEarly.has(local)) c.error(c.declNodes.get(local)!, `Variable '${local.name}' needs a type annotation or an initializer.`)
     }
-    for (const [local, _] of c.unassigned) {
+    for (const local of c.unassigned) {
         // Functions may run at any time, so a global they use needs its value at once.
         if (local.global) c.error(c.declNodes.get(local)!, `Variable '${local.name}' is used by functions, so it must have a value where it is declared.`)
     }
@@ -316,10 +316,10 @@ export function localizeGlobals(c: Checker) {
             if (local.global) owners.set(local, init)
         })
     }
-    const shared = new Map<Local, bool>()
+    const shared = new Set<Local>()
     for (const func of c.module.functions) {
         visitLocals(func.body, (local) => {
-            if (local.global && owners.get(local) !== func) shared.set(local, true)
+            if (local.global && owners.get(local) !== func) shared.add(local)
         })
     }
     for (const [local, _] of owners) if (!shared.has(local) && !local.threadLocal && local.exportName === null) local.global = false
@@ -407,11 +407,11 @@ export function importedModule(c: Checker, specifier: Node, module: ModuleInfo):
 }
 
 /** What a module exports under a name, following re-exports. */
-export function exportOf(c: Checker, module: ModuleInfo, name: string, seen: Map<ModuleInfo, bool> | null = null): Exported | null {
-    const visited = seen ?? new Map<ModuleInfo, bool>()
+export function exportOf(c: Checker, module: ModuleInfo, name: string, seen: Set<ModuleInfo> | null = null): Exported | null {
+    const visited = seen ?? new Set<ModuleInfo>()
     const entry = module.exports.get(name)
     if (entry === null || visited.has(module)) return null
-    visited.set(module, true)
+    visited.add(module)
     const from = entry.from
     if (from !== null) return exportOf(c, from, entry.local, visited)
     const value = module.scope.ownValue(entry.local)
@@ -698,16 +698,16 @@ export function instantiate(c: Checker, generic: Generic, args: Type[], node: No
     if (decl.kind === "InterfaceDeclaration") {
         const type = new InterfaceTypeClass(c.nextStructId++, label, [])
         generic.instances.set(key, type)
-        c.instanceOf.set(type.id, new InstanceInfo(generic, args))
-        c.memberDecls.set(type.id, new Map<string, Node>())
+        c.instanceOf.set(type, new InstanceInfo(generic, args))
+        c.memberDecls.set(type, new Map<string, Node>())
         fillInterface(c, new InterfaceInfo(decl, type, scope, "declared"), scope)
         return type
     }
     const type = new StructType(c.nextStructId++, label, true, [], [])
     generic.instances.set(key, type)
-    c.instanceOf.set(type.id, new InstanceInfo(generic, args))
+    c.instanceOf.set(type, new InstanceInfo(generic, args))
     c.module.structs.push(type)
-    c.memberDecls.set(type.id, new Map<string, Node>())
+    c.memberDecls.set(type, new Map<string, Node>())
     const info = classInfo(c, decl, type, scope, cname)
     resolveBase(c, info)
     declareClassMembers(c, info, scope)
@@ -791,10 +791,14 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
             inferFrom(c, typeArgs[1], type.value, names, bindings, scope)
             return
         }
+        if (name === "Set" && typeArgs.length === 1 && type.kind === "set") {
+            inferFrom(c, typeArgs[0], type.elem, names, bindings, scope)
+            return
+        }
         const symbol = scope.lookupType(name)
         const generic = symbol === null ? null : symbol.generic
         if (typeArgs.length === 0 || generic === null) return
-        const instance = type.kind === "struct" || type.kind === "interface" ? c.instanceOf.get(instanceId(type)) : null
+        const instance = c.instanceOf.get(type)
         if (instance !== null && instance.generic === generic) {
             for (let i = 0; i < typeArgs.length; i++) if (i < instance.args.length) inferFrom(c, typeArgs[i], instance.args[i], names, bindings, scope)
         } else if (generic.decl.kind === "TypeAliasDeclaration") {
@@ -858,13 +862,6 @@ export function inferFrom(c: Checker, n: Node, type: Type, names: string[], bind
             }
         }
     }
-}
-
-/** The key of a struct or interface type in `instanceOf`. */
-export function instanceId(type: Type): int {
-    if (type.kind === "struct") return type.id
-    if (type.kind === "interface") return type.id
-    return -1
 }
 
 /** The result of a generic call: the instance and the operands already checked. */
@@ -976,16 +973,25 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope): Local[
     for (let i = 0; i < params_.length; i++) {
         const p = params_[i]
         let type: Type | null = null
+        let early = false
         const annotation = typeNode(p)
         const init = initializer(p)
         if (annotation !== null) type = c.resolveValueType(annotation, scope)
         else if (init !== null) {
+            const saved = c.constructedEarly
+            const before = c.diagnostics.length
+            c.constructedEarly = false
             const value = checkDefault(c, init, defaults, null)
             if (value !== null) type = value.type
+            // A value that constructs a class declared further down has the class's
+            // type; its diagnostics come from checking it again with that type.
+            early = c.constructedEarly && value !== null
+            if (early) while (c.diagnostics.length > before) c.diagnostics.pop()
+            c.constructedEarly = saved
         } else c.error(nameNode(p), `Parameter '${c.text(nameNode(p))}' must have a type annotation.`)
         // A value with a declared type is checked once every declaration is known,
         // since it may construct a class or use a constant declared further down.
-        if (type !== null && annotation !== null && init !== null) {
+        if (type !== null && (annotation !== null || early) && init !== null) {
             const before = defaults
             const declared = type
             c.pending.push(() => {
@@ -1129,6 +1135,29 @@ export function checkTopLevelConstants(c: Checker, stmt: Node, scope: Scope): bo
         if (!scope.declareValue(k.name.text, new ConstSymbol(k.value, k.type, k.decl))) c.error(k.name, `Duplicate declaration '${k.name.text}'.`)
     }
     return true
+}
+
+/**
+ * Reports the names that strict mode reserves (`private`, `static`, `let`...)
+ * where they declare a binding, as TypeScript does: Ore modules are always
+ * in strict mode. Property names may be any word, reserved or not.
+ */
+export function checkStrictNames(c: Checker, node: Node, inClass: bool) {
+    const k = node.kind
+    const named =
+        k === "Parameter" ||
+        k === "VariableDeclaration" ||
+        k === "BindingElement" ||
+        k === "FunctionDeclaration" ||
+        k === "FunctionExpression" ||
+        k === "ClassDeclaration"
+    const nested = inClass || k === "ClassDeclaration"
+    const name = named ? node.child("name") : null
+    if (name !== null && name.kind === "Identifier" && strictReserved.includes(name.text)) {
+        const reason = nested ? "Class definitions are automatically in strict mode." : "Modules are automatically in strict mode."
+        c.error(name, `Identifier expected. '${name.text}' is a reserved word in strict mode. ${reason}`)
+    }
+    for (const child of node.children) checkStrictNames(c, child, nested)
 }
 
 export function unsupportedTopLevel(stmt: Node): string {

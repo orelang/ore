@@ -7,5 +7,12 @@ n.put("a", 1) // error: Method 'put' does not exist on type 'Map<string, i64>'.
 for (const entry of n) {
     // error: Iterate a Map with 'for (const [key, value] of map)'.
 }
-const bad = new Map<f64[] | null, int>() // error: Type 'f64[] | null' cannot be a Map key.
-const w = new Map<string, int>([]) // error: 'new Map' takes no arguments; add entries with 'set'.
+const bad = new Map<f64[] | (() => void), int>() // error: cannot be a Map key.
+const w = new Map<string, int>(n) // error: The entries of 'new Map' must be an array literal of [key, value] pairs.
+const pairs = new Map([["a", 1], ["b"]]) // error: An entry of 'new Map' must be a [key, value] pair.
+const typed = new Map<string, int>([["a", "b"]]) // error: Type 'string' is not assignable to type 'i64'.
+const inferred = new Map([
+    ["a", 1],
+    [2, 3], // error: An integer constant is not assignable to type 'string'.
+])
+const two = new Map([], []) // error: 'new Map' takes at most one argument

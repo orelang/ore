@@ -354,6 +354,7 @@ class FuncAnalysis {
       case "field":
         return this.expr(t.object, safe)
       case "iface-field":
+      case "union-field":
         return this.expr(t.value, escapes)
     }
   }
@@ -431,6 +432,8 @@ function children(e: ir.Expr): ir.Expr[] {
       return [e.value, e.fallback]
     case "map":
       return [e.map, e.key, e.value].filter((x) => x !== undefined)
+    case "set":
+      return [e.set, e.value].filter((x) => x !== undefined)
     case "call-value":
       return [e.callee, ...e.args]
     case "bound-method":

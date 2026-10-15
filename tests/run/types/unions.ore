@@ -84,3 +84,36 @@ for (const v of values) console.write(v, typeof v, "")
 console.log()
 const x: string | int = 5
 console.log(x === 5, values[1] === "1", values[0] === "a")
+
+// A field common to every member of a union, with the same type, can be assigned.
+class Assign {
+    readonly k: "assign" = "assign"
+    line: int | null = null
+    count = 0
+}
+class Jump {
+    readonly k: "jump" = "jump"
+    line: int | null = null
+    count = 0
+}
+interface Counted {
+    count: int
+}
+class Counter {
+    count = 10
+}
+function counted(): Counted {
+    return new Counter()
+}
+const statements: (Assign | Jump)[] = [new Assign(), new Jump()]
+for (const stmt of statements) {
+    stmt.line = 3
+    stmt.count += 2
+    stmt.count++
+}
+console.log(statements[0].line ?? -1, statements[1].count, statements[1].k)
+const tally = new Assign()
+tally.count = 3
+const mixed: (Assign | Counted)[] = [tally, counted()]
+for (const m of mixed) m.count *= 3
+console.log(mixed[0].count, mixed[1].count)

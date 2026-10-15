@@ -1,0 +1,37 @@
+// The files that `ore fmt`, `ore test` and `ore check` work on: the files
+// given, and the files in the directories given, outside node_modules and
+// hidden directories.
+
+import { join } from "ore:path"
+
+/**
+ * The `.ore` files in the given files and directories (default: "."), in
+ * sorted order. With `tests`, only `*.test.ore` files are taken from
+ * directories, while a file given by name only needs to end in `.ore`. An
+ * Error names a path that cannot be read.
+ */
+export function oreFiles(paths: string[], tests: bool = false): string[] | Error {
+    const files: string[] = []
+    for (const path of paths.length > 0 ? paths : ["."]) {
+        const error = walk(path, tests, true, files)
+        if (error !== null) return error
+    }
+    return files
+}
+
+function walk(path: string, tests: bool, given: bool, files: string[]): Error | null {
+    const info = fs.stat(path)
+    if (info instanceof Error) return info
+    if (!info.isDir) {
+        if (path.endsWith(tests && !given ? ".test.ore" : ".ore")) files.push(path)
+        return null
+    }
+    const entries = fs.readDir(path)
+    if (entries instanceof Error) return entries
+    for (const entry of entries) {
+        if (entry === "node_modules" || entry.startsWith(".")) continue
+        const error = walk(join(path, entry), tests, false, files)
+        if (error !== null) return error
+    }
+    return null
+}

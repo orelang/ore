@@ -1,0 +1,20 @@
+// The path of the running `ore` executable, so that it can run itself: `ore
+// test` builds test files in child processes of the same compiler.
+
+declare function _NSGetExecutablePath(buffer: ptr, size: ptr): i32
+
+/** The absolute path of the running executable, without links. */
+export function executablePath(): string | Error {
+    // _NSGetExecutablePath is macOS's: the call compiles only there.
+    if (target.os !== "darwin") return fs.realpath("/proc/self/exe")
+    else {
+        const capacity = 4096
+        const buffer = unsafe.allocBytes(capacity)
+        const size = unsafe.allocBytes(4)
+        unsafe.store<u32>(size, u32(capacity))
+        if (_NSGetExecutablePath(buffer, size) !== 0) return new Error("the path of the ore executable is too long")
+        let n = 0
+        while (n < capacity && unsafe.load<u8>(unsafe.add(buffer, n)) !== 0) n++
+        return fs.realpath(unsafe.makeString(buffer, n))
+    }
+}

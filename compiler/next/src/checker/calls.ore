@@ -4,6 +4,7 @@
 import {
     type Expr,
     type MapOpName,
+    type SetOpName,
     type ChanOpName,
     ArrayLit,
     ArrayMethod,
@@ -28,6 +29,7 @@ import {
     LetStmt,
     LocalRef,
     MapOp,
+    SetOp,
     MethodCall,
     NullLit,
     Pop,
@@ -48,6 +50,7 @@ import {
     Field,
     FuncType as FuncTypeClass,
     MapType,
+    SetType,
     StructType as StructTypeClass,
     arrayOf,
     findField,
@@ -63,6 +66,7 @@ import { type Node } from "../syntax/ast"
 import {
     argumentExpression,
     args as argsOf,
+    elements,
     expression,
     initializer,
     isIdentifier,
@@ -150,7 +154,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope): Operand {
         if (symbol.k === "local") return callValue(c, checkExpr(c, callee, scope), node, scope)
         c.info.definitions.set(callee, symbol.decl)
     }
-    const found = symbol!
+    const found = symbol
     // Functions check spread arguments themselves, for rest parameters.
     if (found.k !== "func") for (const arg of args) if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
 
@@ -327,7 +331,7 @@ export function builtinCall(c: Checker, name: string, decl: Node, node: Node, sc
             }
             type = c.defaultType(pick)
         }
-        const t = type!
+        const t = type
         if (!isNumeric(t)) return c.fail(args[0], `'${name}' needs numbers, got '${typeToString(t)}'.`)
         const values: Expr[] = []
         for (let i = 0; i < operands.length; i++) values.push(c.coerce(operands[i], t, args[i]))
@@ -376,8 +380,7 @@ export function jsonCall(c: Checker, name: string, node: Node, scope: Scope): Op
     const text = c.coerce(checkExpr(c, args[0], scope, types.string), types.string, args[0])
     const result = c.unionOf([target, c.errorType!])
     const error = basicErrorOf(c)
-    const targets: Type[] = [target]
-    return typed(new BuiltinCall(result, name, [text], error, targets))
+    return typed(new BuiltinCall(result, name, [text], error, [target]))
 }
 
 /** A value argument of `unsafe` and the type it gives `T`. */
@@ -389,7 +392,7 @@ class TypedArg {
 }
 
 function isReferenceType(t: Type): bool {
-    return t.kind === "struct" || t.kind === "array" || t.kind === "map" || t.kind === "chan"
+    return t.kind === "struct" || t.kind === "array" || t.kind === "map" || t.kind === "set" || t.kind === "chan"
 }
 
 function isAtomic(t: Type): bool {
@@ -566,6 +569,101 @@ function builtinGeneric(c: Checker, name: string, typeArgs: Node[], node: Node, 
     return key !== null && value !== null ? c.mapOf(key, value, typeArgs[0]) : null
 }
 
+/**
+ * `new Map<K, V>()`, or `new Map(entries)` from an array literal of
+ * `[key, value]` pairs, which become `set` calls in order; without type
+ * arguments or a context, the types are those of the first pair.
+ */
+function newMap(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    if (args.length > 1) return c.fail(args[1], "'new Map' takes at most one argument: an array of [key, value] pairs.")
+    const entries = args.length > 0 ? args[0] : null
+    if (entries !== null && entries.kind !== "ArrayLiteralExpression") return c.fail(entries, "The entries of 'new Map' must be an array literal of [key, value] pairs.")
+    const pairs: Node[] = entries !== null ? elements(entries) : []
+    for (const pair of pairs) {
+        const kv: Node[] = pair.kind === "ArrayLiteralExpression" ? elements(pair) : []
+        if (pair.kind !== "ArrayLiteralExpression" || kv.length !== 2 || kv[0].kind === "SpreadElement" || kv[1].kind === "SpreadElement") {
+            return c.fail(pair, "An entry of 'new Map' must be a [key, value] pair.")
+        }
+    }
+    let type: MapType | null = null
+    // The first pair, checked to infer the types.
+    let firstKey: Operand | null = null
+    let firstValue: Operand | null = null
+    if (typeArgs.length > 0) {
+        const resolved = builtinGeneric(c, "Map", typeArgs, node, scope)
+        if (resolved !== null && resolved.kind === "map") type = resolved
+    } else if (expected !== null && expected.kind === "map") {
+        type = expected
+    } else if (pairs.length > 0) {
+        const kv = elements(pairs[0])
+        const k = checkExpr(c, kv[0], scope)
+        const v = checkExpr(c, kv[1], scope)
+        if (k.k === "error" || v.k === "error") return errorOperand
+        const key = c.toDefault(k, kv[0])
+        const value = c.toDefault(v, kv[1])
+        type = c.mapOf(key.type, value.type, kv[0])
+        firstKey = typed(key)
+        firstValue = typed(value)
+    } else {
+        return c.fail(node, "Cannot infer the types of the Map. Write 'new Map<K, V>()' or annotate the variable.")
+    }
+    if (type === null) return errorOperand
+    let map: Expr = new MapOp("new", type, type)
+    for (let i = 0; i < pairs.length; i++) {
+        const kv = elements(pairs[i])
+        const k = i === 0 && firstKey !== null ? firstKey : checkExpr(c, kv[0], scope, type.key)
+        const key = c.coerce(k, type.key, kv[0])
+        const v = i === 0 && firstValue !== null ? firstValue : checkExpr(c, kv[1], scope, type.value)
+        const value = c.coerce(v, type.value, kv[1])
+        map = new MapOp("set", type, type, map, key, value)
+    }
+    return typed(map)
+}
+
+/**
+ * `new Set<T>()`, or `new Set(values)` from an array or another set; without
+ * a type argument or a context, the type is that of the elements.
+ */
+function newSet(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    if (args.length > 1) return c.fail(args[1], "'new Set' takes at most one argument: an array or a set of values.")
+    let type: SetType | null = null
+    if (typeArgs.length > 0) {
+        if (typeArgs.length !== 1) return c.fail(node, "'Set' expects exactly 1 type argument.")
+        const elem = c.resolveValueType(typeArgs[0], scope)
+        type = elem !== null ? c.setOf(elem, typeArgs[0]) : null
+        if (type === null) return errorOperand
+    } else if (expected !== null && expected.kind === "set") {
+        type = expected
+    }
+    if (args.length === 0) {
+        if (type === null) return c.fail(node, "Cannot infer the type of the Set. Write 'new Set<T>()' or annotate the variable.")
+        return typed(new SetOp("new", type, type))
+    }
+    const source = args[0]
+    // The values: an array (an array literal takes the element type as its context), or a set's values.
+    const operand = checkExpr(c, source, scope, type !== null ? arrayOf(type.elem) : null)
+    if (operand.k === "error") return errorOperand
+    let values: Expr
+    if (operand.k === "typed" && operand.expr.type.kind === "set") {
+        const from = type !== null ? c.coerce(operand, type, source) : operand.expr
+        const fromType = from.type
+        if (fromType.kind !== "set") return errorOperand
+        values = new SetOp("values", arrayOf(fromType.elem), fromType, from)
+    } else {
+        values = c.toDefault(operand, source)
+    }
+    const valuesType = values.type
+    if (valuesType.kind !== "array") return c.fail(source, `'new Set' takes an array or a set of values, got '${typeToString(valuesType)}'.`)
+    const setType = type !== null ? type : c.setOf(valuesType.elem, source)
+    if (setType === null) return errorOperand
+    const elems = c.coerce(typed(values), arrayOf(setType.elem), source)
+    return typed(new SetOp("new", setType, setType, null, elems))
+}
+
 export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
     const target = expression(node)
     const qualified = target.kind === "PropertyAccessExpression"
@@ -585,15 +683,8 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         if (type === null || type.kind !== "chan") return errorOperand
         return typed(new ChanOp("new", type, type, null, capacity))
     }
-    if (name === "Map" && symbol === null) {
-        if (args.length > 0) return c.fail(args[0], "'new Map' takes no arguments; add entries with 'set'.")
-        let type: Type | null = null
-        if (typeArgs.length > 0) type = builtinGeneric(c, "Map", typeArgs, node, scope)
-        else if (expected !== null && expected.kind === "map") type = expected
-        else return c.fail(node, "Cannot infer the types of the Map. Write 'new Map<K, V>()' or annotate the variable.")
-        if (type === null || type.kind !== "map") return errorOperand
-        return typed(new MapOp("new", type, type))
-    }
+    if (name === "Map" && symbol === null) return newMap(c, node, scope, expected)
+    if (name === "Set" && symbol === null) return newSet(c, node, scope, expected)
     const errorType = c.errorType
     if (symbol !== null && errorType !== null && symbol.type === errorType) {
         if (isIdentifier(target)) c.info.definitions.set(target, symbol.decl)
@@ -613,7 +704,7 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         const instance = call.instance
         if (instance instanceof Func || instance.kind !== "struct") return errorOperand
         const ctor = instance.ctor
-        if (ctor === null) return c.fail(node, earlyConstruction(instance.name ?? name))
+        if (ctor === null) return constructEarly(c, instance)
         const instanceInfo = c.classInfos.get(instance.id)
         if (instanceInfo !== null && instanceInfo.abstract) return c.fail(node, `Cannot create an instance of an abstract class '${instance.name}'.`)
         return callFunc(c, ctor, args, node, scope, `Constructor of '${instance.name}'`, null, call.operands.length > 0 ? call.operands : null)
@@ -623,7 +714,7 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
     if (typeArgs.length > 0) return c.fail(typeArgs[0], `Class '${name}' is not generic.`)
     if (isIdentifier(target)) c.info.definitions.set(target, symbol!.decl)
     const ctor = type.ctor
-    if (ctor === null) return c.fail(node, earlyConstruction(name))
+    if (ctor === null) return constructEarly(c, type)
     const info = c.classInfos.get(type.id)
     if (info !== null && info.abstract) return c.fail(node, `Cannot create an instance of an abstract class '${name}'.`)
     return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`)
@@ -666,7 +757,7 @@ function superMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Op
     if (method === null) {
         return c.fail(nameId, genericMethod(c, base, name) !== null ? `Generic method '${name}' cannot be called through 'super' yet.` : `Method '${name}' does not exist on base class '${base.name}'.`)
     }
-    defineMember(c, nameId, base.id, name)
+    defineMember(c, nameId, base, name)
     if (!checkAccess(c, base, method.private, name, nameId)) return errorOperand
     const owner = c.abstractMethods.get(method.func)
     if (owner !== null) return c.fail(nameId, `Abstract method '${name}' in class '${owner.name}' cannot be accessed via super expression.`)
@@ -674,17 +765,18 @@ function superMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Op
 }
 
 /**
- * The error for a class constructed while declarations are resolved, before
- * its constructor is known: the default value of a parameter without a type.
+ * A class constructed while declarations are resolved, before its
+ * constructor is known: in the default value of a parameter without a type,
+ * which takes the class's type and is checked again later.
  */
-function earlyConstruction(name: string): string {
-    return `Class '${name}' cannot be constructed in the default value of a parameter without a type. Annotate the parameter: 'x: ${name} = new ${name}(...)'.`
+function constructEarly(c: Checker, type: StructType): Operand {
+    c.constructedEarly = true
+    return typed(new Alloc(type))
 }
 
 /** The class created by `new Error(message)`. */
 export function basicErrorClass(c: Checker): StructType {
-    const existing = c.basicError
-    if (existing !== null) return existing
+    if (c.basicError !== null) return c.basicError
     const type = new StructTypeClass(c.nextStructId++, "BasicError", true, [new Field("message", types.string, true)], [])
     const message = c.newLocal("message", types.string, false)
     const self = c.newLocal("this", type, false)
@@ -863,6 +955,23 @@ function mapOpName(name: string): MapOpName {
     }
 }
 
+/** The operation of a Set method, or null for none. */
+function setOpName(name: string): SetOpName | null {
+    switch (name) {
+        case "add":
+            return "add"
+        case "has":
+            return "has"
+        case "delete":
+            return "delete"
+        case "clear":
+            return "clear"
+        case "values":
+            return "values"
+    }
+    return null
+}
+
 function chanOpName(name: string): ChanOpName {
     switch (name) {
         case "send":
@@ -884,7 +993,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     const generic = type.kind === "struct" ? genericMethod(c, type, name) : null
     if (typeArgs.length > 0 && generic === null) return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
     if (type.kind === "struct" && generic !== null) {
-        defineMember(c, nameId, type.id, name)
+        defineMember(c, nameId, type, name)
         if (!checkAccess(c, type, generic.private, name, nameId)) return errorOperand
         const call = genericCall(c, generic.generic, parameters(generic.generic.decl), typeArgs, args, node, scope)
         if (call === null) return errorOperand
@@ -895,7 +1004,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     if (type.kind === "struct") {
         const method = findMethod(type, name)
         if (method !== null) {
-            defineMember(c, nameId, type.id, name)
+            defineMember(c, nameId, type, name)
             if (!checkAccess(c, type, method.private, name, nameId)) return errorOperand
             const call = callFunc(c, method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
             if (call.k === "typed") dispatch(c, call.expr, name)
@@ -910,7 +1019,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             const m = type.members[index]
             if (m.name !== name) continue
             if (m.k === "method") {
-                defineMember(c, nameId, type.id, name)
+                defineMember(c, nameId, type, name)
                 for (const arg of args) if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
                 const params = m.type.params
                 if (args.length !== params.length) return c.fail(node, `Method '${type.name}.${name}' expects ${params.length} argument(s), got ${args.length}.`)
@@ -958,6 +1067,19 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         else result = types.void
         return typed(new MapOp(op, result, type, value, key, val))
     }
+    if (type.kind === "set") {
+        const op = setOpName(name)
+        if (op === null) return c.fail(nameId, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
+        const count = op === "add" || op === "has" || op === "delete" ? 1 : 0
+        if (args.length !== count) return c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+        const elem = count > 0 ? c.coerce(checkExpr(c, args[0], scope, type.elem), type.elem, args[0]) : null
+        let result: Type
+        if (op === "add") result = type
+        else if (op === "has" || op === "delete") result = types.bool
+        else if (op === "values") result = arrayOf(type.elem)
+        else result = types.void
+        return typed(new SetOp(op, result, type, value, elem))
+    }
     if (type.kind === "array" && arrayMethods.has(name)) return arrayMethod(c, value, type, name, node, callee, scope)
     if ((isNumeric(type) || type.kind === "bool") && name === "toString" && args.length === 0) {
         return typed(new Concat(types.string, [value]))
@@ -979,7 +1101,8 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         const values: Expr[] = []
         for (let i = 0; i < args.length; i++) values.push(c.coerce(checkExpr(c, args[i], scope, params[i]), params[i], args[i]))
         const str: Expr = sameType(type, types.string) ? value : new Recast(types.string, value)
-        return typed(new StringMethod(name, stringMethod.result, str, values))
+        const result = name === "codePointAt" ? c.unionOf([types.i64, types.null]) : stringMethod.result
+        return typed(new StringMethod(name, result, str, values))
     }
     if (type.kind === "array" && name === "push") {
         const values: Expr[] = []

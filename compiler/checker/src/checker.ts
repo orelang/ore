@@ -50,6 +50,7 @@ export class Checker extends CallChecker {
 
     // Pass 1: exports, imports, and names of classes and interfaces, so that
     // types can refer to them in any order and across modules.
+    each((stmt) => this.checkStrictNames(stmt, false))
     each((stmt, m) => this.declareExports(stmt, m))
     each((stmt) => this.checkDirectives(stmt))
     each((stmt, m) => {

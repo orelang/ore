@@ -1,7 +1,7 @@
 // Expressions and unions.
 import * as ir from "@ore/ir"
 import { isStringLike, isSubclass, typeofName, typeToString, types, unionRepr, type IntType, type Type, type UnionType } from "@ore/ir"
-import { floatConstant, sizeOf, voidValue, type V } from "./ll"
+import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
 import { STR, FN, IFACE, ARRAY, DIVIDE_BY_ZERO } from "./context"
 import { typeId, memberIndex } from "./helpers"
 import { FunctionEmitter } from "./functions"
@@ -157,12 +157,7 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
         const from = e.value.type
         const v = this.expr(e.value)
         if (from.kind !== "union") return this.str(typeofName(from))
-        let result = this.str("object")
-        for (let i = from.members.length - 1; i >= 0; i--) {
-          const test = this.slotTest(from, v, i)
-          result = this.b.value(STR, `select i1 ${test.v}, ${STR} ${this.str(typeofName(from.members[i]!)).v}, ${STR} ${result.v}`)
-        }
-        return result
+        return this.b.value(STR, `call ${STR} ${this.typeofer(from)}(${v.ty} ${v.v})`)
       }
       case "is": {
         const v = this.expr(e.value)
@@ -188,6 +183,8 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       }
       case "map":
         return this.mapOp(e)
+      case "set":
+        return this.setOp(e)
       case "chan":
         return this.chanOp(e)
       case "func-ref":
@@ -294,13 +291,14 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
 
   protected placeParts(target: Exclude<ir.LValue, { k: "local" }>): V[] {
     if (target.k === "field") return [this.expr(target.object)]
-    if (target.k === "iface-field") return [this.expr(target.value)]
+    if (target.k === "iface-field" || target.k === "union-field") return [this.expr(target.value)]
     return [this.expr(target.array), this.intToI64(this.expr(target.index), target.index.type)]
   }
 
   protected placePointer(target: Exclude<ir.LValue, { k: "local" }>, parts: V[], type: Type): string {
     if (target.k === "field") return this.fieldPtr(parts[0]!.v, target.object.type as ir.StructType, target.name)
     if (target.k === "iface-field") return this.ifaceField(parts[0]!, target.index)
+    if (target.k === "union-field") return this.unionFieldPtr(parts[0]!, target.value.type as UnionType, target.name)
     return this.rt("ore_rt_array_at", [parts[0]!, parts[1]!, { ty: "i64", v: sizeOf(this.mt(type)) }]).v
   }
 
@@ -576,13 +574,61 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       if (to.kind !== "union") return v
       return this.inject(to, memberIndex(to, from), v)
     }
-    if (to.kind !== "union" && memberIndex(from, to) === -1 && to.kind === "struct") return this.recastToBase(v, from, to)
+    // Narrowing a nullable union or one of strings is a test of the value, kept in place.
+    if (to.kind !== "union" && unionRepr(from).k !== "tagged") return this.recastInline(v, from, to)
+    // Between unions held the same way without a tag (strings, or one reference
+    // and null), with every member of the source in the target, the value stays.
+    if (to.kind === "union" && unionRepr(from).k !== "tagged" && unionRepr(to).k !== "tagged" && this.lt(from) === this.lt(to) && from.members.every((m) => memberIndex(to, m) !== -1)) return v
+    // Otherwise the conversion tests the tag, or every member of the source: a
+    // function per pair of types, so that each use is a call.
+    const ty = this.lt(to)
+    return this.b.value(ty, `call ${ty} ${this.recaster(from, to)}(${v.ty} ${v.v})`)
+  }
+
+  /** The function converting a union to another type, as `recast` does: `@ore.recast.<from>.<to>`. */
+  protected recaster(from: UnionType, to: Type): string {
+    const name = globalName(`ore.recast.${from.id}.${shortKey(to)}`)
+    if (this.helpers.has(name)) return name
+    this.helpers.set(name, "")
+    const fromTy = this.lt(from)
+    const ty = this.lt(to)
+    this.helper(name, `define internal ${ty} ${name}(${fromTy} %v)`, (e) => {
+      const r = e.recastInline({ ty: fromTy, v: "%v" }, from, to)
+      e.b.terminate(`ret ${ty} ${r.v}`)
+    })
+    return name
+  }
+
+  /** The function telling what `typeof` says of a value of a union: `@ore.typeof.<union>`. */
+  protected typeofer(u: UnionType): string {
+    const name = globalName(`ore.typeof.${u.id}`)
+    if (this.helpers.has(name)) return name
+    this.helpers.set(name, "")
+    const uty = this.lt(u)
+    this.helper(name, `define internal ${STR} ${name}(${uty} %v)`, (e) => {
+      const v: V = { ty: uty, v: "%v" }
+      let result = e.str("object")
+      for (let i = u.members.length - 1; i >= 0; i--) {
+        const test = e.slotTest(u, v, i)
+        result = e.b.value(STR, `select i1 ${test.v}, ${STR} ${e.str(typeofName(u.members[i]!)).v}, ${STR} ${result.v}`)
+      }
+      e.b.terminate(`ret ${STR} ${result.v}`)
+    })
+    return name
+  }
+
+  /** Converts a union to a member or to another union, in place; narrowing panics on a member the target lacks. */
+  protected recastInline(v: V, from: UnionType, to: Type): V {
+    // A union of subclasses of a class, as that class.
+    if (to.kind === "struct" && memberIndex(from, to) === -1) return this.recastToBase(v, from, to)
     if (to.kind !== "union") {
       const i = memberIndex(from, to)
       const message = from.members.some((m) => m.kind === "null") && from.members.length === 2 ? "unexpected null" : `value is not of type ${typeToString(to)}`
       this.check(this.slotTest(from, v, i), message)
       return this.payload(from, v, i)
     }
+    if (unionRepr(from).k === "tagged" && unionRepr(to).k === "tagged") return this.retag(v, from, to)
+    if (unionRepr(from).k === "strings" && this.lt(to) === STR) return this.narrowStrings(v, from, to)
     // Union to union: each member of the source maps to the target.
     const ty = this.lt(to)
     const result = this.b.alloca(ty)
@@ -625,6 +671,47 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
     return this.b.value("ptr", `load ptr, ptr ${result}`)
   }
 
+  /**
+   * A tagged union as another: members keep their representation, so the tag
+   * is mapped through a table and the payload words are copied.
+   */
+  protected retag(v: V, from: UnionType, to: UnionType): V {
+    const ty = this.lt(to)
+    const tags = from.members.map((m) => memberIndex(to, m))
+    const tag = this.extract(v, 0, "i32")
+    const table = this.constArray("i32", tags.map(String))
+    const j = this.b.value("i32", `load i32, ptr ${this.b.value("ptr", `getelementptr i32, ptr ${table}, i32 ${tag.v}`).v}`)
+    if (tags.includes(-1)) this.check(this.b.value("i1", `icmp ne i32 ${j.v}, -1`), `value is not of type ${typeToString(to)}`)
+    const n = this.unionWords(from)
+    const m = this.unionWords(to)
+    let words = this.extract(v, 1, `[${n} x i64]`)
+    if (m !== n) {
+      let resized: V = { ty: `[${m} x i64]`, v: "zeroinitializer" }
+      for (let k = 0; k < Math.min(m, n); k++) {
+        const word = this.extract(words, k, "i64")
+        resized = this.b.value(resized.ty, `insertvalue ${resized.ty} ${resized.v}, i64 ${word.v}, ${k}`)
+      }
+      words = resized
+    }
+    return this.aggregate(ty, [j, words])
+  }
+
+  /**
+   * A union of string literals as a union held as a string too: the value
+   * stays, after checking that it is a member of the target, against the
+   * fewer of the members the target has and those it lacks.
+   */
+  protected narrowStrings(v: V, from: UnionType, to: UnionType): V {
+    const present = from.members.filter((m) => memberIndex(to, m) !== -1)
+    const missing = from.members.filter((m) => memberIndex(to, m) === -1)
+    const tested = missing.length <= present.length ? missing : present
+    let any: V = { ty: "i1", v: "false" }
+    for (const m of tested) any = this.b.value("i1", `or i1 ${any.v}, ${this.rtBool("ore_rt_str_eq", [v, this.str((m as ir.LiteralType).value)]).v}`)
+    const ok = tested === missing ? this.b.value("i1", `xor i1 ${any.v}, true`) : any
+    this.check(ok, `value is not of type ${typeToString(to)}`)
+    return v
+  }
+
   protected optional(e: ir.Optional): V {
     // `value?.body`: null when value is null, else body with the value bound.
     const from = e.value.type as UnionType
@@ -650,10 +737,79 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
     )
   }
 
+  /** The address of a field that every member of a union has, with the same type. */
+  protected unionFieldPtr(v: V, u: UnionType, name: string): string {
+    const end = this.b.label("ufield")
+    const incoming: string[] = []
+    u.members.forEach((m, i) => {
+      const here = this.b.label("umember")
+      const next = this.b.label("unext")
+      this.b.condBr(this.slotTest(u, v, i), here, next)
+      this.b.start(here)
+      const object = this.payload(u, v, i)
+      const ptr = m.kind === "struct" ? this.fieldPtr(object.v, m, name) : this.ifaceField(object, (m as ir.InterfaceType).members.findIndex((x) => x.name === name))
+      incoming.push(`[ ${ptr}, %${this.b.block} ]`)
+      this.b.br(end)
+      this.b.start(next)
+    })
+    this.b.terminate("unreachable")
+    this.b.start(end)
+    return this.b.value("ptr", `phi ptr ${incoming.join(", ")}`).v
+  }
+
   protected unionField(e: ir.UnionField): V {
     const u = e.value.type as UnionType
     const v = this.expr(e.value)
     const ty = this.lt(e.type)
+    // Every member a class with the field at the same place, read as the result as it is: one load.
+    const index = this.sharedField(u, e.name, e.type)
+    if (index !== -1) {
+      const object = this.payload(u, v, 0)
+      return this.load(this.field(object.v, this.structType(u.members[0] as ir.StructType), index), e.type)
+    }
+    return this.b.value(ty, `call ${ty} ${this.unionFielder(u, e.name, e.type)}(${v.ty} ${v.v})`)
+  }
+
+  /**
+   * The index of a field that every member of a union, all classes, has at the
+   * same place after fields of the same layout, with a value that is the
+   * result's as it is; -1 when there is none.
+   */
+  protected sharedField(u: UnionType, name: string, type: Type): number {
+    const first = u.members[0]
+    if (first?.kind !== "struct") return -1
+    const index = first.fields.findIndex((f) => f.name === name)
+    if (index === -1) return -1
+    // After the pointer to the class table, when the members have one.
+    const offset = this.tables.has(first) ? 1 : 0
+    for (const m of u.members) {
+      if (m.kind !== "struct" || m.fields.length <= index || m.fields[index]!.name !== name) return -1
+      if ((this.tables.has(m) ? 1 : 0) !== offset) return -1
+      for (let i = 0; i <= index; i++) if (this.mt(m.fields[i]!.type) !== this.mt(first.fields[i]!.type)) return -1
+      const t = m.fields[index]!.type
+      const same = ir.sameType(t, type) || (t.kind !== "union" && type.kind === "union" && unionRepr(type).k !== "tagged" && memberIndex(type, t) !== -1)
+      if (!same || this.mt(t) !== this.mt(type)) return -1
+    }
+    return index + offset
+  }
+
+  /** The function reading a field common to the members of a union: `@ore.ufield.<union>.<field>.<type>`. */
+  protected unionFielder(u: UnionType, name: string, type: Type): string {
+    const helper = globalName(`ore.ufield.${u.id}.${name}.${shortKey(type)}`)
+    if (this.helpers.has(helper)) return helper
+    this.helpers.set(helper, "")
+    const uty = this.lt(u)
+    const ty = this.lt(type)
+    this.helper(helper, `define internal ${ty} ${helper}(${uty} %v)`, (e) => {
+      const r = e.unionFieldInline(u, { ty: uty, v: "%v" }, name, type)
+      e.b.terminate(`ret ${ty} ${r.v}`)
+    })
+    return helper
+  }
+
+  /** Reads a field common to the members of a union, testing each member in turn. */
+  protected unionFieldInline(u: UnionType, v: V, name: string, resultType: Type): V {
+    const ty = this.lt(resultType)
     const result = this.b.alloca(ty)
     const end = this.b.label("ufield")
     u.members.forEach((m, i) => {
@@ -665,14 +821,14 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
       let read: V
       let type: Type
       if (m.kind === "struct") {
-        type = ir.findField(m, e.name)!.type
-        read = this.load(this.fieldPtr(object.v, m, e.name), type)
+        type = ir.findField(m, name)!.type
+        read = this.load(this.fieldPtr(object.v, m, name), type)
       } else {
-        const index = (m as ir.InterfaceType).members.findIndex((x) => x.name === e.name)
+        const index = (m as ir.InterfaceType).members.findIndex((x) => x.name === name)
         type = (m as ir.InterfaceType).members[index]!.type
         read = this.load(this.ifaceField(object, index), type)
       }
-      this.b.emit(`store ${ty} ${this.recast(read, type, e.type).v}, ptr ${result}`)
+      this.b.emit(`store ${ty} ${this.recast(read, type, resultType).v}, ptr ${result}`)
       this.b.br(end)
       this.b.start(next)
     })
@@ -680,4 +836,9 @@ export abstract class ExpressionEmitter extends FunctionEmitter {
     this.b.start(end)
     return this.b.value(ty, `load ${ty}, ptr ${result}`)
   }
+}
+
+/** A short key of a type for the names of helpers: a union by its id. */
+function shortKey(t: Type): string {
+  return t.kind === "union" ? `u${t.id}` : ir.typeKey(t)
 }

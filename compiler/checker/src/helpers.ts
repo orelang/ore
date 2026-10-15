@@ -1,6 +1,6 @@
 // Tables and pure functions of the checker.
 import * as ir from "@ore/ir"
-import { arrayOf, findField, findMethod, isStringLike, isSubclass, membersOf, sameType, types, typeToString, type FuncType, type Type } from "@ore/ir"
+import { arrayOf, findField, findMethod, isNumeric, isStringLike, isSubclass, membersOf, sameType, types, typeToString, type Field, type FuncType, type Type } from "@ore/ir"
 import ts from "typescript"
 import type { Operand } from "./operand"
 
@@ -51,6 +51,8 @@ export const stringMethods: Record<string, [Type[], number, Type]> = {
   padStart: [[types.i64, types.string], 1, types.string],
   padEnd: [[types.i64, types.string], 1, types.string],
   substring: [[types.i64, types.i64], 1, types.string],
+  // `int | null`: the checker makes the union.
+  codePointAt: [[types.i64], 0, types.i64],
 }
 
 /** Array methods handled by `arrayMethod`, with their minimum and maximum argument counts. */
@@ -84,6 +86,12 @@ export const nullOperand = { k: "null", type: types.null } as unknown as ir.Expr
 
 /** The member name of `[Symbol.dispose]`. */
 export const disposeName = "[Symbol.dispose]"
+
+/** The words that strict mode reserves, which cannot name bindings in Ore. */
+export const strictReserved = ["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield"]
+
+/** The error of an index signature (`[key: string]: T`) in an interface, an object type or a class. */
+export const indexSignatureMessage = "Index signatures are not supported. Use a 'Map<K, V>'."
 
 export function isSymbolDispose(node: ts.Expression): boolean {
   return ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Symbol" && node.name.text === "dispose"
@@ -135,6 +143,24 @@ export function fieldType(type: Type, name: string): Type | undefined {
   if (type.kind === "interface") {
     const member = type.members.find((m) => m.name === name)
     return member?.k === "field" ? member.type : undefined
+  }
+  return undefined
+}
+
+/** Whether a type other than a union can be a `Map` key: numbers, strings and references. */
+export function isKeyType(type: Type): boolean {
+  return isNumeric(type) || ["bool", "string", "literal", "struct", "array", "interface", "map", "set"].includes(type.kind)
+}
+
+/** A public field of a class or a field of an interface, with its type and whether it is read-only. */
+export function memberField(type: Type, name: string): Field | undefined {
+  if (type.kind === "struct") {
+    const field = findField(type, name)
+    return field && !field.private ? field : undefined
+  }
+  if (type.kind === "interface") {
+    const member = type.members.find((m) => m.name === name)
+    return member?.k === "field" ? { name, type: member.type, readonly: member.readonly } : undefined
   }
   return undefined
 }
@@ -219,6 +245,21 @@ export function hasZeroValue(type: Type): boolean {
   return type.kind !== "struct" && type.kind !== "interface" && type.kind !== "chan" && type.kind !== "func"
 }
 
+/** Whether values of a type can be Map keys and Set elements: numbers and strings by value, references by identity, and unions of those and null. */
+export function hashable(type: Type): boolean {
+  return type.kind === "union" ? type.members.every((m) => m.kind === "null" || isKeyType(m)) : isKeyType(type)
+}
+
+/**
+ * Whether the zero value of a type is not all zero bits, so that a field
+ * without an initializer is set to it by the constructor: `""`, `[]`, a new
+ * map, or the null of a tagged union.
+ */
+export function zeroNeedsInit(type: Type): boolean {
+  if (type.kind === "union") return hasZeroValue(type) && ir.unionRepr(type).k === "tagged"
+  return type.kind === "string" || type.kind === "array" || type.kind === "map" || type.kind === "set"
+}
+
 export function zeroValue(type: Type): ir.Expr {
   switch (type.kind) {
     case "int":
@@ -233,6 +274,8 @@ export function zeroValue(type: Type): ir.Expr {
       return { k: "array", type, elems: [] }
     case "map":
       return { k: "map", op: "new", type, mapType: type }
+    case "set":
+      return { k: "set", op: "new", type, setType: type }
     case "union":
       return { k: "null", type }
     case "ptr":

@@ -2,8 +2,6 @@
 // growable buffer. The runtime sees elements as `size` bytes each, since it
 // serves arrays of every element type.
 
-import { sliceOffset } from "ore:runtime/string"
-
 const lenOffset = 8
 const capOffset = 16
 const headerSize = 24
@@ -139,6 +137,12 @@ function arraySort(a: ptr, size: int, compare: ptr, ctx: ptr): void {
         buf = t
     }
     if (src !== data(a)) unsafe.copy(data(a), src, n * size)
+}
+
+/** A JavaScript `slice` offset resolved against a length: negative counts from the end, then clamped. */
+export function sliceOffset(offset: int, length: int): int {
+    const at = offset < 0 ? offset + length : offset
+    return at < 0 ? 0 : at > length ? length : at
 }
 
 /** Panics for an index out of bounds; apart, so that the checks that call it stay small. */

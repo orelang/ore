@@ -49,6 +49,7 @@ import {
     IfaceCall,
     IfaceField,
     IfaceFieldLValue,
+    UnionFieldLValue,
     IfStmt,
     IncDec,
     Index,
@@ -64,6 +65,7 @@ import {
     Logical,
     LoopStmt,
     MapOp,
+    SetOp,
     MethodCall,
     Module,
     Not,
@@ -85,13 +87,13 @@ import {
     Unary,
     UnionField,
     UsingStmt,
-    setLine,
     type ArithOp,
     type ChanOpName,
     type CompareOp,
     type Expr,
     type LValue,
     type MapOpName,
+    type SetOpName,
     type Stmt,
 } from "./nodes"
 import {
@@ -104,6 +106,7 @@ import {
     InterfaceType,
     LiteralType,
     MapType,
+    SetType,
     Method,
     StructType,
     UnionType,
@@ -144,9 +147,9 @@ function isIdentChar(c: u8): bool {
 }
 
 function hexValue(c: u8): int {
-    if (isDigit(c)) return i64(c) - 0x30
-    if (c >= 0x61 && c <= 0x66) return i64(c) - 0x61 + 10
-    if (c >= 0x41 && c <= 0x46) return i64(c) - 0x41 + 10
+    if (isDigit(c)) return int(c) - 0x30
+    if (c >= 0x61 && c <= 0x66) return int(c) - 0x61 + 10
+    if (c >= 0x41 && c <= 0x46) return int(c) - 0x41 + 10
     return -1
 }
 
@@ -163,7 +166,7 @@ class Cursor {
     }
 
     peek(): int {
-        return this.pos < this.text.length ? i64(this.text[this.pos]) : -1
+        return this.pos < this.text.length ? int(this.text[this.pos]) : -1
     }
 
     fail(message: string) {
@@ -219,7 +222,7 @@ class Cursor {
             value = value * 10 + u64(this.text[this.pos] - 0x30)
             this.pos++
         }
-        return negative ? -i64(value) : i64(value)
+        return negative ? -int(value) : int(value)
     }
 
     /** A string in double quotes as `quote` writes it. */
@@ -424,6 +427,11 @@ class Reader {
             c.expect(">")
             return new MapType(key, value)
         }
+        if (c.eat("Set<")) {
+            const elem = this.type(c)
+            c.expect(">")
+            return new SetType(elem)
+        }
         if (c.eat("Chan<")) {
             const elem = this.type(c)
             c.expect(">")
@@ -547,6 +555,12 @@ class Reader {
         if (t.kind === "map") return t
         this.fail("expected a map type")
         return new MapType(types.void, types.void)
+    }
+
+    setType(t: Type): SetType {
+        if (t.kind === "set") return t
+        this.fail("expected a set type")
+        return new SetType(types.void)
     }
 
     chanType(t: Type): ChanType {
@@ -833,7 +847,7 @@ class Reader {
                 this.fail(`unknown statement ${JSON.stringify(kind)}`)
                 this.i++
         }
-        setLine(s, line)
+        s.line = line
         return s
     }
 
@@ -890,6 +904,12 @@ class Reader {
                 const index = c.int()
                 this.next(c)
                 return new IfaceFieldLValue(this.expr(d, "value"), index)
+            }
+            case "union-field": {
+                c.expect(" ")
+                const name = c.word()
+                this.next(c)
+                return new UnionFieldLValue(this.expr(d, "value"), name)
             }
             default:
                 this.fail(`unknown target ${JSON.stringify(kind)}`)
@@ -1157,6 +1177,18 @@ class Reader {
                 if (this.has(d, "value: ")) value = this.expr(d, "value")
                 return new MapOp(op, type, mapType, map, key, value)
             }
+            case "set": {
+                c.expect(" ")
+                const op = this.setOp(c.word())
+                c.expect(" setType=")
+                const setType = this.setType(this.type(c))
+                const type = this.exprType(c)
+                let set: Expr | null = null
+                if (this.has(d, "set: ")) set = this.expr(d, "set")
+                let value: Expr | null = null
+                if (this.has(d, "value: ")) value = this.expr(d, "value")
+                return new SetOp(op, type, setType, set, value)
+            }
             case "func-ref": {
                 c.expect(" ")
                 const func = this.func(c.word(), c)
@@ -1300,6 +1332,28 @@ class Reader {
                 return "values"
             default:
                 this.fail(`unknown map operation ${JSON.stringify(op)}`)
+                return "new"
+        }
+    }
+
+    setOp(op: string): SetOpName {
+        switch (op) {
+            case "new":
+                return "new"
+            case "add":
+                return "add"
+            case "has":
+                return "has"
+            case "delete":
+                return "delete"
+            case "clear":
+                return "clear"
+            case "size":
+                return "size"
+            case "values":
+                return "values"
+            default:
+                this.fail(`unknown set operation ${JSON.stringify(op)}`)
                 return "new"
         }
     }

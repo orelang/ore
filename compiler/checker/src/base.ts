@@ -15,6 +15,7 @@ import {
   type InterfaceType,
   type LiteralType,
   type MapType,
+  type SetType,
   type StructType,
   type Type,
   type UnionType,
@@ -24,7 +25,7 @@ import ts from "typescript"
 import { errorOperand, type Operand } from "./operand"
 import { Scope, type Generic, type TypeSymbol } from "./symbols"
 import type { CheckInfo, ProgramInput, ModuleInfo, Signature, FuncContext, ClassInfo, Accessor, AssignTarget, InterfaceInfo } from "./context"
-import { disposeName, isSymbolDispose, memberOf, typeOf, floatLit, poison } from "./helpers"
+import { disposeName, hashable, indexSignatureMessage, isSymbolDispose, memberOf, typeOf, floatLit, poison } from "./helpers"
 
 /** A program being checked; see Checker in checker.ts. */
 export abstract class CheckerBase {
@@ -89,6 +90,13 @@ export abstract class CheckerBase {
 
   /** Checks of generic instances, run after the other bodies. */
   protected readonly pending: (() => void)[] = []
+
+  /**
+   * Set when a class is constructed before its constructor is declared, in
+   * the default value of a parameter without a type: the value gives its type,
+   * and is checked once every declaration is known.
+   */
+  protected constructedEarly = false
 
   /** The generic and type arguments of each instance type. */
   protected readonly instanceOf = new Map<Type, { generic: Generic; args: Type[] }>()
@@ -207,6 +215,11 @@ export abstract class CheckerBase {
       const value = this.resolveValueType(node.typeArguments[1]!, scope)
       return key && value ? this.mapOf(key, value, node.typeArguments[0]!) : undefined
     }
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "Set" && !scope.lookupType("Set")) {
+      if (node.typeArguments?.length !== 1) return this.error(node, "'Set' expects exactly 1 type argument."), undefined
+      const elem = this.resolveValueType(node.typeArguments[0]!, scope)
+      return elem && this.setOf(elem, node.typeArguments[0]!)
+    }
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "Chan" && !scope.lookupType("Chan")) {
       if (node.typeArguments?.length !== 1) return this.error(node, "'Chan' expects exactly 1 type argument."), undefined
       const elem = this.resolveValueType(node.typeArguments[0]!, scope)
@@ -276,7 +289,12 @@ export abstract class CheckerBase {
     const fields: Field[] = []
     for (const member of node.members) {
       if (!ts.isPropertySignature(member)) {
-        this.error(member, ts.isMethodSignature(member) ? "Methods in object types are not supported yet. Use an interface." : "Only properties are supported in object types.")
+        this.error(
+          member,
+          ts.isMethodSignature(member) ? "Methods in object types are not supported yet. Use an interface."
+          : ts.isIndexSignatureDeclaration(member) ? indexSignatureMessage
+          : "Only properties are supported in object types.",
+        )
         continue
       }
       const name = this.memberName(member.name)
@@ -301,9 +319,13 @@ export abstract class CheckerBase {
   }
 
   protected mapOf(key: Type, value: Type, node: ts.Node): MapType | undefined {
-    const hashable = isNumeric(key) || ["bool", "string", "literal", "struct", "array", "interface", "map"].includes(key.kind)
-    if (!hashable) return this.error(node, `Type '${typeToString(key)}' cannot be a Map key.`), undefined
+    if (!hashable(key)) return this.error(node, `Type '${typeToString(key)}' cannot be a Map key.`), undefined
     return { kind: "map", key, value }
+  }
+
+  protected setOf(elem: Type, node: ts.Node): SetType | undefined {
+    if (!hashable(elem)) return this.error(node, `Type '${typeToString(elem)}' cannot be an element of a Set.`), undefined
+    return { kind: "set", elem }
   }
 
   protected literal(value: string): LiteralType {

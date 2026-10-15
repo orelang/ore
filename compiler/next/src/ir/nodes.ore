@@ -15,6 +15,7 @@ import {
     type LiteralType,
     type MapType,
     type NullType,
+    type SetType,
     type StringType,
     type StructType,
     type Type,
@@ -70,23 +71,23 @@ export class Func {
         public body: Block,
         public exported: bool,
         /** Path of the declaring module, when it differs from the module's `file`. */
-        public file: string | null = null,
+        public file?: string,
         /**
          * An external C function, called by its C name `name`: strings are passed
          * as NUL-terminated copies and returned strings are copied.
          */
         public extern: bool = false,
         /** For a variadic external function: the type of the arguments after `params`, as C passes them. */
-        public variadic: Type | null = null,
+        public variadic?: Type,
         /** `this` of a method, passed before the parameters. */
-        public receiver: Local | null = null,
+        public receiver?: Local,
         /**
          * For a closure: the locals of enclosing functions it uses, in the order of
          * its environment. The closure is called with the environment first.
          */
-        public captures: Local[] | null = null,
+        public captures?: Local[],
         /** Set by `//ore:` directives before the declaration. */
-        public attributes: FuncAttributes | null = null,
+        public attributes?: FuncAttributes,
     ) {}
 }
 
@@ -100,9 +101,9 @@ export class FuncAttributes {
         /** `//ore:cold`: rarely called, optimized for size and placed apart. */
         public cold: bool = false,
         /** `//ore:export name`: visible to C as `name`, with the C calling convention. */
-        public exportName: string | null = null,
+        public exportName?: string,
         /** `//ore:runtime name`, in the standard library: implements the runtime function `name` that generated code calls. */
-        public runtime: string | null = null,
+        public runtime?: string,
         /** `//ore:naked`: no prologue or epilogue; the body is assembly only. */
         public naked: bool = false,
     ) {}
@@ -126,7 +127,7 @@ export class Local {
         /** `//ore:threadlocal`: a global with a separate value, starting at zero, in each OS thread. */
         public threadLocal: bool = false,
         /** `//ore:export name`: a global visible to C as `name`. */
-        public exportName: string | null = null,
+        public exportName?: string,
     ) {}
 }
 
@@ -136,73 +137,31 @@ export class Local {
 
 export type Stmt = Block | LetStmt | ExprStmt | IfStmt | LoopStmt | ForOfStmt | SwitchStmt | UsingStmt | BreakStmt | ContinueStmt | ReturnStmt
 
-/**
- * Sets the source line of a statement: `stmt.line = line` in TypeScript, as
- * Ore reads a field common to the members of a union but does not assign it.
- */
-export function setLine(s: Stmt, line: int | null) {
-    switch (s.k) {
-        case "block":
-            s.line = line
-            return
-        case "let":
-            s.line = line
-            return
-        case "expr":
-            s.line = line
-            return
-        case "if":
-            s.line = line
-            return
-        case "loop":
-            s.line = line
-            return
-        case "for-of":
-            s.line = line
-            return
-        case "switch":
-            s.line = line
-            return
-        case "using":
-            s.line = line
-            return
-        case "break":
-            s.line = line
-            return
-        case "continue":
-            s.line = line
-            return
-        case "return":
-            s.line = line
-            return
-    }
-}
-
 export class Block {
     readonly k: "block" = "block"
-    line: int | null = null
+    line?: int
     constructor(public body: Stmt[]) {}
 }
 
 export class LetStmt {
     readonly k: "let" = "let"
-    line: int | null = null
+    line?: int
     constructor(
         public local: Local,
         /** Without an initializer, the local starts zeroed; used for hoisted functions. */
-        public init: Expr | null = null,
+        public init?: Expr,
     ) {}
 }
 
 export class ExprStmt {
     readonly k: "expr" = "expr"
-    line: int | null = null
+    line?: int
     constructor(public expr: Expr) {}
 }
 
 export class IfStmt {
     readonly k: "if" = "if"
-    line: int | null = null
+    line?: int
     else: Stmt | null
     constructor(
         public cond: Expr,
@@ -220,7 +179,7 @@ export class IfStmt {
  */
 export class LoopStmt {
     readonly k: "loop" = "loop"
-    line: int | null = null
+    line?: int
     constructor(
         /** Unique within the function; the target of labeled `break` / `continue`. */
         public id: int,
@@ -232,9 +191,9 @@ export class LoopStmt {
          * Variables declared by `for (let ...)`: each iteration has its own copy,
          * which matters when closures capture them.
          */
-        public perIteration: Local[] | null = null,
-        public cond: Expr | null = null,
-        public update: Expr | null = null,
+        public perIteration?: Local[],
+        public cond?: Expr,
+        public update?: Expr,
     ) {}
 }
 
@@ -244,7 +203,7 @@ export class LoopStmt {
  */
 export class ForOfStmt {
     readonly k: "for-of" = "for-of"
-    line: int | null = null
+    line?: int
     constructor(
         public id: int,
         public labeled: bool,
@@ -253,7 +212,7 @@ export class ForOfStmt {
         public iterable: Expr,
         public body: Stmt,
         /** The value of a map entry, for `for (const [key, value] of map)`. */
-        public value: Local | null = null,
+        public value?: Local,
     ) {}
 }
 
@@ -261,7 +220,7 @@ export class ForOfStmt {
 export class SwitchClause {
     constructor(
         public body: Stmt[],
-        public test: Expr | null = null,
+        public test?: Expr,
     ) {}
 }
 
@@ -273,7 +232,7 @@ export class SwitchClause {
  */
 export class SwitchStmt {
     readonly k: "switch" = "switch"
-    line: int | null = null
+    line?: int
     constructor(
         public id: int,
         public labeled: bool,
@@ -292,7 +251,7 @@ export class SwitchStmt {
  */
 export class UsingStmt {
     readonly k: "using" = "using"
-    line: int | null = null
+    line?: int
     constructor(
         public local: Local,
         public init: Expr,
@@ -304,21 +263,21 @@ export class UsingStmt {
 /** Exits the innermost loop or switch, or the one with id `target` for a labeled break. */
 export class BreakStmt {
     readonly k: "break" = "break"
-    line: int | null = null
-    constructor(public target: int | null = null) {}
+    line?: int
+    constructor(public target?: int) {}
 }
 
 /** Continues the innermost loop, or the loop with id `target` for a labeled continue. */
 export class ContinueStmt {
     readonly k: "continue" = "continue"
-    line: int | null = null
-    constructor(public target: int | null = null) {}
+    line?: int
+    constructor(public target?: int) {}
 }
 
 export class ReturnStmt {
     readonly k: "return" = "return"
-    line: int | null = null
-    constructor(public value: Expr | null = null) {}
+    line?: int
+    constructor(public value?: Expr) {}
 }
 
 export type ArithOp = "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>"
@@ -365,6 +324,7 @@ export type Expr =
     | Is
     | Downcast
     | MapOp
+    | SetOp
     | FuncRef
     | Closure
     | CallValue
@@ -449,8 +409,20 @@ export class IfaceFieldLValue {
     ) {}
 }
 
+/**
+ * A field that every member of a union of structs and interfaces has, with the
+ * same type: `{ k: "union-field"; value; name }` of `LValue`.
+ */
+export class UnionFieldLValue {
+    readonly k: "union-field" = "union-field"
+    constructor(
+        public value: Expr,
+        public name: string,
+    ) {}
+}
+
 /** A place that can be assigned to. */
-export type LValue = LocalLValue | ElementLValue | FieldLValue | IfaceFieldLValue
+export type LValue = LocalLValue | ElementLValue | FieldLValue | IfaceFieldLValue | UnionFieldLValue
 
 /**
  * Assignment. With `op` it is a compound assignment `target op= value`, where
@@ -463,7 +435,7 @@ export class Assign {
         public type: Type,
         public target: LValue,
         public value: Expr,
-        public op: ArithOp | null = null,
+        public op?: ArithOp,
     ) {}
 }
 
@@ -564,9 +536,9 @@ export class BuiltinCall {
         public name: BuiltinName,
         public args: Expr[],
         /** For built-ins that return `Error`: how to create one from a message. */
-        public error: BuiltinError | null = null,
+        public error?: BuiltinError,
         /** Type arguments, for `JSON.parse<T>` and the generic `unsafe` functions. */
-        public typeArgs: Type[] | null = null,
+        public typeArgs?: Type[],
     ) {}
 }
 
@@ -617,8 +589,8 @@ export class Slice {
     constructor(
         public type: Type,
         public value: Expr,
-        public start: Expr | null = null,
-        public end: Expr | null = null,
+        public start?: Expr,
+        public end?: Expr,
     ) {}
 }
 
@@ -706,8 +678,8 @@ export class ToIface {
     constructor(
         public type: InterfaceType,
         public value: Expr,
-        public itab: Itab | null = null,
-        public indices: int[] | null = null,
+        public itab?: Itab,
+        public indices?: int[],
     ) {}
 }
 
@@ -819,7 +791,7 @@ export class Is {
         public type: BoolType,
         public value: Expr,
         public member: Type,
-        public via: InterfaceType | null = null,
+        public via?: InterfaceType,
     ) {}
 }
 
@@ -846,9 +818,28 @@ export class MapOp {
         public op: MapOpName,
         public type: Type,
         public mapType: MapType,
-        public map: Expr | null = null,
-        public key: Expr | null = null,
-        public value: Expr | null = null,
+        public map?: Expr,
+        public key?: Expr,
+        public value?: Expr,
+    ) {}
+}
+
+/** The operations of `SetOp` (an inline union in TypeScript). */
+export type SetOpName = "new" | "add" | "has" | "delete" | "clear" | "size" | "values"
+
+/**
+ * An operation of `Set`: `new Set()` (with `value`, an array whose elements
+ * it adds), `set.add(value)` (the set), `has`, `delete`, `clear`, `size`, and
+ * `values` as an array in insertion order.
+ */
+export class SetOp {
+    readonly k: "set" = "set"
+    constructor(
+        public op: SetOpName,
+        public type: Type,
+        public setType: SetType,
+        public set?: Expr,
+        public value?: Expr,
     ) {}
 }
 
@@ -891,8 +882,8 @@ export class BoundMethod {
     constructor(
         public type: FuncType,
         public receiver: Expr,
-        public func: Func | null = null,
-        public index: int | null = null,
+        public func?: Func,
+        public index?: int,
     ) {}
 }
 
@@ -909,7 +900,7 @@ export class ArrayMethod {
         public type: Type,
         public array: Expr,
         public args: Expr[],
-        public arity: int | null = null,
+        public arity?: int,
     ) {}
 }
 
@@ -938,11 +929,11 @@ export class ChanOp {
         public op: ChanOpName,
         public type: Type,
         public chanType: ChanType,
-        public chan: Expr | null = null,
-        public value: Expr | null = null,
+        public chan?: Expr,
+        public value?: Expr,
         /** For select cases: the handler, and how many arguments it takes. */
-        public handler: Expr | null = null,
-        public arity: int | null = null,
+        public handler?: Expr,
+        public arity?: int,
     ) {}
 }
 
