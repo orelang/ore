@@ -172,15 +172,14 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
     } else if (callee.kind === "PropertyAccessExpression") {
         // `console.log(...)`: a member of a namespace, or else a method call.
         const object = expression(callee)
-        const ns = isIdentifier(object) ? scope.lookupValue(object.text) : null
-        if (ns === null || ns.k !== "namespace") return checkMethodCall(c, node, callee, scope)
+        const ns = c.namespaceAt(object, scope)
+        if (ns === null) return checkMethodCall(c, node, callee, scope)
         if (ns.name === "internal" && !isInternal(c, c.sourceOf(node))) {
             return c.fail(
                 object,
                 "'internal' is only for the standard library. Add '//ore:internal' at the top of the file to use it here.",
             )
         }
-        c.info.definitions.set(object, ns.decl)
         const memberName = nameNode(callee)
         name = `${ns.name}.${memberName.text}`
         nameAt = memberName

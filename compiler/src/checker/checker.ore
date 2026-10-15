@@ -7,7 +7,14 @@ import { type Node } from "../syntax/ast"
 import { hasModifier, members, nameNode } from "../syntax/nodes"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
-import { builtinScope, globalClasses, globalClassModule, namespaceModule, namespaceNames } from "./builtins"
+import {
+    builtinScope,
+    globalClasses,
+    globalClassModule,
+    namespaceAtPath,
+    namespaceModule,
+    namespaceNames,
+} from "./builtins"
 import {
     checkClassBodies,
     checkFieldInitializers,
@@ -75,11 +82,11 @@ export function check(program: Program): CheckResult {
     }
     // Built-in namespaces implemented in Ore take the exports of their module.
     for (const ns of namespaceNames) {
-        const symbol = builtins.scope.lookupValue(ns)
+        const symbol = namespaceAtPath(builtins.scope, ns)
         const path = namespaceModule(ns)
         let module: ModuleInfo | null = null
         for (const m of modules) if (module === null && m.source.path === path) module = m
-        if (symbol !== null && symbol.k === "namespace" && module !== null) {
+        if (symbol !== null && module !== null) {
             const target = module
             symbol.module = (name) => exportOf(c, target, name)
         }

@@ -92,7 +92,7 @@ import {
     typeOf,
 } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
-import { type Generic, type TypeSymbol, Scope } from "./symbols"
+import { type Generic, type NamespaceSymbol, type TypeSymbol, Scope } from "./symbols"
 
 /** Two operands brought to a common type, or nulls when that failed: `[ir.Expr | undefined, ir.Expr | undefined]`. */
 export class Unified {
@@ -410,6 +410,29 @@ export class Checker {
         return null
     }
 
+    /**
+     * The built-in namespace that `node` names, as `process`, or a namespace
+     * nested in one, as `process.command`; null for anything else. Records
+     * the definitions of its names.
+     */
+    namespaceAt(node: Node, scope: Scope): NamespaceSymbol | null {
+        if (isIdentifier(node)) {
+            const symbol = scope.lookupValue(node.text)
+            if (symbol === null || symbol.k !== "namespace") return null
+            this.info.definitions.set(node, symbol.decl)
+            return symbol
+        }
+        const qualified = node.kind === "QualifiedName"
+        if (!qualified && node.kind !== "PropertyAccessExpression") return null
+        const name = node.child(qualified ? "right" : "name")
+        const outer = this.namespaceAt(node.child(qualified ? "left" : "expression")!, scope)
+        if (outer === null || name === null || !isIdentifier(name)) return null
+        const inner = outer.members.get(name.text)
+        if (inner === null || inner.k !== "namespace") return null
+        this.info.definitions.set(name, inner.decl)
+        return inner
+    }
+
     /** The type named by `T` or `m.T` (an export of a module imported as `* as m`); reports missing names. */
     typeSymbol(name: Node, scope: Scope): TypeSymbol | null {
         if (isIdentifier(name)) {
@@ -433,7 +456,9 @@ export class Checker {
                 : name.kind === "PropertyAccessExpression"
                   ? name.child("name")
                   : null
-        const module = left !== null && isIdentifier(left) ? scope.lookupValue(left.text) : null
+        // A namespace can be nested in another: `process.command`.
+        const module =
+            left === null ? null : isIdentifier(left) ? scope.lookupValue(left.text) : this.namespaceAt(left, scope)
         // A type of a built-in namespace implemented in Ore, such as `fs.FileInfo`.
         const exports =
             module === null

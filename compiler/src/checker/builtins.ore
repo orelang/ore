@@ -56,6 +56,7 @@ function targetConstant(name: string): string | null {
 /**
  * The runtime module that implements a built-in namespace in Ore, or null:
  * its exports are members of the namespace, as `fs.stat` or `fs.FileInfo`.
+ * A nested namespace, named by its path (`a.b`), has a module of its own.
  */
 export function namespaceModule(ns: string): string | null {
     if (ns === "String") return "ore:runtime/string"
@@ -101,38 +102,65 @@ export function builtinScope(): Builtins {
             const found = scope.lookupType(name)
             if (found === null) process.panic(`unknown builtin function ${name}`)
             scope.declareValue(name, new ConversionSymbol(found.type, stmt))
-        } else if (
-            stmt.kind === "ModuleDeclaration" &&
-            isIdentifier(nameNode(stmt)) &&
-            body(stmt) !== null &&
-            body(stmt)!.kind === "ModuleBlock"
-        ) {
+        } else if (isNamespace(stmt)) {
             const ns = nameNode(stmt).text
-            const members = new Map<string, ValueSymbol>()
-            for (const member of statements(body(stmt)!)) {
-                if (member.kind === "FunctionDeclaration" && optionalName(member) !== null) {
-                    members.set(nameNode(member).text, new BuiltinSymbol(`${ns}.${nameNode(member).text}`, member))
-                } else if (member.kind === "VariableStatement") {
-                    for (const d of declarations(declarationList(member))) {
-                        const short = nameNode(d).text
-                        const name = `${ns}.${short}`
-                        const value = constant(name)
-                        const text = targetConstant(name)
-                        // A value known only at run time, such as `process.args`, is a call of a built-in.
-                        let expr: Expr
-                        if (value !== null) expr = new FloatLit(types.f64, value)
-                        else if (text !== null) expr = new StringLit(types.string, text)
-                        else expr = new BuiltinCall(arrayOf(types.string), name, [])
-                        if (value === null && text === null && name !== "process.args")
-                            process.panic(`unknown builtin constant ${name}`)
-                        members.set(short, new ConstSymbol(new Typed(expr), expr.type, d))
-                    }
-                }
-            }
-            scope.declareValue(ns, new NamespaceSymbol(ns, members, stmt))
+            scope.declareValue(ns, builtinNamespace(ns, stmt))
         }
     }
     return new Builtins(scope, source)
+}
+
+/** Whether a statement of builtin.d.ore declares a namespace: `declare namespace name { ... }`. */
+function isNamespace(stmt: Node): bool {
+    return (
+        stmt.kind === "ModuleDeclaration" &&
+        isIdentifier(nameNode(stmt)) &&
+        body(stmt) !== null &&
+        body(stmt)!.kind === "ModuleBlock"
+    )
+}
+
+/**
+ * The namespace `ns` (a dotted path when nested) declared by `decl`: its
+ * functions, constants and nested namespaces, as `process.command`.
+ */
+function builtinNamespace(ns: string, decl: Node): NamespaceSymbol {
+    const members = new Map<string, ValueSymbol>()
+    for (const member of statements(body(decl)!)) {
+        if (member.kind === "FunctionDeclaration" && optionalName(member) !== null) {
+            members.set(nameNode(member).text, new BuiltinSymbol(`${ns}.${nameNode(member).text}`, member))
+        } else if (isNamespace(member)) {
+            const short = nameNode(member).text
+            members.set(short, builtinNamespace(`${ns}.${short}`, member))
+        } else if (member.kind === "VariableStatement") {
+            for (const d of declarations(declarationList(member))) {
+                const short = nameNode(d).text
+                const name = `${ns}.${short}`
+                const value = constant(name)
+                const text = targetConstant(name)
+                // A value known only at run time, such as `process.args`, is a call of a built-in.
+                let expr: Expr
+                if (value !== null) expr = new FloatLit(types.f64, value)
+                else if (text !== null) expr = new StringLit(types.string, text)
+                else expr = new BuiltinCall(arrayOf(types.string), name, [])
+                if (value === null && text === null && name !== "process.args")
+                    process.panic(`unknown builtin constant ${name}`)
+                members.set(short, new ConstSymbol(new Typed(expr), expr.type, d))
+            }
+        }
+    }
+    return new NamespaceSymbol(ns, members, decl)
+}
+
+/** The built-in namespace at a dotted path, as `process.command`, or null. */
+export function namespaceAtPath(scope: Scope, path: string): NamespaceSymbol | null {
+    let found: NamespaceSymbol | null = null
+    for (const name of path.split(".")) {
+        const symbol = found === null ? scope.lookupValue(name) : found.members.get(name)
+        if (symbol === null || symbol.k !== "namespace") return null
+        found = symbol
+    }
+    return found
 }
 
 function intrinsic(name: string): Type | null {

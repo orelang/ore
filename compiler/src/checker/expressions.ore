@@ -259,7 +259,11 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
                 first = name
                 break
             }
-            return c.fail(node, `'${node.text}' is a namespace; call its functions, e.g. '${node.text}.${first}(...)'.`)
+            // Named by its path when nested: 'process.command'.
+            return c.fail(
+                node,
+                `'${symbol.name}' is a namespace; call its functions, e.g. '${symbol.name}.${first}(...)'.`,
+            )
         }
         case "module":
             return c.fail(node, `'${node.text}' is a module; use its exports, e.g. '${node.text}.name'.`)
@@ -1548,29 +1552,30 @@ export function printable(c: Checker, expr: Expr, node: Node): bool {
  * the expression is not such an access. Reports missing exports.
  */
 export function moduleMember(c: Checker, node: Node, scope: Scope): ValueSymbol | null {
-    if (node.kind !== "PropertyAccessExpression" || !isIdentifier(expression(node))) return null
+    if (node.kind !== "PropertyAccessExpression") return null
     const object = expression(node)
     const nameId = nameNode(node)
-    const module = scope.lookupValue(object.text)
-    if (module === null) return null
-    if (module.k === "class") return staticOf(c, module.type, module.decl, object, nameId)
-    if (module.k === "namespace") {
+    // A built-in namespace, or one nested in it, as `process.command`.
+    const ns = c.namespaceAt(object, scope)
+    if (ns !== null) {
         // An export of the module implementing the namespace in Ore, such as `fs.stat`.
-        const implementation = module.module
+        const implementation = ns.module
         const exported = implementation !== null ? implementation(nameId.text) : null
         const value = exported !== null ? exported.value : null
         if (value !== null) {
-            c.info.definitions.set(object, module.decl)
             if (isIdentifier(nameId)) c.info.definitions.set(nameId, value.decl)
             return value
         }
-        // A constant of a built-in namespace, such as `Math.PI`.
-        const member_ = module.members.get(nameId.text)
-        if (member_ === null || member_.k !== "const") return null
-        c.info.definitions.set(object, module.decl)
+        // A constant of a built-in namespace, such as `Math.PI`, or a nested namespace.
+        const member_ = ns.members.get(nameId.text)
+        if (member_ === null || (member_.k !== "const" && member_.k !== "namespace")) return null
         if (isIdentifier(nameId)) c.info.definitions.set(nameId, member_.decl)
         return member_
     }
+    if (!isIdentifier(object)) return null
+    const module = scope.lookupValue(object.text)
+    if (module === null) return null
+    if (module.k === "class") return staticOf(c, module.type, module.decl, object, nameId)
     if (module.k !== "module") return null
     c.info.definitions.set(object, module.decl)
     const exported = module.exports(nameId.text)
