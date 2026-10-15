@@ -71,6 +71,5 @@ equivalent in Ore:
 
 Ore limitations to keep in mind: an array literal passed where `T[] | null` is
 expected takes its type from its first element, so declare it with a type
-first (`const args: Type[] = [...]`); a default parameter value cannot refer to
-module-level names, so use `x: T | null = null` and `x ?? value` in the body;
-union types cannot be `Map` keys (key by `typeKey(t)` or an id instead).
+first (`const args: Type[] = [...]`); a default parameter value that
+constructs a class needs a type annotation (`o: O = new O()`); union types cannot be `Map` keys (key by `typeKey(t)` or an id instead).
