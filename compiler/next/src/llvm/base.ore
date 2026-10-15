@@ -327,7 +327,12 @@ export class Emitter {
         return exportName !== null && exportName !== "" ? `@${exportName}` : globalName(`G.${local.name}.${local.id}`)
     }
 
-    /** The address of a global; a thread-local one is looked up on each access, since tasks move between threads. */
+    /**
+     * The address of a global; a thread-local one is looked up on each access,
+     * since tasks move between threads. LLVM may still reuse the address within
+     * a function, across calls: the runtime reads its thread-locals only in
+     * small functions that never park, and `top()` goes through a helper.
+     */
     globalPlace(local: Local): string {
         if (!local.threadLocal) return this.globalOf(local)
         return this.b.value("ptr", `call ptr @llvm.threadlocal.address.p0(ptr ${this.globalOf(local)})`).v
