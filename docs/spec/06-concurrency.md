@@ -35,8 +35,16 @@ console.log(results.receive())
   one. Cases are `ch.onReceive((v) => ...)` (`v` is `null` once closed),
   `ch.onSend(value, () => ...)` and `task.after(ms, () => ...)`. With
   `otherwise`, it runs instead of waiting when no case is ready.
-- Each task has a fixed stack (256 KiB; 8 MiB for the top-level code) with a guard page:
-  overflowing it crashes the program.
+- Each task has a fixed stack with a guard page: 1 MiB, and 8 MiB for the
+  top-level code and the tests of `ore test`. `ORE_STACK=<size>` sets the size
+  of every stack, top-level code included: bytes, or with a unit `K`, `M` or
+  `G` (powers of 1024), such as `ORE_STACK=64M`; at least 64 KiB. A stack is
+  reserved address space that takes memory only for the pages it touches, so
+  a large size costs little, but it is reserved for every task that runs at
+  once. Recursion that overflows a stack is a panic, `panic: stack overflow`
+  with the call stack (runs of the same frame counted on one line), status 2;
+  a release build has no call stack, and may turn simple recursion into a
+  loop that does not overflow.
 - A file operation blocks only its OS thread: the scheduler starts another
   thread for the other tasks meanwhile. A task waiting for a program it ran
   (`process.output`, `process.run`) parks on the poller, like one waiting
