@@ -1297,6 +1297,20 @@ export class Converter {
         return array.setAll("elements", elements)
     }
 
+    /**
+     * A rest element of a binding pattern, with its default value kept: it is
+     * an error, reported by the checker, which formatting must not remove.
+     */
+    private restElement(element: Node): ENode {
+        let argument = this.bindingName(must(element.child("name")))
+        const init = element.child("initializer")
+        if (init !== null) {
+            const assignment = new ENode("AssignmentPattern", argument.start, element.end)
+            argument = assignment.set("left", argument).set("right", this.req(init))
+        }
+        return this.make("RestElement", element).set("argument", argument)
+    }
+
     /** A binding name: an identifier or an object or array pattern. */
     private bindingName(node: Node): ENode {
         if (node.kind === "ObjectBindingPattern") {
@@ -1304,12 +1318,7 @@ export class Converter {
             const properties: ENode[] = []
             for (const element of node.list("elements")) {
                 if (element.child("dotDotDotToken") !== null) {
-                    properties.push(
-                        this.make("RestElement", element).set(
-                            "argument",
-                            this.bindingName(must(element.child("name"))),
-                        ),
-                    )
+                    properties.push(this.restElement(element))
                     continue
                 }
                 const property = this.make("Property", element)
@@ -1343,12 +1352,7 @@ export class Converter {
                     continue
                 }
                 if (element.child("dotDotDotToken") !== null) {
-                    elements.push(
-                        this.make("RestElement", element).set(
-                            "argument",
-                            this.bindingName(must(element.child("name"))),
-                        ),
-                    )
+                    elements.push(this.restElement(element))
                     continue
                 }
                 let value = this.bindingName(must(element.child("name")))
