@@ -10,7 +10,7 @@ ORE=./ore1 bench/run.sh      # with a given Ore compiler
 RUNS=10 bench/run.sh         # 10 timed runs instead of 5
 RUNTIMES="ore go" bench/run.sh
 ALL=1 bench/run.sh           # also the benchmarks that have a SKIP file
-bench/run.sh strings         # a skipped benchmark, named exactly
+bench/run.sh <name>          # a skipped benchmark, named exactly
 ```
 
 The script builds Ore with `ore build --release` and Go with `go build`,
@@ -41,8 +41,7 @@ exits with 1. Node needs version 22.6 or later for `--experimental-strip-types`.
 
 A benchmark whose directory has a file `SKIP` is left out unless `ALL=1` is
 set or a filter is exactly its name; the first line of the file says why, and
-the script prints it. `strings` is skipped until `s += x` in Ore stops copying
-the whole string each time; remove its `SKIP` file once it does.
+the script prints it.
 
 ## Adding a benchmark
 
