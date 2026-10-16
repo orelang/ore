@@ -65,6 +65,25 @@ string constant with its contents. The file is embedded in the program; it is
 not needed at run time. The syntax is TypeScript's import attributes, as Bun
 reads them.
 
+## JSON files
+
+`import name from "./file.json" with { type: "json" }` reads and parses a
+JSON file, relative to the importing module, when the program is compiled,
+and declares `name` as a constant with its value. The value is typed as the
+same literal written in Ore: objects are object types with the properties of
+the file, arrays have the element type of an array literal (`[1, 2.5]` is
+`float[]`), strings are `string`, numbers `int` or `float` as written, `true`
+and `false` `bool`, and `null` `null`. Using the value where a type is
+declared checks it against that type: `const server: Server = config.server`
+compiles when the JSON object has exactly the properties of `Server`, with
+their types. A JSON value that has no Ore type, such as an empty array or an
+array of strings and numbers, is an error at its place in the JSON file, as
+are JSON syntax errors. Importing a file twice gives the same value, one for
+the program.
+
+The attribute `type` is `"text"` or `"json"`; other types and attributes are
+errors.
+
 ## External C functions
 
 `declare function name(params): result` at the top level of a module declares

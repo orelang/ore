@@ -13,6 +13,11 @@ before 1.0, a minor version may change the language.
   library of utility types is global: `DeepPartial`, `DeepReadonly`,
   `Paths`, `PathValue`, `KeysOfType`, `PickByValueType`, `Merge`,
   `Assign`, `RequiredKeys`, `OptionalKeys`, `Exact` and more.
+- `import config from "./config.json" with { type: "json" }` imports a JSON
+  file as a constant, parsed when the program is compiled and typed as the
+  same literal written in Ore; JSON syntax and type errors point into the
+  file, and go to definition leads there. Unknown import types and
+  attributes are errors (ORE6067 to ORE6070).
 - Conditional types `T extends U ? X : Y`, distributed over unions, with
   `infer`; mapped types `{ [K in keyof T]?: T[K] }` with `readonly`, `?`,
   `-`/`+` and `as`; template literal types and `Uppercase` and the other
