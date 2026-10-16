@@ -6,6 +6,7 @@
 #   ore-<tag>-<os>-<arch>/bin/ore
 #   ore-<tag>-<os>-<arch>/lib/ore/ld.lld (ld64.lld on macOS)   found by `ore`
 #   ore-<tag>-<os>-<arch>/lib/*.so|*.dylib                   libLLVM and what it needs
+#   ore-<tag>-<os>-<arch>/THIRD-PARTY-NOTICES               their licenses
 #
 # The libraries `ore` and lld load, except the system's (glibc's on Linux,
 # /usr/lib and /System on macOS), are copied into lib/, and the binaries find
@@ -59,9 +60,11 @@ deps() {
     fi
 }
 
-# Copies the libraries of every file into lib/, transitively.
+# Copies the libraries of every file into lib/, transitively; `bundled` keeps
+# where each copied file (lld too) came from, for THIRD-PARTY-NOTICES.
 pending="$root/bin/ore $root/lib/ore/$linker"
 seen=" "
+bundled=$lld
 while [ -n "$pending" ]; do
     next=""
     for file in $pending; do
@@ -70,12 +73,52 @@ while [ -n "$pending" ]; do
             case "$seen" in *" $base "*) continue ;; esac
             seen="$seen$base "
             cp -L "$lib" "$root/lib/$base"
+            bundled="$bundled $lib"
             chmod u+w "$root/lib/$base"
             next="$next $root/lib/$base"
         done
     done
     pending=$next
 done
+
+# The license texts of what is bundled, from the package that installed each
+# file: its Homebrew keg on macOS, its Debian copyright file on Linux. A file
+# without one fails the release, which must not ship without the notices.
+licenses() {
+    real=$(realpath "$1")
+    if [ "$os" = darwin ]; then
+        case "$real" in */Cellar/*/*/*) ;; *) return 1 ;; esac
+        keg=$(echo "$real" | sed 's|\(/Cellar/[^/]*/[^/]*\)/.*|\1|')
+        found=$(ls "$keg" | grep -i -E '^(licen[cs]e|copying|notice)' || true)
+        [ -n "$found" ] || return 1
+        echo "== $(basename "$(dirname "$keg")") $(basename "$keg")"
+        for file in $found; do echo; cat "$keg/$file"; done
+    else
+        pkg=$(dpkg -S "$1" 2>/dev/null || dpkg -S "$real" 2>/dev/null) || return 1
+        pkg=${pkg%%:*}
+        [ -f "/usr/share/doc/$pkg/copyright" ] || return 1
+        echo "== $pkg $(dpkg-query -W -f '${Version}' "$pkg" 2>/dev/null)"
+        echo
+        cat "/usr/share/doc/$pkg/copyright"
+    fi
+}
+{
+    echo "Ore is licensed under MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE)."
+    echo "This archive also carries the following files of other projects, under"
+    echo "their own licenses, which follow."
+    echo
+    for file in $bundled; do echo "  $(basename "$file")"; done
+    done_pkgs=" "
+    for file in $bundled; do
+        text=$(licenses "$file") || { echo "package: no license found for $file" >&2; exit 1; }
+        head=$(echo "$text" | head -1)
+        case "$done_pkgs" in *" $head "*) continue ;; esac
+        done_pkgs="$done_pkgs$head "
+        echo
+        echo
+        echo "$text"
+    done
+} > "$root/THIRD-PARTY-NOTICES"
 
 # Each binary and library finds the copies relative to itself.
 if [ "$os" = darwin ]; then
