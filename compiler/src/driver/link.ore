@@ -134,7 +134,10 @@ export function link(objects: string[], native: NativeCode, output: string): Err
         const crt = crtDir()
         if (crt instanceof Error) return crt
         for (const dir of linuxLibDirs()) args.push(`-L${dir}`)
-        args.push("-lm", "-lpthread", "-lc", join(crt, "crtn.o"))
+        // Before glibc 2.34, dladdr (of the runtime's stack traces) is in libdl
+        // and threads in libpthread; from 2.34 on, both are in libc and these
+        // are empty.
+        args.push("-lm", "-lpthread", "-ldl", "-lc", join(crt, "crtn.o"))
     }
     return run(linker, args)
 }
