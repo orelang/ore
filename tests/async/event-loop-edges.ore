@@ -31,12 +31,13 @@ await time.delay(1 * time.millisecond)
 console.log("delay 1")
 
 // Blocking the loop: timers due meanwhile run after it, microtasks first, then
-// the timers by their deadlines.
+// the timers by their deadlines. Both are set from the same moment, so that
+// their order does not depend on when this timer ran.
 time.timeout(() => {
     console.log("timeout 10")
-    time.timeout(() => console.log("timeout 15, queued before sleep"), 5)
+    time.timeout(() => console.log("timeout 15, queued before sleep"), 5 * time.millisecond)
+    time.timeout(() => console.log("timeout 25, due during sleep"), 15 * time.millisecond)
     time.sleep(30 * time.millisecond)
     task.microtask(() => console.log("microtask after sleep"))
     console.log("slept")
 }, 10 * time.millisecond)
-time.timeout(() => console.log("timeout 25, due during sleep"), 25 * time.millisecond)
