@@ -1,0 +1,48 @@
+// The spectral norm of an infinite matrix, from the Computer Language
+// Benchmarks Game: floating-point loops over arrays.
+
+function a(i: int, j: int): f64 {
+    return 1.0 / f64(((i + j) * (i + j + 1)) / 2 + i + 1)
+}
+
+function multiplyAv(n: int, v: f64[], av: f64[]) {
+    for (let i = 0; i < n; i++) {
+        let sum = 0.0
+        for (let j = 0; j < n; j++) sum += a(i, j) * v[j]
+        av[i] = sum
+    }
+}
+
+function multiplyAtv(n: int, v: f64[], atv: f64[]) {
+    for (let i = 0; i < n; i++) {
+        let sum = 0.0
+        for (let j = 0; j < n; j++) sum += a(j, i) * v[j]
+        atv[i] = sum
+    }
+}
+
+function multiplyAtAv(n: int, v: f64[], out: f64[], tmp: f64[]) {
+    multiplyAv(n, v, tmp)
+    multiplyAtv(n, tmp, out)
+}
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 4000) : 4000
+const u: f64[] = []
+const v: f64[] = []
+const tmp: f64[] = []
+for (let i = 0; i < n; i++) {
+    u.push(1)
+    v.push(0)
+    tmp.push(0)
+}
+for (let i = 0; i < 10; i++) {
+    multiplyAtAv(n, u, v, tmp)
+    multiplyAtAv(n, v, u, tmp)
+}
+let vBv = 0.0
+let vv = 0.0
+for (let i = 0; i < n; i++) {
+    vBv += u[i] * v[i]
+    vv += v[i] * v[i]
+}
+console.log(Math.sqrt(vBv / vv).toFixed(9))
