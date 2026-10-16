@@ -13,11 +13,18 @@ export class NativeCode {
     libDirs: string[] = []
 }
 
-/** The native code of the packages of the modules at these paths ("ore:" modules have none). */
+/**
+ * The native code of the packages of the modules at these paths, and the
+ * libraries of the standard modules that need one ("ore:tls").
+ */
 export function nativeCode(paths: string[]): NativeCode | Error {
     const native = new NativeCode()
     const roots = new Set<string>()
     for (const path of paths) {
+        if (path === "ore:tls") {
+            const error = addOpenssl(native)
+            if (error !== null) return error
+        }
         if (path.startsWith("ore:")) continue
         const root = findPackageRoot(dirname(resolve(path)))
         if (root === null || roots.has(root)) continue
@@ -40,6 +47,32 @@ export function nativeCode(paths: string[]): NativeCode | Error {
         }
     }
     return native
+}
+
+/**
+ * OpenSSL 3, for "ore:tls". On Linux, the system's libssl.so.3 and
+ * libcrypto.so.3 by their file names, so that the run-time package (libssl3)
+ * is enough, without the development one. On macOS, Homebrew's openssl@3: the
+ * system has no OpenSSL to link against.
+ */
+function addOpenssl(native: NativeCode): Error | null {
+    if (target.os !== "darwin") {
+        native.link.push(":libssl.so.3")
+        native.link.push(":libcrypto.so.3")
+        return null
+    }
+    let found = false
+    for (const dir of ["/opt/homebrew/opt/openssl@3/lib", "/usr/local/opt/openssl@3/lib"]) {
+        if (!fs.isFile(join(dir, "libssl.3.dylib"))) continue
+        found = true
+        if (!native.libDirs.includes(dir)) native.libDirs.push(dir)
+    }
+    // $LIBRARY_PATH may name another.
+    if (!found && process.getenv("LIBRARY_PATH") === null)
+        return new Error("ore:tls needs OpenSSL 3: brew install openssl@3")
+    native.link.push("ssl")
+    native.link.push("crypto")
+    return null
 }
 
 /**

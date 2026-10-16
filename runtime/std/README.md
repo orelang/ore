@@ -42,7 +42,10 @@ The standard library.
     `now()` and `timeOrigin` in milliseconds as `number`, marks and
     measures (`mark`, `measure`, `getEntries`...).
 - Modules imported as `ore:<name>`: `ore:sync` (`Mutex`, `WaitGroup`),
-  `ore:net` (TCP `listen`, `Listener`, `Conn`), `ore:test` (`test`,
+  `ore:net` (TCP `listen`, `Listener`, `Conn`), `ore:tls` (TLS
+  `connect`, `createServer`, `Connection`, `Server`, on the system's OpenSSL
+  3 through `declare function`; the driver links libssl and libcrypto only
+  into programs that import it, see `compiler/src/driver/native.ore`), `ore:test` (`test`,
   `describe`, the hooks, `expect` and its matchers, used by `ore test`), `ore:crypto` (`sha256`, the incremental
   `Sha256`, and `randomUUIDv4`, `randomUUIDv7` of RFC 9562 from the
   system's secure random numbers, getentropy(3), as the global `crypto` has them), `ore:path` (`join`, `dirname`, `basename`, `extname`,

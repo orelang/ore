@@ -36,7 +36,6 @@ before 1.0, a minor version may change the language.
   async function of a `Promise<void>`.
 - The inference of a generic call takes the getters of a class for the
   fields of an interface: `stream.pipeThrough(new TextDecoderStream())`.
-
 - Async generators and `for await`, as in JavaScript: `async function*`
   declarations and expressions, `async *method()` (also `async
   *[Symbol.asyncIterator]()` and in object literals) return an
@@ -347,6 +346,20 @@ before 1.0, a minor version may change the language.
   [AsyncGenerator] {}`; a generator, which holds its fiber, was an error
   (ORE3060), and the others printed their fields. Generators and async
   generators have `toString()`, `[object Generator]`, as in JavaScript.
+- The standard module `ore:tls`: TLS 1.2 and 1.3 clients and servers over
+  TCP, from the system's OpenSSL 3. `connect({ host, port, servername?, ca?,
+  rejectUnauthorized?, alpnProtocols? })` completes the handshake and
+  returns a `Connection` (`read`, `readAll`, `write`, `close`,
+  `alpnProtocol`, `authorized`) or an `Error` worded as Node's (`unable to
+  get local issuer certificate`, `Hostname/IP does not match certificate's
+  altnames: ...`); the certificate is verified against the system's trusted
+  ones, or `ca`, and the host name or address, and SNI is sent.
+  `createServer({ cert, key, alpnProtocols? })` gives a `Server` to
+  `listen` and `accept` on. Tasks wait for the socket on the network poller,
+  never blocking a thread. Only programs that import `ore:tls` link with
+  OpenSSL: on Linux its run-time library (`libssl.so.3`), on macOS
+  Homebrew's `openssl@3`; `install.sh` checks for it and offers to install
+  it.
 
 ## 0.5.0
 

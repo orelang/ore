@@ -148,7 +148,7 @@ say() { printf '%s\n' "$*"; }
 detail() { [ -z "$verbose" ] || printf '    %s%s%s\n' "$o_dim" "$*" "$o_off"; }
 
 step=0
-steps=5
+steps=6
 cr=
 [ -n "$live" ] && cr="$(printf '\r')${esc}[K"
 # A step's line: its mark, its number and its text.
@@ -427,7 +427,67 @@ else
     fi
 fi
 
-# --- 2. Download --------------------------------------------------------------
+# --- 2. OpenSSL 3, for programs that import ore:tls ---------------------------
+
+# Programs that import ore:tls link with OpenSSL 3; others do not need it, so
+# without it ore is installed all the same.
+begin "Checking OpenSSL 3 (for ore:tls)"
+if [ "$os" = linux ]; then
+    found=
+    for dir in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /lib/x86_64-linux-gnu /lib/aarch64-linux-gnu /usr/lib64 /lib64 /usr/lib /lib; do
+        [ -f "$dir/libssl.so.3" ] && found=$dir && break
+    done
+    if [ -n "$found" ]; then
+        ok "OpenSSL 3 is there $o_dim($found/libssl.so.3)$o_off"
+    else
+        pm= pkg=
+        if command -v apt-get >/dev/null; then pm=apt-get pkg=libssl3
+        elif command -v dnf >/dev/null; then pm=dnf pkg=openssl-libs
+        elif command -v yum >/dev/null; then pm=yum pkg=openssl-libs
+        elif command -v zypper >/dev/null; then pm=zypper pkg=libopenssl3
+        elif command -v pacman >/dev/null; then pm=pacman pkg=openssl
+        fi
+        [ -n "$live" ] && printf '\n'
+        if [ -n "$pm" ] && ask "Install $pkg with $pm, for programs that import ore:tls (it needs root, through sudo)" y; then
+            if [ "$(id -u)" != 0 ]; then say "    ${o_dim}sudo may ask for your password$o_off"; fi
+            live_was=$live
+            live=
+            if case $pm in
+                apt-get) run "" as_root apt-get update -qq && run "" as_root apt-get install -y -qq libssl3 ;;
+                dnf | yum) run "" as_root "$pm" install -y -q openssl-libs ;;
+                zypper) run "" as_root zypper --non-interactive install libopenssl3 ;;
+                pacman) run "" as_root pacman -S --noconfirm --needed openssl ;;
+            esac; then
+                live=$live_was
+                ok "Installed $pkg with $pm"
+            else
+                live=$live_was
+                note "Installing $pkg with $pm failed: programs that import ore:tls will not link until OpenSSL 3 is installed"
+            fi
+        else
+            note "OpenSSL 3 (libssl.so.3) is missing: programs that import ore:tls will not link until it is installed"
+        fi
+    fi
+else
+    if [ -f /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib ] || [ -f /usr/local/opt/openssl@3/lib/libssl.3.dylib ]; then
+        ok "OpenSSL 3 is there $o_dim(Homebrew's openssl@3)$o_off"
+    elif command -v brew >/dev/null; then
+        [ -n "$live" ] && printf '\n'
+        if ask "Install openssl@3 with Homebrew, for programs that import ore:tls" y; then
+            if run "Installing openssl@3 with Homebrew$dots" brew install openssl@3; then
+                ok "Installed openssl@3 with Homebrew"
+            else
+                note "Installing openssl@3 failed: programs that import ore:tls will not link until it is installed"
+            fi
+        else
+            note "openssl@3 is missing: programs that import ore:tls will not link until it is (brew install openssl@3)"
+        fi
+    else
+        note "OpenSSL 3 is missing: programs that import ore:tls need Homebrew's openssl@3 (https://brew.sh, then brew install openssl@3)"
+    fi
+fi
+
+# --- 3. Download --------------------------------------------------------------
 
 begin "Downloading $name.tar.gz"
 # Its size (and whether it is there) from a HEAD request, for the progress.
@@ -446,7 +506,7 @@ run "Downloading" curl -fsSL -o "$work/$name.tar.gz" "$base/$name.tar.gz" ||
 progress_file= progress_total=
 ok "Downloaded $name.tar.gz $o_dim($(size "$(wc -c <"$work/$name.tar.gz")"))$o_off"
 
-# --- 3. Checksum --------------------------------------------------------------
+# --- 4. Checksum --------------------------------------------------------------
 
 begin "Checking it against the release's SHA256SUMS"
 run "Checking it against the release's SHA256SUMS" curl -fsSL -o "$work/SHA256SUMS" "$base/SHA256SUMS" ||
@@ -462,7 +522,7 @@ detail "actual   $actual"
     "Expected $expected" "Got      $actual" "The download is damaged or was altered on the way; try again."
 ok "The SHA-256 sum matches $o_dim(${actual%"${actual#????????????}"}$dots)$o_off"
 
-# --- 4. Install ---------------------------------------------------------------
+# --- 5. Install ---------------------------------------------------------------
 
 begin "Unpacking into $(pretty "$home/versions/$tag")"
 mkdir -p "$home/versions" "$home/bin" 2>>"$work/log" ||
@@ -480,7 +540,7 @@ runs=$("$home/bin/ore" version 2>>"$work/log") ||
     die "The installed ore does not run" "Why: $(tail -n 1 "$work/log")" "Binary: $home/versions/$tag/bin/ore"
 ok "Installed ore $runs in $o_code$(pretty "$home/bin/ore")$o_off $o_dim$m_link versions/$tag$o_off"
 
-# --- 5. PATH ------------------------------------------------------------------
+# --- 6. PATH ------------------------------------------------------------------
 
 begin "Checking PATH"
 [ -n "$live" ] && printf '\r%s[K' "$esc"

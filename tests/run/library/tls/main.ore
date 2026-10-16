@@ -1,0 +1,128 @@
+// threads: 4
+
+// A TLS server and its clients in one program, with the test certificates of
+// ./certs (public, for tests only): a CA, and a certificate it signed for
+// localhost and 127.0.0.1. No test reaches the network.
+
+import { connect as tcpConnect, listen as tcpListen } from "ore:net"
+import { connect, createServer } from "ore:tls"
+import ca from "./certs/ca.pem" with { type: "text" }
+import cert from "./certs/cert.pem" with { type: "text" }
+import key from "./certs/key.pem" with { type: "text" }
+
+// An echo server: each connection is served by its own task, which reads
+// lines until the client closes.
+const server = createServer({ cert, key, alpnProtocols: ["http/1.1"] })
+if (server instanceof Error) process.panic(server.message)
+const listening = server.listen(0)
+if (listening !== null) process.panic(listening.message)
+const port = server.port
+task.spawn(() => {
+    for (;;) {
+        const conn = server.accept()
+        if (conn instanceof Error) return
+        task.spawn(() => {
+            using c = conn
+            for (;;) {
+                const data = c.read()
+                if (data instanceof Error || data.length === 0) return
+                if (c.write(data.toUpperCase()) !== null) return
+            }
+        })
+    }
+})
+
+/** Writes `message` and reads its echo. */
+function echo(host: string, message: string): string {
+    const conn = connect({ host, port: port, ca })
+    if (conn instanceof Error) return conn.message
+    using c = conn
+    const written = c.write(message)
+    if (written !== null) return written.message
+    let echoed = ""
+    while (echoed.length < message.length) {
+        const part = c.read()
+        if (part instanceof Error) return part.message
+        if (part.length === 0) break
+        echoed += part
+    }
+    return echoed
+}
+
+// By name and by address: the certificate has both.
+console.log(echo("localhost", "hello, tls"))
+console.log(echo("127.0.0.1", "by address"))
+
+// ALPN: the server's choice among the client's offers.
+const negotiated = connect({ host: "localhost", port: port, ca, alpnProtocols: ["h2", "http/1.1"] })
+if (negotiated instanceof Error) process.panic(negotiated.message)
+console.log(negotiated.alpnProtocol, negotiated.authorized)
+negotiated.close()
+const none = connect({ host: "localhost", port: port, ca })
+if (none instanceof Error) process.panic(none.message)
+console.log(none.alpnProtocol)
+none.close()
+// No protocol in common: the server refuses the handshake.
+console.log(connect({ host: "localhost", port: port, ca, alpnProtocols: ["h2"] }) instanceof Error)
+
+// Large messages, from many clients at once: reads and writes wait on the poller.
+const clients = 20
+const results = new Chan<int>()
+for (let i = 0; i < clients; i++) {
+    task.spawn(() => {
+        const message = `client ${i} `.repeat(20000)
+        results.send(echo("localhost", message) === message.toUpperCase() ? 1 : 0)
+    })
+}
+let ok = 0
+for (let i = 0; i < clients; i++) ok += results.receive() ?? 0
+console.log(ok, "of", clients)
+
+// Verification: the test CA is not among the system's.
+const untrusted = connect({ host: "localhost", port: port })
+console.log(untrusted instanceof Error ? untrusted.message : "connected")
+const mismatch = connect({ host: "localhost", port: port, ca, servername: "example.com" })
+console.log(mismatch instanceof Error ? mismatch.message : "connected")
+const wrongIp = connect({ host: "localhost", port: port, ca, servername: "127.0.0.2" })
+console.log(wrongIp instanceof Error ? wrongIp.message : "connected")
+
+// rejectUnauthorized: false connects, and tells why the certificate failed.
+const unchecked = connect({ host: "localhost", port: port, rejectUnauthorized: false })
+if (unchecked instanceof Error) process.panic(unchecked.message)
+console.log(unchecked.authorized, unchecked.authorizationError)
+unchecked.write("unchecked")
+const reply = unchecked.read()
+console.log(reply instanceof Error ? reply.message : reply)
+unchecked.close()
+console.log(unchecked.read() instanceof Error)
+
+// A server that does not speak TLS.
+const plain = tcpListen(0)
+if (plain instanceof Error) process.panic(plain.message)
+task.spawn(() => {
+    const conn = plain.accept()
+    if (conn instanceof Error) return
+    conn.write("HTTP/1.1 400 Bad Request\r\n\r\n")
+    conn.close()
+})
+console.log(connect({ host: "localhost", port: plain.port, ca }) instanceof Error)
+plain.close()
+
+// Bad options are errors.
+const noKey = createServer({ cert, key: "" })
+console.log(noKey instanceof Error && noKey.message.startsWith("key: "))
+const wrongKey = createServer({ cert, key: ca })
+console.log(wrongKey instanceof Error)
+const badCa = connect({ host: "localhost", port: port, ca: "nothing" })
+console.log(badCa instanceof Error ? badCa.message : "connected")
+const badProtocol = connect({ host: "localhost", port: port, ca, alpnProtocols: [""] })
+console.log(badProtocol instanceof Error ? badProtocol.message : "connected")
+const refused = connect({ host: "127.0.0.1", port: 1, ca })
+console.log(refused instanceof Error)
+
+// The ore:net client still works beside it.
+const raw = tcpConnect("127.0.0.1", port)
+console.log(raw instanceof Error)
+if (!(raw instanceof Error)) raw.close()
+server.close()
+console.log(server.accept() instanceof Error)

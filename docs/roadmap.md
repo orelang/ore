@@ -282,10 +282,13 @@ library (OpenSSL), packed with releases as libLLVM is. In order:
   `process.nextTick`).
 - The network: `fetch` with `Request` and `Response` over an HTTP/1.1 client,
   an HTTP server that takes a handler from `Request` to `Response` (as
-  `Bun.serve` and `Deno.serve`), `WebSocket`, and `https` with TLS.
+  `Bun.serve` and `Deno.serve`), `WebSocket`, and `https` with TLS. The
+  TLS underneath is done: `ore:tls`, clients and servers on OpenSSL 3 over
+  the network poller, with verification against the system's certificates,
+  SNI, hostname checks and ALPN.
 
 ## Later
 
 - Escape analysis for arrays of known size.
-- UDP, TLS and HTTP in the standard library.
+- UDP and HTTP in the standard library.
 - Snap package; Windows.

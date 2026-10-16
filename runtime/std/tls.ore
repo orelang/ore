@@ -1,0 +1,637 @@
+//ore:internal
+// The "ore:tls" module: TLS 1.2 and 1.3 over TCP, from the system's OpenSSL 3
+// (libssl and libcrypto, linked only into programs that import this module).
+// Sockets stay non-blocking: when OpenSSL wants to read or write and the
+// socket is not ready (SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE), the task
+// parks on the network poller, as in "ore:net", and tries again.
+//
+//   import { connect, createServer } from "ore:tls"
+//
+//   const conn = connect({ host: "example.com", port: 443, alpnProtocols: ["http/1.1"] })
+//
+// OpenSSL keeps its errors in a queue of the thread, and a task may resume
+// on another worker after waiting: every call is preceded by ERR_clear_error
+// and its error read right after it, before the task can wait.
+
+import { netWait } from "ore:runtime/poll"
+import { isNil, lock, nil, permanent, permanentMutex, unlock } from "ore:runtime/os"
+import { cString, errno, fromCString } from "ore:runtime/sys"
+
+// ---------------------------------------------------------------------------
+// OpenSSL 3 (libssl, libcrypto)
+
+declare function TLS_client_method(): ptr
+declare function TLS_server_method(): ptr
+declare function SSL_CTX_new(method: ptr): ptr
+declare function SSL_CTX_free(ctx: ptr): void
+declare function SSL_CTX_set_default_verify_paths(ctx: ptr): i32
+declare function SSL_CTX_get_cert_store(ctx: ptr): ptr
+declare function SSL_CTX_ctrl(ctx: ptr, command: i32, larg: i64, parg: ptr): i64
+declare function SSL_CTX_set_options(ctx: ptr, options: u64): u64
+declare function SSL_CTX_use_certificate(ctx: ptr, x509: ptr): i32
+declare function SSL_CTX_use_PrivateKey(ctx: ptr, key: ptr): i32
+declare function SSL_CTX_check_private_key(ctx: ptr): i32
+declare function SSL_CTX_set_alpn_select_cb(ctx: ptr, callback: ptr, argument: ptr): void
+declare function SSL_new(ctx: ptr): ptr
+declare function SSL_free(ssl: ptr): void
+declare function SSL_set_fd(ssl: ptr, fd: i32): i32
+declare function SSL_set_connect_state(ssl: ptr): void
+declare function SSL_set_accept_state(ssl: ptr): void
+declare function SSL_set_verify(ssl: ptr, mode: i32, callback: ptr): void
+declare function SSL_ctrl(ssl: ptr, command: i32, larg: i64, parg: ptr): i64
+declare function SSL_get0_param(ssl: ptr): ptr
+declare function SSL_set_alpn_protos(ssl: ptr, protocols: ptr, length: u32): i32
+declare function SSL_get0_alpn_selected(ssl: ptr, data: ptr, length: ptr): void
+declare function SSL_select_next_proto(
+    out: ptr,
+    outLength: ptr,
+    server: ptr,
+    serverLength: u32,
+    client: ptr,
+    clientLength: u32,
+): i32
+declare function SSL_do_handshake(ssl: ptr): i32
+declare function SSL_read(ssl: ptr, buffer: ptr, size: i32): i32
+declare function SSL_write(ssl: ptr, buffer: ptr, size: i32): i32
+declare function SSL_shutdown(ssl: ptr): i32
+declare function SSL_get_error(ssl: ptr, result: i32): i32
+declare function SSL_get_verify_result(ssl: ptr): i64
+declare function SSL_get1_peer_certificate(ssl: ptr): ptr
+declare function SSL_get_peer_cert_chain(ssl: ptr): ptr
+declare function X509_VERIFY_PARAM_set1_host(param: ptr, name: string, length: u64): i32
+declare function X509_VERIFY_PARAM_set1_ip_asc(param: ptr, address: string): i32
+declare function X509_VERIFY_PARAM_set_hostflags(param: ptr, flags: u32): void
+declare function X509_verify_cert_error_string(error: i64): string
+declare function X509_free(x509: ptr): void
+declare function X509_STORE_add_cert(store: ptr, x509: ptr): i32
+declare function X509_get_ext_d2i(x509: ptr, nid: i32, critical: ptr, index: ptr): ptr
+declare function GENERAL_NAMES_free(names: ptr): void
+declare function OPENSSL_sk_num(stack: ptr): i32
+declare function OPENSSL_sk_value(stack: ptr, index: i32): ptr
+declare function ASN1_STRING_get0_data(s: ptr): ptr
+declare function ASN1_STRING_length(s: ptr): i32
+declare function BIO_new_mem_buf(data: ptr, length: i32): ptr
+declare function BIO_free(bio: ptr): i32
+declare function PEM_read_bio_X509(bio: ptr, x509: ptr, callback: ptr, argument: ptr): ptr
+declare function PEM_read_bio_PrivateKey(bio: ptr, key: ptr, callback: ptr, argument: ptr): ptr
+declare function EVP_PKEY_free(key: ptr): void
+declare function ERR_get_error(): u64
+declare function ERR_clear_error(): void
+declare function ERR_error_string_n(error: u64, buffer: ptr, length: u64): void
+
+// libc
+declare function inet_pton(family: i32, text: string, address: ptr): i32
+declare function inet_ntop(family: i32, address: ptr, text: ptr, length: u32): ptr
+declare function strerror(error: i32): string
+declare function free(p: ptr): void
+
+// The constants of OpenSSL's headers (ssl.h, tls1.h, x509v3.h, x509_vfy.h).
+const sslErrorSsl = 1
+const sslErrorWantRead = 2
+const sslErrorWantWrite = 3
+const sslErrorSyscall = 5
+const sslErrorZeroReturn = 6
+const sslVerifyNone: i32 = 0
+const sslVerifyPeer: i32 = 1
+const sslCtrlExtraChainCert: i32 = 14
+const sslCtrlSetTlsextHostname: i32 = 55
+const sslCtrlSetMinProtoVersion: i32 = 123
+const tls12Version = 0x0303
+const tlsextNametypeHostName = 0
+/** SSL_OP_IGNORE_UNEXPECTED_EOF: a peer that closes without close_notify ends the stream, as before OpenSSL 3. */
+const sslOpIgnoreUnexpectedEof: u64 = 0x80
+/** X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS: "*.example.com", never "w*.example.com". */
+const noPartialWildcards: u32 = 0x4
+const sslTlsextErrOk: i32 = 0
+const sslTlsextErrAlertFatal: i32 = 2
+const opensslNpnNegotiated: i32 = 1
+const nidSubjectAltName: i32 = 85
+const genDns = 2
+const genIpAddress = 7
+const x509VOk = 0
+const x509VErrHostnameMismatch = 62
+const x509VErrIpAddressMismatch = 64
+
+const afInet: i32 = 2
+
+function afInet6(): i32 {
+    return target.os === "darwin" ? 30 : 10
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+
+/** The oldest error of OpenSSL's queue, as ERR_error_string_n writes it ("error:0A00010B:SSL routines::wrong version number"), or `fallback`. */
+function opensslError(prefix: string, fallback: string): Error {
+    const code = ERR_get_error()
+    ERR_clear_error()
+    if (code === 0) return new Error(`${prefix}${fallback}`)
+    const buffer = unsafe.allocBytes(256)
+    ERR_error_string_n(code, buffer, 256)
+    return new Error(`${prefix}${fromCString(buffer)}`)
+}
+
+/**
+ * The error of an operation that SSL_get_error says failed: the system's
+ * (SSL_ERROR_SYSCALL), the certificate's when verification failed, or
+ * OpenSSL's. Read right after the call, on its thread.
+ */
+function failure(ssl: ptr, kind: int, prefix: string, host: string): Error {
+    if (kind === sslErrorSyscall) {
+        const e = errno()
+        ERR_clear_error()
+        if (e === 0) return new Error(`${prefix}the connection was closed`)
+        return new Error(`${prefix}${strerror(e)}`)
+    }
+    const verified = SSL_get_verify_result(ssl)
+    if (kind === sslErrorSsl && verified !== x509VOk) {
+        ERR_clear_error()
+        return new Error(verifyMessage(ssl, verified, host))
+    }
+    return opensslError(prefix, "the TLS connection failed")
+}
+
+/**
+ * Node's message for a certificate that does not verify: OpenSSL's
+ * (X509_verify_cert_error_string, as Node has it: "unable to verify the
+ * first certificate", "self-signed certificate"...), but for a name that
+ * does not match, which Node words with the certificate's names.
+ */
+function verifyMessage(ssl: ptr, code: i64, host: string): string {
+    if (code !== x509VErrHostnameMismatch && code !== x509VErrIpAddressMismatch)
+        return X509_verify_cert_error_string(code)
+    const names = altNames(ssl)
+    if (isIpAddress(host))
+        return `Hostname/IP does not match certificate's altnames: IP: ${host} is not in the cert's list: ${names}`
+    return `Hostname/IP does not match certificate's altnames: Host: ${host}. is not in the cert's altnames: ${names}`
+}
+
+/** The subject alternative names of the peer's certificate, as Node writes them: "DNS:localhost, IP Address:127.0.0.1". */
+function altNames(ssl: ptr): string {
+    // The chain the server sent, which starts with its own certificate and
+    // which OpenSSL keeps when the verification fails, unlike the peer's
+    // certificate; the connection owns it.
+    const chain = SSL_get_peer_cert_chain(ssl)
+    if (isNil(chain) || OPENSSL_sk_num(chain) === 0) return ""
+    const names = X509_get_ext_d2i(OPENSSL_sk_value(chain, 0), nidSubjectAltName, nil(), nil())
+    if (isNil(names)) return ""
+    const parts: string[] = []
+    const count = OPENSSL_sk_num(names)
+    for (let i: i32 = 0; i < count; i++) {
+        // GENERAL_NAME: the type (an int), then a pointer to its value.
+        const name = OPENSSL_sk_value(names, i)
+        const kind = i64(unsafe.load<i32>(name))
+        const value = unsafe.load<ptr>(unsafe.add(name, 8))
+        const data = ASN1_STRING_get0_data(value)
+        const length = i64(ASN1_STRING_length(value))
+        if (kind === genDns) parts.push(`DNS:${fromCString(copyBytes(data, length))}`)
+        else if (kind === genIpAddress && (length === 4 || length === 16)) {
+            const text = unsafe.allocBytes(64)
+            inet_ntop(length === 4 ? afInet : afInet6(), data, text, 64)
+            parts.push(`IP Address:${fromCString(text)}`)
+        }
+    }
+    GENERAL_NAMES_free(names)
+    return parts.join(", ")
+}
+
+/** A NUL-terminated copy of `length` bytes at `p`. */
+function copyBytes(p: ptr, length: int): ptr {
+    const copy = unsafe.allocBytes(length + 1)
+    unsafe.copy(copy, p, length)
+    unsafe.store<u8>(unsafe.add(copy, length), 0)
+    return copy
+}
+
+/** Whether `host` is an IPv4 or IPv6 address rather than a name. */
+function isIpAddress(host: string): bool {
+    const address = unsafe.allocBytes(16)
+    return inet_pton(afInet, host, address) === 1 || inet_pton(afInet6(), host, address) === 1
+}
+
+// ---------------------------------------------------------------------------
+// Certificates and keys
+
+/** A memory BIO over a string, which must outlive it. */
+function memoryBio(pem: string): ptr {
+    return BIO_new_mem_buf(unsafe.stringData(pem), i32(pem.length))
+}
+
+/** Adds every certificate of a PEM text to the trusted ones of `ctx`; an Error when it has none. */
+function addTrusted(ctx: ptr, pem: string): Error | null {
+    ERR_clear_error()
+    const bio = memoryBio(pem)
+    const store = SSL_CTX_get_cert_store(ctx)
+    let count = 0
+    for (;;) {
+        const cert = PEM_read_bio_X509(bio, nil(), nil(), nil())
+        if (isNil(cert)) break
+        X509_STORE_add_cert(store, cert)
+        X509_free(cert)
+        count++
+    }
+    BIO_free(bio)
+    // The end of the text leaves "no start line" in the queue.
+    ERR_clear_error()
+    if (count === 0) return new Error("ca: no certificate in the PEM text")
+    return null
+}
+
+/** Uses the certificate chain and the key of PEM texts for a server's `ctx`. */
+function useCertificate(ctx: ptr, certPem: string, keyPem: string): Error | null {
+    ERR_clear_error()
+    let bio = memoryBio(certPem)
+    const leaf = PEM_read_bio_X509(bio, nil(), nil(), nil())
+    if (isNil(leaf)) {
+        BIO_free(bio)
+        return opensslError("cert: ", "no certificate in the PEM text")
+    }
+    const used = SSL_CTX_use_certificate(ctx, leaf)
+    X509_free(leaf)
+    if (used !== 1) {
+        BIO_free(bio)
+        return opensslError("cert: ", "the certificate cannot be used")
+    }
+    // The intermediate certificates, sent after the leaf; the context owns them.
+    for (;;) {
+        const cert = PEM_read_bio_X509(bio, nil(), nil(), nil())
+        if (isNil(cert)) break
+        SSL_CTX_ctrl(ctx, sslCtrlExtraChainCert, 0, cert)
+    }
+    BIO_free(bio)
+    ERR_clear_error()
+    bio = memoryBio(keyPem)
+    const key = PEM_read_bio_PrivateKey(bio, nil(), nil(), nil())
+    BIO_free(bio)
+    if (isNil(key)) return opensslError("key: ", "no private key in the PEM text")
+    const keyUsed = SSL_CTX_use_PrivateKey(ctx, key)
+    EVP_PKEY_free(key)
+    if (keyUsed !== 1) return opensslError("key: ", "the key cannot be used")
+    if (SSL_CTX_check_private_key(ctx) !== 1) return opensslError("key: ", "the key does not match the certificate")
+    return null
+}
+
+/** A context of `method` for TLS 1.2 and later; null when OpenSSL cannot make one, with its error queued. */
+function newContext(method: ptr): ptr {
+    ERR_clear_error()
+    const ctx = SSL_CTX_new(method)
+    if (isNil(ctx)) return ctx
+    SSL_CTX_ctrl(ctx, sslCtrlSetMinProtoVersion, tls12Version, nil())
+    SSL_CTX_set_options(ctx, sslOpIgnoreUnexpectedEof)
+    return ctx
+}
+
+/** The client context that trusts the system's certificates, made once and shared. */
+let systemContext: ptr
+const systemContextLock = permanentMutex()
+
+/**
+ * The system's trusted certificates are those of OpenSSL's default paths
+ * (SSL_CTX_set_default_verify_paths): on Linux the distribution's
+ * (/etc/ssl/certs), on macOS Homebrew's OpenSSL's cert.pem, which its
+ * ca-certificates keeps; $SSL_CERT_FILE and $SSL_CERT_DIR override them.
+ */
+function systemClientContext(): ptr {
+    lock(systemContextLock)
+    if (isNil(systemContext)) {
+        const ctx = newContext(TLS_client_method())
+        if (!isNil(ctx)) {
+            SSL_CTX_set_default_verify_paths(ctx)
+            ERR_clear_error()
+            systemContext = ctx
+        }
+    }
+    const ctx = systemContext
+    unlock(systemContextLock)
+    return ctx
+}
+
+// ---------------------------------------------------------------------------
+// ALPN
+
+/** An Error for a protocol name that is empty or longer than 255 bytes, which ALPN cannot send. */
+function checkProtocols(protocols: string[]): Error | null {
+    for (const p of protocols)
+        if (p.length === 0 || p.length > 255) return new Error(`alpnProtocols: invalid protocol name '${p}'`)
+    return null
+}
+
+/** Protocol names in ALPN's wire format, each after its length in a byte, in C memory (calloc), after their total length as a u32. */
+function alpnWire(protocols: string[]): ptr {
+    let size = 0
+    for (const p of protocols) size += 1 + p.length
+    const wire = permanent(4 + size)
+    unsafe.store<u32>(wire, u32(size))
+    let at = 4
+    for (const p of protocols) {
+        unsafe.store<u8>(unsafe.add(wire, at), u8(p.length))
+        unsafe.copy(unsafe.add(wire, at + 1), unsafe.stringData(p), p.length)
+        at += 1 + p.length
+    }
+    return wire
+}
+
+/**
+ * The server's choice among the protocols a client offers: its first that
+ * the client offers too. None in common ends the handshake with the alert
+ * no_application_protocol, as Node's servers do. Called by OpenSSL during
+ * the handshake, with the server's protocols from alpnWire as `argument`.
+ */
+function selectProtocol(ssl: ptr, out: ptr, outLength: ptr, offered: ptr, offeredLength: u32, argument: ptr): i32 {
+    const result = SSL_select_next_proto(
+        out,
+        outLength,
+        unsafe.add(argument, 4),
+        unsafe.load<u32>(argument),
+        offered,
+        offeredLength,
+    )
+    return result === opensslNpnNegotiated ? sslTlsextErrOk : sslTlsextErrAlertFatal
+}
+
+// ---------------------------------------------------------------------------
+// Connections
+
+/**
+ * A TLS connection. Close it when done, e.g. with `using conn = ...`. One
+ * task at a time may use it: OpenSSL's connections are not safe to read and
+ * write from two threads at once.
+ */
+export class Connection {
+    private closed = false
+    private handshaken = false
+    /** The protocol ALPN agreed on, such as "h2"; null when none was. */
+    alpnProtocol: string | null = null
+    /** Whether the peer's certificate verified; false for a client of a server, which asks for none. */
+    authorized = false
+    /** Why the peer's certificate did not verify, when it did not. */
+    authorizationError: string | null = null
+
+    constructor(
+        private ssl: ptr,
+        private fd: int,
+        /** The name the certificate was checked against, for messages. */
+        private host: string,
+    ) {}
+
+    /** Completes the handshake, which a server's connection does when first read or written. */
+    handshake(): Error | null {
+        if (this.closed) return new Error("handshake: the connection is closed")
+        if (this.handshaken) return null
+        for (;;) {
+            ERR_clear_error()
+            const result = SSL_do_handshake(this.ssl)
+            if (result === 1) break
+            const kind = i64(SSL_get_error(this.ssl, result))
+            if (kind === sslErrorWantRead) netWait(i32(this.fd), false)
+            else if (kind === sslErrorWantWrite) netWait(i32(this.fd), true)
+            else return failure(this.ssl, kind, "handshake: ", this.host)
+        }
+        this.handshaken = true
+        const verified = SSL_get_verify_result(this.ssl)
+        this.authorized = verified === x509VOk && hasPeerCertificate(this.ssl)
+        if (verified !== x509VOk) this.authorizationError = verifyMessage(this.ssl, verified, this.host)
+        const data = unsafe.allocBytes(16)
+        SSL_get0_alpn_selected(this.ssl, data, unsafe.add(data, 8))
+        const length = i64(unsafe.load<u32>(unsafe.add(data, 8)))
+        if (length > 0) this.alpnProtocol = fromCString(copyBytes(unsafe.load<ptr>(data), length))
+        return null
+    }
+
+    /** Reads what has arrived, up to `max` bytes, waiting for some; "" at the end of the stream. */
+    read(max: int = 65536): string | Error {
+        if (this.closed) return new Error("read: the connection is closed")
+        if (max <= 0) return new Error("read: the size must be positive")
+        const shaken = this.handshake()
+        if (shaken !== null) return shaken
+        const size = max > 1 << 30 ? 1 << 30 : max
+        const buffer = unsafe.allocBytes(size)
+        for (;;) {
+            ERR_clear_error()
+            const n = SSL_read(this.ssl, buffer, i32(size))
+            if (n > 0) return unsafe.makeString(buffer, i64(n))
+            const kind = i64(SSL_get_error(this.ssl, n))
+            if (kind === sslErrorZeroReturn) return ""
+            if (kind === sslErrorWantRead) netWait(i32(this.fd), false)
+            else if (kind === sslErrorWantWrite) netWait(i32(this.fd), true)
+            else if (kind === sslErrorSyscall && errno() === 0) return ""
+            else return failure(this.ssl, kind, "read: ", this.host)
+        }
+    }
+
+    /** Reads until the other side closes the connection. */
+    readAll(): string | Error {
+        let all = ""
+        for (;;) {
+            const chunk = this.read()
+            if (chunk instanceof Error) return chunk
+            if (chunk.length === 0) return all
+            all += chunk
+        }
+    }
+
+    /** Writes all of `data`. */
+    write(data: string): Error | null {
+        if (this.closed) return new Error("write: the connection is closed")
+        const shaken = this.handshake()
+        if (shaken !== null) return shaken
+        let done = 0
+        while (done < data.length) {
+            // A write that must wait is retried with the same arguments, as OpenSSL requires.
+            const size = data.length - done > 1 << 30 ? 1 << 30 : data.length - done
+            ERR_clear_error()
+            const n = SSL_write(this.ssl, unsafe.add(unsafe.stringData(data), done), i32(size))
+            if (n > 0) {
+                done += i64(n)
+                continue
+            }
+            const kind = i64(SSL_get_error(this.ssl, n))
+            if (kind === sslErrorWantRead) netWait(i32(this.fd), false)
+            else if (kind === sslErrorWantWrite) netWait(i32(this.fd), true)
+            else return failure(this.ssl, kind, "write: ", this.host)
+        }
+        return null
+    }
+
+    /** Sends close_notify, if the socket takes it at once, and closes the connection. */
+    close(): void {
+        if (this.closed) return
+        this.closed = true
+        if (this.handshaken) {
+            ERR_clear_error()
+            SSL_shutdown(this.ssl)
+            ERR_clear_error()
+        }
+        SSL_free(this.ssl)
+        internal.netClose(this.fd)
+    }
+
+    [Symbol.dispose](): void {
+        this.close()
+    }
+}
+
+/** Whether the peer sent a certificate. */
+function hasPeerCertificate(ssl: ptr): bool {
+    const cert = SSL_get1_peer_certificate(ssl)
+    if (isNil(cert)) return false
+    X509_free(cert)
+    return true
+}
+
+/** The options of `connect`. */
+export type ConnectOptions = {
+    /** The host to connect to: a name or an IP address. */
+    host: string
+    port: int
+    /** The name sent with SNI and checked against the certificate; `host` when left out. No SNI for an IP address. */
+    servername?: string
+    /** Certificates (PEM) to trust instead of the system's. */
+    ca?: string
+    /** Whether a certificate that does not verify fails the connection; true when left out. */
+    rejectUnauthorized?: bool
+    /** The protocols to offer with ALPN, preferred first, such as ["h2", "http/1.1"]. */
+    alpnProtocols?: string[]
+}
+
+/**
+ * Connects to a TLS server and completes the handshake. The server's
+ * certificate must verify against the system's trusted certificates (or
+ * `ca`) and name `servername` (or `host`), unless `rejectUnauthorized` is
+ * false. Errors read as Node's: "unable to verify the first certificate",
+ * "Hostname/IP does not match certificate's altnames: ...".
+ */
+export function connect(options: ConnectOptions): Connection | Error {
+    const name = options.servername ?? options.host
+    const reject = options.rejectUnauthorized ?? true
+    const ca = options.ca
+    const protocols = options.alpnProtocols ?? []
+    const invalid = checkProtocols(protocols)
+    if (invalid !== null) return invalid
+    const ctx = ca === null ? systemClientContext() : newContext(TLS_client_method())
+    if (isNil(ctx)) return opensslError("connect: ", "cannot create a TLS context")
+    if (ca !== null) {
+        const added = addTrusted(ctx, ca)
+        if (added !== null) {
+            SSL_CTX_free(ctx)
+            return added
+        }
+    }
+    ERR_clear_error()
+    const ssl = SSL_new(ctx)
+    // The connection keeps the context it needs; a context of its own goes with it.
+    if (ca !== null) SSL_CTX_free(ctx)
+    if (isNil(ssl)) return opensslError("connect: ", "cannot create a TLS connection")
+    const ip = isIpAddress(name)
+    if (!ip) SSL_ctrl(ssl, sslCtrlSetTlsextHostname, tlsextNametypeHostName, cString(name))
+    const param = SSL_get0_param(ssl)
+    X509_VERIFY_PARAM_set_hostflags(param, noPartialWildcards)
+    if (ip) X509_VERIFY_PARAM_set1_ip_asc(param, name)
+    else X509_VERIFY_PARAM_set1_host(param, name, 0)
+    SSL_set_verify(ssl, reject ? sslVerifyPeer : sslVerifyNone, nil())
+    if (protocols.length > 0) {
+        const wire = alpnWire(protocols)
+        SSL_set_alpn_protos(ssl, unsafe.add(wire, 4), unsafe.load<u32>(wire))
+        free(wire)
+    }
+    const fd = internal.netConnect(options.host, options.port)
+    if (fd instanceof Error) {
+        SSL_free(ssl)
+        return fd
+    }
+    SSL_set_fd(ssl, i32(fd))
+    SSL_set_connect_state(ssl)
+    const conn = new Connection(ssl, fd, name)
+    const shaken = conn.handshake()
+    if (shaken !== null) {
+        conn.close()
+        return shaken
+    }
+    return conn
+}
+
+// ---------------------------------------------------------------------------
+// Servers
+
+/** The options of `createServer`. */
+export type ServerOptions = {
+    /** The server's certificate (PEM), followed by the intermediate ones, if any. */
+    cert: string
+    /** The private key of the certificate (PEM). */
+    key: string
+    /** The protocols the server speaks with ALPN, preferred first; a client offering none of them is refused. */
+    alpnProtocols?: string[]
+}
+
+/** A TLS server: `listen`, then `accept` connections. */
+export class Server {
+    private fd = -1
+    private closed = false
+    /** The port listened on, also when 0 asked for any free one; -1 before `listen`. */
+    port = -1
+
+    constructor(private ctx: ptr) {}
+
+    /** Listens on a port of a host (by default only this machine; "" for every interface). Port 0 picks a free port. */
+    listen(port: int, host: string = "127.0.0.1"): Error | null {
+        if (this.closed) return new Error("listen: the server is closed")
+        if (this.fd >= 0) return new Error("listen: the server is listening already")
+        const fd = internal.netListen(host, port)
+        if (fd instanceof Error) return fd
+        this.fd = fd
+        this.port = internal.netPort(fd)
+        return null
+    }
+
+    /**
+     * Waits for the next connection. Its handshake is done when it is first
+     * read or written, or by `handshake()`, so a slow client does not hold up
+     * the next.
+     */
+    accept(): Connection | Error {
+        if (this.closed) return new Error("accept: the server is closed")
+        if (this.fd < 0) return new Error("accept: the server is not listening")
+        const fd = internal.netAccept(this.fd)
+        if (fd instanceof Error) return fd
+        ERR_clear_error()
+        const ssl = SSL_new(this.ctx)
+        if (isNil(ssl)) {
+            internal.netClose(fd)
+            return opensslError("accept: ", "cannot create a TLS connection")
+        }
+        SSL_set_fd(ssl, i32(fd))
+        SSL_set_accept_state(ssl)
+        return new Connection(ssl, fd, "")
+    }
+
+    /** Stops listening. Connections accepted stay open. */
+    close(): void {
+        if (this.closed) return
+        this.closed = true
+        if (this.fd >= 0) internal.netClose(this.fd)
+        // Connections hold references of their own to the context.
+        SSL_CTX_free(this.ctx)
+    }
+
+    [Symbol.dispose](): void {
+        this.close()
+    }
+}
+
+/** A TLS server with a certificate and its key; `listen` starts it. */
+export function createServer(options: ServerOptions): Server | Error {
+    const protocols = options.alpnProtocols ?? []
+    const invalid = checkProtocols(protocols)
+    if (invalid !== null) return invalid
+    const ctx = newContext(TLS_server_method())
+    if (isNil(ctx)) return opensslError("createServer: ", "cannot create a TLS context")
+    const used = useCertificate(ctx, options.cert, options.key)
+    if (used !== null) {
+        SSL_CTX_free(ctx)
+        return used
+    }
+    // The protocols are never freed: connections may still be in their handshakes when the server closes.
+    if (protocols.length > 0)
+        SSL_CTX_set_alpn_select_cb(ctx, unsafe.functionAddress(selectProtocol), alpnWire(protocols))
+    return new Server(ctx)
+}
