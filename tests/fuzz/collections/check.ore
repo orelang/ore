@@ -1,0 +1,94 @@
+// Runs the operations of tests/fuzz/collections/gen.mjs on Ore's Map, Set
+// and arrays and prints them as it prints JavaScript's results.
+
+type Step = [string, string, int, int]
+
+const file = fs.readFile(process.args[0])
+if (file instanceof Error) process.panic(file.message)
+const out: string[] = []
+let k = 0
+for (const line of file.split("\n")) {
+    if (line === "") continue
+    const steps = JSON.parse<Step[]>(line)
+    if (steps instanceof Error) process.panic(steps.message)
+    out.push(`== ${k++}`)
+    const m = new Map<string, int>()
+    const s = new Set<int>()
+    let a: int[] = []
+    for (const [op, x, y, z] of steps) {
+        switch (op) {
+            case "set":
+                m.set(x, y)
+                out.push(JSON.stringify(m.size))
+                break
+            case "get":
+                out.push(JSON.stringify(m.get(x)))
+                break
+            case "has":
+                out.push(JSON.stringify(m.has(x)))
+                break
+            case "delete":
+                out.push(JSON.stringify(m.delete(x)))
+                break
+            case "clear":
+                m.clear()
+                s.clear()
+                out.push(JSON.stringify(m.size + s.size))
+                break
+            case "sadd":
+                s.add(y)
+                out.push(JSON.stringify(s.size))
+                break
+            case "shas":
+                out.push(JSON.stringify(s.has(y)))
+                break
+            case "sdelete":
+                out.push(JSON.stringify(s.delete(y)))
+                break
+            case "push":
+                out.push(JSON.stringify(a.push(y)))
+                break
+            case "pop":
+                out.push(a.length > 0 ? JSON.stringify(a.pop()) : `"empty"`)
+                break
+            case "shift":
+                out.push(a.length > 0 ? JSON.stringify(a.shift()) : `"empty"`)
+                break
+            case "unshift":
+                out.push(JSON.stringify(a.unshift(y, z)))
+                break
+            case "splice":
+                out.push(JSON.stringify(a.splice(y, z, y * z)))
+                break
+            case "reverse":
+                a.reverse()
+                out.push(JSON.stringify(a))
+                break
+            case "sort":
+                a.sort((p, q) => p - q)
+                out.push(JSON.stringify(a))
+                break
+            case "indexOf":
+                const found: [int, int, bool] = [a.indexOf(y), a.lastIndexOf(y), a.includes(y)]
+                out.push(JSON.stringify(found))
+                break
+            case "fill":
+                a.fill(z, y, y + 2)
+                out.push(JSON.stringify(a))
+                break
+            case "copyWithin":
+                a.copyWithin(y, z)
+                out.push(JSON.stringify(a))
+                break
+            case "flat":
+                a = [a.slice(0, 2), a.slice(2)].flat()
+                out.push(JSON.stringify(a.length))
+                break
+        }
+    }
+    out.push(JSON.stringify([...m]))
+    out.push(JSON.stringify([...s]))
+    out.push(JSON.stringify([...m.keys()].join()))
+    out.push(JSON.stringify(a))
+}
+console.log(out.join("\n"))
