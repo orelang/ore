@@ -161,8 +161,7 @@ as a computed method name of classes and interfaces, and in
   a class is an `Iterable<T>` when its `[Symbol.iterator]()` is declared to
   return `Iterator<T>`. Ore writes `null` where TypeScript has `undefined`,
   so `TNext` defaults to `null`, and a void `TReturn` is `null` at run
-  time. Iterator helpers (`map`, `filter`, `toArray` of ES2025) are not
-  supported yet.
+  time.
 - `for (const x of iterable)`, `[...iterable]`, `Array.from(iterable)`,
   `new Set(iterable)`, `new Map(iterable)` (of `[key, value]` tuples) and
   `yield* iterable` take any iterable: arrays, strings (`[...s]` and
@@ -178,6 +177,37 @@ as a computed method name of classes and interfaces, and in
   length at each step, a map or set iterator visits the entries in
   insertion order as it reaches them, those added meanwhile included, and
   a finished iterator stays done.
+- Iterator helpers (ES2025): generators, the iterators of `values()`,
+  `keys()` and `entries()` and the helpers' results extend the global
+  abstract class `IteratorObject<T, TReturn = void, TNext = null>`
+  (TypeScript's name for JavaScript's `Iterator.prototype`), which has
+  `map`, `filter`, `take`, `drop`, `flatMap`, `reduce`, `toArray`,
+  `forEach`, `some`, `every` and `find` (`T | null`). Callbacks receive
+  `(value, index)`, the index counting the values passed to the callback
+  before, and may declare fewer parameters; predicates return `bool`.
+  `map`, `filter`, `take`, `drop` and `flatMap` return lazy iterators
+  (`[object Iterator Helper]`), iterable too, that step their source only
+  as far as each of their own steps needs: `g().map(f).take(2)` runs `g`
+  to its second `yield` when the second value is asked for, and the step
+  after it ends `g`. A helper that ends before its source (`take` at its
+  limit, or its `return()`, which `for...of` calls when it leaves early)
+  closes the source, a generator by its `return()`; `some`, `every` and
+  `find` close the iterator when they stop early, as `for...of` over an
+  `IteratorObject` does. `take(n)` and `drop(n)` take an `int` (not
+  `Infinity`) and panic with `RangeError: n must be positive` for a
+  negative one. The callback of `flatMap` returns an array, a set, a map
+  (its entries) or an iterator with the helpers, iterated in turn as
+  `yield*` does, on a generator of its own; strings are rejected, as in
+  JavaScript. `reduce(f)` without an initial value starts from the first
+  value, and panics with `TypeError: Reduce of a done iterator with no
+  initial value` when there is none. A class may extend `IteratorObject<T>`
+  with a `next()` of its own, as a JavaScript class extends `Iterator`, and
+  override `close()` (which does nothing by default) to be ended early.
+- `Iterator.from(iterable)` is an `IteratorObject` of the values of an
+  array, a set, a map's entries or an iterator with the helpers, read
+  lazily as `yield*` reads them; unlike JavaScript, it wraps an iterator
+  that has the helpers already, and does not take an object that has only
+  `next()`.
 - A generator function `function* f(): Generator<T, TReturn, TNext>`, a
   generator method `*m()` (also `*[Symbol.iterator]()`) or a generator
   function expression returns a `Generator<T, TReturn = void, TNext = null>`
@@ -200,7 +230,11 @@ as a computed method name of classes and interfaces, and in
   ignored, and a `yield` resumed by a `next()` without a value is `null`,
   which panics when `TNext` does not include it). `return(value)` ends the
   generator as if its body returned `value` at that `yield`, without
-  running the rest of it. `yield* other` yields the values of another
+  running the rest of it. A generator ended early without a value (by
+  `for...of` or an iterator helper) is then done with the value null, as
+  JavaScript's `undefined`; when `TReturn` does not include null, its
+  `next()` panics with `TypeError: Generator ended early without a return
+  value`. `yield* other` yields the values of another
   iterable; of a generator, it passes on the values sent with `next` and
   its value is the generator's return value. Calling `next` of a generator
   from its own body panics with `TypeError: Generator is already running`.

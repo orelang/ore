@@ -232,8 +232,11 @@ an LLVM coroutine. Left:
   caller and the generator's fiber, or compiling generators to state
   machines, would make it tens of nanoseconds. A generator dropped before
   its end keeps a parked stack until the program ends: the collector could
-  free the fibers of unreachable generators. Iterator helpers (ES2025
-  `map`, `filter`, `toArray`...) and async generators.
+  free the fibers of unreachable generators. Iterator helpers (done; the
+  callback results of `flatMap` are iterated on a generator each, a fiber
+  per inner iterable). Async generators. Strings have no iterator objects
+  (`s[Symbol.iterator]()`, nor `[Symbol.iterator]()` of arrays, maps and
+  sets), and `s.matchAll(re)` is an array, not a lazy iterator.
 
 ## Later
 

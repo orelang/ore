@@ -7,6 +7,7 @@
 import {
     type Expr,
     type Stmt,
+    ArrayLit,
     Block,
     Call,
     Closure,
@@ -18,7 +19,7 @@ import {
     Recast,
     ReturnStmt,
 } from "../ir/nodes"
-import { type StructType, type Type, FuncType, findMethod, sameType, types, typeToString } from "../ir/types"
+import { type StructType, type Type, FuncType, arrayOf, findMethod, sameType, types, typeToString } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { asteriskToken, body, expression } from "../syntax/nodes"
 import { type Checker } from "./base"
@@ -56,13 +57,23 @@ export function iteratorInstance(c: Checker, type: Type, name: string): Type[] |
     return info.args
 }
 
+/** Whether `type` is a class that extends `IteratorObject` of the runtime, with the iterator helpers. */
+export function isIteratorObject(c: Checker, type: Type): bool {
+    if (type.kind !== "struct") return false
+    const method = findMethod(type, "reduceFirst")
+    const decl = method !== null ? c.funcDecls.get(method.func) : null
+    return decl !== null && c.sourceOf(decl).path === iteratorModule
+}
+
 /**
  * The types of a generator function whose declared result type is `result`:
- * `Generator<T, TReturn, TNext>`, or an interface a generator converts to,
- * `Iterator<T, TReturn>` or `IterableIterator<T, TReturn>`. Reports any other.
+ * `Generator<T, TReturn, TNext>`, its base class `IteratorObject`, or an
+ * interface a generator converts to, `Iterator<T, TReturn>` or
+ * `IterableIterator<T, TReturn>`. Reports any other.
  */
 export function generatorTypes(c: Checker, result: Type, node: Node): GeneratorTypes | null {
     let args = iteratorInstance(c, result, "Generator")
+    if (args === null) args = iteratorInstance(c, result, "IteratorObject")
     if (args === null) args = iteratorInstance(c, result, "Iterator")
     if (args === null) args = iteratorInstance(c, result, "IterableIterator")
     if (args === null || args.length < 1) {
@@ -187,7 +198,11 @@ export function generatorBody(
     const make = iteratorFunc(c, "generator", [types_.value, types_.result, types_.next], decl)
     if (make === null) return null
     const closure: Expr = new Closure(func.type, func)
-    const made: Expr = new Call(genType!, make, [closure])
+    // What `next()` gives as the value once the generator is ended early: null, when its return type has it.
+    const closed: Expr[] = []
+    if (types_.result.kind === "void" || canBeNull(types_.result))
+        closed.push(c.coerce(typed(new NullLit(types.null)), types_.result, decl))
+    const made: Expr = new Call(genType!, make, [closure, new ArrayLit(arrayOf(types_.result), closed)])
     const result = declared ?? genType!
     return new GeneratorBody([new ReturnStmt(c.coerce(typed(made), result, decl))], result)
 }

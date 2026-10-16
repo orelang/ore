@@ -5,8 +5,14 @@
 // `for...of`, spread, `Array.from`, `new Map`, `new Set` and `yield*` take
 // any value with a `[Symbol.iterator]()` method, whose iterator's `next()`
 // returns an `IteratorResult` (declared in types.ore) until one is done.
-// The classes and interfaces `Generator`, `Iterator`, `Iterable` and
-// `IterableIterator` are global names.
+// The classes and interfaces `Generator`, `Iterator`, `Iterable`,
+// `IterableIterator` and `IteratorObject` are global names.
+//
+// Generators, the iterators of arrays, maps and sets, and the iterator
+// helpers' results extend `IteratorObject`, which has the iterator helpers
+// of ES2025 (`map`, `filter`, `take`... of JavaScript's `Iterator.prototype`):
+// lazy, they step their source only when they are stepped, and close it
+// (`close()`, a generator's `return()`) when they end before it does.
 //
 // A generator is a fiber of its own (see "Fibers" in task.ore), started by
 // the first `next()`: `next` hands the current task's turn to it, and
@@ -34,6 +40,272 @@ export interface IterableIterator<T, TReturn = void, TNext = null> {
     [Symbol.iterator](): IterableIterator<T, TReturn, TNext>
 }
 
+/**
+ * The type of the values of the iterable type R: what `for...of` and
+ * `yield*` give, the `[key, value]` entries of a map.
+ */
+export type IteratedOf<R> = R extends (infer E)[]
+    ? E
+    : R extends Set<infer E>
+      ? E
+      : R extends Map<infer K, infer V>
+        ? [K, V]
+        : R extends IteratorObject<infer E, infer TReturn, infer TNext>
+          ? E
+          : R extends IterableIterator<infer E, infer TReturn, infer TNext>
+            ? E
+            : R extends Iterable<infer E>
+              ? E
+              : never
+
+/**
+ * An iterator with the iterator helpers of ES2025, JavaScript's
+ * `Iterator.prototype` (TypeScript's `IteratorObject`): generators, the
+ * iterators of arrays, maps and sets and the helpers' results extend it.
+ * The helpers that return iterators are lazy: each step of the result
+ * steps this iterator as far as it needs. Callbacks receive the value and
+ * its index, the count of the values given to the callback before.
+ */
+export abstract class IteratorObject<T, TReturn = void, TNext = null> {
+    abstract next(): IteratorResult<T, TReturn>
+
+    /** The iterator itself. */
+    [Symbol.iterator](): IterableIterator<T, TReturn, TNext> {
+        return this
+    }
+
+    /**
+     * Ends the iterator before it is done, as JavaScript's `IteratorClose`
+     * calls `return()`: a generator returns, a helper closes its source.
+     * The iterators of arrays, maps and sets have nothing to end.
+     */
+    close(): void {}
+
+    /** The values passed through `mapper`. */
+    map<U>(mapper: (value: T, index: int) => U): IteratorHelper<U> {
+        let counter = 0
+        return new IteratorHelper<U>(
+            () => {
+                const r = this.next()
+                if (r.done) return { value: null, done: true }
+                return { value: mapper(r.value, counter++), done: false }
+            },
+            () => this.close(),
+        )
+    }
+
+    /** The values for which `predicate` is true. */
+    filter(predicate: (value: T, index: int) => bool): IteratorHelper<T> {
+        let counter = 0
+        return new IteratorHelper<T>(
+            () => {
+                while (true) {
+                    const r = this.next()
+                    if (r.done) return { value: null, done: true }
+                    if (predicate(r.value, counter++)) return { value: r.value, done: false }
+                }
+            },
+            () => this.close(),
+        )
+    }
+
+    /** The first `limit` values; the step after them closes this iterator. */
+    take(limit: int): IteratorHelper<T> {
+        if (limit < 0) process.panic(`RangeError: ${limit} must be positive`)
+        let remaining = limit
+        return new IteratorHelper<T>(
+            () => {
+                if (remaining === 0) {
+                    this.close()
+                    return { value: null, done: true }
+                }
+                remaining--
+                const r = this.next()
+                if (r.done) return { value: null, done: true }
+                return { value: r.value, done: false }
+            },
+            () => this.close(),
+        )
+    }
+
+    /** The values after the first `limit`, which the first step skips. */
+    drop(limit: int): IteratorHelper<T> {
+        if (limit < 0) process.panic(`RangeError: ${limit} must be positive`)
+        let remaining = limit
+        return new IteratorHelper<T>(
+            () => {
+                while (remaining > 0) {
+                    remaining--
+                    if (this.next().done) return { value: null, done: true }
+                }
+                const r = this.next()
+                if (r.done) return { value: null, done: true }
+                return { value: r.value, done: false }
+            },
+            () => this.close(),
+        )
+    }
+
+    /**
+     * The values of the iterables that `mapper` returns, in turn: arrays,
+     * sets, maps (their entries), generators and other iterables, each
+     * iterated as `yield*` iterates it, on a generator of its own.
+     */
+    flatMap<R extends object>(mapper: (value: T, index: int) => R): IteratorHelper<IteratedOf<R>> {
+        let counter = 0
+        // The generator of the current inner iterable: one element, or none between them.
+        let inner: Generator<IteratedOf<R>>[] = []
+        return new IteratorHelper<IteratedOf<R>>(
+            () => {
+                while (true) {
+                    if (inner.length > 0) {
+                        const r = inner[0].next()
+                        if (!r.done) return { value: r.value, done: false }
+                        inner = []
+                    }
+                    const r = this.next()
+                    if (r.done) return { value: null, done: true }
+                    inner = [flatten<R>(mapper(r.value, counter++))]
+                }
+            },
+            () => {
+                if (inner.length > 0) inner[0].close()
+                this.close()
+            },
+        )
+    }
+
+    /** The values, in an array. */
+    toArray(): T[] {
+        const out: T[] = []
+        while (true) {
+            const r = this.next()
+            if (r.done) return out
+            out.push(r.value)
+        }
+    }
+
+    /** Calls `fn` with each value. */
+    forEach(fn: (value: T, index: int) => void): void {
+        let counter = 0
+        while (true) {
+            const r = this.next()
+            if (r.done) return
+            fn(r.value, counter++)
+        }
+    }
+
+    /** Whether `predicate` is true for a value; the first one closes the iterator. */
+    some(predicate: (value: T, index: int) => bool): bool {
+        let counter = 0
+        while (true) {
+            const r = this.next()
+            if (r.done) return false
+            if (predicate(r.value, counter++)) {
+                this.close()
+                return true
+            }
+        }
+    }
+
+    /** Whether `predicate` is true for every value; the first for which it is not closes the iterator. */
+    every(predicate: (value: T, index: int) => bool): bool {
+        let counter = 0
+        while (true) {
+            const r = this.next()
+            if (r.done) return true
+            if (!predicate(r.value, counter++)) {
+                this.close()
+                return false
+            }
+        }
+    }
+
+    /** The first value for which `predicate` is true, which closes the iterator, or null. */
+    find(predicate: (value: T, index: int) => bool): T | null {
+        let counter = 0
+        while (true) {
+            const r = this.next()
+            if (r.done) return null
+            if (predicate(r.value, counter++)) {
+                this.close()
+                return r.value
+            }
+        }
+    }
+
+    /** The values folded by `reducer`, from `initialValue`. */
+    reduce<U>(reducer: (accumulator: U, value: T, index: int) => U, initialValue: U): U {
+        let accumulator = initialValue
+        let counter = 0
+        while (true) {
+            const r = this.next()
+            if (r.done) return accumulator
+            accumulator = reducer(accumulator, r.value, counter++)
+        }
+    }
+
+    /** `reduce(reducer)` without an initial value, which the compiler calls for it: from the first value. */
+    reduceFirst(reducer: (accumulator: T, value: T, index: int) => T): T {
+        const first = this.next()
+        if (first.done) process.panic("TypeError: Reduce of a done iterator with no initial value")
+        let accumulator = first.value
+        let counter = 1
+        while (true) {
+            const r = this.next()
+            if (r.done) return accumulator
+            accumulator = reducer(accumulator, r.value, counter++)
+        }
+    }
+}
+
+/**
+ * The iterator that `map`, `filter`, `take`, `drop` and `flatMap` return
+ * (JavaScript's `%IteratorHelperPrototype%`): `step` makes each value from
+ * the source, and `closing` closes the source when `return()` ends the
+ * helper first. Once done, it stays done.
+ */
+export class IteratorHelper<T> extends IteratorObject<T> {
+    private done = false
+
+    constructor(
+        private readonly step: () => IteratorResult<T, void>,
+        private readonly closing: () => void,
+    ) {
+        super()
+    }
+
+    next(): IteratorResult<T, void> {
+        if (this.done) return { value: null, done: true }
+        const r = this.step()
+        if (r.done) this.done = true
+        return r
+    }
+
+    /** Ends the helper and closes its source, unless it is done already. */
+    return(): IteratorResult<T, void> {
+        if (!this.done) {
+            this.done = true
+            this.closing()
+        }
+        return { value: null, done: true }
+    }
+
+    close(): void {
+        this.return()
+    }
+
+    /** `[object Iterator Helper]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Iterator Helper]"
+    }
+}
+
+/** The values of an iterable on a generator, as `yield*` gives them: what `flatMap` and `Iterator.from` iterate. */
+export function* flatten<R extends object>(iterable: R): Generator<IteratedOf<R>> {
+    yield* iterable
+}
+
 const created = 0
 const suspended = 1
 const running = 2
@@ -44,7 +316,7 @@ const finished = 3
  * its next `yield`, whose value it returns; `next(value)` also makes
  * `value` the result of the `yield` the body waits at.
  */
-export class Generator<T, TReturn = void, TNext = null> {
+export class Generator<T, TReturn = void, TNext = null> extends IteratorObject<T, TReturn, TNext> {
     /** The fiber of the body, from the first `next()` until it ends. */
     private fiber: Task | null = null
     private state = created
@@ -59,7 +331,13 @@ export class Generator<T, TReturn = void, TNext = null> {
     /** Ends the generator that a `yield*` of the body waits on, when this one ends there. */
     private inner: (() => void) | null = null
 
-    constructor(private readonly body: (generator: Generator<T, TReturn, TNext>) => TReturn) {}
+    constructor(
+        private readonly body: (generator: Generator<T, TReturn, TNext>) => TReturn,
+        /** The value of a generator ended early without one, by `close()`: null when TReturn has it, else none. */
+        private readonly closedValue: TReturn[],
+    ) {
+        super()
+    }
 
     /** Runs the body until its next `yield` (`done: false`) or its end (`done: true`). */
     next(): IteratorResult<T, TReturn> {
@@ -80,11 +358,6 @@ export class Generator<T, TReturn = void, TNext = null> {
         this.close()
         this.returned = [value]
         return { value, done: true }
-    }
-
-    /** The generator itself: generators are iterable once. */
-    [Symbol.iterator](): IterableIterator<T, TReturn, TNext> {
-        return this
     }
 
     /**
@@ -113,11 +386,13 @@ export class Generator<T, TReturn = void, TNext = null> {
             this.state = running
             handTo(this.fiber!)
         }
+        if (this.returned.length === 0) this.returned = this.closedValue
         this.state = finished
     }
 
     private result(yielded: bool): IteratorResult<T, TReturn> {
         if (yielded) return { value: this.yielded[0], done: false }
+        if (this.returned.length === 0) process.panic("TypeError: Generator ended early without a return value")
         return { value: this.returned[0], done: true }
     }
 
@@ -174,8 +449,9 @@ export class Generator<T, TReturn = void, TNext = null> {
 /** A generator whose body is `body`, given the generator for its `yield`s: what a generator function returns. */
 export function generator<T, TReturn, TNext>(
     body: (generator: Generator<T, TReturn, TNext>) => TReturn,
+    closedValue: TReturn[],
 ): Generator<T, TReturn, TNext> {
-    return new Generator<T, TReturn, TNext>(body)
+    return new Generator<T, TReturn, TNext>(body, closedValue)
 }
 
 /** `yield* inner` of a generator in the body of `self`: yields its values, passes on what `next` sends, returns its result. */
@@ -222,14 +498,16 @@ export function iteratorToArray<T>(iterator: Iterator<T>): T[] {
 // including those added meanwhile. Once done, an iterator stays done.
 
 /** The iterator of an array's `values()`, `keys()` and `entries()`: what `read` makes of each index. */
-export class ArrayIterator<E, T> {
+export class ArrayIterator<E, T> extends IteratorObject<T> {
     private index = 0
     private done = false
 
     constructor(
         private readonly items: E[],
         private readonly read: (items: E[], index: int) => T,
-    ) {}
+    ) {
+        super()
+    }
 
     next(): IteratorResult<T, void> {
         if (this.done || this.index >= this.items.length) {
@@ -241,10 +519,6 @@ export class ArrayIterator<E, T> {
         return { value, done: false }
     }
 
-    [Symbol.iterator](): IterableIterator<T> {
-        return this
-    }
-
     /** `[object Array Iterator]`, as JavaScript names it. */
     toString(): string {
         return "[object Array Iterator]"
@@ -252,17 +526,19 @@ export class ArrayIterator<E, T> {
 }
 
 /** The iterator of a map's `keys()`, `values()` and `entries()`: what `read` makes of each entry. */
-export class MapIterator<K, V, T> {
+export class MapIterator<K, V, T> extends IteratorObject<T> {
     private index = 0
     private done = false
 
     constructor(
-        private readonly map: Map<K, V>,
+        private readonly source: Map<K, V>,
         private readonly read: (key: K, value: V) => T,
-    ) {}
+    ) {
+        super()
+    }
 
     next(): IteratorResult<T, void> {
-        const m = unsafe.addressOf(this.map)
+        const m = unsafe.addressOf(this.source)
         while (!this.done && this.index < mapCount(m)) {
             const i = this.index
             this.index++
@@ -273,10 +549,6 @@ export class MapIterator<K, V, T> {
         return { value: null, done: true }
     }
 
-    [Symbol.iterator](): IterableIterator<T> {
-        return this
-    }
-
     /** `[object Map Iterator]`, as JavaScript names it. */
     toString(): string {
         return "[object Map Iterator]"
@@ -284,14 +556,16 @@ export class MapIterator<K, V, T> {
 }
 
 /** The iterator of a set's `values()`, `keys()` and `entries()`: what `read` makes of each element. */
-export class SetIterator<E, T> {
+export class SetIterator<E, T> extends IteratorObject<T> {
     private index = 0
     private done = false
 
     constructor(
         private readonly set: Set<E>,
         private readonly read: (value: E) => T,
-    ) {}
+    ) {
+        super()
+    }
 
     next(): IteratorResult<T, void> {
         const m = unsafe.addressOf(this.set)
@@ -303,10 +577,6 @@ export class SetIterator<E, T> {
         }
         this.done = true
         return { value: null, done: true }
-    }
-
-    [Symbol.iterator](): IterableIterator<T> {
-        return this
     }
 
     /** `[object Set Iterator]`, as JavaScript names it. */

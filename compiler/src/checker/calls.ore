@@ -2,7 +2,7 @@
 // `unsafe` and `JSON`), array and string methods.
 
 import { isProtocolIterable, toArray } from "./iteration"
-import { inferGenerator, iteratorFunc, iteratorInstance } from "./generators"
+import { inferGenerator, isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
 import { compileRegExp } from "../../../runtime/core/regexp-syntax"
 import {
     type Expr,
@@ -2429,7 +2429,9 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
     if (type.kind === "array" && type.readOnly && mutatingArrayMethods.includes(name))
         return c.fail(nameId, `Property '${name}' does not exist on type '${typeToString(type)}'.`)
 
-    const generic = type.kind === "struct" ? genericMethod(c, type, name) : null
+    // `iterator.reduce(f)` without an initial value is its `reduceFirst(f)`, whose accumulator has the values' type.
+    const methodName = name === "reduce" && args.length === 1 && isIteratorObject(c, type) ? "reduceFirst" : name
+    const generic = type.kind === "struct" ? genericMethod(c, type, methodName) : null
     if (typeArgs.length > 0 && generic === null)
         return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
     if (type.kind === "struct" && generic !== null) {
@@ -2460,7 +2462,7 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
     if (type.kind === "struct") {
         // `generator.next(value)` is its `send(value)`: the interface `Iterator` has a `next()` without arguments.
         const sends = name === "next" && args.length === 1 && iteratorInstance(c, type, "Generator") !== null
-        const method = findMethod(type, sends ? "send" : name)
+        const method = findMethod(type, sends ? "send" : methodName)
         if (method !== null) {
             defineMember(c, nameId, type, name)
             if (!checkAccess(c, type, method.private, name, nameId)) return errorOperand

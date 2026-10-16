@@ -39,6 +39,8 @@ Rules for this code:
 | `gc.ore` | The garbage collector: size-classed spans, per-thread allocation, a precise heap (a pointer map per type from the compiler), marking alongside the program behind a write barrier with two short stops, a pacer, sweeping, and giving free pages back to the system. Settings: `ORE_GOGC` (percent the heap grows between collections, 100; `off`), `ORE_MEMLIMIT` (a soft heap limit, e.g. `512M`), `ORE_GCPROCS` (markers), `ORE_GCSTW=1` (mark with the world stopped), `ORE_GCTRACE=1` (print each collection) |
 | `task.ore` | The M:N scheduler: tasks on mapped stacks, the context switch in assembly, workers, timers, the collector's view of task stacks; per-worker state of the clock and `Math.random` |
 | `sys.ore` | Allocation (`ore_rt_alloc`, inlined into every `new`), files, `Math.random`, C strings, conversion of interface values to narrower interfaces |
+| `iterator.ore` | Generators on fibers of their own, the iteration protocol, the iterators of arrays, maps and sets, and the iterator helpers of `IteratorObject` (`map`, `filter`, `take`, `flatMap`...) |
+| `iterator-from.ore` | The namespace `Iterator` (`Iterator.from`) |
 | `chan.ore` | Channels and `select` |
 | `poll.ore` | Waiting for sockets, pipes and the exit of children: the kqueue or epoll poller thread |
 | `fs.ore` | The namespace `fs` in Ore: directories, `stat`, `remove`, `rename`, `realpath`, temporary directories, with the `stat` and `dirent` layouts of each platform |

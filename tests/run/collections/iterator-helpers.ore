@@ -1,0 +1,189 @@
+// The iterator helpers of ES2025 on generators, the built-in iterators and
+// their own results: lazy, with the order of JavaScript's steps and closes.
+
+function* numbers(n: int): Generator<int> {
+    for (let i = 1; i <= n; i++) {
+        console.log("yield", i)
+        yield i
+    }
+}
+
+// map and take: the generator runs only as far as the values taken; the
+// step after the last one closes it, so it is done when asked again.
+const source = numbers(5)
+const firstTwo = source
+    .map((x, i) => {
+        console.log("map", x, i)
+        return x * 10
+    })
+    .take(2)
+console.log("nothing ran yet")
+for (const x of firstTwo) console.log("got", x)
+console.log(source.next())
+
+// filter, drop and the index of each callback.
+console.log(
+    numbers(6)
+        .filter((x, i) => {
+            console.log("filter", x, i)
+            return x % 2 === 0
+        })
+        .drop(1)
+        .toArray(),
+)
+
+// Leaving a loop over a helper early closes the helper and its source.
+const looped = numbers(9)
+for (const x of looped.map((x) => x + 1)) {
+    if (x > 2) break
+    console.log("loop", x)
+}
+console.log(looped.next())
+
+// flatMap: the iterables the mapper returns, in turn.
+console.log(
+    numbers(3)
+        .flatMap((x, i) => [x, i])
+        .toArray(),
+)
+function* twice(x: string): Generator<string> {
+    yield x
+    yield x
+}
+console.log(
+    ["a", "b"]
+        .values()
+        .flatMap((s) => twice(s))
+        .toArray(),
+)
+console.log(
+    new Set([1, 2])
+        .values()
+        .flatMap((x) => new Set([x, x * 100]))
+        .toArray(),
+)
+console.log(
+    [1]
+        .values()
+        .flatMap((x) => new Map<string, int>([["k", x]]))
+        .toArray(),
+)
+// return() of a flatMap in the middle of an inner generator closes both.
+const outer = numbers(3)
+let inner = numbers(0)
+const flat = outer.flatMap((x) => {
+    inner = numbers(x + 1)
+    return inner
+})
+console.log(flat.next(), flat.next())
+console.log(flat.return(), flat.next(), inner.next(), outer.next())
+
+// The helpers that consume: reduce, forEach, some, every, find; those that
+// stop early close the iterator.
+console.log(numbers(4).reduce((sum, x) => sum + x))
+console.log(numbers(3).reduce((s, x, i) => `${s}${x}@${i} `, ">"))
+numbers(2).forEach((x, i) => console.log("forEach", x, i))
+const searched = numbers(5)
+console.log(
+    searched.some((x) => x === 2),
+    searched.next(),
+)
+console.log(numbers(2).some((x) => x > 5))
+console.log(numbers(5).every((x) => x < 2))
+console.log(numbers(2).every((x) => x < 5))
+console.log(numbers(5).find((x) => x > 1))
+console.log(numbers(2).find((x) => x > 5))
+
+// The iterators of arrays, maps and sets.
+const words = ["one", "two", "three"]
+console.log(
+    words
+        .values()
+        .map((w) => w.toUpperCase())
+        .toArray(),
+)
+console.log(words.keys().reduce((a, b) => a + b, 0))
+console.log(
+    words
+        .entries()
+        .filter(([i, w]) => i > 0)
+        .map(([i, w]) => `${i}=${w}`)
+        .toArray(),
+)
+const ages = new Map<string, int>([
+    ["ann", 31],
+    ["bob", 17],
+])
+console.log(
+    ages
+        .entries()
+        .filter(([name, age]) => age >= 18)
+        .map(([name]) => name)
+        .toArray(),
+)
+console.log(
+    ages.keys().some((k) => k === "bob"),
+    ages.values().every((v) => v > 20),
+)
+console.log(new Set(["x", "y", "z"]).values().drop(1).take(1).toArray())
+
+// A helper is an iterator and an iterable: next() and spread.
+const squares = [1, 2, 3].values().map((x) => x * x)
+console.log(squares.next(), [...squares], squares.next())
+console.log(squares.toString())
+
+// An infinite generator, made finite by take.
+function* naturals(): Generator<int> {
+    let n = 0
+    while (true) yield n++
+}
+console.log(
+    naturals()
+        .filter((n) => n % 3 === 0)
+        .map((n) => n * n)
+        .take(4)
+        .toArray(),
+)
+
+// Iterator.from: any iterable, as an iterator with the helpers.
+console.log(Iterator.from([5, 6, 7]).drop(1).toArray())
+console.log(
+    Iterator.from(new Set(["p", "q"]))
+        .map((s) => s + s)
+        .toArray(),
+)
+console.log(Iterator.from(naturals()).take(3).toArray())
+
+// IteratorObject is the type of every iterator with the helpers; leaving a
+// loop over one early closes it.
+const some: IteratorObject<int> = [10, 20].values()
+console.log(some.map((x) => x + 1).toArray())
+const held: IteratorObject<int> = numbers(4)
+for (const x of held) if (x === 2) break
+console.log(held.next())
+
+// A class extending IteratorObject has the helpers; its close() is what
+// take, find and an early exit of for...of call, as JavaScript calls return().
+class Countdown extends IteratorObject<int> {
+    constructor(private n: int) {
+        super()
+    }
+
+    next(): IteratorResult<int> {
+        if (this.n === 0) return { value: null, done: true }
+        return { value: this.n--, done: false }
+    }
+
+    close(): void {
+        console.log("closed at", this.n)
+    }
+}
+console.log(
+    new Countdown(5)
+        .map((x) => x * 2)
+        .take(2)
+        .toArray(),
+)
+console.log(new Countdown(4).reduce((a, b) => a * b))
+console.log(new Countdown(4).find((x) => x < 4))
+for (const x of new Countdown(4)) if (x === 3) break

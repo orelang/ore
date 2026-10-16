@@ -1,0 +1,16 @@
+const it = [1, 2, 3].values()
+
+// flatMap takes iterables, which strings are not, as in JavaScript.
+it.flatMap((x) => "ab") // error: Type 'string' does not satisfy the constraint 'object' of 'R'.
+Iterator.from("ab") // error: Type 'string' does not satisfy the constraint 'object' of 'R'.
+
+// reduce without an initial value accumulates in the type of the values.
+it.reduce((a: string, x) => a) // error: Parameter type 'string' does not match the expected 'i64'.
+
+// A generic constraint `object` takes the types of objects.
+function keep<T extends object>(value: T): T {
+    return value
+}
+keep([1])
+keep(new Map<string, int>())
+keep(1) // error: Type 'i64' does not satisfy the constraint 'object' of 'T'.

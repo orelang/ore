@@ -43,6 +43,16 @@ before 1.0, a minor version may change the language.
   overrides them with the same signatures, and each signature implements an
   interface method of its type. Interfaces report overload signatures as not
   supported yet (ORE5066).
+- Iterator helpers of ES2025 on generators, the iterators of `values()`,
+  `keys()` and `entries()` and their own results: `map`, `filter`, `take`,
+  `drop`, `flatMap`, `reduce`, `toArray`, `forEach`, `some`, `every` and
+  `find`, lazy as in JavaScript, closing their source when they end before
+  it; the global class `IteratorObject` that has them, and
+  `Iterator.from(iterable)`. `infer` in a conditional type matches a
+  subclass of the generic class it names, and a type parameter may be
+  constrained by `object`.
+- `next()` of a generator that `for...of` left early is done with the
+  value null, where it panicked with an index out of range.
 
 ## 0.5.0
 

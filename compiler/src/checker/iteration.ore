@@ -34,7 +34,7 @@ import {
 import { type Type, arrayOf, findField, findMethod, types, typeToString } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Checker } from "./base"
-import { iteratorFunc, iteratorInstance } from "./generators"
+import { isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
 import { iteratorName, typed } from "./helpers"
 import { symbolMethodCall } from "./statements"
 
@@ -77,12 +77,12 @@ export function iteratorValue(c: Checker, iterator: Type): Type | null {
 
 /**
  * The iterator of an iterable value of a class or interface type: the value
- * itself for a generator, else its `[Symbol.iterator]()`. Reports a type
- * that is not iterable.
+ * itself for a generator or another `IteratorObject`, else its
+ * `[Symbol.iterator]()`. Reports a type that is not iterable.
  */
 export function iteratorOf(c: Checker, value: Expr, node: Node): Expr | null {
     const type = value.type
-    if (iteratorInstance(c, type, "Generator") !== null) return value
+    if (iteratorInstance(c, type, "Generator") !== null || isIteratorObject(c, type)) return value
     let builtin: Func | null = null
     if (type.kind === "array") builtin = iteratorFunc(c, "arrayValues", [type.elem], node)
     else if (type.kind === "set") builtin = iteratorFunc(c, "setValues", [type.elem], node)
@@ -135,7 +135,8 @@ export function toArray(c: Checker, value: Expr, node: Node): Expr | null {
  * statements that unpack it, `prologue`, before the body: a loop over its
  * iterator that ends when `next()` is done. When the loop is left early,
  * `return()` ends the iterator: for a generator always, for another
- * iterator when it has a `return()` without arguments.
+ * iterator when it has a `return()` without arguments, else for an
+ * `IteratorObject` by its `close()`.
  */
 export function protocolLoop(
     c: Checker,
@@ -168,7 +169,9 @@ export function protocolLoop(
         const doneLocal = c.newLocal("done", types.bool, true)
         first.push(new LetStmt(resultLocal, next))
         const finished: Stmt[] = []
-        const returning = symbolMethodCall(c, it, "return")
+        let returning = symbolMethodCall(c, it, "return")
+        // Else an `IteratorObject` is ended by its `close()`, which subclasses override.
+        if (returning === null && isIteratorObject(c, iterator.type)) returning = symbolMethodCall(c, it, "close")
         if (returning !== null) {
             finished.push(
                 new ExprStmt(new Assign(types.bool, new LocalLValue(doneLocal), new BoolLit(types.bool, true))),
