@@ -118,7 +118,7 @@ run)
     ;;
 submit)
     name=$2
-    shift
+    shift 2
     rm -f "$home/done/$name.status"
     printf '%s\n' "$@" >"$home/queue/$name.job.tmp"
     mv "$home/queue/$name.job.tmp" "$home/queue/$name.job"
