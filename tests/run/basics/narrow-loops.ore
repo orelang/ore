@@ -1,0 +1,58 @@
+// A narrowing return inside a loop body does not hold after the loop: the
+// body may run zero times, or `continue` and `break` may skip the return.
+function forOf(k: "a" | "b" | "c", xs: int[]): string {
+    for (const x of xs) {
+        if (x !== 1) continue
+        if (k !== "a") return "early"
+    }
+    switch (k) {
+        case "b":
+            return "b"
+        default:
+            return "other"
+    }
+}
+
+function whileLoop(k: "a" | "b" | "c", n: int): string {
+    let i = 0
+    while (i < n) {
+        i++
+        if (k !== "a") return "early"
+    }
+    return k === "b" ? "b" : "other"
+}
+
+function forLoop(k: "a" | "b" | "c", n: int): string {
+    for (let i = 0; i < n; i++) {
+        if (k !== "a") return "early"
+    }
+    return k === "c" ? "c" : "other"
+}
+
+function doWhile(k: "a" | "b" | "c", stop: boolean): string {
+    do {
+        if (stop) break
+        if (k !== "a") return "early"
+    } while (false)
+    return k === "b" ? "b" : "other"
+}
+
+function nullable(s: string | null, xs: int[]): int {
+    for (const _ of xs) {
+        if (s === null) return -1
+    }
+    return s === null ? 0 : s.length
+}
+
+console.log(forOf("b", []))
+console.log(forOf("b", [2, 3]))
+console.log(forOf("b", [1]))
+console.log(forOf("a", [1]))
+console.log(whileLoop("b", 0))
+console.log(whileLoop("b", 1))
+console.log(forLoop("c", 0))
+console.log(forLoop("c", 2))
+console.log(doWhile("b", true))
+console.log(doWhile("b", false))
+console.log(nullable(null, []))
+console.log(nullable("abc", [1]))

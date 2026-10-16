@@ -1,0 +1,37 @@
+class Node {
+    constructor(public value: int) {}
+}
+
+// A narrowing return in a loop body does not narrow after the loop.
+function f(n: Node | null, xs: int[]): int {
+    for (const _ of xs) {
+        if (n === null) return 0
+    }
+    return n.value // error: The value may be null
+}
+
+function g(n: Node | null, i: int): int {
+    while (i > 0) {
+        i--
+        if (n === null) return 0
+    }
+    return n.value // error: The value may be null
+}
+
+function h(n: Node | null, stop: boolean): int {
+    do {
+        if (stop) continue
+        if (n === null) return 0
+    } while (false)
+    return n.value // error: The value may be null
+}
+
+// Inside the body, the narrowing still holds after the return.
+function k(n: Node | null, xs: int[]): int {
+    let sum = 0
+    for (const x of xs) {
+        if (n === null) return 0
+        sum += n.value + x
+    }
+    return sum
+}

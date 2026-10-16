@@ -163,6 +163,8 @@ before 1.0, a minor version may change the language.
   letter and number categories and the Latin, Greek, Cyrillic and Han
   scripts, the strict syntax, case folding), the `v` flag (nested classes,
   `--` and `&&`) and the `d` flag (`m.indices`, `m.groupIndices`).
+- A narrowing `return` inside a loop body no longer narrows after the loop,
+  which may run zero times or skip the `return` with `continue` or `break`.
 
 ## 0.1.1
 

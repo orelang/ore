@@ -1191,7 +1191,11 @@ export function checkLoopBody(c: Checker, stmt: Node, scope: Scope): LoopBody {
     const loop = new LoopContext(fn.nextLoopId++, fn.pendingLabel)
     fn.pendingLabel = null
     fn.loops.push(loop)
+    // Facts from the body do not hold after the loop: it may run zero times,
+    // and `continue` or `break` may leave it before a narrowing return.
+    c.pushFacts([])
     const loopBody = checkNested(c, stmt, scope)
+    c.popFacts()
     fn.loops.pop()
     return new LoopBody(loop, loopBody)
 }
