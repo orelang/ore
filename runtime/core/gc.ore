@@ -186,8 +186,16 @@ let threadCount: int
 /** Serializes collections, and the slow path of allocation. */
 let gcLock: ptr
 let heapLock: ptr
-/** 1 while the world is stopped; the threads wait on it. */
+/** 1 while the world is stopped. */
 let stoppingCell: ptr
+/**
+ * Counts the stops and starts of the world: the word the stopped threads
+ * wait on. Waiting on `stoppingCell` would lose a start followed at once by
+ * the next stop (the word is 1 again when the thread goes to sleep), and the
+ * thread would never acknowledge that stop: its signal stays blocked while
+ * its handler waits.
+ */
+let epochCell: ptr
 /** The number of the current (or last) collection: a thread acknowledges a stop with it. */
 let generationCell: ptr
 /** The pause between checks of a waiting thread: a timespec. */
@@ -303,6 +311,7 @@ export function init(): void {
     switchState = permanent(8)
     allocatedCell = permanent(8)
     stoppingCell = permanent(8)
+    epochCell = permanent(8)
     generationCell = permanent(8)
     markingCell = permanent(8)
     pause = permanent(16)
@@ -901,15 +910,17 @@ function stopHere(t: ptr): void {
     unsafe.atomicStore<i64>(unsafe.add(t, threadStopRequested), 0)
     unsafe.atomicStore<ptr>(unsafe.add(t, threadSp), currentSp())
     // A late signal, after the collection it was for, stops nothing.
-    while (unsafe.atomicLoad<i64>(stoppingCell) !== 0) {
+    while (true) {
+        const epoch = unsafe.atomicLoad<i64>(epochCell)
+        if (unsafe.atomicLoad<i64>(stoppingCell) === 0) break
         // Acknowledged once per collection: one may start while the thread
         // still waits here for the previous one, and it waits on for that one.
         const generation = unsafe.atomicLoad<i64>(generationCell)
         if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) {
             unsafe.atomicStore<i64>(unsafe.add(t, threadStoppedFor), generation)
         }
-        // Asleep in the kernel until `startWorld` wakes it, instead of polling.
-        waitWord(stoppingCell, 1)
+        // Asleep in the kernel until the world starts or stops again, instead of polling.
+        waitWord(epochCell, epoch)
     }
 }
 
@@ -1390,6 +1401,8 @@ function stopWorld(self: ptr): int {
     while ((unsafe.atomicLoad<i64>(switchState) & ~switchWriter) !== 0) backoff(round++, pause)
     const generation = unsafe.atomicAdd<i64>(generationCell, 1) + 1
     unsafe.atomicStore<i64>(stoppingCell, 1)
+    unsafe.atomicAdd<i64>(epochCell, 1)
+    wakeWord(epochCell)
     // A parked thread is stopped already: it saw `stoppingCell` set if it
     // unparked before this read (both sides use sequentially consistent
     // atomics), and then stops itself. Others get the signal.
@@ -1432,7 +1445,8 @@ function stopWorld(self: ptr): int {
 /** Lets the threads `stopWorld` stopped run again. */
 function startWorld(): void {
     unsafe.atomicStore<i64>(stoppingCell, 0)
-    wakeWord(stoppingCell)
+    unsafe.atomicAdd<i64>(epochCell, 1)
+    wakeWord(epochCell)
     unsafe.atomicAnd<i64>(switchState, ~switchWriter)
 }
 
