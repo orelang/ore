@@ -1592,6 +1592,7 @@ export class Parser {
 
     type(): Node {
         if (this.at("LessThanToken")) return this.functionType()
+        if (this.at("NewKeyword")) return this.functionType()
         if (this.at("OpenParenToken")) {
             const functionType = this.speculate(() => this.functionType())
             if (functionType !== null) return functionType
@@ -1625,9 +1626,10 @@ export class Parser {
         return type
     }
 
+    /** `(params) => T`, or a constructor type, `new (params) => T`. */
     private functionType(): Node {
         const start = this.token().start
-        const node = new Node("FunctionType", start, start)
+        const node = new Node(this.eat("NewKeyword") ? "ConstructorType" : "FunctionType", start, start)
         if (this.at("LessThanToken")) node.addAll(this.typeParameters(), "typeParameters")
         node.addAll(this.parameters(), "parameters")
         this.expect("EqualsGreaterThanToken")
@@ -1734,7 +1736,8 @@ export class Parser {
                 return this.finish(node, start)
             }
         }
-        let name = this.identifier()
+        // `as const` names the type `const`, as in TypeScript.
+        let name = k === "ConstKeyword" ? this.identifierName() : this.identifier()
         while (this.at("DotToken")) {
             this.next()
             name = this.node("QualifiedName", start, [name, this.identifierName()], ["left", "right"])
@@ -1836,6 +1839,17 @@ export class Parser {
                 // The separator belongs to the member.
                 if (!this.eat("SemicolonToken")) this.eat("CommaToken")
                 members.push(this.finish(signature, start))
+                continue
+            }
+            const next = this.peek(1)
+            if ((this.at("GetKeyword") || this.at("SetKeyword")) && this.isPropertyNameStart(next.kind) && !next.newline) {
+                // `get x(): T` and `set x(value: T)`: accessor signatures.
+                const kind: NodeKind = this.at("GetKeyword") ? "GetAccessor" : "SetAccessor"
+                this.next()
+                const accessor = new Node(kind, start, start).addAll(modifiers, "modifiers").add(this.propertyName(), "name")
+                this.signature(accessor)
+                if (!this.eat("SemicolonToken")) this.eat("CommaToken")
+                members.push(this.finish(accessor, start))
                 continue
             }
             const name = this.propertyName()

@@ -135,6 +135,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2067](ORE2067.md) | Constant … is not assignable to type '…'. |
 | [ORE2068](ORE2068.md) | An index signature has one parameter and a type: '[key: string]: T'. |
 | [ORE2069](ORE2069.md) | The keys of a dictionary are strings, not '…'; for other keys, use a 'Map<K, V>'. |
+| [ORE2070](ORE2070.md) | The type '…' is 'readonly' and cannot be assigned to the mutable type '…'. |
 
 ## ORE3xxx: Expressions
 
@@ -231,6 +232,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE3089](ORE3089.md) | Only a member named by a string literal can be assigned to: 'object["name"] = value'. |
 | [ORE3090](ORE3090.md) | An entry of a dictionary is assigned with '=' or '??=': it is '…' when read. |
 | [ORE3091](ORE3091.md) | 'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'. |
+| [ORE3092](ORE3092.md) | 'as const' takes array literals without spread elements. |
+| [ORE3093](ORE3093.md) | 'as const' takes object literals of 'name: value' properties. |
 
 ## ORE4xxx: Calls and built-in functions
 

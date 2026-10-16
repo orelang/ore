@@ -117,6 +117,18 @@ before 1.0, a minor version may change the language.
   `new URL` panics with `TypeError: Invalid URL` where JavaScript throws.
   `console.log` and `JSON.stringify` write them as Node does. Domains
   outside ASCII are not converted to Punycode.
+- `as const`: literals keep their literal types, array literals are
+  read-only tuples and object literals have read-only fields, so
+  `(typeof Dirs)[number]` of `const Dirs = ["n", "s"] as const` is the
+  union `"n" | "s"`.
+- Interfaces and object types can declare fields with accessor
+  signatures, `get x(): T` (read-only) and `set x(value: T)`.
+- `readonly T[]` and `ReadonlyArray<T>` are enforced: the methods that
+  change an array and index assignment are errors through them, and a
+  read-only array does not convert to a mutable one. `readonly [A, B]` is a
+  tuple of read-only elements. New utility types: `InstanceType` and
+  `ConstructorParameters` of `typeof C` (a class's constructor type,
+  `new (params) => C`), and `NoInfer`.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

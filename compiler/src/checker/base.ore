@@ -48,6 +48,7 @@ import {
     isStringLike,
     isSubclass,
     membersOf,
+    readonlyTuple,
     sameType,
     typeKey,
     types,
@@ -455,7 +456,7 @@ export class Checker {
             return null
         }
         if (node.kind === "TypeLiteral") return this.resolveTypeLiteral(node, scope)
-        if (node.kind === "FunctionType") {
+        if (node.kind === "FunctionType" || node.kind === "ConstructorType") {
             const typeParams = typeParameters(node)
             if (typeParams.length > 0) {
                 this.error(typeParams[0], "Generic function types are not supported.")
@@ -505,6 +506,7 @@ export class Checker {
             const type = new FuncType(params, result)
             if (required !== -1) type.required = required
             type.rest = rest
+            type.construct = node.kind === "ConstructorType"
             return type
         }
         this.error(node, "This kind of type is not supported yet.")
@@ -647,10 +649,50 @@ export class Checker {
         return decls
     }
 
+    /**
+     * The field that an accessor signature of an interface or object type
+     * declares: `get x(): T` and `set x(value: T)` are a field `x: T`,
+     * read-only without a setter. Null for a setter that follows its getter,
+     * and after an error.
+     */
+    accessorSignature(member: Node, all: Node[], scope: Scope): Field | null {
+        const name = this.memberName(nameNode(member))
+        if (name === null) return null
+        const getter = member.kind === "GetAccessor"
+        let hasSetter = false
+        for (const m of all) {
+            if (m === member || (m.kind !== "GetAccessor" && m.kind !== "SetAccessor")) continue
+            if (this.text(nameNode(m)) !== name) continue
+            if (m.kind === "SetAccessor") hasSetter = true
+            // The pair declares one field, at its getter.
+            else if (!getter) return null
+        }
+        const params = parameters(member)
+        const annotation = getter ? typeNode(member) : params.length === 1 ? typeNode(params[0]) : null
+        if (annotation === null) {
+            this.error(
+                nameNode(member),
+                getter
+                    ? `Getter '${name}' must have a return type annotation.`
+                    : `Setter '${name}' must take one parameter with a type annotation.`,
+            )
+            return null
+        }
+        const type = this.resolveValueType(annotation, scope)
+        if (type === null) return null
+        this.info.types.set(nameNode(member), type)
+        return new Field(name, type, getter && !hasSetter)
+    }
+
     /** The fields of an object type `{ ... }`, in the order written. */
     literalFields(node: Node, scope: Scope): Field[] {
         const fields: Field[] = []
         for (const member of members(node)) {
+            if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
+                const field = this.accessorSignature(member, members(node), scope)
+                if (field !== null) fields.push(field)
+                continue
+            }
             if (member.kind !== "PropertySignature") {
                 this.error(
                     member,
@@ -811,13 +853,13 @@ export class Checker {
         return struct
     }
 
-    /** The interned tuple type of these element types. */
-    tupleOf(elems: Type[]): StructType {
-        const key = `[${elems.map(typeKey).join(",")}]`
+    /** The interned tuple type of these element types; a read-only tuple, `readonly [A, B]`, is a type of its own. */
+    tupleOf(elems: Type[], readOnly: bool = false): StructType {
+        const key = `${readOnly && elems.length > 0 ? "readonly " : ""}[${elems.map(typeKey).join(",")}]`
         let struct = this.shapes.get(key)
         if (struct === null) {
             const fields: Field[] = []
-            for (let i = 0; i < elems.length; i++) fields.push(new Field(`${i}`, elems[i], false))
+            for (let i = 0; i < elems.length; i++) fields.push(new Field(`${i}`, elems[i], readOnly))
             struct = new StructType(this.nextStructId++, null, false, fields, [])
             struct.tuple = true
             this.shapes.set(key, struct)
@@ -875,7 +917,22 @@ export class Checker {
             case "typed": {
                 const expr = value.expr
                 const from = typeOf(expr)
+                // A read-only array is not assignable to a mutable one, which could change it.
+                if (from.kind === "array" && target.kind === "array" && from.readOnly && !target.readOnly) {
+                    this.error(
+                        node,
+                        `The type '${typeToString(from)}' is 'readonly' and cannot be assigned to the mutable type '${typeToString(target)}'.`,
+                    )
+                    return poison(target)
+                }
                 if (sameType(from, target) || from.kind === "never") return expr
+                // A tuple converts to the read-only tuple of the same elements, as it is.
+                if (from.kind === "struct" && target.kind === "struct" && from.tuple && readonlyTuple(target)) {
+                    const wanted = target.fields
+                    let same = from.fields.length === wanted.length
+                    for (let i = 0; same && i < wanted.length; i++) same = sameType(from.fields[i].type, wanted[i].type)
+                    if (same) return new Recast(target, expr)
+                }
                 // A function converts to a function type whose parameters convert to its own,
                 // as `(v: T | Promise<T>) => void` to `(v: T) => void`: through an adapter.
                 if (from.kind === "func" && target.kind === "func") {

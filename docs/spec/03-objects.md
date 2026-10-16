@@ -43,6 +43,10 @@
   structural interface, as in TypeScript: classes with those members, and
   object literals with those fields and methods, fit it. An interface's
   method can be a field of a function type in the class or object.
+- An interface or object type can declare a field with accessor
+  signatures: `get x(): T` alone is `readonly x: T`, and with
+  `set x(value: T)` it is a writable `x: T`. Fields and accessors of classes
+  and objects implement them alike.
 - `...object` in an object literal copies the fields of an object: the
   public fields of a class instance (not its methods), the fields of an
   object type or an interface. A later property replaces an earlier one
@@ -406,8 +410,12 @@ names them is:
   is optional in both.
 - The utility types of TypeScript are global names: `Partial`, `Required`,
   `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys an object
-  type, of `string` a [dictionary](#dictionaries)), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and
-  `Parameters`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
+  type, of `string` a [dictionary](#dictionaries)), `Exclude`, `Extract`,
+  `NonNullable`, `ReturnType`, `Parameters`, `InstanceType` and
+  `ConstructorParameters` (of `typeof C`, a class's constructor type
+  `new (params) => C`, which exists only in computations on types),
+  `NoInfer` (a generic call does not infer its type arguments from that
+  position) and `ReadonlyArray`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
   `PartialWithExclusion`, `DeepPartial`, `DeepRequired`, `DeepReadonly`,
   `DeepMutable`, `PickByValueType`, `OmitByValueType`, `KeysOfType`,
   `PartialByKeys`, `RequiredByKeys`, `ReadonlyByKeys`, `MutableByKeys`,

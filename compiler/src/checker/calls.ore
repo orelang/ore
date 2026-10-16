@@ -2290,6 +2290,9 @@ function numberMethod(c: Checker, value: Expr, type: Type, name: string, node: N
     return typed(new BuiltinCall(types.string, "Number.toExponential", [float, arg, digitsGiven]))
 }
 
+/** The methods of arrays that change them, which a read-only array does not have. */
+const mutatingArrayMethods = ["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"]
+
 export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node, scope: Scope): Operand {
     const nameId = nameNode(callee)
     const name = nameId.text
@@ -2304,6 +2307,9 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
             nameId,
             `A dictionary has no methods: '${name}' is an entry, of type '${typeToString(c.unionOf([type.value, types.null]))}'.`,
         )
+    // A read-only array has no methods that change it.
+    if (type.kind === "array" && type.readOnly && mutatingArrayMethods.includes(name))
+        return c.fail(nameId, `Property '${name}' does not exist on type '${typeToString(type)}'.`)
 
     const generic = type.kind === "struct" ? genericMethod(c, type, name) : null
     if (typeArgs.length > 0 && generic === null)

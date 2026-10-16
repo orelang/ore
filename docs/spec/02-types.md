@@ -913,6 +913,12 @@ Standard, whose parser they follow over the UTF-8 bytes of the input:
   [Array methods](04-functions.md#array-methods).
 - `for (const x of a)` iterates elements; the length is re-read on every
   iteration, so elements pushed during the loop are visited.
+- `readonly T[]` (or `ReadonlyArray<T>`) is the same array seen through a
+  type that cannot change it: it has no `push`, `pop`, `shift`, `unshift`,
+  `splice`, `sort`, `reverse`, `fill` or `copyWithin`, and its elements
+  cannot be assigned. A `T[]` converts to it, but not the other way round,
+  as in TypeScript. `readonly [A, B]` is a tuple whose elements cannot be
+  assigned; a `[A, B]` converts to it.
 
 ## Tuples
 
@@ -931,6 +937,12 @@ Standard, whose parser they follow over the UTF-8 bytes of the input:
   functions, methods and conversions too (`m.set(...entry)`), and into
   array literals. JSON encodes a tuple as an array and decodes an array of
   exactly its length.
+
+- `x as const` gives a literal its literal type, an array literal the
+  read-only tuple of its elements' `as const` types, and an object literal
+  read-only fields of theirs: `const Dirs = ["n", "s"] as const` is a
+  `readonly ["n", "s"]`, and `(typeof Dirs)[number]` is `"n" | "s"`, an
+  enum of string literals. Other type assertions are not supported.
 
 ## unknown
 
