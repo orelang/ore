@@ -306,4 +306,15 @@ test("notes are printed under the error, indented, with their source line", () =
     ].join("\n")
     const got = formatDiagnostic(d)
     if (got !== want) fail(`expected:\n${want}\ngot:\n${got}`)
+test("programs checked in parallel tasks share the parse of builtin.d.ore", () => {
+    const count = 8
+    const done = new Chan<string>(count)
+    for (let i = 0; i < count; i++) {
+        const k = i
+        task.spawn(() => {
+            const messages = errors(`const x: int = Math.max(${k}, 1)\nconst s: string = x`)
+            done.send(messages.join("; "))
+        })
+    }
+    for (let i = 0; i < count; i++) expect(done.receive() ?? "").toBe("Type 'i64' is not assignable to type 'string'.")
 })

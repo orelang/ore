@@ -37,6 +37,8 @@ before 1.0, a minor version may change the language.
   with interface members) call them. Fields of names that no accessor
   implements are read and written through interfaces as before; the others
   test the table entry first.
+- The checker parses `builtin.d.ore` once per process instead of on every
+  check, which the language server runs on every change.
 - The language server tries a GitHub repository whose download failed
   again a minute later, or at once when a document importing it is saved,
   instead of never in the session.

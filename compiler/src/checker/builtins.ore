@@ -1,6 +1,7 @@
 // The root scope: the declarations of runtime/std/builtin.d.ore.
 
 import builtinText from "../../../runtime/std/builtin.d.ore" with { type: "text" }
+import { Mutex } from "ore:sync"
 import { type Expr, BuiltinCall, FloatLit, StringLit } from "../ir/nodes"
 import { type Type, arrayOf, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
@@ -88,14 +89,34 @@ export class Builtins {
     ) {}
 }
 
+/** builtin.d.ore parsed, once in the process: empty until the first check. */
+const builtinParsed: Source[] = []
+/** Guards the first parse of builtin.d.ore: programs may be checked in parallel tasks (the test runner). */
+const builtinLock = new Mutex()
+
+/**
+ * `runtime/std/builtin.d.ore` parsed by the first check that needs it and
+ * shared by the others (the language server analyzes again on every
+ * change); nothing changes a syntax tree once parsed.
+ */
+function builtinSource(): Source {
+    builtinLock.lock()
+    if (builtinParsed.length === 0) {
+        const parsed = parse("runtime/std/builtin.d.ore", builtinText)
+        if (parsed.diagnostics.length > 0) process.panic(`invalid builtin.d.ore: ${parsed.diagnostics[0].message}`)
+        builtinParsed.push(parsed.source)
+    }
+    const source = builtinParsed[0]
+    builtinLock.unlock()
+    return source
+}
+
 /**
  * Builds the root scope from the type aliases and functions of
  * `runtime/std/builtin.d.ore`. Its interfaces are declared by the checker.
  */
 export function builtinScope(): Builtins {
-    const parsed = parse("runtime/std/builtin.d.ore", builtinText)
-    if (parsed.diagnostics.length > 0) process.panic(`invalid builtin.d.ore: ${parsed.diagnostics[0].message}`)
-    const source = parsed.source
+    const source = builtinSource()
     const scope = new Scope()
 
     for (const stmt of statements(source.ast)) {
