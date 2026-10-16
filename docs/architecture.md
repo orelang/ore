@@ -13,7 +13,7 @@ always underneath; they are in the [specification](spec).
    the compiler's own parser builds TypeScript's tree. Where Ore needs more (attributes,
    thread-locals), it uses comments: `//ore:` directives.
 2. **Go-like in spirit.** One `ore` binary (`build`, `run`, `test`, `fmt`,
-   `check`, `lsp`), fast compilation, static binaries, a GC, structural
+   `check`, `doc`, `lsp`), fast compilation, static binaries, a GC, structural
    interfaces, errors as values, simplicity over expressiveness.
 3. **Own type checker.** `tsc` is not used as a checker: Ore has its own
    types (`i64`, `u8`, …) and rules. Its parser accepts the TypeScript
@@ -23,10 +23,10 @@ always underneath; they are in the [specification](spec).
 
 ## Pipeline
 
-```
-.ore ─ syntax ─ project ─ checker ─ IR ─ opt ─ codegen ─ LLVM IR ─ LLVM ─ lld ─ binary
-                                                              │
-                         runtime: core (Ore, with the GC) + std (Ore)
+```text
+.ore ─ syntax ─ project ─ checker ─ IR ─ opt ─ llvm ─ LLVM IR ─ LLVM ─ lld ─ binary
+                                                           │
+                      runtime: core (Ore, with the GC) + std (Ore)
 ```
 
 - **syntax** parses each file into a tree in the shape of TypeScript's, with
