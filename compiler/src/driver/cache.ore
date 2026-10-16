@@ -7,6 +7,8 @@
 // the same in every program, and editing a file recompiles only its parts.
 // A release build looks up its one module.
 //
+// Modules imported from GitHub are kept in <cache>/modules (project/remote.ore).
+//
 // <cache> is $ORE_CACHE, else $XDG_CACHE_HOME/ore, else ~/.cache/ore;
 // ORE_CACHE=off turns the cache off. Nothing is ever removed but by `ore
 // cache clean`. Builds running at the same time share it: an object is
@@ -92,25 +94,49 @@ export class CacheSize {
     ) {}
 }
 
+/** The directory of the modules downloaded into a cache directory (project/remote.ore). */
+export function modulesDir(root: string): string {
+    return join(root, "modules")
+}
+
 /** How many object files a cache directory holds, and their size. */
 export function cacheSize(root: string): CacheSize {
-    const dir = objectsDir(root)
+    return directorySize(objectsDir(root))
+}
+
+/** How many files the downloaded modules of a cache directory have, and their size. */
+export function modulesSize(root: string): CacheSize {
+    return directorySize(modulesDir(root))
+}
+
+/** The files in a directory and its subdirectories, and their size. */
+function directorySize(dir: string): CacheSize {
     const names = fs.readDir(dir)
     if (names instanceof Error) return new CacheSize(0, 0)
     let files = 0
     let bytes = 0
     for (const name of names) {
-        const info = fs.stat(join(dir, name))
-        if (info instanceof Error || !info.isFile) continue
-        files++
-        bytes += info.size
+        const path = join(dir, name)
+        const info = fs.lstat(path)
+        if (info instanceof Error) continue
+        if (info.isDir) {
+            const inner = directorySize(path)
+            files += inner.files
+            bytes += inner.bytes
+        } else if (info.isFile) {
+            files++
+            bytes += info.size
+        }
     }
     return new CacheSize(files, bytes)
 }
 
-/** Removes the object files of a cache directory. */
+/** Removes the object files and the downloaded modules of a cache directory. */
 export function cleanCache(root: string): Error | null {
-    const dir = objectsDir(root)
-    if (!fs.exists(dir)) return null
-    return fs.remove(dir, true)
+    for (const dir of [objectsDir(root), modulesDir(root)]) {
+        if (!fs.exists(dir)) continue
+        const removed = fs.remove(dir, true)
+        if (removed !== null) return removed
+    }
+    return null
 }

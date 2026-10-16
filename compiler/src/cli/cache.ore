@@ -1,7 +1,8 @@
 // `ore cache`: where the build cache is (driver/cache.ore) and how much it
-// holds; `ore cache clean` empties it.
+// holds, objects and modules downloaded from GitHub; `ore cache clean`
+// empties it.
 
-import { cacheRoot, cacheSize, cleanCache, objectsDir } from "../driver/cache"
+import { cacheRoot, cacheSize, cleanCache, modulesDir, modulesSize, objectsDir } from "../driver/cache"
 import { toolError, usageError } from "./commands"
 
 /** `ore cache [clean]` */
@@ -15,13 +16,17 @@ export function cacheCommand(args: string[]): i32 {
     }
     if (args.length === 1) {
         const before = cacheSize(root)
+        const modules = modulesSize(root)
         const error = cleanCache(root)
         if (error !== null) return toolError(error)
         console.log(`Removed ${before.files} object files (${megabytes(before.bytes)}) from ${objectsDir(root)}.`)
+        console.log(`Removed ${modules.files} module files (${megabytes(modules.bytes)}) from ${modulesDir(root)}.`)
         return 0
     }
     const size = cacheSize(root)
     console.log(`${objectsDir(root)}: ${size.files} object files, ${megabytes(size.bytes)}`)
+    const modules = modulesSize(root)
+    console.log(`${modulesDir(root)}: ${modules.files} module files, ${megabytes(modules.bytes)}`)
     return 0
 }
 
