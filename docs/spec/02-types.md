@@ -571,7 +571,13 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   `(?= )` and `(?! )`, lookbehind `(?<= )` and `(?<! )`. A lookbehind
   matches backwards from the position, as in JavaScript: its groups are
   set (`/(?<=(\d+)(\d+))$/` on `"1053"` captures `"1"` and `"053"`), and
-  neither it nor, with `u`, a lookahead takes a quantifier.
+  neither it nor, with `u`, a lookahead takes a quantifier (a group around
+  one does: `(?:(?<=a))*`).
+- One name may name several groups in different alternatives (ES2025):
+  `/(?<y>\d{4})-\d\d|\d\d\/(?<y>\d{4})/`. The group that took part gives
+  the name's value in `groups`, `\k<name>` and `$<name>`. Two groups of a
+  name that may both take part are an error, as the specification says,
+  also where V8 takes them (`(?<a>y)(?=q|(?<a>x))`).
 - Flags: `d` (indices), `g` (global), `i` (ignore case), `m` (`^` and `$`
   at line breaks), `s` (`.` matches line breaks too), `u` (Unicode), `v`
   (Unicode sets), `y` (sticky: a match only at `lastIndex`). `re.flags`

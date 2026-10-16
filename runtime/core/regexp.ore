@@ -514,7 +514,10 @@ export class RegExpMatch {
     get groupIndices(): Map<string, [int, int] | null> {
         const groups = new Map<string, [int, int] | null>()
         if (this.indices.length === 0) return groups
-        for (let g = 1; g < this.names.length; g++) if (this.names[g] !== "") groups.set(this.names[g], this.indices[g])
+        // Of the groups of one name, the one that took part.
+        for (let g = 1; g < this.names.length; g++)
+            if (this.names[g] !== "" && (!groups.has(this.names[g]) || this.indices[g] !== null))
+                groups.set(this.names[g], this.indices[g])
         return groups
     }
 
@@ -522,13 +525,15 @@ export class RegExpMatch {
     get groups(): Map<string, string | null> {
         const groups = new Map<string, string | null>()
         for (let g = 1; g < this.names.length; g++)
-            if (this.names[g] !== "") groups.set(this.names[g], this.captures[g])
+            if (this.names[g] !== "" && (!groups.has(this.names[g]) || this.captures[g] !== null))
+                groups.set(this.names[g], this.captures[g])
         return groups
     }
 
     /** The text of the group with a name, null when unset or when there is no such group. */
     group(name: string): string | null {
-        for (let g = 1; g < this.names.length; g++) if (this.names[g] === name) return this.captures[g]
+        for (let g = 1; g < this.names.length; g++)
+            if (this.names[g] === name && this.captures[g] !== null) return this.captures[g]
         return null
     }
 
@@ -940,6 +945,7 @@ class Template {
             }
             const c = replacement[i + 1]
             let ref = REF_NONE
+            const also: int[] = []
             let length = 0
             if (c === 36) {
                 length = 2
@@ -966,9 +972,13 @@ class Template {
             } else if (c === 60 && named) {
                 const close = replacement.indexOf(">", i + 2)
                 if (close >= 0) {
-                    // The first group of the name; none puts nothing.
+                    // The groups of the name, of which at most one took part; none puts nothing.
                     const name = replacement.slice(i + 2, close)
-                    for (let g = 1; g < names.length && ref === REF_NONE; g++) if (names[g] === name) ref = g
+                    for (let g = 1; g < names.length; g++) {
+                        if (names[g] !== name) continue
+                        if (ref === REF_NONE) ref = g
+                        else also.push(g)
+                    }
                     length = close + 1 - i
                 }
             }
@@ -982,6 +992,10 @@ class Template {
             } else if (ref !== REF_NONE) {
                 this.texts.push(text)
                 this.refs.push(ref)
+                for (const g of also) {
+                    this.texts.push("")
+                    this.refs.push(g)
+                }
                 text = ""
             }
             i += length

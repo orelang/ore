@@ -13,8 +13,10 @@ function next() {
     return seed
 }
 const below = (k) => next() % k
-// Group names are unique in a pattern: Ore does not take the same name in two alternatives yet (ES2025).
+// Few group names, so that some repeat: in different alternatives (ES2025) or, rejected by both, not.
+// Never the name of an enclosing group, which V8 takes in `(?<a>.(?<a>b)|c)` against the specification.
 let groupName = 0
+const open = []
 const pick = (xs) => xs[below(xs.length)]
 const atoms = ["a", "b", "c", "x", "\\d", "\\w", "\\s", "\\D", "\\W", ".", "[abc]", "[^a]", "[a-c]", "[x-z0-9]", "\\.", "-", " ", "\\b", "\\B", "^", "$"]
 function term(depth) {
@@ -22,7 +24,14 @@ function term(depth) {
     switch (below(depth > 0 ? 9 : 4)) {
         case 4: t = `(${alt(depth - 1)})`; break
         case 5: t = `(?:${alt(depth - 1)})`; break
-        case 6: t = `(?<g${groupName++}>${alt(depth - 1)})`; break
+        case 6: {
+            let name = `g${below(3)}`
+            while (open.includes(name)) name = `g${below(3)}${groupName++}`
+            open.push(name)
+            t = `(?<${name}>${alt(depth - 1)})`
+            open.pop()
+            break
+        }
         case 7: t = `(?${pick(["=", "!", "<=", "<!"])}${alt(depth - 1)})`; break
         case 8: t = `\\${1 + below(2)}`; break
         default: t = pick(atoms)

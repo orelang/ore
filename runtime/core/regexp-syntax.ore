@@ -88,6 +88,8 @@ class Node {
     ranges: int[] = []
     /** The group a backreference names, resolved once all groups are known. */
     name = ""
+    /** For a backreference to a name of several groups (in different alternatives): the others. */
+    alsoGroups: int[] = []
     /** For a character written as itself, its bytes in the pattern; -1 for an escape. */
     from = -1
     to = -1
@@ -758,6 +760,15 @@ class Parser {
     pos = 0
     error = ""
     /** The name of each group, by number; group 0 is the whole match. */
+    /**
+     * For each group, the alternatives it is in: pairs of a disjunction's
+     * number and the alternative's index, outermost first; two groups of one
+     * name must be in different alternatives of a disjunction (ES2025).
+     */
+    paths: int[][] = [[]]
+    /** The disjunctions open at the position, as pairs like those of `paths`. */
+    path: int[] = []
+    disjunctions = 0
     names: string[] = [""]
     /** The number of groups in the whole pattern, which tells `\10` a backreference from an escape. */
     total = 0
@@ -796,10 +807,11 @@ class Parser {
         for (const ref of this.references) {
             let found = false
             for (let i = 1; i < this.names.length; i++) {
-                if (!found && this.names[i] === ref.name) {
-                    ref.value = i
-                    found = true
-                }
+                if (this.names[i] !== ref.name) continue
+                // A name of several groups: at most one takes part, and the others match empty.
+                if (found) ref.alsoGroups.push(i)
+                else ref.value = i
+                found = true
             }
             if (!found) this.fail("Invalid named capture referenced")
         }
@@ -881,15 +893,33 @@ class Parser {
     }
 
     disjunction(): Node {
+        const id = this.disjunctions++
+        this.path.push(id)
+        this.path.push(0)
         const first = this.alternative()
-        if (this.peek() !== 124) return first
+        if (this.peek() !== 124) {
+            this.path.pop()
+            this.path.pop()
+            return first
+        }
         const alt = new Node(K_ALT, 0)
         alt.kids.push(first)
+        let index = 0
         while (this.peek() === 124 && this.error === "") {
             this.pos++
+            this.path[this.path.length - 1] = ++index
             alt.kids.push(this.alternative())
         }
+        this.path.pop()
+        this.path.pop()
         return alt
+    }
+
+    /** Whether the groups of these paths can both take part in a match: no disjunction has them in different alternatives. */
+    together(a: int[], b: int[]): bool {
+        for (let i = 0; i + 1 < a.length; i += 2)
+            for (let j = 0; j + 1 < b.length; j += 2) if (a[i] === b[j] && a[i + 1] !== b[j + 1]) return false
+        return true
     }
 
     alternative(): Node {
@@ -1063,9 +1093,13 @@ class Parser {
                 this.pos += 2
                 const name = this.groupName()
                 if (this.error !== "") return new Node(K_EMPTY, 0)
-                for (const other of this.names) if (other === name) return this.fail("Duplicate capture group name")
+                // The same name in different alternatives names one group in effect (ES2025).
+                for (let g = 1; g < this.names.length; g++)
+                    if (this.names[g] === name && this.together(this.paths[g], this.path))
+                        return this.fail("Duplicate capture group name")
                 node = new Node(K_GROUP, this.names.length)
                 this.names.push(name)
+                this.paths.push(this.path.slice())
                 node.kids.push(this.disjunction())
             } else {
                 return this.fail("Invalid group")
@@ -1073,6 +1107,7 @@ class Parser {
         } else {
             node = new Node(K_GROUP, this.names.length)
             this.names.push("")
+            this.paths.push(this.path.slice())
             node.kids.push(this.disjunction())
         }
         if (this.error !== "") return node
@@ -1830,6 +1865,10 @@ class Compiler {
             case K_BACKREF:
                 this.read(OP_BACKREF)
                 this.op(node.value)
+                for (const other of node.alsoGroups) {
+                    this.read(OP_BACKREF)
+                    this.op(other)
+                }
                 return
             case K_LOOK:
             case K_LOOKBEHIND: {
