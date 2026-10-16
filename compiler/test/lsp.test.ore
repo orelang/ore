@@ -40,7 +40,7 @@ function closeFd(fd: int): void {
 /** The value received from a channel within the timeout. */
 function within<T>(ch: Chan<T>, what: string): T {
     let value: T | null = null
-    task.select([ch.onReceive((v) => (value = v)), task.after(timeout, () => {})])
+    task.select([ch.onReceive((v) => (value = v)), task.after(timeout * time.millisecond, () => {})])
     if (value === null) fail(`timed out waiting for ${what}`)
     return value
 }
@@ -143,7 +143,7 @@ class Client {
             let body: string | null = null
             task.select([
                 this.bodies.onReceive((b) => (body = b)),
-                task.after(Math.max(0, deadline - Date.now()), () => {}),
+                task.after(Math.max(0, deadline - Date.now()) * time.millisecond, () => {}),
             ])
             if (body === null) fail(`no message from the server: ${what}`)
             if (matches(decode(body))) return body
@@ -221,7 +221,7 @@ class Client {
         // The server's reader task may still be about to read its input, and
         // sees its end; give it the time to, so that it never reads a
         // descriptor reused by the next test.
-        task.sleep(50)
+        task.sleep(50 * time.millisecond)
         closeFd(this.input[0])
     }
 }
@@ -482,7 +482,7 @@ test("messages split across reads, and several in one read", () => {
     for (const cut of [5, 17, emoji + 1, emoji + 3, open.length]) {
         client.write(open.slice(at, cut))
         at = cut
-        task.sleep(30)
+        task.sleep(30 * time.millisecond)
     }
     expect(JSON.stringify(client.diagnostics(uri)[0].range.start)).toBe(position(1, 17))
 

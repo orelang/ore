@@ -11,9 +11,10 @@ console.log(results.receive())
 - `task.spawn(fn)` starts a task. Tasks run in parallel on several OS
   threads, one per CPU by default (set with the `ORE_THREADS` environment
   variable). A thread switches tasks when one waits on a channel, sleeps
-  (`task.sleep(ms)`) or calls `task.yield()`; there is no preemption, so a
-  task computing without waiting keeps its thread. The program ends when
-  the entry file's top-level code ends, as when `main` returns in Go. When every task waits, the program panics with a
+  (`task.sleep(10 * time.millisecond)`: in nanoseconds, as everything in
+  `time`, rounded up to a millisecond) or calls `task.yield()`; there is no
+  preemption, so a task computing without waiting keeps its thread. The
+  program ends when the entry file's top-level code ends, as when `main` returns in Go. When every task waits, the program panics with a
   deadlock.
 - `ORE_WATCHDOG=<seconds>` starts a watchdog for tests: when no task has
   started or resumed and nothing was allocated for that long, the program
@@ -33,8 +34,9 @@ console.log(results.receive())
 - `task.select(cases, otherwise?)` runs the handler of one case that can
   proceed, choosing at random among several, or else waits for the first
   one. Cases are `ch.onReceive((v) => ...)` (`v` is `null` once closed),
-  `ch.onSend(value, () => ...)` and `task.after(ms, () => ...)`. With
-  `otherwise`, it runs instead of waiting when no case is ready.
+  `ch.onSend(value, () => ...)` and `task.after(ns, () => ...)`
+  (nanoseconds, rounded up to a millisecond). With `otherwise`, it runs
+  instead of waiting when no case is ready.
 - Each task has a fixed stack with a guard page: 1 MiB, and 8 MiB for the
   top-level code and the tests of `ore test`. `ORE_STACK=<size>` sets the size
   of every stack, top-level code included: bytes, or with a unit `K`, `M` or

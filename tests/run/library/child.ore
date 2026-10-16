@@ -30,14 +30,14 @@ console.log("terminated", status(sleeper))
 
 // A child that ignores SIGTERM, waited for with a timeout, then killed.
 const stubborn = started(process.spawn("sh", ["-c", "trap '' TERM; echo ready; exec sleep 10"]))
-task.sleep(100)
+task.sleep(100 * time.millisecond)
 stubborn.kill(15)
 const exits = new Chan<int>(1)
 task.spawn(() => exits.send(status(stubborn)))
 let waited = "exited"
 task.select([
     exits.onReceive((code) => console.log("unexpected exit", code)),
-    task.after(200, () => (waited = "timed out")),
+    task.after(200 * time.millisecond, () => (waited = "timed out")),
 ])
 console.log(waited)
 stubborn.kill(9)

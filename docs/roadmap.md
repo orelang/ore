@@ -216,8 +216,6 @@ an LLVM coroutine. Left:
   `values`) are public, as the runtime's functions use them; members
   private to a module would hide them.
 - `Promise.withResolvers`, `await` of a union of a promise and other values.
-- `task.sleep(ms)` and `task.after(ms)` still count milliseconds: to
-  nanoseconds, as the rest of `time`.
 - Generators and iterators on the same fibers.
 
 ## Later

@@ -239,7 +239,11 @@ export function watchdogCases(settings: Settings): Case[] {
         if (problems.length > 0) fail(`${problems.join("\n      ")}\n      stderr: ${quote(run.stderr)}`)
     })
     const inTime = new Case("watchdog/a program that ends in time ends", () => {
-        const program = buildText(settings, "watchdog-in-time", 'task.sleep(1500)\nconsole.log("done")\n')
+        const program = buildText(
+            settings,
+            "watchdog-in-time",
+            'task.sleep(1500 * time.millisecond)\nconsole.log("done")\n',
+        )
         const env = new Map<string, string>()
         env.set("ORE_WATCHDOG", "3")
         const run = runProgram(program, env)

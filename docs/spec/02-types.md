@@ -384,7 +384,7 @@ const code = process.command.run("cc", ["-c", "main.c"], { cwd: "build", env: ne
   server.kill()
   const exited = new Chan<int | Error>(1)
   task.spawn(() => exited.send(server.wait()))
-  task.select([exited.onReceive((status) => {}), task.after(1000, () => server.kill(9))])
+  task.select([exited.onReceive((status) => {}), task.after(time.second, () => server.kill(9))])
   ```
 - A `process.CommandOptions` has `cwd` (this program's directory when left
   out or `""`), `env` (a `Map` of variables set over the inherited

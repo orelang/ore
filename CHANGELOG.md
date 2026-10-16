@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Breaking: `task.sleep(ns)` and `task.after(ns, handler)` count
+  nanoseconds, as everything in `time`: `task.sleep(10 * time.millisecond)`
+  (they counted milliseconds). The timers still wait whole milliseconds,
+  rounding up.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its
