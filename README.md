@@ -28,42 +28,34 @@ as values, generics by monomorphization, green threads with channels and a
 garbage collector. Programs compile through LLVM to a single native binary.
 
 ```ts
-import { Mutex } from "ore:sync"
-
-function price(id: int): u64 | Error {
-    task.sleep(10 * time.millisecond)
-    return id > 0 ? u64(id) * 100 : new Error(`no item ${id}`)
+function* ids() {
+    for (let id = 1; ; id++) yield id
 }
 
-const lock = new Mutex()
-const done = new Chan<bool>()
+async function price(id: int): Promise<u64 | Error> {
+    await time.delay(10 * time.millisecond)
+    return id % 3 !== 0 ? u64(id) * 100 : new Error(`no price for item ${id}`)
+}
+
+// Five prices at once: the awaits overlap on the event loop.
+const prices = await Promise.all(
+    ids()
+        .take(5)
+        .map((id) => price(id))
+        .toArray(),
+)
 let total: u64 = 0
-
-for (const id of [3, -1, 7]) {
-    task.spawn(() => {
-        const p = price(id)
-        if (p instanceof Error) console.error(p.message)
-        else {
-            using guard = lock.acquire()
-            total += p
-        }
-        done.send(true)
-    })
-}
-let finished = 0
-while (finished < 3) {
-    task.select([
-        done.onReceive(() => finished++),
-        task.after(time.second, () => process.panic("too slow")),
-    ])
+for (const p of prices) {
+    if (p instanceof Error) console.error(p.message)
+    else total += p
 }
 console.log(`total: ${total}`)
 ```
 
 ```console
 $ ore build prices.ore && ./prices
-no item -1
-total: 1000
+no price for item 3
+total: 1200
 ```
 
 ## How it works
