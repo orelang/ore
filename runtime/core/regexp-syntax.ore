@@ -46,9 +46,11 @@ export const OP_PROGRESS = 17
 /** The end of the pattern: a match. */
 export const OP_MATCH = 18
 /**
- * `STAR exit`, then one instruction that reads a character: a greedy loop
- * of that character, as `SPLIT`s around it would run it, but without going
- * through the loop's instructions at each character; continues at `exit`.
+ * `STAR exit possessive`, then one instruction that reads a character: a
+ * greedy loop of that character, as `SPLIT`s around it would run it, but
+ * without going through the loop's instructions at each character;
+ * continues at `exit`. When `possessive` is 1, giving characters back could
+ * not lead to a match, and the loop leaves no choices.
  */
 export const OP_STAR = 19
 /**
@@ -121,6 +123,13 @@ export class Program {
      * fast; empty when any byte could start one or a match can be empty.
      */
     first: int[] = []
+    /**
+     * When the program starts with a greedy loop of one character (`x*`, or
+     * `x+` as `x` then `x*`), where the instruction of that character is,
+     * else -1. A failed try covered every start within the run of such
+     * characters, as the loop took all of them and gave each back.
+     */
+    loop = -1
     /** For each class, 128 entries: 1 for each ASCII character it holds, before negation. */
     ascii: int[] = []
     global = false
@@ -168,7 +177,70 @@ export function compileRegExp(pattern: string, flags: string): Program {
     compiler.start(root)
     for (const ranges of program.sets) for (let c = 0; c < 128; c++) program.ascii.push(inRanges(ranges, c) ? 1 : 0)
     program.first = firstBytes(program)
+    program.loop = leadingLoop(program.code)
+    for (const star of compiler.stars) if (possessive(program, star)) program.code[star + 2] = 1
     return program
+}
+
+/**
+ * The characters that a forward instruction reading one character matches,
+ * as sorted ranges into `out`; false for another instruction or one that
+ * ignores case.
+ */
+function readRanges(program: Program, pc: int, out: int[]): bool {
+    const code = program.code
+    const op = code[pc]
+    let ranges: int[] = []
+    if (op === OP_CHAR) {
+        ranges = [code[pc + 1], code[pc + 1]]
+    } else if (op === OP_ANY) {
+        ranges = complement([10, 10, 13, 13, 0x2028, 0x2029])
+    } else if (op === OP_ANY_ALL) {
+        ranges = [0, 0x10ffff]
+    } else if (op === OP_CLASS) {
+        ranges = program.sets[code[pc + 1]]
+        if (code[pc + 2] === 1) ranges = complement(ranges)
+    } else {
+        return false
+    }
+    for (const x of ranges) out.push(x)
+    return true
+}
+
+/**
+ * Whether a `STAR` never needs to give back a character: what follows it
+ * ends the match, or reads a character that the loop's character never is.
+ */
+function possessive(program: Program, star: int): bool {
+    const code = program.code
+    const loop: int[] = []
+    if (!readRanges(program, star + 3, loop)) return false
+    let next = code[star + 1]
+    for (let i = 0; i < 8 && (code[next] === OP_SAVE || code[next] === OP_JUMP); i++) {
+        next = code[next] === OP_SAVE ? next + 2 : code[next + 1]
+    }
+    const op = code[next]
+    if (op === OP_MATCH || op === OP_LOOK_END || (op === OP_EOL && !program.multiline)) return true
+    const after: int[] = []
+    return readRanges(program, next, after) && intersect(loop, after).length === 0
+}
+
+/** The operands that an instruction reading one character has: -1 for another instruction. */
+function readOperands(op: int): int {
+    if (op === OP_ANY || op === OP_ANY_ALL) return 0
+    if (op === OP_CHAR || op === OP_CHAR_I) return 1
+    if (op === OP_CLASS || op === OP_CLASS_I) return 2
+    return -1
+}
+
+/** `Program.loop` of a program's code. */
+function leadingLoop(code: int[]): int {
+    if (code[0] === OP_STAR) return 3
+    const operands = readOperands(code[0])
+    if (operands < 0 || code[operands + 1] !== OP_STAR) return -1
+    const loop = operands + 4
+    for (let i = 0; i <= operands; i++) if (code[i] !== code[loop + i]) return -1
+    return loop
 }
 
 /**
@@ -202,7 +274,7 @@ function firstBytes(program: Program): int[] {
             const negate = code[pc + 2] === 1
             for (let c = 0; c < 128; c++) if ((program.ascii[128 * code[pc + 1] + c] === 1) !== negate) first[c] = 1
         } else if (op === OP_STAR) {
-            work.push(pc + 2)
+            work.push(pc + 3)
             work.push(code[pc + 1])
         } else if (op === OP_SPLIT) {
             work.push(code[pc + 1])
@@ -1654,6 +1726,8 @@ class Compiler {
 
     /** Whether the code emitted reads backwards, in a lookbehind. */
     back = false
+    /** Where each `STAR` is. */
+    stars: int[] = []
 
     op(code: int) {
         this.program.code.push(code)
@@ -1780,8 +1854,10 @@ class Compiler {
         for (let i = 0; i < node.min && this.program.code.length <= maxCode; i++) this.iteration(atom, span, -1)
         const single = atom.kind === K_CHAR || atom.kind === K_CLASS || atom.kind === K_ANY
         if (node.max === unbounded && node.greedy && !this.back && single) {
+            this.stars.push(this.here())
             this.op(OP_STAR)
             const exit = this.hole()
+            this.op(0)
             this.emit(atom)
             this.patch(exit)
             return

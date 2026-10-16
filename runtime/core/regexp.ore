@@ -309,10 +309,11 @@ class Matcher {
             } else if (op === OP_STAR) {
                 // Each character taken leaves the choice of the exit before it, as `SPLIT` would.
                 const exit = code[pc + 1]
+                const choices = code[pc + 2] === 0
                 for (;;) {
-                    const next = this.step(pc + 2, pos)
+                    const next = this.step(pc + 3, pos)
                     if (next < 0) break
-                    this.push(exit, pos)
+                    if (choices) this.push(exit, pos)
                     pos = next
                 }
                 pc = exit
@@ -427,6 +428,15 @@ class Matcher {
                 return true
             }
             if (sticky || program.anchored || at >= n) return false
+            if (program.loop >= 0) {
+                // No start within the run of the leading loop's characters can match either.
+                let end = at
+                for (let next = this.step(program.loop, end); next >= 0; next = this.step(program.loop, end)) end = next
+                if (end > at) {
+                    at = end
+                    continue
+                }
+            }
             this.decode(at)
             at += this.width
         }
@@ -709,15 +719,16 @@ export class RegExp {
     /**
      * `s.replace(re, x)` and `s.replaceAll`: the parts between the matches
      * that `replace` replaces (all of them with `g`, which `replaceAll`
-     * requires, else the first), and the replacement of each.
+     * requires, else the first), and the replacement of each, which
+     * `replacement` adds to the parts.
      */
-    private replace(s: string, all: bool, replacement: (matcher: Matcher) => string): string {
+    private replace(s: string, all: bool, replacement: (matcher: Matcher, parts: string[]) => void): string {
         if (all && !this.global) process.panic("replaceAll must be called with a global RegExp")
         const parts: string[] = []
         let from = 0
         const each = (matcher: Matcher) => {
             parts.push(s.slice(from, matcher.slots[0]))
-            parts.push(replacement(matcher))
+            replacement(matcher, parts)
             from = matcher.slots[1]
         }
         if (this.global) {
@@ -737,15 +748,22 @@ export class RegExp {
 
     /** `s.replace(re, replacement)` and `s.replaceAll`, with `$&`, `$1`, `$<name>`, `` $` ``, `$'` and `$$`. */
     private stringReplace(s: string, replacement: string, all: bool): string {
-        if (replacement.indexOf("$") < 0) return this.replace(s, all, (matcher) => replacement)
-        return this.replace(s, all, (matcher) => substitute(matcher.result(), replacement))
+        if (replacement.indexOf("$") < 0) {
+            return this.replace(s, all, (matcher, parts) => {
+                parts.push(replacement)
+            })
+        }
+        const template = new Template(replacement, this.program.groups, this.program.names)
+        return this.replace(s, all, (matcher, parts) => {
+            template.expand(matcher, parts)
+        })
     }
 
     /** `s.replace(re, fn)` and `s.replaceAll`: each match replaced by what the function returns for it. */
     private stringReplaceWith(s: string, replacer: Replacer, all: bool): string {
-        return this.replace(s, all, (matcher) => {
+        return this.replace(s, all, (matcher, parts) => {
             const match = matcher.result()
-            return replacer(match.captures[0]!, match)
+            parts.push(replacer(match.captures[0]!, match))
         })
     }
 
@@ -789,61 +807,105 @@ export class RegExp {
     }
 }
 
-/** A replacement text with its `$` patterns replaced for a match, as JavaScript's GetSubstitution. */
-function substitute(match: RegExpMatch, replacement: string): string {
-    const s = match.input
-    const matched = match.captures[0]!
-    const groups = match.captures.length - 1
-    const parts: string[] = []
-    let i = 0
-    let from = 0
-    while (i < replacement.length) {
-        if (replacement[i] !== 36 || i + 1 >= replacement.length) {
-            i++
-            continue
-        }
-        const c = replacement[i + 1]
+/** What `Template` puts after a text: nothing. */
+const REF_NONE = -1
+/** What `Template` puts after a text: the input before the match (`` $` ``). */
+const REF_BEFORE = -2
+/** What `Template` puts after a text: the input after the match (`$'`). */
+const REF_AFTER = -3
+
+/**
+ * A replacement text with `$` patterns, as JavaScript's GetSubstitution
+ * reads them, read once for every match: pieces of text, each followed by
+ * a group (0 for `$&`) or a `REF_` constant.
+ */
+class Template {
+    texts: string[] = []
+    refs: int[] = []
+    /** The text after the last piece. */
+    rest = ""
+
+    constructor(replacement: string, captures: int, names: string[]) {
+        const groups = captures - 1
+        let named = false
+        for (const name of names) if (name !== "") named = true
         let text = ""
-        let length = 0
-        if (c === 36) {
-            text = "$"
-            length = 2
-        } else if (c === 38) {
-            text = matched
-            length = 2
-        } else if (c === 96) {
-            text = s.slice(0, match.index)
-            length = 2
-        } else if (c === 39) {
-            text = s.slice(match.index + matched.length)
-            length = 2
-        } else if (c >= 48 && c <= 57) {
-            const one = int(c) - 48
-            const d = i + 2 < replacement.length ? int(replacement[i + 2]) - 48 : -1
-            const two = d >= 0 && d <= 9 ? one * 10 + d : -1
-            if (two >= 1 && two <= groups) {
-                text = match.captures[two] ?? ""
-                length = 3
-            } else if (one >= 1 && one <= groups) {
-                text = match.captures[one] ?? ""
+        let i = 0
+        let from = 0
+        while (i < replacement.length) {
+            if (replacement[i] !== 36 || i + 1 >= replacement.length) {
+                i++
+                continue
+            }
+            const c = replacement[i + 1]
+            let ref = REF_NONE
+            let length = 0
+            if (c === 36) {
                 length = 2
+            } else if (c === 38) {
+                ref = 0
+                length = 2
+            } else if (c === 96) {
+                ref = REF_BEFORE
+                length = 2
+            } else if (c === 39) {
+                ref = REF_AFTER
+                length = 2
+            } else if (c >= 48 && c <= 57) {
+                const one = int(c) - 48
+                const d = i + 2 < replacement.length ? int(replacement[i + 2]) - 48 : -1
+                const two = d >= 0 && d <= 9 ? one * 10 + d : -1
+                if (two >= 1 && two <= groups) {
+                    ref = two
+                    length = 3
+                } else if (one >= 1 && one <= groups) {
+                    ref = one
+                    length = 2
+                }
+            } else if (c === 60 && named) {
+                const close = replacement.indexOf(">", i + 2)
+                if (close >= 0) {
+                    // The first group of the name; none puts nothing.
+                    const name = replacement.slice(i + 2, close)
+                    for (let g = 1; g < names.length && ref === REF_NONE; g++) if (names[g] === name) ref = g
+                    length = close + 1 - i
+                }
             }
-        } else if (c === 60 && match.hasNames()) {
-            const close = replacement.indexOf(">", i + 2)
-            if (close >= 0) {
-                text = match.group(replacement.slice(i + 2, close)) ?? ""
-                length = close + 1 - i
+            if (length === 0) {
+                i++
+                continue
             }
+            text += replacement.slice(from, i)
+            if (c === 36) {
+                text += "$"
+            } else if (ref !== REF_NONE) {
+                this.texts.push(text)
+                this.refs.push(ref)
+                text = ""
+            }
+            i += length
+            from = i
         }
-        if (length === 0) {
-            i++
-            continue
-        }
-        parts.push(replacement.slice(from, i))
-        parts.push(text)
-        i += length
-        from = i
+        this.rest = text + replacement.slice(from)
     }
-    parts.push(replacement.slice(from))
-    return parts.join("")
+
+    /** Adds the replacement of the match that a matcher found to `parts`. */
+    expand(matcher: Matcher, parts: string[]) {
+        const s = matcher.s
+        const slots = matcher.slots
+        for (let k = 0; k < this.refs.length; k++) {
+            if (this.texts[k] !== "") parts.push(this.texts[k])
+            const ref = this.refs[k]
+            if (ref === REF_BEFORE) {
+                parts.push(s.slice(0, slots[0]))
+            } else if (ref === REF_AFTER) {
+                parts.push(s.slice(slots[1]))
+            } else {
+                const start = slots[2 * ref]
+                const end = slots[2 * ref + 1]
+                if (start >= 0 && end >= 0) parts.push(s.slice(start, end))
+            }
+        }
+        if (this.rest !== "") parts.push(this.rest)
+    }
 }
