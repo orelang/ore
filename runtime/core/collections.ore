@@ -1,0 +1,99 @@
+//ore:internal
+// The methods of Map and Set that take callbacks or other sets, written in
+// Ore as generic functions: the checker calls an instance of each, with the
+// map or the set first. They follow the steps of the ECMAScript
+// specification, so the order of the elements of a result is JavaScript's.
+//
+// The exports of this module are members of the namespace `Map`.
+
+/**
+ * Map.groupBy: the elements of `items` grouped by the key `keyFn` returns,
+ * the keys in the order they first appear.
+ */
+export function groupBy<T, K>(items: T[], keyFn: (element: T, index: int) => K): Map<K, T[]> {
+    const groups = new Map<K, T[]>()
+    for (let i = 0; i < items.length; i++) {
+        const key = keyFn(items[i], i)
+        const group = groups.get(key)
+        if (group !== null) group.push(items[i])
+        else groups.set(key, [items[i]])
+    }
+    return groups
+}
+
+/** map.forEach: entries added during the loop are visited, deleted ones are not. */
+function mapForEach<K, V>(map: Map<K, V>, callbackFn: (value: V, key: K, map: Map<K, V>) => void): void {
+    for (const [key, value] of map) callbackFn(value, key, map)
+}
+
+/** set.forEach: the value is passed twice, as JavaScript passes it as the key too. */
+function setForEach<T>(set: Set<T>, callbackFn: (value: T, value2: T, set: Set<T>) => void): void {
+    for (const value of set) callbackFn(value, value, set)
+}
+
+/** set.entries: `[value, value]` pairs, as a map's entries. */
+function setEntries<T>(set: Set<T>): [T, T][] {
+    const entries: [T, T][] = []
+    for (const value of set) entries.push([value, value])
+    return entries
+}
+
+/** The elements of `set`, then those of `other` that it lacks. */
+function setUnion<T>(set: Set<T>, other: Set<T>): Set<T> {
+    const result = new Set(set)
+    for (const value of other) result.add(value)
+    return result
+}
+
+/** The elements of both, in the order of the smaller set (of `set` when they are as large). */
+function setIntersection<T>(set: Set<T>, other: Set<T>): Set<T> {
+    const result = new Set<T>()
+    if (set.size <= other.size) {
+        for (const value of set) if (other.has(value)) result.add(value)
+    } else {
+        for (const value of other) if (set.has(value)) result.add(value)
+    }
+    return result
+}
+
+/** The elements of `set` that `other` lacks. */
+function setDifference<T>(set: Set<T>, other: Set<T>): Set<T> {
+    const result = new Set(set)
+    if (set.size <= other.size) {
+        for (const value of set) if (other.has(value)) result.delete(value)
+    } else {
+        for (const value of other) result.delete(value)
+    }
+    return result
+}
+
+/** The elements in one of the sets but not both: those of `set`, then those of `other`. */
+function setSymmetricDifference<T>(set: Set<T>, other: Set<T>): Set<T> {
+    const result = new Set(set)
+    for (const value of other) {
+        if (set.has(value)) result.delete(value)
+        else result.add(value)
+    }
+    return result
+}
+
+function setIsSubsetOf<T>(set: Set<T>, other: Set<T>): bool {
+    if (set.size > other.size) return false
+    for (const value of set) if (!other.has(value)) return false
+    return true
+}
+
+function setIsSupersetOf<T>(set: Set<T>, other: Set<T>): bool {
+    if (set.size < other.size) return false
+    for (const value of other) if (!set.has(value)) return false
+    return true
+}
+
+function setIsDisjointFrom<T>(set: Set<T>, other: Set<T>): bool {
+    if (set.size <= other.size) {
+        for (const value of set) if (other.has(value)) return false
+    } else {
+        for (const value of other) if (set.has(value)) return false
+    }
+    return true
+}

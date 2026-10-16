@@ -1,0 +1,85 @@
+// The methods of Map and Set that take callbacks or other sets, with
+// JavaScript's results (checked against node, with keys(), values() and
+// entries() taken through toArray()).
+
+// Map: forEach gets the value, the key and the map; entries added during the
+// loop are visited, deleted ones are not.
+const m = new Map<string, int>([
+    ["a", 1],
+    ["b", 2],
+    ["c", 3],
+])
+m.forEach((value, key, map) => {
+    if (key === "a") {
+        map.delete("b")
+        map.set("d", 4)
+    }
+    console.log(key, value, map.size)
+})
+let sum = 0
+m.forEach((value) => {
+    sum += value
+})
+console.log(sum)
+m.set("x", 9).set("y", 10).set("a", 0)
+console.log(m.keys(), m.values(), m.entries())
+// Clearing the map ends the loop.
+m.forEach((value, key, map) => {
+    console.log("first", key)
+    map.clear()
+})
+console.log(m.size)
+
+// Map.groupBy: keys in the order they first appear, with the index.
+const groups = Map.groupBy([1, 2, 3, 4, 5, 6], (x, i) => (x % 3 === 0 ? "fizz" : "other"))
+console.log(groups, groups.get("fizz"), groups.get("none"))
+console.log(Map.groupBy(["a", "b", "c"], (s, i) => i % 2))
+const empty: string[] = []
+console.log(Map.groupBy(empty, (s, i) => s.length).size)
+class Box {
+    size: int
+    constructor(size: int) {
+        this.size = size
+    }
+}
+const small = new Box(1)
+const large = new Box(2)
+const boxed = Map.groupBy([3, 1, 4, 1, 5], (n, i) => (n < 3 ? small : large))
+console.log(boxed.get(small), boxed.get(large))
+
+// Set: keys() is values(), entries() pairs each value with itself, forEach
+// passes the value twice and visits values added during the loop.
+const s = new Set([1, 2, 3, 4])
+console.log(s.keys(), s.values(), s.entries())
+s.forEach((value, value2, set) => {
+    if (value === 1) set.add(5)
+    if (value === 2) set.delete(3)
+    console.log(value, value2, set.size)
+})
+const letters = new Set<string>()
+letters.add("x").add("y").add("x")
+letters.forEach((value) => console.log(value))
+
+// The set methods of ES2024, which return new sets.
+const a = new Set([1, 2, 3, 4])
+const b = new Set([3, 4, 5])
+console.log(a.union(b), a.intersection(b), a.difference(b), a.symmetricDifference(b))
+console.log(b.union(a), b.intersection(a), b.difference(a), b.symmetricDifference(a))
+console.log(a.size, b.size)
+// intersection keeps the order of the smaller set.
+console.log(new Set([1, 2, 3]).intersection(new Set([3, 2])), new Set([3, 2]).intersection(new Set([1, 2, 3])))
+console.log(new Set([1, 2, 3]).difference(new Set([5, 4, 3, 2])))
+console.log(a.isSubsetOf(b), new Set([3]).isSubsetOf(b), a.isSubsetOf(a), new Set<int>().isSubsetOf(a))
+console.log(a.isSupersetOf(new Set([1, 4])), a.isSupersetOf(b), a.isSupersetOf(new Set<int>()))
+console.log(a.isDisjointFrom(b), a.isDisjointFrom(new Set([9])), new Set<int>().isDisjointFrom(a))
+// Values compare as keys do: NaN equals NaN, -0 equals 0.
+const zero: f64 = 0
+const nan = zero / zero
+const floats = new Set<f64>([nan, 0.0, 1.5])
+console.log(
+    floats.intersection(new Set<f64>([-0.0, nan])).size,
+    floats.has(nan),
+    floats.difference(new Set<f64>([nan])),
+)
+const words = new Set(["pear", "fig"])
+console.log(words.union(new Set(["fig", "kiwi"])), words.symmetricDifference(new Set(["fig", "kiwi"])))

@@ -89,7 +89,7 @@ import {
 import { bigFromF64, bigText } from "./bigint"
 import { type Checker } from "./base"
 import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
-import { closureCallee, genericCall, isInternal } from "./declarations"
+import { closureCallee, genericCall, instantiate, isInternal } from "./declarations"
 import {
     checkExpr,
     checkSpreadArray,
@@ -115,7 +115,7 @@ import {
 } from "./helpers"
 import { type Operand, errorOperand, UntypedInt } from "./operand"
 import { capture, checkClosure, disposeCall } from "./statements"
-import { type ValueSymbol, LocalSymbol, Scope } from "./symbols"
+import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
 
 export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
     const callee = expression(node)
@@ -1894,8 +1894,76 @@ function setOpName(name: string): SetOpName | null {
             return "clear"
         case "values":
             return "values"
+        case "keys":
+            return "values"
     }
     return null
+}
+
+/** The module of the methods of Map and Set written in Ore. */
+const collectionsModule = "ore:runtime/collections"
+
+/** The function of runtime/core/collections.ore that implements a Map method, or "". */
+function mapRuntimeName(name: string): string {
+    return name === "forEach" ? "mapForEach" : ""
+}
+
+/** The function of runtime/core/collections.ore that implements a Set method, or "". */
+function setRuntimeName(name: string): string {
+    switch (name) {
+        case "forEach":
+            return "setForEach"
+        case "entries":
+            return "setEntries"
+        case "union":
+            return "setUnion"
+        case "intersection":
+            return "setIntersection"
+        case "difference":
+            return "setDifference"
+        case "symmetricDifference":
+            return "setSymmetricDifference"
+        case "isSubsetOf":
+            return "setIsSubsetOf"
+        case "isSupersetOf":
+            return "setIsSupersetOf"
+        case "isDisjointFrom":
+            return "setIsDisjointFrom"
+    }
+    return ""
+}
+
+/**
+ * A method of Map or Set written in Ore: a call of the instance of the
+ * generic function `func` of runtime/core/collections.ore for `typeArgs`,
+ * with the receiver as its first argument.
+ */
+function collectionsCall(
+    c: Checker,
+    func: string,
+    typeArgs: Type[],
+    receiver: Expr,
+    name: string,
+    node: Node,
+    scope: Scope,
+): Operand {
+    let instance: Func | null = null
+    for (const [source, info] of c.modules) {
+        if (source.path !== collectionsModule) continue
+        const symbol = info.scope.ownValue(func)
+        if (!(symbol instanceof GenericFuncSymbol)) process.panic(`collectionsCall: no function ${func}`)
+        const found = instantiate(c, symbol.generic, typeArgs, node)
+        if (found instanceof Func) instance = found
+    }
+    if (instance === null) return errorOperand
+    const args = argsOf(node)
+    const params = instance.type.params
+    if (args.length !== params.length - 1)
+        return c.fail(node, `'${name}' expects ${params.length - 1} argument(s), got ${args.length}.`)
+    const values: Expr[] = [receiver]
+    for (let i = 0; i < args.length; i++)
+        values.push(c.coerce(checkExpr(c, args[i], scope, params[i + 1]), params[i + 1], args[i]))
+    return typed(new Call(instance.type.result, instance, values))
 }
 
 function chanOpName(name: string): ChanOpName {
@@ -2020,6 +2088,10 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         const result = op === "receive" ? c.unionOf([type.elem, types.null]) : types.void
         return typed(new ChanOp(op, result, type, value, sent))
     }
+    if (type.kind === "map" && mapRuntimeName(name) !== "")
+        return collectionsCall(c, mapRuntimeName(name), [type.key, type.value], value, name, node, scope)
+    if (type.kind === "set" && setRuntimeName(name) !== "")
+        return collectionsCall(c, setRuntimeName(name), [type.elem], value, name, node, scope)
     if (type.kind === "map") {
         const count = mapArity(name)
         if (count === -1) return c.fail(nameId, `Method '${name}' does not exist on type '${typeToString(type)}'.`)
