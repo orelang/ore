@@ -54,6 +54,12 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `blob.stream()`, `URL.createObjectURL(blob)`, `FileReader` | exist | do not exist |
 | an invalid header name or value given to `Headers` | throws a `TypeError` | panics with its message: `TypeError: Headers.append: "a b" is an invalid header name.` |
 | a header value with characters above U+00FF | throws a `TypeError` (not a `ByteString`) | kept, as UTF-8 |
+| `crypto.getRandomValues(array)` | an integer typed array; a `Float64Array` throws `TypeMismatchError` | an array of an integer type (`u8[]`, `i32[]`, `i64[]`, …); floats are a compile error; more than 65536 bytes panics with `QuotaExceededError` |
+| `crypto.randomUUID()` | a UUID of version 4 | `crypto.randomUUIDv4()`, beside `crypto.randomUUIDv7()`; `crypto.subtle` is missing |
+| `performance` | an object (an `EventTarget`) | a namespace: no value, no events; `toJSON()` is `{ timeOrigin }`; Node's `timerify`, `eventLoopUtilization` and `nodeTiming` are missing |
+| `performance.mark(name, { detail })`, `measure` | `detail` is a structured clone | `detail` is the value given, an `unknown` |
+| `new PerformanceMeasure(...)` | throws `TypeError: Illegal constructor` | takes the arguments of `performance.measure` and makes a measure without recording it |
+| `measure(name, { start })` with a mark name, or `measure(name, mark)` | also the names of `performance.timing` (browsers) or `nodeTiming` (Node) | only marks recorded with `performance.mark` |
 | `m[i]` past the end of a `RegExpMatch` | `undefined` | panics, as for arrays |
 | `s.localeCompare(t)` | the locale's collation | code point order |
 | `new Array(3)` | three holes | three zero values of the element type |

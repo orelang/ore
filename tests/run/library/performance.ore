@@ -1,0 +1,63 @@
+// The namespace performance, as JavaScript's global: a monotonic clock in
+// milliseconds, and marks and measures. Times that depend on the clock are
+// printed only as relations; the others are given.
+
+// The clock: milliseconds since timeOrigin, which is the Unix time in
+// milliseconds when the program started.
+const t0 = performance.now()
+let spin = 0
+for (let i = 0; i < 100000; i++) spin += i
+const t1 = performance.now()
+console.log(typeof t0, t0 >= 0, t1 >= t0, t1 < 60000, spin)
+const origin = performance.timeOrigin
+console.log(typeof origin, origin > 1.7e12, origin <= f64(Date.now()) + 1, f64(Date.now()) - origin < 60000)
+console.log(Math.abs(origin + performance.now() - f64(Date.now())) < 1000)
+console.log(performance.toJSON().timeOrigin === origin)
+
+// Marks: at a given time, or now, with a detail.
+const a = performance.mark("a", { startTime: 5, detail: { step: 1 } })
+console.log(a)
+console.log(a.name, a.entryType, a.startTime, a.duration)
+console.log(JSON.stringify(a))
+console.log(JSON.stringify(a.toJSON()))
+const now = performance.mark("now")
+console.log(now.detail, now.startTime >= t1, now.startTime <= performance.now())
+performance.clearMarks("now")
+console.log(new PerformanceMark("free", { startTime: 2 }).startTime, performance.getEntriesByName("free").length)
+
+// Measures: between marks, from a mark to now, and as options say.
+performance.mark("b", { startTime: 12.5 })
+const ab = performance.measure("ab", "a", "b")
+console.log(ab)
+const toNow = performance.measure("toNow", "a")
+console.log(toNow.startTime, toNow.startTime + toNow.duration <= performance.now(), toNow.detail)
+const fromZero = performance.measure("fromZero", null, "b")
+console.log(fromZero.startTime, fromZero.duration)
+console.log(performance.measure("se", { start: 2, end: 9 }).duration)
+console.log(performance.measure("sd", { start: "a", duration: 4, detail: "x" }).toJSON())
+console.log(performance.measure("ed", { end: "b", duration: 2.5 }).startTime)
+console.log(performance.measure("backwards", "b", "a").duration)
+// Only a duration or a detail: not options to place it, so from 0 to now, as in Node.
+const loose = performance.measure("loose", { duration: 5, detail: [1, 2] })
+console.log(loose.startTime, loose.duration >= t1, loose.detail)
+// The last mark of a name counts.
+performance.mark("a", { startTime: 7 })
+console.log(performance.measure("again", "a", "b").duration)
+
+// The entries, ordered by start time: marks before measures at the same time.
+const show = (entries: PerformanceEntry[]) => entries.map((e) => `${e.entryType}:${e.name}`).join(" ")
+console.log(show(performance.getEntriesByType("mark")))
+console.log(show(performance.getEntriesByName("a")))
+console.log(show(performance.getEntriesByName("a", "measure")), performance.getEntriesByType("other").length)
+console.log(show(performance.getEntries().filter((e) => e.startTime < 6)))
+const first = performance.getEntries()[0]
+console.log(first instanceof PerformanceMeasure, first instanceof PerformanceEntry, first.toJSON().detail)
+
+// Clearing by name and all.
+performance.clearMarks("a")
+console.log(show(performance.getEntriesByType("mark")))
+performance.clearMeasures("ab")
+console.log(performance.getEntriesByName("ab").length, performance.getEntriesByType("measure").length)
+performance.clearMeasures()
+performance.clearMarks()
+console.log(performance.getEntries().length)

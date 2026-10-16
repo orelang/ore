@@ -29,6 +29,8 @@ declare type byte = u8
 
 /** Any numeric primitive type. Valid only as a parameter of built-ins. */
 declare type numeric = i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64 | f32 | f64
+/** Any integer type. Valid only as a parameter of built-ins. */
+declare type integer = i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64
 
 declare function i8(x: numeric): i8
 declare function i16(x: numeric): i16
@@ -434,6 +436,68 @@ declare namespace time {
      * that, `hasRef()` tells which; `refresh()` starts its delay again.
      */
     type Timer = { cancel(): void; ref(): Timer; unref(): Timer; hasRef(): bool; refresh(): Timer }
+}
+
+/**
+ * The Web Crypto API's global, as in JavaScript: random values from the
+ * system's secure random number generator. Written in Ore, in
+ * runtime/core/crypto.ore, whose exports are members of the namespace:
+ * these declarations document them.
+ */
+declare namespace crypto {
+    /**
+     * Fills an array of integers (`u8[]` where JavaScript has a
+     * `Uint8Array`, `i32[]`, ...) with random values and returns it. More
+     * than 65536 bytes panics with QuotaExceededError; floats are rejected.
+     */
+    function getRandomValues<T extends integer>(array: T[]): T[]
+    /** A random UUID of version 4 (RFC 9562), as JavaScript's `crypto.randomUUID()`. */
+    function randomUUIDv4(): string
+    /** A UUID of version 7 (RFC 9562): the Unix time in milliseconds, then random bits; increasing within the process. */
+    function randomUUIDv7(): string
+}
+
+/**
+ * The High Resolution Time and User Timing APIs, as in JavaScript: times in
+ * milliseconds as `number` (unlike `time`, in nanoseconds), marks and
+ * measures. Written in Ore, in runtime/core/performance.ore, whose exports
+ * are members of the namespace: these declarations document them. Its
+ * entries are the global classes `PerformanceEntry`, `PerformanceMark` and
+ * `PerformanceMeasure`; `timeOrigin` is a `number` constant of the module,
+ * the Unix time in milliseconds when the program started.
+ */
+declare namespace performance {
+    /** Milliseconds since `timeOrigin` on a monotonic clock. */
+    function now(): number
+    /** Records a mark, at `startTime` of the options or now. */
+    function mark(markName: string, markOptions?: PerformanceMarkOptions): PerformanceMark
+    /** Records the time from a mark (or 0) to another (or now), or as the options say. */
+    function measure(
+        measureName: string,
+        startOrMeasureOptions?: string | PerformanceMeasureOptions | null,
+        endMark?: string | null,
+    ): PerformanceMeasure
+    /** The recorded marks and measures, by `startTime`. */
+    function getEntries(): PerformanceEntry[]
+    /** The recorded entries of a name, and of a type ("mark" or "measure") when given. */
+    function getEntriesByName(name: string, type?: string | null): PerformanceEntry[]
+    /** The recorded entries of a type, "mark" or "measure". */
+    function getEntriesByType(type: string): PerformanceEntry[]
+    /** Forgets the recorded marks of a name, or all. */
+    function clearMarks(markName?: string | null): void
+    /** Forgets the recorded measures of a name, or all. */
+    function clearMeasures(measureName?: string | null): void
+    /** `{ timeOrigin }`. */
+    function toJSON(): PerformanceJSON
+
+    type PerformanceMarkOptions = { detail?: unknown; startTime?: number }
+    type PerformanceMeasureOptions = {
+        detail?: unknown
+        start?: string | number
+        duration?: number
+        end?: string | number
+    }
+    type PerformanceJSON = { timeOrigin: number }
 }
 
 /**

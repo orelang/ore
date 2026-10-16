@@ -4,7 +4,7 @@ The standard library.
 
 - `builtin.d.ore`: declarations visible in every module: the numeric types,
   `console`, `Math`, `Number`, `fs`, `Date`, `time`, `task`, `process`, `JSON`,
-  `unsafe`, `Error` and `internal`. The checker implements them; built-ins
+  `crypto`, `performance`, `unsafe`, `Error` and `internal`. The checker implements them; built-ins
   live in namespaces, never as bare globals.
 - Namespaces written in Ore: the exports of `runtime/core/fs.ore`,
   `runtime/core/process.ore`, `runtime/core/process-command.ore` and
@@ -36,11 +36,16 @@ The standard library.
     60_000_000_000, `format(60 * second)` is "1m"); its texts are those of
     `ms`, so a number without a unit is milliseconds, and it also knows
     `us`/`µs` and `ns`.
+  - `crypto` and `performance`, the globals of JavaScript's hosts, in
+    `runtime/core/crypto.ore` and `runtime/core/performance.ore`:
+    `getRandomValues` on arrays of integers and the UUIDs of `ore:crypto`;
+    `now()` and `timeOrigin` in milliseconds as `number`, marks and
+    measures (`mark`, `measure`, `getEntries`...).
 - Modules imported as `ore:<name>`: `ore:sync` (`Mutex`, `WaitGroup`),
   `ore:net` (TCP `listen`, `Listener`, `Conn`), `ore:test` (`test`,
   `describe`, the hooks, `expect` and its matchers, used by `ore test`), `ore:crypto` (`sha256`, the incremental
   `Sha256`, and `randomUUIDv4`, `randomUUIDv7` of RFC 9562 from the
-  system's secure random numbers, getentropy(3)), `ore:path` (`join`, `dirname`, `basename`, `extname`,
+  system's secure random numbers, getentropy(3), as the global `crypto` has them), `ore:path` (`join`, `dirname`, `basename`, `extname`,
   `normalize`, `isAbsolute`, `resolve`, `relative`, `sep`, `delimiter`,
   with the POSIX semantics of Node's `node:path`).
 

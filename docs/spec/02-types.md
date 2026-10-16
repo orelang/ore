@@ -279,6 +279,10 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `time.now()`, `time.unixNanos()` | nanoseconds on a monotonic clock (for durations); since the Unix epoch on the wall clock |
 | `time.nanosecond`, `time.microsecond`, `time.millisecond`, `time.second`, `time.minute`, `time.hour`, `time.day` | durations in nanoseconds, `int` |
 | `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
+| `performance.now()`, `performance.timeOrigin` | milliseconds as `number`, as in JavaScript: since `timeOrigin` on a monotonic clock; the Unix time when the program started |
+| `performance.mark(name, options?)`, `performance.measure(name, start?, end?)`, `getEntries()`, `getEntriesByName`, `getEntriesByType`, `clearMarks`, `clearMeasures` | marks and measures of the User Timing API (see [random values and timing](#random-values-and-timing)) |
+| `crypto.getRandomValues(array)` | fills an array of integers with secure random values and returns it, as in JavaScript |
+| `crypto.randomUUIDv4()`, `crypto.randomUUIDv7()` | random UUIDs (RFC 9562), as in [`ore:crypto`](11-standard-modules.md#orecrypto) |
 | `JSON.stringify(value, keys?, space?)` | the JSON text of a value; a replacer array `keys` keeps only those keys of each object, in its order; a replacer function, as told below, makes the result `string \| null`; `space` indents each level by that many spaces (at most 10) or by a string (its first 10 characters) |
 | `JSON.omit` | what a replacer function returns to leave a value out, as JavaScript's `undefined` |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
@@ -299,11 +303,12 @@ Modules that a program imports by name, such as `ore:path` and
 `ore:crypto`, are in [standard modules](11-standard-modules.md).
 
 `String`, `fs`, `process`, `Number`, `Math`, `BigInt`, `Map` and `console`
-are partly written in Ore, and `time` and `task` partly or wholly
+are partly written in Ore, and `time`, `task`, `crypto` and `performance` partly or wholly
 (`runtime/core/string.ore`, `runtime/core/fs.ore`, `runtime/core/process.ore`,
 `runtime/core/number.ore`, `runtime/core/math.ore`, `runtime/core/bigint.ore`,
 `runtime/core/collections.ore`, `runtime/core/console.ore`,
-`runtime/core/time.ore` and `runtime/core/tasks.ore`): the exports of these modules are members of
+`runtime/core/time.ore`, `runtime/core/tasks.ore`, `runtime/core/crypto.ore`
+and `runtime/core/performance.ore`): the exports of these modules are members of
 the namespaces, classes and types included, so `fs.FileInfo`,
 `process.Child` and `process.CommandOptions` are types.
 
@@ -518,7 +523,10 @@ an unknown one, has no colors; nor has piped output.
 JSON is typed, as in Go: the code that writes and reads a type is generated
 for it. Numbers, `bool`, strings, string literal types, `null`, arrays,
 `Map`s with string keys, object types, classes (all their fields) and unions
-of these can be converted; interfaces and functions cannot. `JSON.parse<T>`
+of these can be converted; interfaces and functions cannot. `JSON.stringify`
+also writes an `unknown`, alone or as a part, as the value it holds (`null`
+for none), and panics if that is of a type JSON cannot convert;
+`JSON.parse` cannot read one. `JSON.parse<T>`
 checks the shape: an integer must be whole and in range, a string literal
 type must match, and a field must be present unless its type includes
 `null`; unknown fields are ignored. Its errors name the place, e.g.
@@ -1000,6 +1008,63 @@ header names and values.
   `JSON.stringify` writes the private fields, where JavaScript writes `{}`.
 - `Headers` is a class of the runtime written in Ore
   (`runtime/core/headers.ore`), a global name as in JavaScript.
+## Random values and timing
+
+```ts
+const key = crypto.getRandomValues(new Array<u8>(32))   // 32 random bytes
+performance.mark("start")
+work()
+const m = performance.measure("work", "start")
+console.log(`${m.name}: ${m.duration} ms`)
+```
+
+`crypto` and `performance` are the globals of JavaScript's hosts, as
+namespaces: the Web Crypto API's random values, and the High Resolution
+Time and User Timing APIs, whose times are milliseconds as `number`
+(`f64`), unlike the nanoseconds of [`time`](#time).
+
+- `crypto.getRandomValues(array)` fills an array of an integer type
+  (`u8[]` where JavaScript has a `Uint8Array`, `i8[]`, `i16[]`, `u16[]`,
+  `i32[]`, `u32[]`, `i64[]`, `u64[]`) from the system's secure random
+  number generator (`getentropy`) and returns the same array. An array of
+  floats, or of another type, is a compile-time error (JavaScript throws
+  `TypeMismatchError`); one of more than 65536 bytes panics with
+  `QuotaExceededError: The requested length exceeds 65,536 bytes`, as
+  JavaScript throws. `crypto.randomUUIDv4()` and `crypto.randomUUIDv7()`
+  are the UUIDs of [`ore:crypto`](11-standard-modules.md#orecrypto), where
+  JavaScript has `randomUUID()` (version 4).
+- `performance.now()` is the time in milliseconds since
+  `performance.timeOrigin` on a monotonic clock, with fractions;
+  `timeOrigin` is the Unix time in milliseconds when the program started.
+  `performance.toJSON()` is `{ timeOrigin }`.
+- `performance.mark(name, { detail?, startTime? }?)` records a
+  `PerformanceMark` at `startTime` or now and returns it; `detail` (any
+  value, an `unknown`) is null when not given. `new PerformanceMark(name,
+  options?)` makes one without recording it.
+- `performance.measure(name, startOrOptions?, endMark?)` records a
+  `PerformanceMeasure` and returns it: from the mark `startOrOptions` (a
+  name; 0 without one) to the mark `endMark` (now without one), or as the
+  options `{ start?, end?, duration?, detail? }` say, where `start` and
+  `end` are names of marks or times. As in JavaScript, the options place
+  the measure when they have a `start` or an `end`: then `endMark` must be
+  null, and `start`, `end` and `duration` cannot be all given (a
+  `TypeError` panic); the end is `end`, else `start + duration`, else now,
+  and the start is `start`, else `end - duration`, else 0. A name refers to
+  the last mark recorded with it; a name of none panics with `SyntaxError:
+  The "name" performance mark has not been set`, and a negative time with
+  `TypeError: -1 is not a valid timestamp`, as Node throws.
+- Entries have `name`, `entryType` (`"mark"` or `"measure"`), `startTime`,
+  `duration` (0 for a mark), `detail` and `toJSON()`, and print as Node
+  prints them. `PerformanceEntry`, their abstract base class,
+  `PerformanceMark` and `PerformanceMeasure` are global names.
+- `performance.getEntries()`, `getEntriesByName(name, type?)` and
+  `getEntriesByType(type)` return the recorded entries ordered by
+  `startTime`, marks before measures at the same time, each in the order
+  they were recorded. `clearMarks(name?)` and `clearMeasures(name?)` forget
+  those of a name, or all. Tasks on several threads may record entries.
+- They are written in Ore, in `runtime/core/crypto.ore` and
+  `runtime/core/performance.ore`, whose exports are members of the
+  namespaces.
 
 ## Arrays
 
@@ -1113,6 +1178,6 @@ header names and values.
   `unknown`.
 - `typeof x === "object"` is true for `null`, arrays, maps, sets and
   objects, as in JavaScript.
-- An `unknown` cannot be formatted in a template literal, converted to or
-  from JSON (but as what a replacer of `JSON.stringify` returns), or be a
-  `Map` key or a `Set` element.
+- An `unknown` cannot be formatted in a template literal, read from JSON
+  (`JSON.stringify` writes the value it holds), or be a `Map` key or a
+  `Set` element.

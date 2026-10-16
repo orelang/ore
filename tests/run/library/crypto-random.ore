@@ -1,0 +1,42 @@
+// crypto.getRandomValues, as JavaScript's global, on arrays of integers
+// where JavaScript has typed arrays; and the UUIDs of the global crypto.
+// Only what does not depend on the random bits is printed.
+
+const bytes: u8[] = new Array<u8>(4096)
+const same = crypto.getRandomValues(bytes)
+console.log(same === bytes, bytes.length)
+// 4096 random bytes take most of the 256 values, and are not all zero.
+const seen = new Set<u8>(bytes)
+console.log(
+    seen.size > 200,
+    bytes.some((b) => b !== 0),
+)
+
+// Every integer type, up to the quota of 65536 bytes.
+const words = crypto.getRandomValues(new Array<u32>(16384))
+console.log(
+    words.length,
+    words.some((w) => w > 0xffffff),
+)
+const signed = crypto.getRandomValues(new Array<i8>(1000))
+console.log(
+    signed.some((b) => b < 0),
+    signed.some((b) => b > 0),
+)
+const longs = crypto.getRandomValues(new Array<i64>(100))
+console.log(
+    longs.some((n) => n < 0),
+    longs.some((n) => n > 0xffffffff),
+)
+console.log(crypto.getRandomValues(new Array<u16>(0)).length)
+const shorts: i16[] = [0, 0, 0, 0, 0, 0, 0, 0]
+console.log(
+    crypto.getRandomValues(shorts).length,
+    shorts.some((s) => s !== 0),
+)
+
+// The UUIDs of "ore:crypto", on the global too.
+const shape = /^[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const a = crypto.randomUUIDv4()
+const b = crypto.randomUUIDv7()
+console.log(shape.test(a), a.slice(14, 15) === "4", shape.test(b), b.slice(14, 15) === "7", crypto.randomUUIDv7() > b)

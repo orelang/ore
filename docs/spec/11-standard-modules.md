@@ -39,7 +39,8 @@ console.log(join("out", "..", "logs", `${randomUUIDv7()}.txt`))
   same tick of the clock as the one before takes the next value of the
   timestamp.
 - The random bits come from the system's secure random number generator
-  (`getentropy`).
+  (`getentropy`). The global `crypto` has both functions too, beside
+  `getRandomValues` (see [random values and timing](02-types.md#random-values-and-timing)).
 
 ## ore:path
 

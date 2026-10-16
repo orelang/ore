@@ -1,4 +1,5 @@
-// The "ore:crypto" module: SHA-256 (FIPS 180-4) and random UUIDs (RFC 9562).
+// The "ore:crypto" module: SHA-256 (FIPS 180-4) and random UUIDs (RFC 9562),
+// which the global `crypto` has too.
 //
 //   import { randomUUIDv4, randomUUIDv7, sha256, Sha256 } from "ore:crypto"
 //
@@ -193,79 +194,23 @@ function compress(base: ptr, block: ptr): void {
 }
 
 // ---------------------------------------------------------------------------
-// Random UUIDs
-
-declare function getentropy(buffer: ptr, size: u64): i32
-
-/** Fills `size` bytes (at most 256) at `p` from the system's secure random number generator. */
-function randomBytes(p: ptr, size: int): void {
-    if (getentropy(p, u64(size)) !== 0) process.panic("crypto: getentropy failed")
-}
-
-/** The 16 bytes at `p` as a UUID: 36 lowercase hex characters, in groups of 8-4-4-4-12. */
-function uuidText(p: ptr): string {
-    const out = unsafe.allocBytes(36)
-    let at = 0
-    for (let i = 0; i < 16; i++) {
-        if (i === 4 || i === 6 || i === 8 || i === 10) {
-            unsafe.store<u8>(unsafe.add(out, at), 0x2d)
-            at++
-        }
-        const byte = unsafe.load<u8>(unsafe.add(p, i))
-        unsafe.store<u8>(unsafe.add(out, at), hexDigits[i64(byte >> 4)])
-        unsafe.store<u8>(unsafe.add(out, at + 1), hexDigits[i64(byte & 15)])
-        at += 2
-    }
-    return unsafe.makeString(out, 36)
-}
-
-/** Sets the version (the high 4 bits of byte 6) and the variant 0b10 (the high 2 bits of byte 8). */
-function stamp(p: ptr, version: int): void {
-    unsafe.store<u8>(unsafe.add(p, 6), (unsafe.load<u8>(unsafe.add(p, 6)) & 0x0f) | u8(version << 4))
-    unsafe.store<u8>(unsafe.add(p, 8), (unsafe.load<u8>(unsafe.add(p, 8)) & 0x3f) | 0x80)
-}
+// Random UUIDs, as the global `crypto` has them (runtime/core/crypto.ore)
 
 /**
  * A random UUID of version 4 (RFC 9562): 122 bits from the system's secure
  * random number generator, as "xxxxxxxx-xxxx-4xxx-Vxxx-xxxxxxxxxxxx" in
- * lowercase hex, where V is 8, 9, a or b.
+ * lowercase hex, where V is 8, 9, a or b: `crypto.randomUUIDv4()`.
  */
 export function randomUUIDv4(): string {
-    const bytes = unsafe.allocBytes(16)
-    randomBytes(bytes, 16)
-    stamp(bytes, 4)
-    return uuidText(bytes)
+    return crypto.randomUUIDv4()
 }
 
 /**
- * The last timestamp of `randomUUIDv7`: the milliseconds shifted left by 12
- * bits plus the 12 bits of `rand_a`, updated atomically. Held as a string,
- * as `Sha256.scratch`, because the collector does not trace a `ptr`.
- */
-const lastV7 = unsafe.makeString(unsafe.allocBytes(8), 8)
-
-/**
  * A UUID of version 7 (RFC 9562): the 48-bit Unix time in milliseconds,
- * then 12 bits of the time within the millisecond (method 3 of section
- * 6.2), then 62 random bits, so UUIDs sort by creation time, as text too.
- * Within the process they increase strictly: one made in the same tick as
- * the one before takes the next value of the 60-bit timestamp.
+ * then 12 bits of the time within the millisecond, then 62 random bits, so
+ * UUIDs sort by creation time and increase strictly within the process:
+ * `crypto.randomUUIDv7()`.
  */
 export function randomUUIDv7(): string {
-    const nanos = time.unixNanos()
-    const tick = (nanos / time.millisecond) * 4096 + ((nanos % time.millisecond) * 4096) / time.millisecond
-    let next = tick
-    for (;;) {
-        const previous = unsafe.atomicLoad<i64>(unsafe.stringData(lastV7))
-        next = tick > previous ? tick : previous + 1
-        if (unsafe.atomicCompareExchange<i64>(unsafe.stringData(lastV7), previous, next)) break
-    }
-    const bytes = unsafe.allocBytes(16)
-    randomBytes(unsafe.add(bytes, 8), 8)
-    const ms = next >> 12
-    for (let i = 0; i < 6; i++) unsafe.store<u8>(unsafe.add(bytes, i), u8((ms >> (40 - 8 * i)) & 0xff))
-    unsafe.store<u8>(unsafe.add(bytes, 6), u8((next >> 8) & 0x0f))
-    unsafe.store<u8>(unsafe.add(bytes, 7), u8(next & 0xff))
-    stamp(bytes, 7)
-    return uuidText(bytes)
+    return crypto.randomUUIDv7()
 }

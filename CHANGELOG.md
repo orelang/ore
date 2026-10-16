@@ -125,6 +125,22 @@ before 1.0, a minor version may change the language.
 - `a ?? b` has the type `NonNullable<A> | B`, as in TypeScript: a fallback
   of another type, or one that may be null, widens the result instead of
   being refused (`xs.find(f) ?? null`, `n ?? "none"`).
+- `JSON.stringify` writes an `unknown`, alone or as a field, element or
+  map value, as the value it holds, as JavaScript writes any value, through
+  the code a replacer function already used; one of a type JSON cannot
+  convert panics. `JSON.parse` still cannot read an `unknown`.
+- `crypto` and `performance`, the globals of JavaScript's hosts, as
+  namespaces: `crypto.getRandomValues(array)` fills an array of an integer
+  type (`u8[]` for `Uint8Array`, `i32[]`, ...) from the system's secure
+  random number generator, panics with `QuotaExceededError` past 65536
+  bytes, and rejects floats at compile time; `crypto.randomUUIDv4()` and
+  `crypto.randomUUIDv7()` are those of "ore:crypto". `performance.now()`
+  and `performance.timeOrigin` are milliseconds as `number`, as in
+  JavaScript; `mark`, `measure` (mark names or the options `start`, `end`,
+  `duration` and `detail`), `getEntries`, `getEntriesByName`,
+  `getEntriesByType`, `clearMarks`, `clearMeasures` and `toJSON` follow
+  the User Timing API as Node has it, with the global classes
+  `PerformanceEntry`, `PerformanceMark` and `PerformanceMeasure`.
 
 ## 0.5.0
 
