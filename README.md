@@ -90,7 +90,8 @@ total: 1000
 
 The [specification](docs/spec) describes the language, the
 [architecture](docs/architecture.md) the implementation, the
-[roadmap](docs/roadmap.md) what comes next.
+[roadmap](docs/roadmap.md) what comes next; [`docs`](docs/README.md) lists
+them all.
 
 ## The language at a glance
 
@@ -478,6 +479,7 @@ Every directory below has a README with the details.
 | `editors/zed` | Zed extension (GPL-3.0-or-later: it carries Zed's TypeScript queries) |
 | `editors/vscode` | VS Code extension |
 | `ci/` | Bootstrap, tests, stress tests, packaging and releases |
+| `docs` | The specification, a page per diagnostic code, the architecture and the roadmap ([index](docs/README.md)) |
 
 ## License
 
