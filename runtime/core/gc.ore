@@ -1405,16 +1405,20 @@ export function collect(): void {
     markAll()
     unsafe.atomicStore<i64>(markingCell, 0)
     const terminated = nowNs(clock)
-    sweep()
+    prepareSweep()
+    lock(heapLock)
     startWorld()
     const end = nowNs(clock)
-    scavenge()
+    sweep()
+    scavengeLocked()
+    unlock(heapLock)
+    const swept = nowNs(clock)
     const number = collections
     unlock(gcLock)
     if (trace !== 0) {
         dprintf(
             2,
-            "gc %ld: %ld KB live, %ld KB heap (%ld KB released), %ld threads, %ld markers, pauses %ld + %ld us (roots %ld; finish %ld, sweep %ld), marking %ld us\n",
+            "gc %ld: %ld KB live, %ld KB heap (%ld KB released), %ld threads, %ld markers, pauses %ld + %ld us (roots %ld; finish %ld), marking %ld us, sweeping %ld us\n",
             number,
             liveBytes >> 10,
             heapSize() >> 10,
@@ -1425,8 +1429,8 @@ export function collect(): void {
             (end - stoppedAgain) / 1000 + (stoppedAgain - marked) / 1000,
             (resumed - stopped) / 1000,
             (terminated - stoppedAgain) / 1000,
-            (end - terminated) / 1000,
             (marked - resumed) / 1000,
+            (swept - end) / 1000,
         )
     }
 }
@@ -1443,11 +1447,24 @@ function popcount(x: u64): int {
 }
 
 /** Frees every unmarked object: the marks become the allocation bits. The world is stopped. */
-function sweep(): void {
+/**
+ * The part of sweeping done with the world stopped: no thread allocates from
+ * a span until it is swept, since threads take their spans from these lists,
+ * which `sweep` fills again.
+ */
+function prepareSweep(): void {
     for (let c = 0; c < classCount * 2; c++) setPointer(partial, c * 8, nil())
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
         unsafe.fill(unsafe.add(t, threadCache), 0, maxClasses * 16)
     }
+}
+
+/**
+ * Frees the objects marking did not reach, span by span; runs with the world
+ * started again, holding `heapLock` from before it started, so that no span
+ * is made or taken meanwhile.
+ */
+function sweep(): void {
     liveBytes = 0
     let kept = 0
     for (let s = 0; s < spanCount; s++) {
@@ -1498,14 +1515,8 @@ const scavengeAge = 2
  * heap's pages are free: those of runs that stayed free for `scavengeAge`
  * collections, since the others are likely taken again soon. The pages stay
  * reserved, and come back (zeroed) when a span uses them again. Runs after
- * the world is started again, under `heapLock`.
+ * the world is started again; the caller holds `heapLock`.
  */
-function scavenge(): void {
-    lock(heapLock)
-    scavengeLocked()
-    unlock(heapLock)
-}
-
 function scavengeLocked(): void {
     let free = 0
     for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) free += field(run, spanPages)
