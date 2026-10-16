@@ -90,6 +90,9 @@ exports, type assertions (Ore converts: `i32(x)`).
   Unicode's full case mappings and the four normalization forms (done;
   `localeCompare` compares by code point, `String.raw` needs tagged
   templates).
+- `Date` from MDN, with the local time zone from TZif files (done;
+  `toLocale*String` know only `en-US`, and time zone names in `toString`
+  only the common abbreviations).
 - `globalThis`, as in JavaScript: the global names (`globalThis.console`,
   `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
   members of one value, with the type `typeof globalThis`; a module's own
