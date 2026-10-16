@@ -217,6 +217,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `Number.isNaN(x)`, `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)` | predicates on an `f64`, as in JavaScript |
 | `BigInt(x)`, `BigInt.parse(s, radix?)`, `BigInt.asIntN(bits, b)`, `BigInt.asUintN(bits, b)` | bigints from numbers and text, and modulo a power of two (see [BigInt](#bigint)) |
 | `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
+| `Array.from(items, mapFn?)`, `Array.of(...items)`, `Array.isArray(x)` | arrays from other collections and from values (see [array methods](04-functions.md#array-methods)) |
+| `Map.groupBy(items, keyFn)` | the elements of an array grouped by a key (see [maps](03-objects.md#maps)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
@@ -236,6 +238,9 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
+
+Modules that a program imports by name, such as `ore:path` and
+`ore:crypto`, are in [standard modules](11-standard-modules.md).
 
 `String`, `fs`, `process`, `Number` and `BigInt` are partly written in Ore,
 and `time` wholly (`runtime/core/string.ore`, `runtime/core/fs.ore`,
