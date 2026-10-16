@@ -81,6 +81,29 @@ array of strings and numbers, is an error at its place in the JSON file, as
 are JSON syntax errors. Importing a file twice gives the same value, one for
 the program.
 
+To give the value a type of its own, initialize a declaration with the
+imported name:
+
+```ts
+import config from "./config.json" with { type: "json" }
+
+type Config = { name: string; owner: string | null; tags: string[] }
+const settings: Config = config
+```
+
+The first top-level declaration of an importing module whose initializer is
+the imported name alone, and which has a type annotation, gives the value
+its type: the JSON value is checked against that type as the same literal
+would be in `const settings: Config = { ... }`. So `null` is a value of
+`string | null`, `[]` an empty `string[]`, and `2` a `number`; an object
+must have exactly the properties of its type. Errors are reported at their
+place in the JSON file. The imported name then has that type too, and is the
+same value as the declaration. Among the modules that import the file, the
+first in the order of the program that has such a declaration decides; other
+declarations, and declarations in functions, are checked against the type
+it gave. The form is plain TypeScript: there, the declaration checks the
+type TypeScript infers from the file against the annotation.
+
 The attribute `type` is `"text"` or `"json"`; other types and attributes are
 errors.
 

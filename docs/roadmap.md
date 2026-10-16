@@ -83,10 +83,10 @@ exports, type assertions (Ore converts: `i32(x)`).
 - Import attributes as in JavaScript (`import x from "./f" with { type: ... }`,
   see [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import/with)):
   `type: "json"` imports a JSON file as a typed value, checked against the
-  declared type at compile time (done, typed as the equivalent literal; not
-  yet contextually typed by the declared type, so `null` and empty arrays
-  have no other type); other attributes as they come (text imports are
-  done).
+  declared type at compile time (done: typed as the equivalent literal, or
+  by the first declaration it initializes, `const c: Config = config`, so
+  that `null` and empty arrays fit); other attributes as they come (text
+  imports are done).
 
 ## 4. Toolchain
 

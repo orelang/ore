@@ -25,6 +25,10 @@ before 1.0, a minor version may change the language.
   same literal written in Ore; JSON syntax and type errors point into the
   file, and go to definition leads there. Unknown import types and
   attributes are errors (ORE6067 to ORE6070).
+- The value of a JSON import takes the type of the first top-level
+  declaration that it initializes, `const c: Config = config`: the file is
+  checked against `Config` as an annotated literal would be, so `null` fits
+  `string | null` and `[]` fits `string[]`, and errors point into the file.
 - Conditional types `T extends U ? X : Y`, distributed over unions, with
   `infer`; mapped types `{ [K in keyof T]?: T[K] }` with `readonly`, `?`,
   `-`/`+` and `as`; template literal types and `Uppercase` and the other
