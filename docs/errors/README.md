@@ -366,7 +366,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5050](ORE5050.md) | Duplicate type '…'. |
 | [ORE5051](ORE5051.md) | Member '…' conflicts with an inherited member of a different type. |
 | [ORE5052](ORE5052.md) | Interface '…' extends itself. |
-| [ORE5053](ORE5053.md) | An interface can only extend interfaces. |
+| [ORE5053](ORE5053.md) | An interface can only extend interfaces and classes. |
 | [ORE5054](ORE5054.md) | Call and construct signatures are not supported. |
 | [ORE5055](ORE5055.md) | Generic methods are not supported in interfaces: calls through an interface cannot pick an instance. |
 | [ORE5056](ORE5056.md) | This interface member is not supported. |

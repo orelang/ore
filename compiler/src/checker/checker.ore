@@ -24,11 +24,12 @@ import {
     declareClass,
     declareClassMembers,
     declareInterface,
+    extendsClass,
     fillInterface,
     finishClasses,
     resolveBase,
 } from "./classes"
-import { CheckResult, ExportEntry, FuncContext, ModuleInfo } from "./context"
+import { CheckResult, ExportEntry, FuncContext, type InterfaceInfo, ModuleInfo } from "./context"
 import {
     checkDirectives,
     checkStrictNames,
@@ -156,7 +157,11 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
         declareTypeAliases(c, aliases, module.scope)
     }
     c.prefix = ""
-    for (const [_, info] of c.interfaces) fillInterface(c, info, info.scope)
+    // Interfaces that extend a class wait for the members of classes.
+    const late: InterfaceInfo[] = []
+    for (const [_, info] of c.interfaces)
+        if (extendsClass(c, info)) late.push(info)
+        else fillInterface(c, info, info.scope)
     for (const info of c.classes) resolveBase(c, info)
     each((stmt, m) => {
         if (stmt.kind !== "FunctionDeclaration") return
@@ -167,6 +172,7 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
     for (const [_, decls] of c.overloadDecls)
         for (const d of decls) c.error(nameNode(d), "This overload signature has no implementation after it.")
     for (const info of c.classes) declareClassMembers(c, info, info.scope)
+    for (const info of late) fillInterface(c, info, info.scope)
     checkExports(c, modules)
     typeJsonImports(c)
 

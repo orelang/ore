@@ -183,7 +183,15 @@ on that slot reads the class table.
   offset, as before.
 - Interfaces are structural: interfaces with the same members are the same
   type. An interface converts implicitly to an interface with a subset of its
-  members. `interface A extends B` includes the members of `B`.
+  members. `interface A extends B` includes the members of `B`; when `B` is
+  a class, its public instance fields and methods, as in TypeScript (its
+  private and protected members and its accessors are left out, so object
+  literals and unrelated classes conform too).
+- Two declarations of an interface in one scope merge, as in TypeScript:
+  the members and `extends` clauses of both make one interface. A member
+  declared in both must have the same type. Generic interfaces and other
+  kinds of declarations (an interface and a class, two classes) do not
+  merge ([ORE5050](../errors/ORE5050.md)).
 - An interface value refers to the original object: fields read and written
   through the interface are the object's fields, and `===` compares the
   objects.

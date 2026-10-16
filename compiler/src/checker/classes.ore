@@ -1259,7 +1259,15 @@ export function declareInterface(c: Checker, decl: Node, scope: Scope) {
     }
     const type = new InterfaceTypeClass(c.nextStructId++, name, [])
     if (!scope.declareType(name, new TypeSymbol(type, decl))) {
-        c.error(nameNode(decl), `Duplicate type '${name}'.`)
+        // A second declaration of an interface merges its members into the first, as in TypeScript.
+        const existing = scope.ownType(name)
+        let first: InterfaceInfo | null = null
+        if (existing !== null) {
+            const t = existing.type
+            if (t.kind === "interface") first = c.interfaces.get(t)
+        }
+        if (first !== null && first.decl.kind === "InterfaceDeclaration") first.merged.push(decl)
+        else c.error(nameNode(decl), `Duplicate type '${name}'.`)
         return
     }
     c.interfaces.set(type, new InterfaceInfoClass(decl, type, scope, "declared"))
@@ -1294,24 +1302,94 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
     info.state = "filling"
     const found: InterfaceMember[] = []
     const decls = c.memberDecls.get(info.type)!
+    // Merged declarations add their bases and members to the first one.
+    const all: Node[] = [info.decl]
+    for (const d of info.merged) all.push(d)
 
-    for (const clause of heritageClauses(info.decl)) {
-        for (const ref of typeNodes(clause)) {
-            const target = expression(ref)
-            const base = isIdentifier(target) ? scope.lookupType(target.text) : null
-            if (base === null || base.type.kind !== "interface") {
-                c.error(ref, "An interface can only extend interfaces.")
-                continue
+    for (const d of all)
+        for (const clause of heritageClauses(d)) {
+            for (const ref of typeNodes(clause)) {
+                const target = expression(ref)
+                const base = isIdentifier(target) ? scope.lookupType(target.text) : null
+                const baseType = base !== null ? base.type : null
+                if (baseType !== null && baseType.kind === "struct" && baseType.nominal) {
+                    // An interface that extends a class takes its public instance members, as in TypeScript.
+                    if (isIdentifier(target)) c.info.definitions.set(target, base!.decl)
+                    classMembersOf(c, found, decls, baseType, ref)
+                    continue
+                }
+                if (baseType === null || baseType.kind !== "interface") {
+                    c.error(ref, "An interface can only extend interfaces and classes.")
+                    continue
+                }
+                if (isIdentifier(target)) c.info.definitions.set(target, base!.decl)
+                const baseInfo = c.interfaces.get(baseType)!
+                fillInterface(c, baseInfo, scope)
+                for (const m of baseType.members)
+                    addMember(c, found, decls, m, ref, c.memberDecls.get(baseType)!.get(m.name)!)
             }
-            const baseType = base.type
-            if (isIdentifier(target)) c.info.definitions.set(target, base.decl)
-            const baseInfo = c.interfaces.get(baseType)!
-            fillInterface(c, baseInfo, scope)
-            for (const m of baseType.members)
-                addMember(c, found, decls, m, ref, c.memberDecls.get(baseType)!.get(m.name)!)
         }
+    for (const d of all) fillMembers(c, d, found, decls, scope)
+    found.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    info.type.members = found
+    info.state = "filled"
+}
+
+/**
+ * Whether an interface extends a class, directly or through another
+ * interface: it is filled after the members of classes are declared.
+ */
+export function extendsClass(
+    c: Checker,
+    info: InterfaceInfo,
+    seen: Set<InterfaceInfo> = new Set<InterfaceInfo>(),
+): bool {
+    seen.add(info)
+    const all: Node[] = [info.decl]
+    for (const d of info.merged) all.push(d)
+    for (const d of all)
+        for (const clause of heritageClauses(d))
+            for (const ref of typeNodes(clause)) {
+                const target = expression(ref)
+                const base = isIdentifier(target) ? info.scope.lookupType(target.text) : null
+                if (base === null) continue
+                const t = base.type
+                if (t.kind === "struct" && t.nominal) return true
+                if (t.kind === "interface") {
+                    const baseInfo = c.interfaces.get(t)
+                    if (
+                        baseInfo !== null &&
+                        !seen.has(baseInfo) &&
+                        baseInfo.state === "declared" &&
+                        extendsClass(c, baseInfo, seen)
+                    )
+                        return true
+                }
+            }
+    return false
+}
+
+/** Adds the public instance fields and methods of a class to an interface that extends it. */
+function classMembersOf(c: Checker, found: InterfaceMember[], decls: Map<string, Node>, cls: StructType, ref: Node) {
+    // The types of fields without annotations come from their initializers.
+    const info = c.classInfos.get(cls.id)
+    if (info !== null) checkFieldInitializers(c, info, info.scope)
+    const classDecls = c.memberDecls.get(cls)
+    for (const f of cls.fields) {
+        if (f.private) continue
+        const decl = classDecls !== null ? classDecls.get(f.name) : null
+        addMember(c, found, decls, new InterfaceField(f.name, f.type, f.readonly), ref, decl ?? ref)
     }
-    for (const member of members(info.decl)) {
+    for (const m of cls.methods) {
+        if (m.private) continue
+        const decl = classDecls !== null ? classDecls.get(m.name) : null
+        addMember(c, found, decls, new InterfaceMethod(m.name, m.func.type), ref, decl ?? ref)
+    }
+}
+
+/** Adds the members declared in the body of one declaration of an interface. */
+function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Map<string, Node>, scope: Scope) {
+    for (const member of members(decl)) {
         const memberName = member.child("name")
         if (memberName === null) {
             c.error(
@@ -1370,9 +1448,6 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
             c.error(member, "This interface member is not supported.")
         }
     }
-    found.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    info.type.members = found
-    info.state = "filled"
 }
 
 /** Whether a struct or interface has the members of an interface: a reason it does not, or the member indices. */
