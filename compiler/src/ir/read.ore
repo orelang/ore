@@ -56,6 +56,7 @@ import {
     Is,
     IsNull,
     Itab,
+    ItabAccessor,
     Len,
     LetStmt,
     Local,
@@ -1571,8 +1572,23 @@ class Reader {
                     const s = this.structType(this.type(c))
                     c.expect(" -> ")
                     const iface = this.ifaceType(this.type(c))
+                    const table = new Itab(id, s, iface)
+                    while (c.eat(" accessor ")) {
+                        const index = c.int()
+                        c.expect(" ")
+                        const get = c.word()
+                        c.expect(" ")
+                        const set = c.word()
+                        table.accessors.push(
+                            new ItabAccessor(
+                                index,
+                                get === "-" ? null : this.func(get, c),
+                                set === "-" ? null : this.func(set, c),
+                            ),
+                        )
+                    }
                     this.next(c)
-                    this.itabs.push(new Itab(id, s, iface))
+                    this.itabs.push(table)
                     break
                 }
                 case "func":

@@ -83,7 +83,15 @@ class Dumper {
         for (const s of m.structs) this.struct(s)
         for (const u of m.unions)
             this.line(0, `union ${this.type(u)}${u.name !== null ? ` name=${quote(u.name)}` : ""}`)
-        for (const t of m.itabs) this.line(0, `itab ${t.id}: ${this.type(t.struct)} -> ${this.type(t.iface)}`)
+        for (const t of m.itabs) {
+            let text = `itab ${t.id}: ${this.type(t.struct)} -> ${this.type(t.iface)}`
+            for (const a of t.accessors) {
+                const get = a.get
+                const set = a.set
+                text += ` accessor ${a.index} ${get !== null ? this.ref(get) : "-"} ${set !== null ? this.ref(set) : "-"}`
+            }
+            this.line(0, text)
+        }
         for (const f of m.functions) this.func("func", f)
         for (const f of m.inits) this.func("init", f)
         // Interfaces found while writing interfaces are appended to the list.
