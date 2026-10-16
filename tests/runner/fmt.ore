@@ -9,8 +9,8 @@
 // (broken lines that must join), and comments inserted between tokens and at
 // the ends of lines. For each, the output of the formatter must have the
 // tokens of the input (but for punctuation the formatter may add or remove:
-// semicolons, commas, parentheses, the quotes of strings), the same comments,
-// and be its own formatting.
+// semicolons, commas, parentheses, the quotes of strings, the `|` before the
+// first member of a union), the same comments, and be its own formatting.
 
 import { fail } from "ore:test"
 import { format } from "../../compiler/src/fmt/print"
@@ -289,8 +289,9 @@ const variants = [
 
 /**
  * The tokens of a text as the formatter must keep them: kind and text, but
- * for semicolons, commas and parentheses, which it adds and removes, and with
- * strings by their contents, whatever their quotes.
+ * for semicolons, commas, parentheses and the `|` before the first member of
+ * a union, which it adds and removes, and with strings by their contents,
+ * whatever their quotes.
  */
 function significant(text: string, tokens: Token[]): string[] {
     const out: string[] = []
@@ -306,13 +307,19 @@ function significant(text: string, tokens: Token[]): string[] {
             kind === "CloseParenToken"
         )
             continue
-        // The `|` before the first member of a union type broken over lines.
+        // The `|` before the first member of a union type broken over lines:
+        // after `=`, `:`, `(`, `?`, `extends` (a constraint or a conditional
+        // type), `<` and `,` (type arguments) and `=>` (a return type).
         if (
             kind === "BarToken" &&
             (after === "EqualsToken" ||
                 after === "ColonToken" ||
                 after === "OpenParenToken" ||
-                after === "QuestionToken")
+                after === "QuestionToken" ||
+                after === "ExtendsKeyword" ||
+                after === "LessThanToken" ||
+                after === "CommaToken" ||
+                after === "EqualsGreaterThanToken")
         )
             continue
         let value = text.slice(t.start, t.end)
