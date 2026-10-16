@@ -132,7 +132,7 @@ before 1.0, a minor version may change the language.
   a match array (`[ '12', index: 3, input: 'a 12', groups: undefined ]`).
 - `array.length = n` truncates an array, as in JavaScript; a negative or
   larger length panics, since an array has no holes.
-- An unknown member of a built-in namespace, as `Math.LN2` or
+- An unknown member of a built-in namespace, as `Math.TAU` or
   `process.argv`, is reported as such ("'Math' has no member 'LN2'")
   instead of suggesting to call a function of the namespace. The errors for
   `async` and `#private` names say `task.spawn()` and that `#` names are
