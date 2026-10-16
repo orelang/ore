@@ -90,7 +90,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2024](ORE2024.md) | Duplicate property '…'. |
 | [ORE2025](ORE2025.md) | Type '…' cannot be a Map key. |
 | [ORE2026](ORE2026.md) | Type '…' cannot be an element of a Set. |
-| [ORE2027](ORE2027.md) | '#' private names are not supported. Use the 'private' modifier. |
+| [ORE2027](ORE2027.md) | '#' private names are forbidden in Ore. Use the 'private' modifier. |
 | [ORE2028](ORE2028.md) | Computed property names are not supported. |
 | [ORE2029](ORE2029.md) | A value cannot have type '…'. |
 | [ORE2030](ORE2030.md) | Type 'null' is not assignable to type '…'. |
@@ -385,7 +385,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6019](ORE6019.md) | Cannot export '…': it is not declared in this module. |
 | [ORE6020](ORE6020.md) | A function declaration must have a name. |
 | [ORE6021](ORE6021.md) | Generic overload signatures are not supported yet. |
-| [ORE6022](ORE6022.md) | 'async' is not supported in Ore. Use spawn() and channels. |
+| [ORE6022](ORE6022.md) | 'async' is not supported in Ore. Use task.spawn() and channels. |
 | [ORE6023](ORE6023.md) | Default exports are not supported in Ore. |
 | [ORE6024](ORE6024.md) | A generic function cannot have overload signatures yet. |
 | [ORE6025](ORE6025.md) | Overload signatures must all be exported or not, as the implementation. |

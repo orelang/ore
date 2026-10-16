@@ -4,6 +4,7 @@
 
 `any`, `var`, `==` / `!=`, `eval`, `delete`, `with`, `arguments`,
 `prototype`, computed and dynamic property keys on structs, decorators,
+`#name` private fields (use `private`),
 `enum` and `const enum` (use unions of literals), index signatures (use
 `Map`), `namespace` (use modules), `throw` / `try`.
 
