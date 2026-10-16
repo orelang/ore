@@ -5,6 +5,18 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `URL` and `URLSearchParams` are global classes, JavaScript's, written in
+  Ore (runtime/core/url.ore) after the WHATWG URL Standard's parser:
+  special schemes with their default ports dropped and `\` read as `/`,
+  dot segments resolved, the percent-encode sets of each component, IPv4
+  hosts in all their forms and IPv6 hosts compressed, `file` URLs with
+  drive letters, opaque hosts and paths of other schemes, and relative
+  references resolved against a base (`new URL("../x", base)`). Every
+  property but `origin` and `searchParams` has its setter; `searchParams`
+  is linked both ways to the query; `URL.canParse` and `URL.parse`;
+  `new URL` panics with `TypeError: Invalid URL` where JavaScript throws.
+  `console.log` and `JSON.stringify` write them as Node does. Domains
+  outside ASCII are not converted to Punycode.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its
