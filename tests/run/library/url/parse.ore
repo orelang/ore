@@ -1,0 +1,120 @@
+// Parsing absolute URLs as the WHATWG URL Standard does: each line is the
+// href, then the components as JSON.
+function show(input: string): void {
+    const u = URL.parse(input)
+    if (u === null) {
+        console.log(JSON.stringify(input), "invalid")
+        return
+    }
+    const parts = [
+        u.protocol,
+        u.username,
+        u.password,
+        u.host,
+        u.hostname,
+        u.port,
+        u.pathname,
+        u.search,
+        u.hash,
+        u.origin,
+    ]
+    console.log(u.href, JSON.stringify(parts))
+}
+
+// Special schemes: lowercased, default ports left out, backslashes as slashes.
+show("HTTP://Example.COM:80/a/b?c=d#e")
+show("https://example.com:443/")
+show("https://example.com:8443")
+show("ws://h:80/x")
+show("wss://h:443/x")
+show("ftp://h:21/x")
+show("http:\\\\example.com\\a\\b")
+show("http:example.com/x")
+show("http:/example.com/x")
+show("http:///example.com/x")
+show("  \t http://exa\nmple.com/a\tb  \n")
+show("http://example.com:")
+show("http://example.com:0080/")
+show("http://example.com:65535/")
+show("http://example.com:65536/")
+show("http://example.com:8x/")
+
+// Credentials.
+show("https://user:pass@host/")
+show("https://user@host/")
+show("https://:pass@host/")
+show("https://u ser:p@ss:w@host/")
+show("https://a@b@host/")
+show("https://@host/")
+show("http://user:pass@/")
+
+// Paths: dot segments, percent-encoding.
+show("http://h/a/./b/../c")
+show("http://h/a/b/../../../c")
+show("http://h/a/%2e/b/%2E%2e/c")
+show("http://h/a/..")
+show("http://h/a/.")
+show('http://h/ é/<>"`{}^|')
+show("http://h/a?b c'd\"e<f>g")
+show("foo://h/a?b c'd")
+show("http://h/a#b c<d>`e")
+show("http://h/%zz/%41")
+
+// Hosts: IPv4 forms, IPv6, forbidden characters.
+show("http://192.168.0.1/")
+show("http://0x7f.1/")
+show("http://0300.0250.0.1/")
+show("http://4294967295/")
+show("http://4294967296/")
+show("http://1.2.3.4.5/")
+show("http://1.2.3.256/")
+show("http://1.2.3/")
+show("http://1.2.3.4./")
+show("http://foo.0x/")
+show("http://foo.09/")
+show("http://[::1]/")
+show("http://[2001:DB8:0:0:0:0:0:1]:8080/")
+show("http://[1:0:0:2:0:0:0:3]/")
+show("http://[0:0:0:0:0:0:0:0]/")
+show("http://[1:2:3:4:5:6:7:8]/")
+show("http://[::ffff:1.2.3.4]/")
+show("http://[1::2::3]/")
+show("http://[::1/")
+show("http://[g::1]/")
+show("http://exa mple.com/")
+show("http://exa%20mple.com/")
+show("http://EXA%41mple.com/")
+show("http://a<b/")
+show("http:///")
+show("http://%25/")
+
+// Other schemes: opaque hosts and paths.
+show("foo://Host:99/Path?Q#F")
+show("foo:/a/./b/../c")
+show("mailto:Someone@Example.com")
+show("data:text/plain,a b ?q")
+show("javascript:alert(1)")
+show("urn:isbn:0451450523")
+show("foo://exa mple/")
+show("foo://[::1]:5/")
+show("foo:")
+show("sc://ñ/x")
+show("blob:https://example.com:443/uuid")
+show("blob:foo://x/uuid")
+
+// file URLs.
+show("file:///C:/a/b")
+show("file:///c|/a/../..")
+show("file://localhost/etc/passwd")
+show("file://Host/share/x")
+show("file:/a/b")
+show("file:c:\\a\\b")
+show("FILE:///tmp")
+
+// Invalid.
+show("")
+show("nope")
+show("://x")
+show("1http://x")
+show("http://")
+show("https://#x")
