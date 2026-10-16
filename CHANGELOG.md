@@ -67,6 +67,10 @@ before 1.0, a minor version may change the language.
   table of peak memory (from `/usr/bin/time`), skips a benchmark that has a
   `SKIP` file unless `ALL=1` or it is named exactly (`strings` for now), and
   there are `channels`, `tasks` and `regex` benchmarks.
+- The language server downloads the repositories imported from GitHub in
+  the background, once per session, with work-done progress in the
+  editor's status bar; the hover of the import's URL tells the phase of the
+  download, the commit cached, or the error.
 - `ore run --watch` builds and runs the program again whenever one of its
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change

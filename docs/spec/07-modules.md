@@ -50,6 +50,12 @@ import { x } from "https://github.com/owner/repo/tree/v1.2.0/src/point" // at a 
   modules with the rest of the cache.
 - Inside a downloaded module, relative imports resolve in the repository,
   and further GitHub URLs the same way.
+- The language server downloads a repository as soon as an import names
+  it, in the background, one repository at a time and once per session,
+  reporting the download as work-done progress (`$/progress`) in the
+  editor's status bar. Meanwhile the analysis uses the commit the cache
+  has, if any. The hover of the import's URL tells the state of the
+  download: its phase, the commit cached, or the error.
 
 ## Files as text
 
