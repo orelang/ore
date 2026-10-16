@@ -23,6 +23,16 @@ export class Settings {
         readonly work: string,
         /** ORE_BLESS=1: write the actual output of run tests to their .out files. */
         readonly bless: bool,
+        /**
+         * ORE_TEST_RELEASE=1: programs are built in release, for the suite in
+         * another mode of the compiler; the ones that expect a panic are
+         * skipped, as release builds print no call stack.
+         */
+        readonly release: bool = false,
+        /** ORE_TEST_THREADS: the threads of a program without a `// threads:` header (1 otherwise). */
+        readonly threads: string = "1",
+        /** ORE_TEST_ENV: `NAME=value` pairs, comma-separated, set for every program, as `ORE_GOGC=1`. */
+        readonly env: string[] = [],
     ) {
         this.cache = join(work, "cache")
     }
@@ -30,7 +40,7 @@ export class Settings {
 
 /** Builds a program into `output` with the compiler in Ore, with the cases' build cache; fails on diagnostics. */
 function buildProgram(settings: Settings, entry: string, output: string): void {
-    buildWith(entry, new BuildOptions(output, false, "", false, settings.cache))
+    buildWith(entry, new BuildOptions(output, settings.release, "", false, settings.cache))
 }
 
 /** Builds a program with these options; fails on diagnostics. */
@@ -57,7 +67,11 @@ function runCase(settings: Settings, group: string, dir: string, file: string): 
     const output = executable(settings, group, file)
     buildProgram(settings, path, output)
     const env = new Map<string, string>()
-    env.set("ORE_THREADS", header(source, "threads", "1"))
+    for (const variable of settings.env) {
+        const at = variable.indexOf("=")
+        if (at > 0) env.set(variable.slice(0, at), variable.slice(at + 1))
+    }
+    env.set("ORE_THREADS", header(source, "threads", settings.threads))
     // No colors, even when the runner has FORCE_COLOR, unless a header asks for them.
     env.set("FORCE_COLOR", "0")
     for (const variable of headers(source, "env")) {
@@ -74,11 +88,26 @@ function runCase(settings: Settings, group: string, dir: string, file: string): 
     expectRun(source, out, fs.exists(out) ? read(out) : "", run)
 }
 
+/** Why a program does not run in a release suite: one that expects a panic or an exit status, or "". */
+function releaseSkip(settings: Settings, path: string): string {
+    if (!settings.release) return ""
+    const source = read(path)
+    return header(source, "exit", "0") !== "0" || headers(source, "stderr").length > 0
+        ? "expects a panic or an exit status, which a release build reports otherwise"
+        : ""
+}
+
 /** tests/run: every program built and run; stdout must equal NAME.out. */
 export function runCases(settings: Settings): Case[] {
     const cases: Case[] = []
     for (const file of entries("tests/run"))
-        cases.push(new Case(`run/${file}`, () => runCase(settings, "run", "tests/run", file)))
+        cases.push(
+            new Case(
+                `run/${file}`,
+                () => runCase(settings, "run", "tests/run", file),
+                releaseSkip(settings, join("tests/run", file)),
+            ),
+        )
     return cases
 }
 

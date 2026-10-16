@@ -93,7 +93,14 @@ if (!fs.isDir("tests/run") || !fs.isDir("compiler/src")) usage("tests/run not fo
 
 const work = fs.mkdtemp("ore-tests-")
 if (work instanceof Error) usage(work.message)
-const settings = new Settings(work, env.get("ORE_BLESS") === "1")
+const extraEnv = env.get("ORE_TEST_ENV")
+const settings = new Settings(
+    work,
+    env.get("ORE_BLESS") === "1",
+    env.get("ORE_TEST_RELEASE") === "1",
+    env.get("ORE_TEST_THREADS") ?? "1",
+    extraEnv !== null && extraEnv !== "" ? extraEnv.split(",") : [],
+)
 // The runner's own executable, which ci/test.sh gives, to check formatting in processes of their own.
 const self = env.get("ORE_TEST_RUNNER") ?? ""
 
