@@ -10,6 +10,7 @@ import {
     ArrayLit,
     ArrayMethod,
     Assign,
+    BigIntLit,
     Alloc,
     Bind,
     BindLocal,
@@ -85,7 +86,7 @@ import {
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
-import { bigFromF64 } from "./bigint"
+import { bigFromF64, bigText } from "./bigint"
 import { type Checker } from "./base"
 import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
 import { genericCall, isInternal } from "./declarations"
@@ -217,6 +218,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
             if (value.k !== "typed") return typed(c.coerce(value, target, args[0]))
             const from = typeOf(value.expr)
             const numeric = numericType(target)
+            if (from.kind === "bigint" && numeric !== null) return typed(new Convert(numeric, value.expr))
             if (!isNumeric(from) || numeric === null) {
                 return c.fail(args[0], `Cannot convert '${typeToString(from)}' to '${typeToString(target)}'.`)
             }
@@ -281,9 +283,38 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
         }
         case "class":
             return c.fail(nameAt, `Class '${name}' must be instantiated with 'new ${name}(...)'.`)
+        case "namespace":
+            if (found.conversion !== null) return toBigInt(c, name, node, args, scope)
+            return c.fail(nameAt, `'${name}' is not a function.`)
         default:
             return c.fail(nameAt, `'${name}' is not a function.`)
     }
+}
+
+/**
+ * `BigInt(x)`: of an integer constant, a bigint constant; of an integer or a
+ * float, a conversion, which panics at run time on a float that is not an
+ * integer; of a string, the value read from it, which panics if there is none.
+ */
+function toBigInt(c: Checker, name: string, node: Node, args: Node[], scope: Scope): Operand {
+    if (args.length !== 1) return c.fail(node, `Conversion '${name}' expects exactly 1 argument, got ${args.length}.`)
+    const value = checkExpr(c, args[0], scope)
+    if (value.k === "error") return value
+    if (value.k === "untyped-int") return typed(new BigIntLit(types.bigint, bigText(value.value)))
+    if (value.k === "untyped-float") {
+        const x = value.value
+        if (x - x !== 0.0 || Math.trunc(x) !== x) return c.fail(args[0], `Cannot convert ${x} to 'bigint'.`)
+        return typed(new BigIntLit(types.bigint, bigText(bigFromF64(x))))
+    }
+    const expr = value.expr
+    const from = expr.type
+    if (from.kind === "bigint") return value
+    if (isNumeric(from)) return typed(new Convert(types.bigint, expr))
+    if (membersOf(from).every(isStringLike)) {
+        const text: Expr = from.kind === "string" ? expr : new Recast(types.string, expr)
+        return typed(new BuiltinCall(types.bigint, "BigInt.fromString", [text]))
+    }
+    return c.fail(args[0], `Cannot convert '${typeToString(from)}' to 'bigint'.`)
 }
 
 /** A call of a function with overload signatures: the first signature whose parameters take the arguments. */
@@ -374,7 +405,9 @@ export function arrayMethod(
             return typed(new ArrayMethod(name, name === "includes" ? types.bool : types.i64, array, [x]))
         }
         case "join": {
-            if (!membersOf(T).every((m) => isNumeric(m) || m.kind === "bool" || isStringLike(m) || m.kind === "null")) {
+            const joinable = (m: Type): bool =>
+                isNumeric(m) || m.kind === "bigint" || m.kind === "bool" || isStringLike(m) || m.kind === "null"
+            if (!membersOf(T).every(joinable)) {
                 return c.fail(nameNode(callee), `Cannot join elements of type '${typeToString(T)}'.`)
             }
             const values: Expr[] = []
@@ -402,7 +435,7 @@ export function arrayMethod(
         default: {
             // sort: by a comparator returning a number, or in natural order for numbers and strings.
             if (args.length === 0) {
-                if (!(isNumeric(T) || isStringLike(T)))
+                if (!(isNumeric(T) || T.kind === "bigint" || isStringLike(T)))
                     return c.fail(
                         nameNode(callee),
                         `Sorting '${typeToString(T)}' needs a comparator: 'sort((a, b) => ...)'.`,
@@ -690,7 +723,8 @@ class TypedArg {
 }
 
 function isReferenceType(t: Type): bool {
-    return t.kind === "struct" || t.kind === "array" || t.kind === "map" || t.kind === "set" || t.kind === "chan"
+    const k = t.kind
+    return k === "struct" || k === "array" || k === "map" || k === "set" || k === "chan" || k === "bigint"
 }
 
 function isAtomic(t: Type): bool {
@@ -1861,6 +1895,12 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         return typed(new SetOp(op, result, type, value, elem))
     }
     if (type.kind === "array" && arrayMethods.has(name)) return arrayMethod(c, value, type, name, node, callee, scope)
+    if (type.kind === "bigint" && name === "toString") {
+        if (args.length > 1) return c.fail(node, `'toString' expects 0 to 1 argument(s), got ${args.length}.`)
+        if (args.length === 0) return typed(new Concat(types.string, [value]))
+        const radix = c.coerce(checkExpr(c, args[0], scope, types.i64), types.i64, args[0])
+        return typed(new BuiltinCall(types.string, "BigInt.toString", [value, radix]))
+    }
     if ((isNumeric(type) || type.kind === "bool") && name === "toString" && args.length === 0) {
         return typed(new Concat(types.string, [value]))
     }

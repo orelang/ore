@@ -1,0 +1,50 @@
+// What Ore adds to bigint: conversions to the numeric types, BigInt.parse,
+// natural sorting, zero values.
+
+// To integer types: the low bits in two's complement, as BigInt.asIntN and asUintN.
+const big = 2n ** 64n + 2n ** 63n + 300n
+console.log(i64(big), u64(big), i32(big), u32(big), i16(big), u8(big), i8(-1n), u64(-1n), int(-5n))
+console.log(i64(9223372036854775807n), i64(-9223372036854775808n), u64(18446744073709551615n))
+
+// To floats: the nearest value, ties to even.
+console.log(f64(2n ** 53n + 1n), f64(2n ** 53n + 3n), f64(-(2n ** 80n)), f64(10n ** 400n), f64(-(10n ** 400n)))
+console.log(f32(16777217n), f32(16777219n), f32(2n ** 128n), f64(123456789n), f64(0n))
+console.log(f64((2n ** 64n - 1n) * 2n ** 900n), f64(2n ** 1023n * 3n))
+
+// From integer and float types; a float constant converts at compile time.
+const small: i8 = -128
+const unsigned: u64 = 18446744073709551615
+const float: f64 = -1.5e300
+const single: f32 = 16777216
+console.log(BigInt(small), BigInt(unsigned), BigInt(float), BigInt(single))
+// Integer constants are exact: in JavaScript, 9007199254740993 is the double 9007199254740992.
+console.log(BigInt(2 ** 70), BigInt(1e3), BigInt(-0.0), BigInt(9007199254740993))
+
+// Reading text: BigInt.parse is BigInt(s) with null instead of a panic, or digits in a radix.
+console.log(BigInt.parse("123"), BigInt.parse(" 0x10 "), BigInt.parse("1.5"), BigInt.parse("12n"), BigInt.parse("--1"))
+console.log(
+    BigInt.parse("zz", 36),
+    BigInt.parse("-777", 8),
+    BigInt.parse("2", 2),
+    BigInt.parse("1", 37),
+    BigInt.parse(""),
+)
+const parsed = BigInt.parse("99999999999999999999999999")
+if (parsed !== null) console.log(parsed + 1n)
+
+// Arrays of bigints sort in numeric order (JavaScript compares their text).
+const values = [10n, -3n, 9n, 2n ** 70n, 1n, -(2n ** 70n)]
+values.sort()
+console.log(values.join(" "))
+
+// The zero value is 0n.
+let zero: bigint
+class Holder {
+    value: bigint = 0n
+    other = new Map<string, bigint>()
+}
+const holder = new Holder()
+console.log(zero, holder.value, holder.other.get("x") ?? -1n)
+let total: bigint | null = null
+total = (total ?? 0n) + 5n
+console.log(total)

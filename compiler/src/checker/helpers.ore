@@ -8,6 +8,7 @@ import {
     type LValue,
     type Stmt,
     ArrayLit,
+    BigIntLit,
     BoolLit,
     BuiltinCall,
     FloatLit,
@@ -19,6 +20,7 @@ import {
     StringLit,
 } from "../ir/nodes"
 import {
+    type BigIntType,
     type FloatType,
     type IntType,
     type FuncType,
@@ -39,7 +41,7 @@ import {
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { args, expression, isIdentifier, nameNode, typeName } from "../syntax/nodes"
-import { bigFromF64, bigParse } from "./bigint"
+import { bigFromF64, bigParse, bigText } from "./bigint"
 import { type Operand, Typed, UntypedFloat, UntypedInt } from "./operand"
 
 export const arithOps = new Map<string, ArithOp>([
@@ -274,6 +276,7 @@ export function isKeyType(type: Type): bool {
         isNumeric(type) ||
         k === "bool" ||
         k === "string" ||
+        k === "bigint" ||
         k === "literal" ||
         k === "struct" ||
         k === "array" ||
@@ -382,6 +385,25 @@ export function numericLiteral(text: string): Operand {
     return new UntypedFloat(Number.parseFloat(clean) ?? 0.0)
 }
 
+/** The name of the conversion to a type: `BigInt` for `bigint`, else the type's name, as `i64`. */
+export function conversionName(t: Type): string {
+    return t.kind === "bigint" ? "BigInt" : typeToString(t)
+}
+
+/** A bigint literal such as `0x1f_ffn`: its value in decimal. */
+export function bigintLiteral(text: string): BigIntLit {
+    const clean = text.replaceAll("_", "")
+    return new BigIntLit(types.bigint, bigText(bigParse(clean.slice(0, clean.length - 1))))
+}
+
+/** The type of an arithmetic operation: an integer or float type, or `bigint`; else null. */
+export function arithType(t: Type): IntType | FloatType | BigIntType | null {
+    if (t.kind === "int") return t
+    if (t.kind === "float") return t
+    if (t.kind === "bigint") return t
+    return null
+}
+
 /** An integer or float type, or null: `isNumeric` as a narrowing. */
 export function numericType(t: Type): IntType | FloatType | null {
     if (t.kind === "int") return t
@@ -427,6 +449,8 @@ export function zeroValue(type: Type): Expr {
             return new BoolLit(type, false)
         case "string":
             return new StringLit(type, "")
+        case "bigint":
+            return new BigIntLit(type, "0")
         case "array":
             return new ArrayLit(type, [])
         case "map":
@@ -455,7 +479,7 @@ export function poison(type: Type): Expr {
 }
 
 export function isLiteral(expr: Expr): bool {
-    return expr.k === "int" || expr.k === "float" || expr.k === "bool" || expr.k === "string"
+    return expr.k === "int" || expr.k === "float" || expr.k === "bool" || expr.k === "string" || expr.k === "bigint"
 }
 
 export function isTrue(expr: Expr): bool {

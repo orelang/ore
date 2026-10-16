@@ -1,0 +1,127 @@
+// bigint as in JavaScript. The program runs in Bun as it is, with the same output.
+
+// Literals, in every base and with separators.
+console.log(0n, 123n, -123n, 0x1fn, 0o17n, 0b1011n, 1_000_000n, 0xffff_ffff_ffff_ffff_ffffn)
+console.log(123456789012345678901234567890n)
+
+// Arithmetic: division truncates toward zero, the remainder has the sign of the dividend.
+const a = 2n ** 100n + 12345n
+const b = -(3n ** 40n)
+console.log(a + b, a - b, a * b)
+console.log(a / b, a % b, -a / b, -a % b, 7n / -2n, -7n % 2n, 7n % -2n)
+console.log(-a, a ** 0n, (-2n) ** 63n, 10n ** 30n)
+
+// Shifts: `>>` rounds toward negative infinity, a negative count shifts the other way.
+console.log(1n << 100n, a >> 64n, -a >> 64n, -1n >> 1000n, 5n << -1n, -5n >> 1n)
+
+// Bitwise operations, in two's complement for negative values.
+console.log(a & b, a | b, a ^ b, ~a, ~b, ~0n, ~-1n)
+console.log(-12n & 10n, -12n | 10n, -12n ^ -10n, 255n & -256n)
+
+// Compound assignments, increments.
+let n = 10n
+n += 5n
+n *= n
+n -= 25n
+n /= 3n
+n %= 7n
+n **= 10n
+n <<= 3n
+n >>= 1n
+n &= 0xffffn
+n |= 1n
+n ^= 0x10n
+console.log(n)
+let i = 0n
+i++
+++i
+i--
+console.log(i, i++, i, --i)
+
+// Comparisons, by value.
+const big = 2n ** 64n
+console.log(big === 18446744073709551616n, big !== big + 0n, big < big + 1n, -big <= -big, 3n > 2n, 2n >= 3n)
+console.log(BigInt("18446744073709551616") === big)
+
+// Conversions from integers and strings, as in JavaScript.
+const k = 42
+console.log(BigInt(k), BigInt(-k), BigInt(1e21), BigInt("  -0x0  ".trim().slice(1)), BigInt("  987  "), BigInt(""))
+console.log(BigInt("0b101"), BigInt("0o777"), BigInt("0XFF"), BigInt("-12345678901234567890"))
+console.log(BigInt.asIntN(8, 255n), BigInt.asIntN(8, 128n), BigInt.asIntN(64, 2n ** 63n), BigInt.asIntN(0, 5n))
+console.log(BigInt.asUintN(8, -1n), BigInt.asUintN(64, -1n), BigInt.asUintN(3, 13n), BigInt.asUintN(200, -(2n ** 100n)))
+
+// Text: templates and toString give the digits, console.log adds the suffix.
+console.log(`${a} and ${-1n}`, a.toString(), a.toString(2), b.toString(16), (-255n).toString(36), 0n.toString(7))
+
+// Map keys and set elements compare by value.
+const names = new Map<bigint, string>()
+names.set(1n << 80n, "2^80")
+names.set(-1n, "minus one")
+names.set(0n, "zero")
+console.log(names.get(BigInt("1208925819614629174706176")), names.get(-1n), names.get(0n), names.has(2n), names.size)
+const seen = new Set<bigint>()
+for (const x of [1n, 2n ** 70n, 1n, 2n ** 70n, 0n, 3n]) seen.add(x)
+console.log(seen.size, seen.has(2n ** 70n))
+
+// Unions, typeof and switch.
+function describe(x: bigint | string | null): string {
+    if (x === null) return "nothing"
+    if (typeof x === "bigint") return `a bigint ${x + 1n}`
+    return `a string ${x}`
+}
+console.log(describe(41n), describe("x"), describe(null), typeof 1n)
+const maybe: bigint | null = 7n
+console.log(maybe, maybe === 7n)
+function name(x: bigint): string {
+    switch (x) {
+        case 0n:
+            return "zero"
+        case 1n:
+            return "one"
+        case 2n ** 64n:
+            return "2^64"
+        default:
+            return "many"
+    }
+}
+console.log(name(0n), name(1n), name(big), name(5n))
+
+// Fields, arrays and closures.
+class Account {
+    balance = 0n
+    deposit(amount: bigint) {
+        this.balance += amount
+    }
+}
+const account = new Account()
+account.deposit(10n ** 20n)
+account.deposit(1n)
+console.log(account.balance)
+const values = [5n, -3n, 2n ** 65n, 0n]
+console.log(values.indexOf(2n ** 65n), values.includes(-3n), values.join(" "), values.length)
+console.log(
+    values.map((v) => v * 2n).join(","),
+    values.reduce((s, v) => s + v, 0n),
+)
+const sorted = values.slice().sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
+console.log(sorted.join(" "))
+let total = 0n
+const add = (x: bigint) => {
+    total += x
+}
+add(1n)
+add(2n ** 100n)
+console.log(total)
+
+// Factorial and Fibonacci, large.
+let factorial = 1n
+for (let j = 1n; j <= 50n; j++) factorial *= j
+console.log(factorial)
+let f0 = 0n
+let f1 = 1n
+for (let j = 0; j < 300; j++) {
+    const next = f0 + f1
+    f0 = f1
+    f1 = next
+}
+console.log(f0, f0 % 1000000007n)

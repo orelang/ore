@@ -65,11 +65,12 @@ export function namespaceModule(ns: string): string | null {
     if (ns === "process") return "ore:runtime/process"
     if (ns === "process.command") return "ore:runtime/process-command"
     if (ns === "Number") return "ore:runtime/number"
+    if (ns === "BigInt") return "ore:runtime/bigint"
     return null
 }
 
 /** The namespaces that `namespaceModule` maps, in order. */
-export const namespaceNames = ["String", "fs", "process", "process.command", "Number"]
+export const namespaceNames = ["String", "fs", "process", "process.command", "Number", "BigInt"]
 
 /** The runtime module whose classes `globalClasses` are global names, as `RegExp`. */
 export const globalClassModule = "ore:runtime/regexp"
@@ -154,7 +155,10 @@ function builtinNamespace(ns: string, decl: Node): NamespaceSymbol {
             }
         }
     }
-    return new NamespaceSymbol(ns, members, decl)
+    const symbol = new NamespaceSymbol(ns, members, decl)
+    // `BigInt(x)` converts to `bigint`, whose name is a keyword: the namespace is the conversion.
+    if (ns === "BigInt") symbol.conversion = types.bigint
+    return symbol
 }
 
 /** The built-in namespace at a dotted path, as `process.command`, or null. */

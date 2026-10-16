@@ -89,6 +89,7 @@ import {
     isSymbolDispose,
     memberOf,
     poison,
+    conversionName,
     typeOf,
 } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
@@ -250,6 +251,8 @@ export class Checker {
                 return types.bool
             case "StringKeyword":
                 return types.string
+            case "BigIntKeyword":
+                return types.bigint
             case "VoidKeyword":
                 return types.void
             case "NeverKeyword":
@@ -768,6 +771,8 @@ export class Checker {
                 let message = `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}'.`
                 if (isNumeric(from) && isNumeric(target))
                     message += ` Use an explicit conversion: '${typeToString(target)}(...)'.`
+                else if ((isNumeric(from) || from.kind === "bigint") && (isNumeric(target) || target.kind === "bigint"))
+                    message += ` Use an explicit conversion: '${conversionName(target)}(...)'.`
                 this.error(node, message)
                 return poison(target)
             }
@@ -785,6 +790,14 @@ export class Checker {
                     return new IntLit(target, bigToI64(value.value))
                 }
                 if (target.kind === "float") return floatLit(target, bigToF64(value.value))
+                if (target.kind === "bigint") {
+                    // As in JavaScript, a number is not a bigint; the literal says which it is.
+                    this.error(
+                        node,
+                        `An integer constant is not assignable to type 'bigint'. Write a bigint literal: '${bigText(value.value)}n'.`,
+                    )
+                    return poison(target)
+                }
                 this.error(node, `An integer constant is not assignable to type '${typeToString(target)}'.`)
                 return poison(target)
             }

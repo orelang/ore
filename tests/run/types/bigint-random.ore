@@ -1,0 +1,87 @@
+// Operations on bigints of random sizes and shapes, summed into a checksum per
+// operation. It runs in Bun as it is, which gives the expected output.
+
+const MASK64 = (1n << 64n) - 1n
+let state = 88172645463325252n
+
+/** 53 random bits, from a 64-bit linear congruential generator. */
+function next(): bigint {
+    state = (state * 6364136223846793005n + 1442695040888963407n) & MASK64
+    return state >> 11n
+}
+
+/** A random value: up to 12 chunks of 53 bits, or a power of two and its neighbors, of either sign. */
+function random(): bigint {
+    const kind = next() % 8n
+    const bits = next() % 400n
+    let v = 0n
+    if (kind === 0n) v = (1n << bits) - 1n
+    else if (kind === 1n) v = 1n << bits
+    else if (kind === 2n) v = (1n << bits) + 1n
+    else if (kind === 3n) v = next() % 1000n
+    else {
+        const chunks = next() % 12n
+        for (let i = 0n; i < chunks; i++) v = (v << 53n) | next()
+    }
+    return (next() & 1n) === 1n ? -v : v
+}
+
+class Sum {
+    value = 0n
+    count = 0
+    add(v: bigint) {
+        this.value = (this.value * 1000003n + v) & MASK64
+        this.count++
+    }
+}
+
+const sums = new Map<string, Sum>()
+function sum(name: string, v: bigint) {
+    if (!sums.has(name)) sums.set(name, new Sum())
+    sums.get(name)!.add(v)
+}
+
+for (let i = 0; i < 400; i++) {
+    const a = random()
+    const b = random()
+    sum("+", a + b)
+    sum("-", a - b)
+    sum("*", a * b)
+    if (b !== 0n) {
+        const q = a / b
+        const r = a % b
+        sum("/", q)
+        sum("%", r)
+        if (q * b + r !== a) console.log("bad division", a, b)
+    }
+    // Divisors built to exercise the corrections of long division.
+    const d = (1n << ((next() % 200n) + 33n)) - (next() % 3n)
+    sum("/ near powers", a / d + (a % d))
+    sum("&", a & b)
+    sum("|", a | b)
+    sum("^", a ^ b)
+    sum("~", ~a)
+    const bits = (i * 37) % 200
+    const n = BigInt(bits)
+    sum("<<", a << n)
+    sum(">>", a >> n)
+    sum("<< negative", a << -n)
+    sum("**", a ** (next() % 6n))
+    sum(
+        "compare",
+        (a < b ? 1n : 0n) + (a <= b ? 2n : 0n) + (a > b ? 4n : 0n) + (a >= b ? 8n : 0n) + (a === b ? 16n : 0n),
+    )
+    sum("asIntN", BigInt.asIntN(bits, a))
+    sum("asUintN", BigInt.asUintN(bits, a))
+    const magnitude = a < 0n ? -a : a
+    const hex = BigInt("0x" + magnitude.toString(16))
+    const octal = BigInt("0o" + magnitude.toString(8))
+    const binary = BigInt("0b" + magnitude.toString(2))
+    const decimal = BigInt(a.toString())
+    if (hex !== magnitude || octal !== magnitude || binary !== magnitude || decimal !== a) console.log("bad text", a)
+    const radix = ((i * 7) % 35) + 2
+    sum("toString", BigInt(a.toString(radix).length))
+}
+
+for (const [name, s] of sums) console.log(name, s.count, s.value)
+console.log((2n ** 200n - 1n).toString(36), (-(3n ** 100n)).toString(7))

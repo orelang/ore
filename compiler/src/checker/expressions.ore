@@ -7,6 +7,7 @@ import {
     type LValue,
     ArrayLit,
     Assign,
+    BigIntLit,
     Arith,
     Bind,
     BindLocal,
@@ -106,6 +107,9 @@ import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, F
 import { foldBinary, foldUnary } from "./fold"
 import {
     arithOps,
+    arithType,
+    bigintLiteral,
+    conversionName,
     numericType,
     poison,
     canBeNull,
@@ -158,6 +162,7 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
     if (k === "ObjectLiteralExpression") return checkObjectLiteral(c, node, scope, expected)
     // The source spelling decides int vs float.
     if (k === "NumericLiteral") return numericLiteral(c.text(node))
+    if (k === "BigIntLiteral") return typed(bigintLiteral(c.text(node)))
     if (k === "StringLiteral" || k === "NoSubstitutionTemplateLiteral")
         return typed(new StringLit(types.string, literalText(node)))
     if (k === "TrueKeyword" || k === "FalseKeyword") return typed(new BoolLit(types.bool, k === "TrueKeyword"))
@@ -336,7 +341,8 @@ export function arith(c: Checker, op: ArithOp, l: Operand, r: Operand, node: Nod
         return folded
     }
 
-    if (shift) {
+    // Shifts of bigints take a bigint count, as the other operators.
+    if (shift && !isBigInt(l) && !isBigInt(r)) {
         const le = l.k === "typed" ? l.expr : c.toDefault(l, left(node))
         const re = r.k === "typed" ? r.expr : c.coerce(r, types.u64, right(node))
         const lt = typeOf(le)
@@ -363,17 +369,23 @@ export function arith(c: Checker, op: ArithOp, l: Operand, r: Operand, node: Nod
     if (!sameType(type, typeOf(re))) {
         return c.fail(
             opNode,
-            `Operator '${op}' cannot be applied to types '${typeToString(type)}' and '${typeToString(typeOf(re))}'. Convert one side explicitly, e.g. '${typeToString(type)}(x)'.`,
+            `Operator '${op}' cannot be applied to types '${typeToString(type)}' and '${typeToString(typeOf(re))}'. Convert one side explicitly, e.g. '${conversionName(type)}(x)'.`,
         )
     }
     if (type.kind === "string" && op === "+") return typed(new Concat(types.string, [le, re]))
     if (type.kind === "int") return typed(new Arith(type, op, le, re))
+    if (type.kind === "bigint") return typed(new Arith(type, op, le, re))
     if (type.kind === "float") {
         if (op === "&" || op === "|" || op === "^")
             return c.fail(opNode, `Operator '${op}' requires integer operands, got '${type.name}'.`)
         return typed(new Arith(type, op, le, re))
     }
     return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
+}
+
+/** Whether an operand is a `bigint` value. */
+function isBigInt(value: Operand): bool {
+    return value.k === "typed" && value.expr.type.kind === "bigint"
 }
 
 /** The expression of a typed operand. */
@@ -388,6 +400,7 @@ function isEquatable(type: Type): bool {
     return (
         k === "bool" ||
         k === "string" ||
+        k === "bigint" ||
         k === "array" ||
         k === "struct" ||
         k === "interface" ||
@@ -455,7 +468,7 @@ export function compare(
     if (!sameType(type, typeOf(re)) && !related)
         return c.fail(opNode, `Cannot compare '${typeToString(type)}' with '${typeToString(typeOf(re))}'.`)
     const ordered = op !== "===" && op !== "!=="
-    if (ordered ? !(isNumeric(type) || type.kind === "string") : !isEquatable(type)) {
+    if (ordered ? !(isNumeric(type) || type.kind === "string" || type.kind === "bigint") : !isEquatable(type)) {
         return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
     }
     return typed(new Compare(types.bool, op, le, re))
@@ -688,10 +701,13 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
         return c.fail(node, `Variable '${place.local.name}' is used before being assigned.`)
     }
     const op: "++" | "--" = operator === "++" ? "++" : "--"
-    const type = numericType(target.type)
+    const type = arithType(target.type)
     if (type === null) return c.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(target.type)}'.`)
     if (target.accessor !== null) {
-        const one: Expr = type.kind === "int" ? new IntLit(type, 1) : new FloatLit(type, 1.0)
+        let one: Expr
+        if (type.kind === "int") one = new IntLit(type, 1)
+        else if (type.kind === "float") one = new FloatLit(type, 1.0)
+        else one = new BigIntLit(type, "1")
         return writeAccessor(
             c,
             target,
@@ -871,6 +887,17 @@ export function checkPrefixUnary(c: Checker, node: Node, scope: Scope): Operand 
     }
     const expr = typedExpr(value)
     const type = typeOf(expr)
+    if (type.kind === "bigint" && op !== "+") {
+        // The negation of a literal is a literal.
+        if (op === "-" && expr.k === "bigint")
+            return typed(
+                new BigIntLit(
+                    type,
+                    expr.value === "0" ? "0" : expr.value.startsWith("-") ? expr.value.slice(1) : `-${expr.value}`,
+                ),
+            )
+        return typed(new Unary(type, op === "-" ? "-" : "~", expr))
+    }
     const numeric = numericType(type)
     if (numeric !== null && (numeric.kind === "int" || op !== "~")) {
         if (op === "+") return value
@@ -1545,7 +1572,11 @@ export function checkTemplate(c: Checker, node: Node, scope: Scope): Operand {
 /** Whether a value can be printed or interpolated; reports an error if not. */
 export function printable(c: Checker, expr: Expr, node: Node): bool {
     const type = expr.type
-    if (membersOf(type).every((t) => isNumeric(t) || t.kind === "bool" || isStringLike(t) || t.kind === "null"))
+    if (
+        membersOf(type).every(
+            (t) => isNumeric(t) || t.kind === "bigint" || t.kind === "bool" || isStringLike(t) || t.kind === "null",
+        )
+    )
         return true
     c.error(node, `Cannot format a value of type '${typeToString(type)}'.`)
     return false
