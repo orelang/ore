@@ -45,3 +45,26 @@ ok.z = 1 // error: Property 'z' does not exist on type 'Point'.
 ok.area() // error: Method 'area' does not exist on type 'Point'.
 let none: Shape
 console.log(none.area()) // error: Variable 'none' is used before being assigned.
+
+// Two declarations of an interface merge; a member declared twice must keep its type.
+interface Merged {
+    a: int
+}
+interface Merged {
+    a: string // error: Member 'a' conflicts with an inherited member of a different type.
+    b: int
+}
+const m: Merged = { a: 1 } // error: Type '{ a: i64 }' is not assignable to type 'Merged': property 'b' is missing.
+class Taken {}
+interface Taken {} // error: Duplicate type 'Taken'.
+type Id = int | string
+interface FromAlias extends Id {} // error: An interface can only extend interfaces and classes.
+
+// An interface that extends a class takes its public members only.
+class Account {
+    private balance = 0
+    constructor(public owner: string) {}
+}
+interface Owned extends Account {}
+const o: Owned = { owner: "Ann" }
+console.log(o.balance) // error: Property 'balance' does not exist on type 'Owned'.

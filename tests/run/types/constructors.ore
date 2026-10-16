@@ -1,0 +1,35 @@
+// A private constructor behind a static factory, and a protected one called by subclasses.
+class Registry {
+    static instance: Registry | null = null
+    private constructor(readonly name: string) {}
+    static get(): Registry {
+        const existing = Registry.instance
+        if (existing !== null) return existing
+        const created = new Registry("main")
+        Registry.instance = created
+        return created
+    }
+    clone(): Registry {
+        // Allowed in a method of the class, and in a callback inside it.
+        const make = (): Registry => new Registry(`${this.name} copy`)
+        return make()
+    }
+}
+const r = Registry.get()
+console.log(r.name, Registry.get() === r, r.clone().name)
+
+abstract class Shape {
+    protected constructor(readonly sides: int) {}
+}
+class Triangle extends Shape {
+    constructor() {
+        super(3)
+    }
+}
+class Square extends Shape {
+    constructor() {
+        super(4)
+    }
+}
+const shapes: Shape[] = [new Triangle(), new Square()]
+for (const s of shapes) console.log(s.sides)

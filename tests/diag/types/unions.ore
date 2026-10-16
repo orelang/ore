@@ -56,3 +56,27 @@ function rename(op: Read | Write, maybe: Read | Write | null) {
     op.secret = 4 // error: Property 'secret' does not exist on type 'Read | Write'.
     maybe.name = "m" // error: The value may be null
 }
+
+// Methods on a union of classes: in every member, with the same type.
+class Kitten {
+    speak(): string {
+        return "meow"
+    }
+    move(x: int, y: int): void {}
+    private purr(): void {}
+}
+class Robot {
+    speak(): int {
+        return 42
+    }
+    move(x: int, y: int): void {}
+    purr(): void {}
+}
+class Rock {}
+function talk(a: Kitten | Robot, b: Kitten | Rock, to: [int, int]) {
+    a.speak() // error: Method 'speak' has different types in the members of 'Kitten | Robot': '() => string' and '() => i64'.
+    b.speak() // error: Method 'speak' does not exist on type 'Kitten | Rock'.
+    a.purr() // error: 'purr' is private and only accessible inside class 'Kitten'.
+    a.move(1) // error: Method 'move' expects 2 argument(s), got 1.
+    a.move(...to) // error: Spread arguments are not supported in a call of 'move' on a union.
+}

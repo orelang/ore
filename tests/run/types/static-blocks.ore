@@ -1,0 +1,38 @@
+// `static { ... }` blocks run where the class is declared, in order with the static fields.
+console.log("before")
+
+class Config {
+    static a: int = 1
+    static {
+        Config.a = Config.a + 1
+        console.log("block 1", Config.a)
+    }
+    static b: int = Config.a * 10
+    static names: string[] = []
+    static {
+        // Locals of a block stay inside it.
+        const extra = ["x", "y"]
+        for (const n of extra) Config.names.push(n.toUpperCase())
+        console.log("block 2", Config.b, Config.names.join(","))
+    }
+    static {}
+    value(): int {
+        return Config.a + Config.b
+    }
+}
+
+console.log("after", Config.a, Config.b, new Config().value())
+
+// A generic class, and a block that calls a static method.
+class Registry<T> {
+    static count = 0
+    static add(n: int): int {
+        Registry.count += n
+        return Registry.count
+    }
+    static {
+        console.log("registry", Registry.add(5))
+    }
+    constructor(readonly item: T) {}
+}
+console.log(Registry.count, new Registry<string>("s").item)

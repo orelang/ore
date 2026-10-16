@@ -143,6 +143,32 @@ before 1.0, a minor version may change the language.
   `this` must return the receiver (ORE5061); `this` in a static member or
   outside a class is an error as in TypeScript (ORE5059), and in an
   interface not supported yet (ORE5060).
+- A template literal calls `toString()`: `` `${obj}` `` of a class or an
+  interface with a `toString(): string` method gives what it returns, and
+  of an error `"Name: message"`, instead of reporting ORE3060.
+- `Error` is a class to extend, as in JavaScript: `class NotFound extends
+  Error` calls `super(message)` and sets `this.name`; `new Error(message,
+  { cause })` keeps the cause; errors have `name`, `message`, `cause` and
+  `toString()`, `instanceof Error` is true for the subclasses, and
+  `console.log` prints `Name: message`. The type `Error` stays the
+  interface that any class with a `message` implements.
+- Arrow functions in field initializers capture the instance, as in
+  TypeScript: `h = (): int => this.x` works instead of reporting that
+  `this` is only allowed inside a class. At the top level of a module and in
+  its arrow functions, `this` is `null`.
+- `static { ... }` blocks in classes, run where the class is declared, in
+  order with the static field initializers.
+- Methods can be called on a union of classes when every class has the
+  method with the same type: `(a: Cat | Dog) => a.speak()` runs the method
+  of the class the value holds, instead of reporting ORE4071.
+- `private constructor` and `protected constructor` are enforced, as in
+  TypeScript: `new C()` outside the class declaration is ORE5062, and
+  extending a class with a private constructor is ORE5063; subclasses call
+  a protected one through `super(...)`.
+- Interfaces merge and extend classes, as in TypeScript: a second
+  `interface X` adds its members to the first instead of reporting
+  ORE5050, and `interface I extends SomeClass` takes the class's public
+  fields and methods instead of reporting ORE5053.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

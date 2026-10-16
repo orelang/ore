@@ -3,7 +3,7 @@ class C {
     private static hidden = 2
     static nothing // error: Static field 'nothing' needs a type annotation or an initializer.
     static self(): int {
-        return this.fixed // error: A static method has no 'this'; name the class: 'C.name'.
+        return this.fixed // error: A static method or block has no 'this'; name the class: 'C.name'.
     }
     static twice = 1
     static twice = 2 // error: Duplicate static member 'twice'.
@@ -11,3 +11,14 @@ class C {
 C.fixed = 3 // error: Cannot assign to 'C.fixed' because it is a read-only property.
 console.log(C.hidden) // error: 'hidden' is private and only accessible inside class 'C'.
 console.log(C.missing) // error: Class 'C' has no static member 'missing'.
+class WithBlock {
+    static total = 0
+    static {
+        this.total = 1 // error: A static method or block has no 'this'; name the class: 'WithBlock.name'.
+        const local = 2
+        WithBlock.total = WithBlock.unknown // error: Class 'WithBlock' has no static member 'unknown'.
+    }
+    static {
+        console.log(local) // error: Cannot find name 'local'.
+    }
+}

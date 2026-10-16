@@ -855,6 +855,12 @@ export class Parser {
     private classMember(): Node {
         const start = this.token().start
         if (this.eat("SemicolonToken")) return this.make("SemicolonClassElement", start)
+        // `static { ... }`: a block run where the class is declared.
+        if (this.at("StaticKeyword") && this.peek(1).kind === "OpenBraceToken") {
+            this.next()
+            const block = new Node("ClassStaticBlockDeclaration", start, start).add(this.block(), "body")
+            return this.finish(block, start)
+        }
         const modifiers = this.modifiers()
         const next = this.peek(1)
         if (this.at("ConstructorKeyword") && next.kind === "OpenParenToken") {

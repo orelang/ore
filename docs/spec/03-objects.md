@@ -73,6 +73,10 @@
   may have type parameters of its own (`static of<T>(x: T): T[]`), inferred
   from each call's arguments or written (`List.of<string>("a")`).
   `private` static members are used only inside the class declaration.
+- A `static { ... }` block runs where the class is declared, in order with
+  the initializers of the static fields around it. Its variables are local
+  to it, and like a static method it has no `this`
+  ([ORE3002](../errors/ORE3002.md)): it names the class.
 - A generic class can have static fields and methods, generic methods too
   (`Box.of<U>(v)`), as in TypeScript: one field or function shared by every
   instance of the class, which cannot name the class's type parameters
@@ -85,7 +89,13 @@
   fields (see [Interfaces](#interfaces)).
 - `new C(...)` allocates an instance, assigns parameter properties, runs
   field initializers in order, then the constructor body. Field initializers
-  cannot use `this`.
+  cannot use `this` directly, but arrow functions in them capture the
+  instance, as in TypeScript: `onClick = () => this.count++` keeps `this`
+  when the function is detached from the object.
+- Outside classes, at the top level of a module and in its arrow functions,
+  `this` is `null` (JavaScript's `undefined`), of type `null`. In a function
+  declaration or expression outside a class it is an error
+  ([ORE3003](../errors/ORE3003.md)).
 - A field without an initializer starts at its zero value (`0`, `false`,
   `""`, `[]`, a new map, or `null` for a type that includes it). A field of a
   type without a zero value (class, object or interface) must be assigned at
@@ -112,6 +122,11 @@
   function value bound to `obj`.
 - `class C implements I` checks that `C` has the members of `I`; `I` may be
   an instance of a generic interface, `class C implements It<int>`.
+- A `private` constructor is called with `new` only inside the class
+  declaration (a static factory, a method), and the class cannot be
+  extended ([ORE5063](../errors/ORE5063.md)). A `protected` constructor is
+  also called with `new` only inside the class declaration, and subclasses
+  call it through `super(...)` ([ORE5062](../errors/ORE5062.md)).
 
 ## Inheritance
 
@@ -212,7 +227,15 @@ on that slot reads the class table.
   offset, as before.
 - Interfaces are structural: interfaces with the same members are the same
   type. An interface converts implicitly to an interface with a subset of its
-  members. `interface A extends B` includes the members of `B`.
+  members. `interface A extends B` includes the members of `B`; when `B` is
+  a class, its public instance fields and methods, as in TypeScript (its
+  private and protected members and its accessors are left out, so object
+  literals and unrelated classes conform too).
+- Two declarations of an interface in one scope merge, as in TypeScript:
+  the members and `extends` clauses of both make one interface. A member
+  declared in both must have the same type. Generic interfaces and other
+  kinds of declarations (an interface and a class, two classes) do not
+  merge ([ORE5050](../errors/ORE5050.md)).
 - An interface value refers to the original object: fields read and written
   through the interface are the object's fields, and `===` compares the
   objects.
@@ -246,6 +269,14 @@ on that slot reads the class table.
   (`stmt.line`); its type is the union of the members' field types. It can
   be assigned (`stmt.line = 3`, `stmt.count++`) when it is writable and has
   the same type in every member.
+- A method that every member of a union of classes (without `null`) has,
+  public and with the same parameter and result types, can be called
+  without narrowing (`(a: Cat | Dog) => a.speak()`): the receiver and the
+  arguments are evaluated once, then the method of the class the value
+  holds runs (an override in a subclass too), with that class's default
+  values. Methods of different types are an error
+  ([ORE4093](../errors/ORE4093.md)), and spread arguments are not
+  supported there ([ORE4094](../errors/ORE4094.md)).
 - Representation: a reference type with `null` is a nullable reference; a
   union of string literals is a string, and one of numeric literals an
   `f64` (see [numeric literal types](02-types.md#numeric-literal-types));

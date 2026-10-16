@@ -144,7 +144,7 @@ The codes are grouped by the part of the language they concern:
 | Code | Message |
 |---|---|
 | [ORE3001](ORE3001.md) | Field initializers cannot use 'this'. |
-| [ORE3002](ORE3002.md) | A static method has no 'this'; name the class: '….name'. |
+| [ORE3002](ORE3002.md) | A static method or block has no 'this'; name the class: '….name'. |
 | [ORE3003](ORE3003.md) | 'this' can only be used inside a class. |
 | [ORE3004](ORE3004.md) | 'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'. |
 | [ORE3005](ORE3005.md) | Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'. |
@@ -333,6 +333,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE4090](ORE4090.md) | structuredClone cannot clone a function: '…' could not be cloned. |
 | [ORE4091](ORE4091.md) | structuredClone cannot clone '…': an instance of a class with methods would lose them, as JavaScript copies it into a plain object. |
 | [ORE4092](ORE4092.md) | structuredClone cannot clone '…': its values could not be cloned. |
+| [ORE4093](ORE4093.md) | Method '…' has different types in the members of '…': '…' and '…'. |
+| [ORE4094](ORE4094.md) | Spread arguments are not supported in a call of '…' on a union. |
 
 ## ORE5xxx: Classes and interfaces
 
@@ -390,7 +392,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5050](ORE5050.md) | Duplicate type '…'. |
 | [ORE5051](ORE5051.md) | Member '…' conflicts with an inherited member of a different type. |
 | [ORE5052](ORE5052.md) | Interface '…' extends itself. |
-| [ORE5053](ORE5053.md) | An interface can only extend interfaces. |
+| [ORE5053](ORE5053.md) | An interface can only extend interfaces and classes. |
 | [ORE5054](ORE5054.md) | Call and construct signatures are not supported. |
 | [ORE5055](ORE5055.md) | Generic methods are not supported in interfaces: calls through an interface cannot pick an instance. |
 | [ORE5056](ORE5056.md) | This interface member is not supported. |
@@ -399,6 +401,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE5059](ORE5059.md) | A 'this' type is available only in a non-static member of a class or interface. |
 | [ORE5060](ORE5060.md) | A 'this' type in an interface is not supported yet. |
 | [ORE5061](ORE5061.md) | A method returning 'this' must return 'this' or what a method returning 'this' returns on it. |
+| [ORE5062](ORE5062.md) | Constructor of class '…' is … and only accessible within the class declaration. |
+| [ORE5063](ORE5063.md) | Cannot extend a class '…': its constructor is private. |
 
 ## ORE6xxx: Declarations, functions, generics, modules and C
 

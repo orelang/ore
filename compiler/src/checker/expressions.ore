@@ -12,6 +12,9 @@ import {
     BigIntLit,
     Arith,
     Bind,
+    Downcast,
+    IfaceCall,
+    MethodCall,
     BindLocal,
     BoolLit,
     BoundMethod,
@@ -218,13 +221,18 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         const fn = c.fn
         const self = fn !== null ? fn.thisLocal : null
         const inStatic = c.staticClass
+        // `this` directly in a field initializer; arrow functions there capture it.
+        if (fn !== null && fn.fieldInit && fn.closure === null)
+            return c.fail(node, "Field initializers cannot use 'this'.")
+        // At the top level of a module and in its arrow functions, `this` is null (`undefined` in JavaScript).
+        if (self === null && fn !== null && fn.nullThis && inStatic === null) return typed(new NullLit(types.null))
         if (self === null)
             return c.fail(
                 node,
                 fn !== null && fn.fieldInit
                     ? "Field initializers cannot use 'this'."
                     : inStatic !== null
-                      ? `A static method has no 'this'; name the class: '${inStatic}.name'.`
+                      ? `A static method or block has no 'this'; name the class: '${inStatic}.name'.`
                       : "'this' can only be used inside a class.",
             )
         capture(self, fn!.thisCaptures ?? [])
@@ -1884,13 +1892,64 @@ export function checkTemplate(c: Checker, node: Node, scope: Scope): Operand {
         const e = expression(span)
         const value = checkExpr(c, e, scope)
         if (value.k !== "error") {
-            const expr = c.toDefault(value, e)
+            const expr = stringified(c, c.toDefault(value, e))
             if (printable(c, expr, e)) parts.push(expr)
         }
         const text = templateText(literal(span))
         if (text !== "") parts.push(new StringLit(types.string, text))
     }
     return typed(new Concat(types.string, parts))
+}
+
+/**
+ * An object in a template, converted as JavaScript does: a class or an
+ * interface with a `toString(): string` method calls it, so an instance of
+ * the Error class gives "Name: message"; an `Error` interface value calls
+ * the method of the Error class it holds, or gives "Error: message" for
+ * another class. Other values are returned as they are.
+ */
+function stringified(c: Checker, expr: Expr): Expr {
+    const type = expr.type
+    if (type.kind === "struct" && type.nominal) {
+        const method = findMethod(type, "toString")
+        if (method !== null && !method.private) {
+            const ft = method.func.type
+            if (ft.params.length === 0 && ft.result.kind === "string") {
+                const call = new MethodCall(types.string, method.func, expr, [])
+                dispatch(c, call, "toString")
+                return call
+            }
+        }
+        return expr
+    }
+    if (type.kind !== "interface") return expr
+    for (let i = 0; i < type.members.length; i++) {
+        const m = type.members[i]
+        if (m.k === "method" && m.name === "toString") {
+            if (m.type.params.length === 0 && m.type.result.kind === "string")
+                return new IfaceCall(types.string, expr, i, m.type, [])
+        }
+    }
+    const basic = c.basicError
+    const errorType = c.errorType
+    if (type !== errorType || basic === null) return expr
+    const toString = findMethod(basic, "toString")
+    let messageIndex = -1
+    for (let i = 0; i < type.members.length; i++) if (type.members[i].name === "message") messageIndex = i
+    if (toString === null || messageIndex === -1) return expr
+    const local = c.newLocal("error", type, false)
+    const ref = new LocalRef(type, local)
+    const call = new MethodCall(types.string, toString.func, new Downcast(basic, ref), [])
+    dispatch(c, call, "toString")
+    const plain = new Concat(types.string, [
+        new StringLit(types.string, "Error: "),
+        new IfaceField(types.string, ref, messageIndex),
+    ])
+    return new Bind(
+        types.string,
+        [new BindLocal(local, expr)],
+        new Conditional(types.string, new Is(types.bool, ref, basic), call, plain),
+    )
 }
 
 /** Whether a value can be printed or interpolated; reports an error if not. */
@@ -2153,6 +2212,14 @@ export function instanceTest(c: Checker, value: Expr, target: StructType | Inter
     if (type.kind === "struct" && related(type)) return new Is(types.bool, value, target)
     if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m)))
         return new Is(types.bool, value, target)
+    // A class with the members of an interface is always an instance of it, as an error class is of `Error`.
+    if (
+        type.kind === "struct" &&
+        type.nominal &&
+        target.kind === "interface" &&
+        conformance(c, type, target).reason === null
+    )
+        return new BoolLit(types.bool, true)
     if (target.kind !== "struct") return null
     if (type.kind === "interface" && conformance(c, target, type).reason === null)
         return new Is(types.bool, value, target)

@@ -1,0 +1,69 @@
+// Two declarations of an interface merge, and an interface can extend a class.
+interface Point {
+    x: int
+}
+interface Point {
+    y: int
+    norm(): int
+}
+
+class Grid implements Point {
+    constructor(
+        public x: int,
+        public y: int,
+    ) {}
+    norm(): int {
+        return this.x + this.y
+    }
+}
+
+const p: Point = {
+    x: 1,
+    y: 2,
+    norm() {
+        return 3
+    },
+}
+const g: Point = new Grid(4, 5)
+console.log(p.x, p.y, p.norm(), g.x, g.y, g.norm())
+
+class Animal {
+    legs = 4
+    private secret = 1
+    constructor(public name: string) {}
+    describe(): string {
+        return `${this.name} on ${this.legs} legs`
+    }
+}
+
+// Takes the public members of the class: name, legs and describe.
+interface Pet extends Animal {
+    owner: string
+}
+interface Pet {
+    vaccinated: bool
+}
+
+class Dog extends Animal {
+    owner = "Ann"
+    vaccinated = true
+}
+
+const pets: Pet[] = [
+    new Dog("Rex"),
+    {
+        name: "Tom",
+        legs: 4,
+        owner: "Bob",
+        vaccinated: false,
+        describe() {
+            return "a cat"
+        },
+    },
+]
+for (const pet of pets) console.log(pet.name, pet.legs, pet.owner, pet.vaccinated, pet.describe())
+
+// Through another interface.
+interface Show extends Pet {}
+const s: Show = new Dog("Max")
+console.log(s.describe())

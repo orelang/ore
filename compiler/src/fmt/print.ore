@@ -406,6 +406,7 @@ const statementTypes = [
     "BlockStatement",
     "BreakStatement",
     "ClassBody",
+    "StaticBlock",
     "ClassDeclaration",
     "MethodDefinition",
     "PropertyDefinition",
@@ -807,6 +808,7 @@ function printNode(n: ENode, args: Args): Doc {
     switch (n.type) {
         case "Program":
         case "BlockStatement":
+        case "StaticBlock":
         case "TSModuleBlock":
             return printBlock(n)
         case "EmptyStatement":
@@ -1173,7 +1175,7 @@ function printBlock(n: ENode): Doc {
         body = c(parts)
     }
     if (n.type === "Program") return body !== null ? c([body, hardline]) : empty
-    const parts: Doc[] = [t("{")]
+    const parts: Doc[] = [t(n.type === "StaticBlock" ? "static {" : "{")]
     if (body !== null) parts.push(indent(c([hardline, body])), hardline)
     else {
         const parent = n.parent!
@@ -1187,7 +1189,8 @@ function printBlock(n: ENode): Doc {
             t_ === "WhileStatement" ||
             t_ === "DoWhileStatement" ||
             (t_ === "CatchClause" && gp !== null && !gp.has("finalizer")) ||
-            t_ === "TSModuleDeclaration"
+            t_ === "TSModuleDeclaration" ||
+            n.type === "StaticBlock"
         if (!bare) parts.push(hardline)
     }
     parts.push(t("}"))
