@@ -444,9 +444,9 @@ Every directory below has a README with the details.
 Ore is licensed under either of the [MIT license](LICENSE-MIT) or the
 [Apache License, Version 2.0](LICENSE-APACHE), at your option.
 
-Unless you state otherwise, any contribution you submit for inclusion in Ore,
-as defined in the Apache License 2.0, is dual licensed as above, without any
-additional terms or conditions.
+Contributions are accepted under the
+[Contributor License Agreement](CLA.md), which assigns their copyright to the
+Ore Team ([AUTHORS](AUTHORS)).
 
 The Zed extension in [`editors/zed`](editors/zed) is the exception: it
 carries Zed's TypeScript queries and is licensed under the

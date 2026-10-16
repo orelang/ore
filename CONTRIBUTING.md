@@ -42,10 +42,12 @@ change per commit, with a message that says why.
 
 ## License
 
-Ore is licensed under either of MIT or Apache-2.0, at your option. Unless
-you state otherwise, any contribution you submit for inclusion in Ore, as
-defined in the Apache License 2.0, is dual licensed as above, without any
-additional terms or conditions.
+Ore is licensed under either of MIT or Apache-2.0, at your option.
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md):
+you assign the copyright in them to the Ore Team, who keep them in Ore under
+an open source license and may license Ore under other terms too. On your
+first pull request, a bot asks you to sign it with a comment.
 
 ## Layout
 
