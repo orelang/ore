@@ -1,0 +1,31 @@
+// JSON: writes an array of objects as text with JSON.stringify, reads it back
+// with JSON.parse and sums its fields.
+
+type Item = {
+    id: int
+    name: string
+    score: f64
+    active: bool
+    tags: string[]
+}
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 300000) : 300000
+
+const items: Item[] = []
+for (let i = 0; i < n; i++) {
+    items.push({ id: i, name: `item ${i}`, score: f64(i % 100) * 0.5, active: i % 3 === 0, tags: ["a", `t${i % 10}`] })
+}
+const text = JSON.stringify(items)
+const parsed = JSON.parse<Item[]>(text)
+if (parsed instanceof Error) process.panic(parsed.message)
+let ids = 0
+let score = 0.0
+let active = 0
+let tags = 0
+for (const item of parsed) {
+    ids += item.id
+    score += item.score
+    if (item.active) active++
+    tags += item.tags.length + item.name.length
+}
+console.log(text.length, parsed.length, ids, score, active, tags)
