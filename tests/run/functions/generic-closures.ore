@@ -1,0 +1,99 @@
+// Generic nested functions and generic function literals of a `const`:
+// instantiated per call, as closures of the enclosing function.
+
+function outer(prefix: string) {
+    let count = 0
+    function show<T>(x: T): T {
+        count++
+        console.log(prefix, x)
+        return x
+    }
+    show(1)
+    show("a")
+    show<number>(2.5)
+    const twice = () => show(true)
+    twice()
+    const id = <T>(x: T): T => x
+    console.log(id(5), id("five"))
+    const pair = <A, B>(a: A, b: B) => `${a}/${b}/${count}`
+    console.log(pair(1, "x"))
+    function fact<T extends int>(n: T): int {
+        return n <= 1 ? 1 : n * fact(n - 1)
+    }
+    console.log(fact(5))
+    console.log(count)
+    later()
+    function early<T>(x: T) {
+        console.log("early", x, late)
+    }
+    let late = 9
+    function later() {
+        // Checked after the block, so the instance sees `late` too.
+        early(3)
+    }
+    late = 10
+    later()
+}
+
+// At the top level, a generic literal of a `const` is called from functions too.
+const top = <T>(xs: T[]): T => xs[0]
+
+function useTop() {
+    console.log(top([1, 2]), top(["p"]))
+}
+
+// The instance's closure, created at a call in a closure that outlives the function.
+function counter(): () => string {
+    let n = 0
+    const tag = <T>(x: T): string => {
+        n++
+        return `${x}#${n}`
+    }
+    return () => {
+        const inner = () => tag(n * 10)
+        return tag("call") + " " + inner()
+    }
+}
+
+class Box {
+    constructor(readonly label: string) {}
+
+    describe(): string {
+        function wrap<T>(x: T): string {
+            return `[${x}]`
+        }
+        // An arrow function keeps `this` of the method.
+        const mine = <T>(x: T): string => `${this.label}:${wrap(x)}`
+        return mine(1) + mine("two")
+    }
+}
+
+function rest() {
+    const size = <T>(...xs: T[]): int => xs.length
+    console.log(size<string>("a", "b"), size<int>())
+}
+
+function mutual() {
+    function even<T>(n: int, tag: T): bool {
+        return n === 0 ? true : odd(n - 1, tag)
+    }
+    function odd<T>(n: int, tag: T): bool {
+        return n === 0 ? false : even(n - 1, tag)
+    }
+    console.log(even(10, "x"), odd(7, 1))
+}
+
+function sizes(lists: int[][]): int[] {
+    const first = <T>(xs: T[]): T => xs[0]
+    return lists.map((xs) => first(xs))
+}
+
+outer("p:")
+useTop()
+const next = counter()
+console.log(next())
+console.log(next())
+console.log(new Box("b").describe())
+rest()
+mutual()
+console.log(sizes([[1, 2], [3]]))

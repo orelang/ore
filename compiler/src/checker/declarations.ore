@@ -6,6 +6,7 @@ import {
     type Expr,
     type Stmt,
     Block,
+    Closure,
     ExprStmt,
     Func,
     FuncAttributes,
@@ -115,12 +116,13 @@ import {
     typed,
 } from "./helpers"
 import { type Operand, Typed } from "./operand"
-import { checkBlock, checkClosure, checkTupleOf, bindPattern } from "./statements"
+import { capture, checkBlock, checkClosure, checkTupleOf, bindPattern } from "./statements"
 import {
     type Exported,
     type Instance,
     type ValueSymbol,
     ClassSymbol,
+    ClosureSite,
     ConstSymbol,
     Exported as ExportedClass,
     FuncSymbol,
@@ -1095,15 +1097,35 @@ export function makeFunc(
     return func
 }
 
-export function declareGeneric(c: Checker, decl: Node, scope: Scope) {
-    const name = nameNode(decl).text
-    const params = typeParameters(decl)
+/** Reports a type parameter without a default after one with a default. */
+function checkDefaults(c: Checker, params: Node[]) {
     let defaults = false
     for (const p of params) {
         const d = defaultTypeNode(p)
         if (d !== null) defaults = true
         else if (defaults) c.error(nameNode(p), "A type parameter without a default cannot follow one with a default.")
     }
+}
+
+/**
+ * Declares a generic function of a function body, or a generic function
+ * literal of a `const` (`decl`, named by `name`, declared by `declNode`),
+ * instantiated as closures (see `ClosureSite`).
+ */
+export function declareGenericClosure(c: Checker, decl: Node, name: Node, declNode: Node, scope: Scope) {
+    const params = typeParameters(decl)
+    checkDefaults(c, params)
+    const generic = new Generic(name.text, decl, params, scope, new Map<string, Instance>())
+    generic.closure = new ClosureSite(c.fn)
+    c.closureGenerics.push(generic)
+    if (!scope.declareValue(name.text, new GenericFuncSymbol(generic, declNode)))
+        c.error(name, `Cannot redeclare '${name.text}' in the same scope.`)
+}
+
+export function declareGeneric(c: Checker, decl: Node, scope: Scope) {
+    const name = nameNode(decl).text
+    const params = typeParameters(decl)
+    checkDefaults(c, params)
     const generic = new Generic(name, decl, params, scope, new Map<string, Instance>())
     let declared: bool
     if (decl.kind === "FunctionDeclaration") declared = scope.declareValue(name, new GenericFuncSymbol(generic, decl))
@@ -1182,6 +1204,8 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
         }
     }
     const label = generic.params.length === 0 ? generic.name : `${generic.name}<${args.map(typeToString).join(", ")}>`
+    const site = generic.closure
+    if (site !== null) return instantiateClosure(c, generic, site, key, scope, label)
     const cname = `${cIdent(generic.name)}_${c.instanceCount}`
     const decl = generic.decl
 
@@ -1235,6 +1259,110 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
         }),
     )
     return type
+}
+
+/**
+ * Checks the instance of a generic closure for a key of type arguments, in
+ * the function that declares it: its own closure, which the calls create.
+ */
+function instantiateClosure(
+    c: Checker,
+    generic: Generic,
+    site: ClosureSite,
+    key: string,
+    scope: Scope,
+    label: string,
+): Instance | null {
+    if (site.failed.has(key)) return null
+    const savedFn = c.fn
+    const savedFacts = c.facts
+    const savedContext = c.context
+    // What is known where it is called is not known in the instance, which every call shares.
+    c.fn = site.fn
+    c.facts = [new Map<string, Type>()]
+    c.context = label
+    site.checking.add(key)
+    site.scopes.set(key, scope)
+    const closure = checkClosure(c, generic.decl, scope, null, false, null, label, (func) => {
+        generic.instances.set(key, func)
+    })
+    site.checking.delete(key)
+    c.fn = savedFn
+    c.facts = savedFacts
+    c.context = savedContext
+    if (closure.k !== "typed") {
+        site.failed.add(key)
+        return null
+    }
+    shareCaptures(c)
+    return generic.instances.get(key)
+}
+
+/**
+ * The closure that a call of an instance of a generic closure creates and
+ * calls. The closures between the call and the declaration capture what the
+ * instance captures.
+ */
+export function closureCallee(c: Checker, generic: Generic, func: Func, node: Node, scope: Scope): Closure | null {
+    const site = generic.closure!
+    let key = ""
+    for (const [k, instance] of generic.instances) if (instance === func) key = k
+    let type = func.type
+    const instanceScope = site.scopes.get(key)
+    if (site.checking.has(key) && instanceScope !== null) {
+        // A call of the instance in its own body: its result type is not inferred yet.
+        const annotation = typeNode(generic.decl)
+        if (annotation === null) {
+            c.error(node, `'${generic.name}' calls itself, so it needs a return type annotation.`)
+            return null
+        }
+        const result = c.resolveType(annotation, instanceScope)
+        if (result === null) return null
+        type = new FuncType(func.type.params, result)
+        type.required = func.type.required
+        type.rest = func.type.rest
+    }
+    const closures: Func[] = []
+    let s: Scope | null = scope
+    while (s !== null && s !== generic.scope) {
+        const closure = s.closure
+        if (closure !== null) closures.push(closure)
+        s = s.parent
+    }
+    const calls = site.calls.get(key)
+    if (calls !== null) calls.push(closures)
+    else site.calls.set(key, [closures])
+    shareCaptures(c)
+    return new Closure(type, func)
+}
+
+/**
+ * Makes the closures around each call of a generic closure capture what the
+ * instance captures, until nothing changes: an instance captures more while
+ * its body is checked, after its calls in that body.
+ */
+function shareCaptures(c: Checker) {
+    let changed = true
+    while (changed) {
+        changed = false
+        for (const generic of c.closureGenerics) {
+            for (const [key, calls] of generic.closure!.calls) {
+                const func = generic.instances.get(key)
+                if (!(func instanceof Func)) continue
+                const captures = func.captures
+                if (captures === null) continue
+                for (const local of captures) {
+                    for (const closures of calls) {
+                        for (const f of closures) {
+                            if (f.captures!.includes(local)) continue
+                            capture(local, [f])
+                            changed = true
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /** The class declaring a generic method. */

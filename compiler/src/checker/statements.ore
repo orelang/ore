@@ -103,6 +103,7 @@ import { type Checker } from "./base"
 import { dispatch, initStatics } from "./classes"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
 import {
+    declareGenericClosure,
     directives,
     exportVariable,
     paramScope,
@@ -163,6 +164,17 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
         const creation = new ExprStmt(new Assign(local.type, new LocalLValue(local), expr))
         creation.line = c.line(decl)
         creations.push(creation)
+    }
+    // So do the variables that instances of its generic functions capture: a
+    // call can come first.
+    for (const decl of nested) {
+        const symbol = inner.ownValue(nameNode(decl).text)
+        if (symbol === null || symbol.k !== "generic-func" || symbol.decl !== decl) continue
+        for (const [_, instance] of symbol.generic.instances) {
+            if (!(instance instanceof Func)) continue
+            const captures = instance.captures
+            if (captures !== null) for (const x of captures) captured.add(x)
+        }
     }
     // Variables of this block used by hoisted functions get their boxes at the
     // start of the block; their declarations become assignments.
@@ -298,9 +310,8 @@ export function declareNestedFunction(c: Checker, decl: Node, scope: Scope): Loc
         c.error(decl, "A nested function needs a name and a body.")
         return null
     }
-    const typeParams = typeParameters(decl)
-    if (typeParams.length > 0) {
-        c.error(typeParams[0], "Nested generic functions are not supported.")
+    if (typeParameters(decl).length > 0) {
+        declareGenericClosure(c, decl, name, decl, scope)
         return null
     }
     const params: Type[] = []
@@ -506,6 +517,17 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
             continue
         }
         const name = nameId.text
+        if (
+            isConst &&
+            annotation === null &&
+            init_ !== null &&
+            (init_.kind === "ArrowFunction" || init_.kind === "FunctionExpression") &&
+            typeParameters(init_).length > 0
+        ) {
+            // `const id = <T>(x: T): T => x`: instantiated per call, as a nested generic function.
+            declareGenericClosure(c, init_, nameId, decl, scope)
+            continue
+        }
         // The value of a JSON file has the type of the declaration it initializes first.
         const declared = annotation !== null ? c.resolveValueType(annotation, scope) : c.jsonTypes.get(decl)
         if (isConst && init_ === null) c.error(nameId, "A 'const' declaration must be initialized.")
@@ -1286,9 +1308,13 @@ export function checkClosure(
     inferResult: bool = false,
     /** For a method of an object literal: the object, its `this`. */
     self: Local | null = null,
+    /** For an instance of a generic closure: its name, such as `id<int>`. */
+    instance: string | null = null,
+    /** Called with the function before its body is checked, for an instance that calls itself. */
+    declared: ((func: Func) => void) | null = null,
 ): Operand {
     const typeParams = typeParameters(node)
-    if (typeParams.length > 0) return c.fail(typeParams[0], "Generic closures are not supported.")
+    if (typeParams.length > 0 && instance === null) return c.fail(typeParams[0], "Generic closures are not supported.")
     const asterisk = asteriskToken(node)
     if (asterisk !== null) return c.fail(asterisk, "Generators are not supported in Ore.")
     for (const m of modifiers(node))
@@ -1374,7 +1400,7 @@ export function checkClosure(
     const annotated = resultNode !== null ? c.resolveType(resultNode, outer) : null
     const outerFn = c.fn
     const isDeclaration = node.kind === "FunctionDeclaration"
-    const name = isDeclaration ? nameNode(node).text : "<lambda>"
+    const name = instance !== null ? instance : isDeclaration ? nameNode(node).text : "<lambda>"
     const outerClosure = outerFn !== null ? outerFn.closure : null
     const noCaptures: Func[] = []
     const noLocals: Local[] = []
@@ -1398,6 +1424,7 @@ export function checkClosure(
     func.type.required = required
     func.type.rest = rest
     c.module.functions.push(func)
+    if (declared !== null) declared(func)
     const prologue: Stmt[] = []
     const scope = paramScope(c, params_, named, new Scope(outer, func), prologue)
 

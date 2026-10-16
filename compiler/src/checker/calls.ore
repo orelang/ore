@@ -89,7 +89,7 @@ import {
 import { bigFromF64, bigText } from "./bigint"
 import { type Checker } from "./base"
 import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
-import { genericCall, isInternal } from "./declarations"
+import { closureCallee, genericCall, isInternal } from "./declarations"
 import {
     checkExpr,
     checkSpreadArray,
@@ -130,6 +130,15 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
         if (call === null) return errorOperand
         const func = call.instance
         if (!(func instanceof Func)) return errorOperand
+        if (generic.closure !== null) {
+            // A generic closure: the call creates the instance's closure and calls it.
+            const closure = closureCallee(c, generic, func, node, scope)
+            if (closure === null) return errorOperand
+            // Spread arguments are taken apart already, unless the type arguments are given.
+            const given = call.expanded !== null ? call.args(args) : null
+            const operands = call.operands.length > 0 ? call.operands : null
+            return call.bind(callValue(c, typed(closure), node, scope, given, operands))
+        }
         return call.bind(
             callFunc(
                 c,
@@ -1065,18 +1074,28 @@ export function bindAround(locals: BindLocal[], call: Operand): Operand {
 }
 
 /** Calls a function value with arguments converted to its parameters. */
-export function callValue(c: Checker, callee: Operand, node: Node, scope: Scope): Operand {
+export function callValue(
+    c: Checker,
+    callee: Operand,
+    node: Node,
+    scope: Scope,
+    /** The arguments, one per position, when the call's spread arguments are taken apart already. */
+    given: Node[] | null = null,
+    /** The arguments already checked, if any. */
+    checked: Operand[] | null = null,
+): Operand {
     if (callee.k !== "typed")
         return callee.k === "error" ? callee : c.fail(expression(node), "A constant is not a function.")
     const type = callee.expr.type
     if (type.kind === "unknown") return c.fail(expression(node), unknownObject)
     if (type.kind !== "func")
         return c.fail(expression(node), `A value of type '${typeToString(type)}' is not a function.`)
-    let args = argsOf(node)
+    let args = given ?? argsOf(node)
     let fn = callee.expr
     let operands: (Operand | null)[] = []
+    if (checked !== null) for (const o of checked) operands.push(o)
     let locals: BindLocal[] = []
-    if (args.some((arg) => arg.kind === "SpreadElement")) {
+    if (given === null && args.some((arg) => arg.kind === "SpreadElement")) {
         const params = type.params
         const expanded = expandArgs(c, args, scope, (i) => (i < params.length ? params[i] : null), fn)
         if (expanded === null) return errorOperand

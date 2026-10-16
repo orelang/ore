@@ -269,6 +269,11 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
         case "class":
             return c.fail(node, `'${node.text}' is a class. Create an instance with 'new ${node.text}(...)'.`)
         case "generic-func":
+            if (symbol.generic.closure !== null)
+                return c.fail(
+                    node,
+                    "A generic function value must be instantiated: give its type arguments or call it.",
+                )
             return c.fail(node, `'${node.text}' is a generic function and cannot be used as a value.`)
         case "namespace": {
             let first = ""

@@ -434,6 +434,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE6068](ORE6068.md) | A JSON import has one name: 'import data from "…" with { type: "json" }'. |
 | [ORE6069](ORE6069.md) | Unknown import type '…'. Use 'text' or 'json'. |
 | [ORE6070](ORE6070.md) | Unknown import attribute '…'. Only 'type' is supported. |
+| [ORE6071](ORE6071.md) | A generic function value must be instantiated: give its type arguments or call it. |
+| [ORE6072](ORE6072.md) | '…' calls itself, so it needs a return type annotation. |
 
 ## ORE7xxx: Statements
 

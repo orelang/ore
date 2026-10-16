@@ -1,0 +1,32 @@
+function apply(f: (x: int) => int): int {
+    return f(1)
+}
+
+function values() {
+    function id<T>(x: T): T {
+        return x
+    }
+    const twice = <T>(x: T): T[] => [x, x]
+    const f = id // error: A generic function value must be instantiated: give its type arguments or call it.
+    apply(twice) // error: A generic function value must be instantiated: give its type arguments or call it.
+    apply(<T>(x: T): T => x) // error: Generic closures are not supported.
+    id<int>("a") // error: Type 'string' is not assignable to type 'i64'.
+    id<int, string>(1) // error: 'id' expects 1 type argument(s), got 2.
+}
+
+function recursive() {
+    const count = <T>(xs: T[], i: int) => (i >= xs.length ? 0 : 1 + count(xs, i + 1)) // error: 'count' calls itself, so it needs a return type annotation.
+    count([1], 0)
+}
+
+function bounded() {
+    function half<T extends int>(n: T): int {
+        return n / 2
+    }
+    half("a") // error: Type 'string' does not satisfy the constraint 'i64' of 'T'.
+    function broken<T>(x: T): T {
+        return missing // error: Cannot find name 'missing'. (in 'broken<i64>')
+    }
+    broken(1)
+    broken(2)
+}

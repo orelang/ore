@@ -4,6 +4,7 @@
 import { type Func, type Local } from "../ir/nodes"
 import { type StructType, type Type } from "../ir/types"
 import { type Node } from "../syntax/ast"
+import { type FuncContext } from "./context"
 import { type Operand } from "./operand"
 
 /** A built-in function by its qualified name, such as `Math.sqrt`. */
@@ -21,6 +22,31 @@ export class Generic {
         readonly scope: Scope,
         readonly instances: Map<string, Instance>,
     ) {}
+
+    /** Set for a generic function declared in a function body, or a generic function literal of a `const`. */
+    public closure: ClosureSite | null = null
+}
+
+/**
+ * A generic function declared in a function body, or a generic function
+ * literal assigned to a `const`: each instance is a closure, checked at its
+ * first call and created at every call, which captures what it uses from
+ * the enclosing functions.
+ */
+export class ClosureSite {
+    constructor(
+        /** The function being checked where the generic is declared. */
+        readonly fn: FuncContext | null,
+    ) {}
+
+    /** Instances whose bodies are being checked, by key. */
+    readonly checking = new Set<string>()
+    /** Instances whose bodies have errors, by key. */
+    readonly failed = new Set<string>()
+    /** The scope of each instance, with its type arguments, by key. */
+    readonly scopes = new Map<string, Scope>()
+    /** For each instance, by key: the closures between each call and the declaration, which capture what it captures. */
+    readonly calls = new Map<string, Func[][]>()
 }
 
 /** An instance of a generic: a function, or a class, interface or other type. */
