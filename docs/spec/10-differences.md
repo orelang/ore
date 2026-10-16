@@ -31,7 +31,11 @@ Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
 | `typeof x === "number"` on an `unknown` | narrows to `number` | narrows to `f64`; an integer converts |
 | `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it |
 | `map.get(missing)` | `undefined` | `null` |
-| `map.keys()` | iterator | array |
+| `map.keys()`, `set.values()`, `array.entries()` | iterator | array |
+| `s.charCodeAt(i)`, `s.slice(i)`, other string positions | UTF-16 code units | bytes of UTF-8 (`charCodeAt` is the byte at `i`) |
+| `s.localeCompare(t)` | the locale's collation | code point order |
+| `new Array(3)` | three holes | three zero values of the element type |
+| `Set` methods `union`, `isSubsetOf`, … | take set-like objects | take sets |
 | `[10, 9, 1].sort()` | `[1, 10, 9]` (as strings) | `[1, 9, 10]` |
 | `[10n, 9n, 1n].sort()` | `[1n, 10n, 9n]` (as strings) | `[1n, 9n, 10n]` |
 | `1n < 2`, `1n == 1` | compare the values | compile error: no mixing of bigints and numbers |
