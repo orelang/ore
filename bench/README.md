@@ -65,6 +65,19 @@ its header.
 | `strings` | concatenating, joining, splitting, scanning and searching strings | pieces |
 | `map` | inserting, looking up, deleting and iterating integer and string keys | keys |
 | `json` | writing an array of objects as JSON text and reading it back | objects |
+| `sort` | sorting pseudo-random integers, then strings, with the built-in sort | integers |
+| `matmul` | naive multiplication of f64 matrices in flat arrays | n |
+| `mandelbrot` | the Benchmarks Game's Mandelbrot bitmap, hashed: floating point and bit operations | n |
+| `nqueens` | counting n-queens solutions over arrays and over bitmasks: recursion | n |
+| `sha256` | a hand-written SHA-256 over a buffer: 32-bit integer operations | rounds |
+| `knucleotide` | the Benchmarks Game's k-nucleotide: counting k-mers in string-keyed maps | nucleotides |
+| `wordcount` | splitting a generated text into words and counting them in a map | words |
+| `dispatch` | calls through an interface to methods of four classes: dynamic dispatch | passes |
+| `closures` | chains of map, filter and reduce with capturing callbacks | rounds |
+| `structs` | moving particles with an immutable vector type: short-lived objects in Ore and TypeScript, value types in Go and C | steps |
+| `bigint` | a factorial by multiplication and a Fibonacci number by addition | n |
+| `fileio` | writing a file of numbers, reading it back and summing them | lines |
+| `startup` | hello world: starting a process and the runtime | lines |
 
 The C versions use only the C17 standard library and POSIX, as a C program
 without dependencies would: `channels` is a mutex and condition-variable
