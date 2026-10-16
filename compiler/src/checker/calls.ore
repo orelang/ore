@@ -139,7 +139,7 @@ import {
 } from "./helpers"
 import { type Operand, errorOperand, UntypedInt } from "./operand"
 import { filteredType, narrowingFunc } from "./predicates"
-import { capture, checkClosure, narrowConvert, symbolMethodCall } from "./statements"
+import { capture, checkClosure, narrowConvert, narrowed, refKey, symbolMethodCall } from "./statements"
 import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
 import { objectCall } from "./dicts"
 import { plainArray } from "./templates"
@@ -2411,6 +2411,21 @@ function unionMethodCall(
     return typed(new Bind(result, locals, chain))
 }
 
+/**
+ * Calls a field that holds a function or null, such as an optional method,
+ * where a check narrowed it to the function.
+ */
+function nullableFuncCall(c: Checker, value: Expr, callee: Node, node: Node, scope: Scope): Operand {
+    const nameId = nameNode(callee)
+    const name = nameId.text
+    const read = member(c, value, nameId, name)
+    if (read.k !== "typed") return read
+    const key = refKey(c, callee, scope)
+    const fn = key !== null ? narrowed(c, key, read.expr) : read.expr
+    if (fn.type.kind === "func") return callValue(c, typed(fn), node, scope)
+    return c.fail(nameId, `'${name}' may be null: call it with '${name}?.(...)'.`)
+}
+
 export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node, scope: Scope): Operand {
     const nameId = nameNode(callee)
     const name = nameId.text
@@ -2489,7 +2504,7 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         if (field !== null && field.type.kind === "func")
             return callValue(c, member(c, value, nameId, name), node, scope)
         if (field !== null && membersOf(field.type).some((m) => m.kind === "func"))
-            return c.fail(nameId, `'${name}' may be null: call it with '${name}?.(...)'.`)
+            return nullableFuncCall(c, value, callee, node, scope)
         if (field !== null) return c.fail(nameId, `Field '${name}' is not a method.`)
     }
     if (type.kind === "union") {
@@ -2528,6 +2543,7 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
                 return bindAround(locals, typed(new IfaceCall(m.type.result, self, index, m.type, values)))
             }
             if (m.type.kind === "func") return callValue(c, member(c, value, nameId, name), node, scope)
+            if (membersOf(m.type).some((t) => t.kind === "func")) return nullableFuncCall(c, value, callee, node, scope)
             return c.fail(nameId, `Field '${name}' is not a method.`)
         }
     }

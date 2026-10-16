@@ -7,6 +7,7 @@ import {
     Alloc,
     Assign,
     Block,
+    BoundMethod,
     BuiltinCall,
     CallValue,
     ExprStmt,
@@ -19,6 +20,7 @@ import {
     Local,
     LocalRef,
     MethodCall,
+    Recast,
     ReturnStmt,
     StringLit,
 } from "../ir/nodes"
@@ -333,7 +335,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             const asterisk = asteriskToken(member)
             if (asterisk !== null && isAsync(member)) c.error(asterisk, "Async generators are not supported in Ore.")
             const question = questionToken(member)
-            if (question !== null) c.error(question, "Optional methods are not supported.")
+            if (question !== null) c.error(question, "Optional methods are not supported in classes.")
             if (flags.isAbstract) {
                 if (!info.abstract)
                     c.error(nameNode(member), "Abstract methods can only appear within an abstract class.")
@@ -1538,7 +1540,17 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
             const info = c.interfaces.get(part)
             if (info !== null) fillInterface(c, info, info.scope)
             for (const m of part.members)
-                if (!add(m.name, m.type, m.k === "field" && m.readonly, m.k === "method", false, node)) return null
+                if (
+                    !add(
+                        m.name,
+                        m.type,
+                        m.k === "field" && m.readonly,
+                        m.k === "method",
+                        m.k === "field" && m.optional,
+                        node,
+                    )
+                )
+                    return null
         }
     }
     if (!anyInterface) {
@@ -1554,7 +1566,11 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
     for (let i = 0; i < names.length; i++) {
         const t = memberTypes[i]
         if (methods[i] && t.kind === "func") members.push(new InterfaceMethod(names[i], t))
-        else members.push(new InterfaceField(names[i], t, readonly[i]))
+        else {
+            const field = new InterfaceField(names[i], t, readonly[i])
+            field.optional = optional[i]
+            members.push(field)
+        }
     }
     members.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     const type = new InterfaceTypeClass(c.nextStructId++, collapseSpaces(c.text(node)), members)
@@ -1768,8 +1784,6 @@ function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Ma
         const name = c.memberName(memberName)
         if (name === null) continue
         const question = questionToken(member)
-        if (question !== null && member.kind !== "PropertySignature")
-            c.error(question, "Optional methods are not supported.")
         if (member.kind === "PropertySignature") {
             const annotation = typeNode(member)
             if (annotation === null) {
@@ -1800,20 +1814,17 @@ function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Ma
             const params = resolveParams(c, parameters(member), memberScope)
             const annotation = typeNode(member)
             const result = annotation !== null ? (c.resolveType(annotation, memberScope) ?? types.void) : types.void
-            addMember(
-                c,
-                found,
-                decls,
-                new InterfaceMethod(
-                    name,
-                    new FuncType(
-                        params.map((p) => p.type),
-                        result,
-                    ),
-                ),
-                memberName,
-                member,
+            const type = new FuncType(
+                params.map((p) => p.type),
+                result,
             )
+            if (question !== null) {
+                // `m?(): T`: a read-only optional field of type `(() => T) | null`.
+                const field = new InterfaceField(name, c.unionOf([type, types.null]), true)
+                field.optional = true
+                field.method = true
+                addMember(c, found, decls, field, memberName, member)
+            } else addMember(c, found, decls, new InterfaceMethod(name, type), memberName, member)
         } else {
             c.error(member, "This interface member is not supported.")
         }
@@ -1837,7 +1848,7 @@ export class Conformance {
 export function conformance(c: Checker, from: StructType | InterfaceType, iface: InterfaceType): Conformance {
     const indices: int[] = []
     for (const member of iface.members) {
-        const what = `${member.k === "field" ? "property" : "method"} '${member.name}'`
+        const what = `${member.k === "field" && !member.method ? "property" : "method"} '${member.name}'`
         if (from.kind === "interface") {
             let index = -1
             for (let i = 0; i < from.members.length; i++)
@@ -1869,6 +1880,17 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
                 if (!property.hasGet) return new Conformance(`${what} has a setter but no getter`, null)
                 if (!property.hasSet && !member.readonly)
                     return new Conformance(`${what} has a getter but no setter`, null)
+                continue
+            }
+            // An optional method may be a method, or a field holding a function, of its type.
+            const implementation = member.method ? optionalMethod(from, member) : null
+            if (implementation !== null) {
+                if (!sameType(c.unionOf([implementation, types.null]), member.type))
+                    return new Conformance(
+                        `${what} has type '${typeToString(implementation)}' instead of '${typeToString(member.type)}'`,
+                        null,
+                        member.name,
+                    )
                 continue
             }
             // An optional member may be missing.
@@ -1916,6 +1938,11 @@ export function itab(c: Checker, struct: StructType, iface: InterfaceType): Itab
         table = new Itab(c.itabs.size, struct, iface)
         for (let i = 0; i < iface.members.length; i++) {
             const member = iface.members[i]
+            const getter = member.k === "field" && member.method ? optionalMethodGetter(c, struct, member) : null
+            if (getter !== null) {
+                table.accessors.push(new ItabAccessor(i, getter, null))
+                continue
+            }
             if (member.k !== "field" || findField(struct, member.name) !== null) continue
             const property = accessor(c, struct, member.name)
             if (property === null || property.private || !property.hasGet) continue
@@ -1925,6 +1952,51 @@ export function itab(c: Checker, struct: StructType, iface: InterfaceType): Itab
         c.module.itabs.push(table)
     }
     return table
+}
+
+/**
+ * The type of the method of a struct, or of its field holding a function,
+ * that implements an optional method of an interface; null when the struct
+ * has no such member, or a field of the member's own type `F | null`, which
+ * the table reads at its offset.
+ */
+function optionalMethod(struct: StructType, member: InterfaceField): Type | null {
+    const field = findField(struct, member.name)
+    if (field !== null && !field.private) return sameType(field.type, member.type) ? null : field.type
+    const method = findMethod(struct, member.name)
+    return method !== null && !method.private ? method.func.type : null
+}
+
+/** The getter of an optional method that a struct implements with a method, or a field of a function type. */
+function optionalMethodGetter(c: Checker, struct: StructType, member: InterfaceField): Func | null {
+    if (optionalMethod(struct, member) === null) return null
+    const self = c.newLocal("this", struct, false)
+    const receiver: Expr = new LocalRef(struct, self)
+    const field = findField(struct, member.name)
+    let value: Expr
+    let line = 0
+    if (field !== null) value = new FieldGet(field.type, receiver, member.name)
+    else {
+        const method = findMethod(struct, member.name)!
+        value = new BoundMethod(method.func.type, receiver, method.func)
+        dispatch(c, value, member.name)
+        line = method.func.line
+    }
+    const func = new Func(
+        `ore_lambda_${c.nextLambda++}`,
+        member.name,
+        line,
+        new FuncType([], member.type),
+        [],
+        new Block([new ReturnStmt(new Recast(member.type, value))]),
+        false,
+        null,
+        false,
+        null,
+        self,
+    )
+    c.module.functions.push(func)
+    return func
 }
 
 /** Reports access to a private member from outside its class, or to a protected one from outside its class and subclasses. */

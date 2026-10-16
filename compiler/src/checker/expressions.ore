@@ -1935,9 +1935,15 @@ function memberHint(hints: StructType | InterfaceType, name: string): Type | nul
     return null
 }
 
-/** The function type of a method of an object literal, from its annotations or the expected type. */
+/**
+ * The function type of a method of an object literal, from its annotations
+ * or the expected type: a function type, or one that may be null for an
+ * optional method.
+ */
 function methodType(c: Checker, method: Node, scope: Scope, hint: Type | null): FuncType | null {
-    const want = hint !== null && hint.kind === "func" ? hint : null
+    const funcs = hint !== null ? membersOf(hint).filter((m) => m.kind === "func") : []
+    const first = funcs.length === 1 ? funcs[0] : null
+    const want = first !== null && first.kind === "func" ? first : null
     const params: Type[] = []
     const list = parameters(method)
     for (let i = 0; i < list.length; i++) {

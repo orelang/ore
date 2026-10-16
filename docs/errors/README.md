@@ -359,7 +359,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5011](ORE5011.md) | Field '…' needs a type annotation or an initializer. |
 | [ORE5012](ORE5012.md) | Methods cannot be 'readonly'. |
 | [ORE5013](ORE5013.md) | Async generators are not supported in Ore. |
-| [ORE5014](ORE5014.md) | Optional methods are not supported. |
+| [ORE5014](ORE5014.md) | Optional methods are not supported in classes. |
 | [ORE5015](ORE5015.md) | Abstract methods can only appear within an abstract class. |
 | [ORE5016](ORE5016.md) | Method '…' cannot have an implementation because it is marked abstract. |
 | [ORE5017](ORE5017.md) | Generic methods cannot be abstract. |

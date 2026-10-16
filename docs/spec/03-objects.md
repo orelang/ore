@@ -267,7 +267,15 @@ on that slot reads the class table.
 - An optional member `label?: T` of an interface has the type `T | null`. A
   class or object type conforms with a field `label` of that type, or
   without one: then reading `label` through the interface gives null, and
-  assigning it panics. Optional methods are not supported.
+  assigning it panics.
+- An optional method `start?(): T` of an interface or object type is a
+  read-only member of type `(() => T) | null`: callers check it for null
+  (`if (p.start !== null) p.start()`) or call it with `p.start?.()`, of
+  type `T | null`. A class or object conforms without it (it reads as
+  null), with a method or a field of the type `() => T`, or with a field of
+  type `(() => T) | null`. Unlike TypeScript, it cannot be assigned through
+  the interface, as a method of a class cannot be replaced; classes cannot
+  declare optional methods ([ORE5014](../errors/ORE5014.md)).
 - Object types (`type P = { ... }`) and interfaces differ on purpose: an
   object type is an exact record, an interface accepts any record or class
   with the members.

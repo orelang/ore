@@ -10,6 +10,28 @@ class Strict {
 const m: Maybe = { label: "x" }
 const s: Sure = m // error: property 'label' is optional
 const t: Maybe = new Strict() // error: property 'label' has type 'string' instead of 'null | string'
-interface Odd {
-    run?(): void // error: Optional methods are not supported.
+class Odd {
+    run?(): void {} // error: Optional methods are not supported in classes.
+}
+interface Hooks {
+    run?(): void
+    size?(n: int): int
+}
+class Wrong {
+    size(n: string): int {
+        return n.length
+    }
+}
+const w: Hooks = new Wrong() // error: method 'size' has type '(string) => i64' instead of '((i64) => i64) | null'
+function use(h: Hooks) {
+    h.run() // error: 'run' may be null: call it with 'run?.(...)'.
+    h.run = null // error: Cannot assign to 'run' because it is a read-only property.
+    const n: int = h.size?.(1) // error: Type 'i64 | null' is not assignable to type 'i64': the value may be null.
+    if (h.size !== null) console.log(h.size(2))
+}
+interface Required {
+    run(): void
+}
+function require(h: Hooks): Required {
+    return h // error: Type 'Hooks' is not assignable to type 'Required': method 'run' is missing.
 }

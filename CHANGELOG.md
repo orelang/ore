@@ -53,6 +53,11 @@ before 1.0, a minor version may change the language.
   constrained by `object`.
 - `next()` of a generator that `for...of` left early is done with the
   value null, where it panicked with an index out of range.
+- Optional methods in interfaces and object types, `start?(): T`: a
+  read-only member of type `(() => T) | null` that a class or object may
+  leave out, or implement with a method or a field holding a function;
+  call it with `p.start?.()` or after a check for null. Classes still
+  cannot declare optional methods (ORE5014).
 
 ## 0.5.0
 

@@ -1,0 +1,93 @@
+// Optional methods of interfaces and object types: `f?(): T` is a read-only
+// member of type `(() => T) | null`, which a class or object may implement
+// with a method or a field holding a function, or leave out.
+
+interface Plugin {
+    name: string
+    start?(): int
+    stop?(code: int): string
+}
+
+class Full implements Plugin {
+    name = "full"
+    count = 40
+    start(): int {
+        return this.count + 2
+    }
+    stop(code: int): string {
+        return `stopped ${code}`
+    }
+}
+
+class Bare implements Plugin {
+    name = "bare"
+}
+
+class Arrow implements Plugin {
+    name = "arrow"
+    start = () => 7
+}
+
+class Nullable implements Plugin {
+    name = "nullable"
+    start: (() => int) | null = null
+}
+
+class Base implements Plugin {
+    name = "base"
+    start(): int {
+        return 1
+    }
+}
+
+class Derived extends Base {
+    override start(): int {
+        return 2
+    }
+}
+
+function run(p: Plugin) {
+    const started = p.start?.()
+    let stopped: string | null = null
+    if (p.stop !== null) stopped = p.stop(3)
+    console.log(p.name, started, stopped, p.start === null, p.stop === null)
+}
+
+run(new Full())
+run(new Bare())
+run(new Arrow())
+run(new Nullable())
+const n = new Nullable()
+n.start = () => 9
+run(n)
+run(new Base())
+run(new Derived())
+run({ name: "literal", start: () => 5 })
+run({
+    name: "shorthand",
+    stop(code: int) {
+        return `shorthand ${code}`
+    },
+})
+run({ name: "empty" })
+
+// The type of an optional call is `T | null`.
+const p: Plugin = new Full()
+const r: int | null = p.start?.()
+console.log(r)
+const f = p.stop
+if (f !== null) console.log(f(1))
+
+// In object types.
+type Hooks = { before?(): void; after?(): void }
+function hooks(h: Hooks) {
+    h.before?.()
+    console.log("between")
+    h.after?.()
+}
+hooks({ before: () => console.log("before") })
+hooks({
+    after() {
+        console.log("after")
+    },
+})

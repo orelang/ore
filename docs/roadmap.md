@@ -76,7 +76,7 @@ exports, type assertions (Ore converts: `i32(x)`).
     `instanceof`);
   - intersections `A & B` (done, of object types and interfaces);
   - methods in object types (`{ f(): void }`, done), optional members of
-    interfaces (done; not methods), generic methods in interfaces;
+    interfaces (done, methods too), generic methods in interfaces;
   - `keyof`, `typeof x` as a type, indexed access `T["k"]` (done);
   - dictionaries, `{ [key: string]: V }` and `Record<string, V>`, with
     the syntax of objects, `delete` and `in` (done), with named entries
