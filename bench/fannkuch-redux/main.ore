@@ -1,0 +1,56 @@
+// Fannkuch-redux from the Computer Language Benchmarks Game: flips prefixes
+// of every permutation of 1..n, on small integer arrays.
+
+function fannkuch(n: int): int[] {
+    const perm1: int[] = []
+    const perm: int[] = []
+    const count: int[] = []
+    for (let i = 0; i < n; i++) {
+        perm1.push(i)
+        perm.push(0)
+        count.push(0)
+    }
+    let maxFlips = 0
+    let checksum = 0
+    let permCount = 0
+    let r = n
+    while (true) {
+        while (r !== 1) {
+            count[r - 1] = r
+            r--
+        }
+        for (let i = 0; i < n; i++) perm[i] = perm1[i]
+        let flips = 0
+        let k = perm[0]
+        while (k !== 0) {
+            let i = 0
+            let j = k
+            while (i < j) {
+                const t = perm[i]
+                perm[i] = perm[j]
+                perm[j] = t
+                i++
+                j--
+            }
+            flips++
+            k = perm[0]
+        }
+        if (flips > maxFlips) maxFlips = flips
+        checksum += permCount % 2 === 0 ? flips : -flips
+        // The next permutation, in the order the checksum depends on.
+        while (true) {
+            if (r === n) return [checksum, maxFlips]
+            const first = perm1[0]
+            for (let i = 0; i < r; i++) perm1[i] = perm1[i + 1]
+            perm1[r] = first
+            count[r]--
+            if (count[r] > 0) break
+            r++
+        }
+        permCount++
+    }
+}
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 11) : 11
+const result = fannkuch(n)
+console.log(`${result[0]} Pfannkuchen(${n}) = ${result[1]}`)
