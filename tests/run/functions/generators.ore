@@ -21,7 +21,7 @@ console.log(e.next("ignored"))
 console.log(e.next("ab"))
 console.log(e.next("cde"))
 console.log(e.next("stop"))
-console.log(e.next("more"))
+console.log(e.next("more").done)
 
 // The body runs lazily, between the calls of next().
 function* traced(): Generator<string> {
@@ -42,12 +42,12 @@ console.log(t.next().done)
 // return() ends a suspended generator: the rest of its body never runs.
 const r = traced()
 console.log(r.next())
-console.log(r.return())
-console.log(r.next())
-// return() of a generator that has not started.
-const fresh = count(5)
-console.log(fresh.return())
-console.log(fresh.next())
+console.log(r.return().done)
+console.log(r.next().done)
+// return(value) gives the value; a generator that has not started never runs.
+const fresh = echo()
+console.log(fresh.return(42))
+console.log(fresh.next().done)
 
 // yield* delegates to another generator and gives its return value.
 function* inner(): Generator<int, string> {
@@ -68,10 +68,13 @@ console.log([...outer()])
 
 // Generator methods, with `this`, and [Symbol.iterator] as a generator method.
 class Range {
-    constructor(
-        readonly start: int,
-        readonly end: int,
-    ) {}
+    start: int
+    end: int
+
+    constructor(start: int, end: int) {
+        this.start = start
+        this.end = end
+    }
 
     *values(): Generator<int> {
         for (let i = this.start; i < this.end; i++) yield i

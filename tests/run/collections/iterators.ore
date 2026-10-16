@@ -1,0 +1,99 @@
+// keys(), values() and entries() return lazy iterators; any iterable spreads,
+// and goes to Array.from, new Map and new Set.
+
+const m = new Map<string, int>([
+    ["a", 1],
+    ["b", 2],
+])
+const keys = m.keys()
+m.set("c", 3)
+// Lazy: the entry set after the iterator was made is visited.
+console.log([...keys])
+console.log([...m.values()], Array.from(m.entries()))
+const it = m.values()
+const first = it.next()
+console.log(first.value, first.done)
+m.delete("b")
+const second = it.next()
+console.log(second.value, second.done)
+const third = it.next()
+console.log(third.done)
+// A finished iterator stays done, even when the map grows.
+m.set("d", 4)
+console.log(it.next().done)
+for (const [k, v] of m.entries()) console.log(k, v)
+for (const k of m.keys()) console.log("key", k)
+for (const v of m.values()) console.log("value", v)
+const entries = m.entries()
+for (const e of entries) console.log(e[0], e[1])
+
+const s = new Set(["x", "y"])
+console.log([...s.values()], [...s.keys()], [...s.entries()])
+for (const v of s.values()) console.log("set", v)
+
+const a = ["p", "q", "r"]
+console.log([...a.keys()], [...a.values()], [...a.entries()])
+const ai = a.values()
+a.push("s")
+console.log([...ai])
+for (const [i, x] of a.entries()) console.log(i, x)
+
+// Iterables of every kind spread together.
+function* two(): Generator<int> {
+    yield 1
+    yield 2
+}
+console.log([...two(), ...new Set([3]), ...[4]])
+console.log([..."héllo"])
+console.log(new Set(m.keys()), new Map(m.entries()))
+
+// A class whose [Symbol.iterator]() returns an iterator object of its own.
+class Countdown {
+    from: int
+
+    constructor(from: int) {
+        this.from = from
+    }
+
+    [Symbol.iterator](): Iterator<int> {
+        let n = this.from
+        return {
+            next(): IteratorResult<int> {
+                if (n === 0) return { value: null, done: true }
+                n--
+                return { value: n + 1, done: false }
+            },
+        }
+    }
+}
+
+console.log([...new Countdown(3)])
+for (const n of new Countdown(2)) console.log("countdown", n)
+
+// An iterator with return(): for...of calls it when the loop is left early.
+class Tracked {
+    count = 0
+
+    next(): IteratorResult<int> {
+        this.count++
+        return { value: this.count, done: false }
+    }
+
+    return(): IteratorResult<int> {
+        console.log("return called at", this.count)
+        return { value: null, done: true }
+    }
+
+    [Symbol.iterator](): Tracked {
+        return this
+    }
+}
+
+for (const n of new Tracked()) {
+    if (n === 3) break
+}
+function firstOver(limit: int): int {
+    for (const n of new Tracked()) if (n > limit) return n
+    return -1
+}
+console.log(firstOver(4))
