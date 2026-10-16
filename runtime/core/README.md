@@ -37,12 +37,13 @@ Rules for this code:
 | `os.ore` | libc, pthreads and signals, with the sizes and constants of each platform |
 | `gc.ore` | The garbage collector: size-classed spans, per-thread allocation, a precise heap (a pointer map per type from the compiler), marking alongside the program behind a write barrier with two short stops, a pacer, sweeping, and giving free pages back to the system. Settings: `ORE_GOGC` (percent the heap grows between collections, 100; `off`), `ORE_MEMLIMIT` (a soft heap limit, e.g. `512M`), `ORE_GCPROCS` (markers), `ORE_GCSTW=1` (mark with the world stopped), `ORE_GCTRACE=1` (print each collection) |
 | `task.ore` | The M:N scheduler: tasks on mapped stacks, the context switch in assembly, workers, timers, the collector's view of task stacks; per-worker state of the clock and `Math.random` |
-| `sys.ore` | Allocation (`ore_rt_alloc`, inlined into every `new`), files, `Date.now`, `Math.random`, C strings, conversion of interface values to narrower interfaces |
+| `sys.ore` | Allocation (`ore_rt_alloc`, inlined into every `new`), files, `Math.random`, C strings, conversion of interface values to narrower interfaces |
 | `chan.ore` | Channels and `select` |
 | `poll.ore` | Waiting for sockets, pipes and the exit of children: the kqueue or epoll poller thread |
 | `fs.ore` | The namespace `fs` in Ore: directories, `stat`, `remove`, `rename`, `realpath`, temporary directories, with the `stat` and `dirent` layouts of each platform |
 | `regexp-syntax.ore` | Regular expressions parsed and compiled into programs for the matcher, with JavaScript's syntax and errors; also imported by the compiler, which checks literals with it, so it uses only what stage 0 of the bootstrap compiles |
 | `regexp.ore` | The global classes `RegExp` and `RegExpMatch`: the backtracking matcher over UTF-8, `exec`, `test`, `lastIndex`, and the string methods that take a regular expression (`s.match(re)` calls `re`'s private `stringMatch`) |
+| `date.ore` | The global class `Date`: the calendar arithmetic of ECMAScript, the local time zone from `TZ` or `/etc/localtime` (TZif files and POSIX rules), `Date.parse`, the string forms, and how `console.log` and `JSON.stringify` write a date |
 | `spawn.ore` | Starting programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller: for `process` and `process.command` |
 | `process.ore` | The namespace `process` in Ore: `run`, `output` and `spawn` without options, `Child`, `Output`, `CommandOptions`, the environment |
 | `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |
