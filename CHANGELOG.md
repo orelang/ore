@@ -5,6 +5,14 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Checker fixes: a generic object type alias that refers to itself
+  (`type List<T> = { v: T; next: List<T> | null }`) works like a recursive
+  alias without parameters instead of crashing the compiler; a string
+  literal type, or a union narrowed to one, compares with a string constant
+  it can hold and with any string; `typeof` of a top-level `const`
+  initialized with literals works in type aliases without an annotation
+  (`keyof typeof obj`); a string constant for a parameter `k: K` with
+  `K extends keyof T` has its literal type, as in TypeScript.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with
