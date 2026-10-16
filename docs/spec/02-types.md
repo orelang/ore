@@ -229,15 +229,18 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `fs.realpath(path)` | the absolute path without links, `.` and `..`, or an `Error` |
 | `fs.tempDir()`, `fs.mkdtemp(prefix?, dir?)` | `$TMPDIR` or `/tmp`; a new uniquely named directory in it |
 | `Date.now()` | milliseconds since the Unix epoch |
+| `time.now()`, `time.unixNanos()` | nanoseconds on a monotonic clock (for durations); since the Unix epoch on the wall clock |
+| `time.nanosecond`, `time.microsecond`, `time.millisecond`, `time.second`, `time.minute`, `time.hour`, `time.day` | durations in nanoseconds, `int` |
+| `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
 | `JSON.stringify(value, null?, space?)` | the JSON text of a value, indented by `space` spaces per level; the replacer must be null |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
 
-`String`, `fs`, `process`, `Number` and `BigInt` are partly written in Ore
-(`runtime/core/string.ore`, `runtime/core/fs.ore`,
-`runtime/core/process.ore`, `runtime/core/number.ore` and
-`runtime/core/bigint.ore`): the exports of these modules are members of
+`String`, `fs`, `process`, `Number` and `BigInt` are partly written in Ore,
+and `time` wholly (`runtime/core/string.ore`, `runtime/core/fs.ore`,
+`runtime/core/process.ore`, `runtime/core/number.ore`,
+`runtime/core/bigint.ore` and `runtime/core/time.ore`): the exports of these modules are members of
 the namespaces, classes and types included, so `fs.FileInfo`,
 `process.Child` and `process.CommandOptions` are types.
 
@@ -269,6 +272,52 @@ another one.
   since the Unix epoch) and `mode` (the permission bits).
 - `fs.mkdtemp(prefix = "ore-", dir = fs.tempDir())` creates a directory
   named `prefix` and six random characters, and returns its path.
+
+### Time
+
+Every time and duration of `time` is an `int` of nanoseconds, as in Go:
+`time.now()` reads a monotonic clock, whose zero is arbitrary, so the
+difference of two readings is a duration; `time.unixNanos()` reads the
+wall clock, which may jump. The constants make durations readable:
+`5 * time.second`, `elapsed / time.millisecond`.
+
+`time.parse` and `time.format` port the npm package `ms` (2.1), with
+nanoseconds where `ms` has milliseconds:
+
+```ts
+time.parse("2 days")        // 172_800_000_000_000
+time.parse("2.5 hrs")       // 9_000_000_000_000
+time.parse("-3 days")       // -259_200_000_000_000
+time.parse("100")           // 100_000_000: no unit is milliseconds, as in ms
+time.parse("250us")         // 250_000, a unit beyond ms
+time.parse("soon")          // null
+time.format(60 * time.second)                                // "1m"
+time.format(2 * time.minute, { long: true })                 // "2 minutes"
+time.format(1_500_000)                                       // "1.5ms"
+time.format(250 * time.microsecond)                          // "250µs"
+```
+
+- `parse` reads what `ms` reads: an optional `-`, a decimal number (`.5`
+  but not `1.`), optional spaces, then an optional unit, case-insensitive:
+  years (`y`, `yr`, `yrs`, `year`, `years`: 365.25 days), weeks (`w`,
+  `week`, `weeks`), days (`d`, `day`, `days`), hours (`h`, `hr`, `hrs`,
+  `hour`, `hours`), minutes (`m`, `min`, `mins`, `minute`, `minutes`),
+  seconds (`s`, `sec`, `secs`, `second`, `seconds`) and milliseconds (`ms`,
+  `msec`, `msecs`, `millisecond`, `milliseconds`); beyond `ms`, also
+  microseconds (`us`, `µs`, `usec`, `usecs`, `microsecond`, `microseconds`)
+  and nanoseconds (`ns`, `nsec`, `nsecs`, `nanosecond`, `nanoseconds`). A
+  number without a unit is milliseconds. A whole number is exact; a
+  fraction is rounded to the nearest nanosecond. Where `ms` returns
+  `undefined` or throws (other text, an empty one, one longer than 100
+  characters), `parse` returns `null`, and also for a duration beyond `int`
+  (about 292 years).
+- `format` rounds to the largest unit reached, days at most (`"3d"`,
+  `"10h"`, `"1m"`, `"5s"`), half up as `Math.round`; with `{ long: true }`
+  whole words, plural from 1.5 units on (`"1 second"` for 1.2 s, `"2
+  seconds"` for 1.5 s, `"-1 seconds"` for -1.5 s, as `ms` does). Under a
+  second it writes exact milliseconds as `ms` does (`"500ms"`, `"1.5ms"`,
+  long `"500 ms"`); beyond `ms`, under a millisecond microseconds
+  (`"250µs"`) and under a microsecond nanoseconds (`"80ns"`).
 
 ### Running programs
 
