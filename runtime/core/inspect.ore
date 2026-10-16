@@ -7,8 +7,14 @@
 // `[Object]`, at most 100 entries are shown, a line is at most 80 columns
 // wide, up to 3 inner levels go on one line, and arrays of more than 6 short
 // entries are grouped in columns.
+//
+// When the output shows colors (runtime/core/io.ore decides as Node does),
+// values are colored as with util.inspect's `colors`: numbers, bigints and
+// booleans yellow, strings green, null bold, functions and `[Circular *1]`
+// cyan. Lines are broken by the width of the text without the colors.
 
 import { strFromF32, strFromF64 } from "ore:runtime/float"
+import { printColors } from "ore:runtime/io"
 
 /** The widest line, counting the indentation. */
 const breakLength = 80
@@ -32,11 +38,43 @@ class Inspection {
     circular: ptr[] = []
     /** The entries formatted so far of each object in `seen`. */
     entries: string[][] = []
+    /** Whether values are colored. */
+    colors = false
 }
 
 //ore:runtime ore_rt_inspect_new
 function inspectNew(): Inspection {
-    return new Inspection()
+    const s = new Inspection()
+    s.colors = printColors()
+    return s
+}
+
+/** `text` in a color, between the SGR codes `open` and `close`, when colors are on. */
+//ore:runtime ore_rt_inspect_paint
+function paint(s: Inspection, text: string, open: int, close: int): string {
+    return s.colors ? `\u001b[${open}m${text}\u001b[${close}m` : text
+}
+
+/** Node's style `special`: cyan. */
+function special(s: Inspection, text: string): string {
+    return paint(s, text, 36, 39)
+}
+
+/** The width of `text` on the screen: its length without colors. */
+function width(s: Inspection, text: string): int {
+    if (!s.colors) return text.length
+    let n = 0
+    let i = 0
+    while (i < text.length) {
+        if (text[i] === 0x1b) {
+            // An SGR sequence, up to its final `m`.
+            while (i < text.length && text[i] !== 0x6d) i++
+        } else {
+            n++
+        }
+        i++
+    }
+    return n
 }
 
 /**
@@ -54,11 +92,11 @@ function begin(s: Inspection, p: ptr, count: int, depth: int, open: string, clos
                 s.circular.push(p)
                 index = s.circular.length - 1
             }
-            return `[Circular *${index + 1}]`
+            return special(s, `[Circular *${index + 1}]`)
         }
     }
     if (count === 0) return `${open}${close}`
-    if (depth > depthLimit) return short
+    if (depth > depthLimit) return special(s, short)
     s.seen.push(p)
     s.entries.push([])
     s.currentDepth = depth + 1
@@ -106,15 +144,15 @@ function end(s: Inspection, open: string, close: string, depth: int, array: bool
     const p = s.seen.pop()
     let output: string[] = s.entries.pop()
     const index = s.circular.findIndex((c) => unsafe.toInt(c) === unsafe.toInt(p))
-    const base = index >= 0 ? `<ref *${index + 1}>` : ""
+    const base = index >= 0 ? special(s, `<ref *${index + 1}>`) : ""
     const indentation = depth * 2
     const entries = output.length
-    if (array && entries > 6) output = group(output, indentation, numbers)
+    if (array && entries > 6) output = group(s, output, indentation, numbers)
     const prefix = base !== "" ? `${base} ` : ""
     if (s.currentDepth - (depth + 1) < compact && entries === output.length) {
-        // On one line, if it fits.
+        // On one line, if it fits. As in Node, the start counts the colors of `<ref *1>`.
         const start = output.length + indentation + open.length + base.length + 10
-        if (fits(output, start)) {
+        if (fits(s, output, start)) {
             const joined = output.join(", ")
             if (!joined.includes("\n")) return `${prefix}${open} ${joined} ${close}`
         }
@@ -124,18 +162,18 @@ function end(s: Inspection, open: string, close: string, depth: int, array: bool
 }
 
 /** Whether the entries fit on one line after `start` columns. */
-function fits(output: string[], start: int): bool {
+function fits(s: Inspection, output: string[], start: int): bool {
     let total = output.length + start
     if (total + output.length > breakLength) return false
     for (const o of output) {
-        total += o.length
+        total += width(s, o)
         if (total > breakLength) return false
     }
     return true
 }
 
 /** Groups the entries of an array in columns, as Node's groupArrayElements does. */
-function group(output: string[], indentation: int, numbers: bool): string[] {
+function group(s: Inspection, output: string[], indentation: int, numbers: bool): string[] {
     let total = 0
     let maxLength = 0
     let length = output.length
@@ -144,7 +182,7 @@ function group(output: string[], indentation: int, numbers: bool): string[] {
     const separatorSpace = 2
     const lengths: int[] = []
     for (let i = 0; i < length; i++) {
-        const n = output[i].length
+        const n = width(s, output[i])
         lengths.push(n)
         total += n + separatorSpace
         if (maxLength < n) maxLength = n
@@ -168,10 +206,13 @@ function group(output: string[], indentation: int, numbers: bool): string[] {
         let line = ""
         let j = i
         for (; j < last - 1; j++) {
+            // Padded to the column's width on the screen: the colors take no room.
+            const target = widths[j - i] + output[j].length - lengths[j]
             const cell = `${output[j]}, `
-            line += numbers ? cell.padStart(widths[j - i]) : cell.padEnd(widths[j - i])
+            line += numbers ? cell.padStart(target) : cell.padEnd(target)
         }
-        line += numbers ? output[j].padStart(widths[j - i] - separatorSpace) : output[j]
+        const target = widths[j - i] + output[j].length - lengths[j] - separatorSpace
+        line += numbers ? output[j].padStart(target) : output[j]
         grouped.push(line)
     }
     if (length < output.length) grouped.push(output[length])

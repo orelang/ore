@@ -1,8 +1,17 @@
 // What console.log prints: a value formatted as Node's util.inspect does,
 // by a function generated per type. Arrays, maps, sets and objects give
-// their entries to runtime/core/inspect.ore, which lays them out.
+// their entries to runtime/core/inspect.ore, which lays them out. Values are
+// colored as Node colors them when the output shows colors.
 
-import { type InterfaceType, type StructType, type Type, type UnionType, isNumeric, types, unionRepr } from "../ir/types"
+import {
+    type InterfaceType,
+    type StructType,
+    type Type,
+    type UnionType,
+    isNumeric,
+    types,
+    unionRepr,
+} from "../ir/types"
 import { counted } from "./json"
 import { ARRAY, MAP, STR } from "./context"
 import { Emitter } from "./base"
@@ -34,13 +43,46 @@ function topInspector(g: Emitter, t: UnionType): string {
             const next = e.b.label("tnext")
             e.b.condBr(slotTest(e, t, v, i), here, next)
             e.b.start(here)
-            const s = m.kind === "null" ? e.str("null") : inspectTop(e, payload(e, t, v, i), m)
+            const s =
+                m.kind === "null"
+                    ? inspectNull(e, e.rt("ore_rt_inspect_new", []))
+                    : inspectTop(e, payload(e, t, v, i), m)
             e.b.terminate(`ret ${STR} ${s.v}`)
             e.b.start(next)
         }
         e.b.terminate(`ret ${STR} ${e.str("").v}`)
     })
     return name
+}
+
+// Node's styles (util.inspect.styles) as the SGR codes that start and end them.
+const yellow = 33
+const green = 32
+const cyan = 36
+const defaultColor = 39
+const bold = 1
+const normal = 22
+
+/** `text` in a color when the output shows colors. */
+function paint(g: Emitter, s: V, text: V, open: int, close: int): V {
+    return g.rt("ore_rt_inspect_paint", [s, text, g.i64(open), g.i64(close)])
+}
+
+/** A number, a bigint or a boolean: yellow. */
+function yellowText(g: Emitter, s: V, text: V): V {
+    return paint(g, s, text, yellow, defaultColor)
+}
+
+/** `null`, bold. */
+function inspectNull(g: Emitter, s: V): V {
+    return paint(g, s, g.str("null"), bold, normal)
+}
+
+/** Prints a number, a bigint or a boolean at the top by `printIt`, yellow when the output shows colors. */
+export function printYellow(g: Emitter, printIt: () => void) {
+    g.rt("ore_rt_print_color", [g.i64(yellow)])
+    printIt()
+    g.rt("ore_rt_print_color", [g.i64(defaultColor)])
 }
 
 /** Calls the inspector of type `t` on `v`, `depth` levels deep, with the state `s`. */
@@ -91,6 +133,13 @@ function propertyName(name: string): string {
     return `${quoted}'`
 }
 
+/** A property name as Node writes it, green when quoted, as Node colors a quoted name as a string. */
+function fieldName(g: Emitter, s: V, name: string): V {
+    const written = propertyName(name)
+    if (written === name) return g.str(name)
+    return paint(g, s, g.str(written), green, defaultColor)
+}
+
 /** Returns `r` from the inspector unless it is empty, which means to go on. */
 function returnUnlessEmpty(g: Emitter, r: V) {
     const done = g.b.label("done")
@@ -112,24 +161,39 @@ function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
     const depth: V = { ty: "i64", v: "%depth" }
     switch (t.kind) {
         case "int":
-            return t.signed
-                ? g.rt("ore_rt_str_from_i64", [g.toI64(v)])
-                : g.rt("ore_rt_str_from_u64", [g.toI64(v, false)])
+            return yellowText(
+                g,
+                s,
+                t.signed ? g.rt("ore_rt_str_from_i64", [g.toI64(v)]) : g.rt("ore_rt_str_from_u64", [g.toI64(v, false)]),
+            )
         case "float":
-            return g.rt(t.bits === 32 ? "ore_rt_inspect_f32" : "ore_rt_inspect_f64", [v])
+            return yellowText(g, s, g.rt(t.bits === 32 ? "ore_rt_inspect_f32" : "ore_rt_inspect_f64", [v]))
         case "bool":
-            return g.rt("ore_rt_str_from_bool", [v])
+            return yellowText(g, s, g.rt("ore_rt_str_from_bool", [v]))
         case "bigint":
             // With its suffix, as Node prints it: `10n`.
-            return concat(g, [{ v: v, t: t }, { v: g.str("n"), t: types.string }])
+            return yellowText(
+                g,
+                s,
+                concat(g, [
+                    { v: v, t: t },
+                    { v: g.str("n"), t: types.string },
+                ]),
+            )
         case "string":
-            return g.rt("ore_rt_inspect_string", [v])
+            return paint(g, s, g.rt("ore_rt_inspect_string", [v]), green, defaultColor)
         case "literal":
-            return g.rt("ore_rt_inspect_string", [v])
+            return paint(g, s, g.rt("ore_rt_inspect_string", [v]), green, defaultColor)
         case "null":
-            return g.str("null")
+            return inspectNull(g, s)
         case "func":
-            return g.rt("ore_rt_inspect_function", [functionName(g, g.extract(v, 0, "ptr"))])
+            return paint(
+                g,
+                s,
+                g.rt("ore_rt_inspect_function", [functionName(g, g.extract(v, 0, "ptr"))]),
+                cyan,
+                defaultColor,
+            )
         case "union":
             return inspectUnion(g, t, v, s, depth)
         case "interface":
@@ -205,14 +269,14 @@ function inspectEntries(g: Emitter, v: V, keyType: Type, valueType: Type | null,
 
 /** A union value: by the inspector of the member it holds. */
 function inspectUnion(g: Emitter, t: UnionType, v: V, s: V, depth: V): V {
-    if (unionRepr(t).k === "strings") return g.rt("ore_rt_inspect_string", [v])
+    if (unionRepr(t).k === "strings") return paint(g, s, g.rt("ore_rt_inspect_string", [v]), green, defaultColor)
     for (let i = 0; i < t.members.length; i++) {
         const m = t.members[i]
         const here = g.b.label("imember")
         const next = g.b.label("inext")
         g.b.condBr(slotTest(g, t, v, i), here, next)
         g.b.start(here)
-        const r = m.kind === "null" ? g.str("null") : inspectAt(g, payload(g, t, v, i), m, s, depth)
+        const r = m.kind === "null" ? inspectNull(g, s) : inspectAt(g, payload(g, t, v, i), m, s, depth)
         g.b.terminate(`ret ${STR} ${r.v}`)
         g.b.start(next)
     }
@@ -227,7 +291,7 @@ function inspectInterface(g: Emitter, t: InterfaceType, v: V, s: V, depth: V): V
     const present = g.b.label("ipresent")
     g.b.condBr(g.b.value("i1", `icmp eq ptr ${table.v}, null`), isNull, present)
     g.b.start(isNull)
-    g.b.terminate(`ret ${STR} ${g.str("null").v}`)
+    g.b.terminate(`ret ${STR} ${inspectNull(g, s).v}`)
     g.b.start(present)
     const id = g.b.value("i64", `load i64, ptr ${table.v}`)
     const done = new Set<int>()
@@ -307,7 +371,7 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
         }
         const text = inspectAt(g, values[i], f.type, s, deeper)
         if (t.tuple) g.rt("ore_rt_inspect_entry", [s, text])
-        else g.rt("ore_rt_inspect_field", [s, g.str(propertyName(f.name)), text])
+        else g.rt("ore_rt_inspect_field", [s, fieldName(g, s, f.name), text])
         g.b.br(skip)
         g.b.start(skip)
     }

@@ -1,0 +1,47 @@
+// env: FORCE_COLOR=1
+// With colors (FORCE_COLOR=1 here; a terminal otherwise), console.log colors
+// values as Node's util.inspect does: numbers, bigints and booleans yellow,
+// strings inside values green, null bold, functions and `[Circular *1]`
+// cyan; strings at the top stay as they are. Lines are broken by the width
+// without the colors. The expected output is Node's for this program with
+// FORCE_COLOR=1.
+
+class Node {
+    label: string
+    next: Node | null
+    constructor(label: string) {
+        this.label = label
+        this.next = null
+    }
+}
+
+function twice(n: int): int {
+    return n * 2
+}
+
+const maybe: int | null = null
+console.log(1, -0.0, 1.5, true, 10n, null, maybe, "top", twice)
+const mixed: (int | string | bool | bigint | null)[] = [1, "two", null, false, 3n]
+console.log(mixed, { "a-b": 1, f: twice, name: "x" })
+console.log(new Map<string, int>([["k", 1]]), new Set<string>(["s"]))
+console.log({ a: { b: { c: { d: 1 } } } }, [[[[1]]]])
+// `<ref *1>` counts with its colors, as in Node: this fits on one line, the next does not.
+const loop = new Node("abcdefghijklmn")
+loop.next = loop
+console.log(loop)
+const near = new Node("abcdefghijklmnopqrst")
+near.next = near
+console.log(near)
+const numbers: int[] = []
+for (let i = 0; i < 40; i++) numbers.push(i * i)
+console.log(numbers)
+const words: string[] = []
+for (let i = 0; i < 26; i++) words.push(String.fromCharCode(97 + i).repeat((i % 4) + 1))
+console.log(words)
+console.log({
+    count: 3,
+    description: "twenty characters...",
+    name: "ten chars.",
+})
+const pair: (int | string)[] = [1, "x"]
+console.error(pair, 2)

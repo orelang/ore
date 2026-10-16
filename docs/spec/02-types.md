@@ -305,8 +305,7 @@ const code = process.command.run("cc", ["-c", "main.c"], { cwd: "build", env: ne
   fills one while this program reads the other cannot deadlock. Many tasks
   can run programs at the same time.
 
-`console.log` prints any value as Node's `util.inspect` does without colors;
-the code that formats a type is generated for it. Strings among the
+`console.log` prints any value as Node's `util.inspect` does; the code that formats a type is generated for it. Strings among the
 arguments are printed as they are, and the arguments are separated by
 spaces. Floats are printed in the shortest form that round-trips, like
 JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`, `-0`. Inside
@@ -336,6 +335,18 @@ things differ from Node: the properties of object types are printed in
 alphabetical order (the order of their fields), and optional properties that
 are `null` are left out, as JavaScript leaves out those not set. Channels
 and C pointers cannot be printed.
+
+When the output shows colors, values are colored as Node colors them, with
+the same codes: numbers, bigints and booleans yellow, strings inside values
+(and quoted property names) green, `null` bold, functions, `[Object]`,
+`[Circular *1]` and `<ref *1>` cyan; strings among the arguments stay as
+they are. Lines are broken by the width without the colors. As in Node,
+`FORCE_COLOR` turns colors on when it is empty, `1`, `2`, `3` or `true`
+(off for other values) even when the output is not a terminal; otherwise
+`NO_COLOR` or `NODE_DISABLE_COLORS` set, or `TERM=dumb`, turns them off,
+and they are on when the stream is a terminal: standard output for
+`console.log`, standard error for `console.error`. Piped output has no
+colors.
 
 JSON is typed, as in Go: the code that writes and reads a type is generated
 for it. Numbers, `bool`, strings, string literal types, `null`, arrays,

@@ -4,7 +4,7 @@
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
 import { intRange, type FuncType, type Type, type UnionType } from "../ir/types"
 import { counted, json } from "./json"
-import { inspectTop } from "./inspect"
+import { inspectTop, printYellow } from "./inspect"
 import { ARRAY, FN, IFACE, STR } from "./context"
 import { Emitter } from "./base"
 import { choose, expr, inject, payload, slotTest, unionOf } from "./expressions"
@@ -275,20 +275,28 @@ export function unionToStr(g: Emitter, t: UnionType): string {
     return name
 }
 
-/** Prints a value as console.log does: numbers, booleans and strings as they are, other values as Node's util.inspect formats them. */
+/** Prints a value as console.log does: strings as they are, other values as Node's util.inspect formats them, numbers and booleans yellow when the output shows colors. */
 export function print(g: Emitter, v: V, t: Type) {
     switch (t.kind) {
-        case "int":
-            if (t.signed) g.rt("ore_rt_print_i64", [g.toI64(v)])
-            else g.rt("ore_rt_print_u64", [g.toI64(v, false)])
+        case "int": {
+            const signed = t.signed
+            printYellow(g, () => {
+                if (signed) g.rt("ore_rt_print_i64", [g.toI64(v)])
+                else g.rt("ore_rt_print_u64", [g.toI64(v, false)])
+            })
             return
+        }
         case "bool":
-            g.rt("ore_rt_print_bool", [v])
+            printYellow(g, () => {
+                g.rt("ore_rt_print_bool", [v])
+            })
             return
         case "bigint":
             // As Node prints a bigint: with its suffix.
-            g.rt("ore_rt_print_string", [g.rt("ore_rt_big_to_string", [v, g.i64(10)])])
-            g.rt("ore_rt_print_string", [g.str("n")])
+            printYellow(g, () => {
+                g.rt("ore_rt_print_string", [g.rt("ore_rt_big_to_string", [v, g.i64(10)])])
+                g.rt("ore_rt_print_string", [g.str("n")])
+            })
             return
         default:
             g.rt("ore_rt_print_string", [inspectTop(g, v, t)])

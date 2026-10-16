@@ -48,6 +48,12 @@ before 1.0, a minor version may change the language.
   entries, cycles as `[Circular *1]`, and Node's line breaking at 80
   columns with arrays of short entries grouped in columns. The code that
   formats a type is generated for it. `-0` prints as `-0`.
+- `console.log` colors values as Node does when the output is a terminal:
+  numbers, bigints and booleans yellow, strings inside values green, `null`
+  bold, functions and `[Circular *1]` cyan, with Node's codes; lines are
+  broken by the width without the colors. `FORCE_COLOR` and `NO_COLOR` are
+  respected as in Node, `console.error` colors by standard error, and piped
+  output stays the same.
 
 - `bigint`, as in JavaScript: literals (`10n`, `0x1fn`), arithmetic with
   truncating division, `**`, shifts and bitwise operations in two's

@@ -117,6 +117,41 @@ function printTo(fd: int): void {
     setTarget(fd === 2 ? 2 : 0)
 }
 
+/** Whether standard output (1) and standard error (2) show colors: 0 not yet known, 1 no, 2 yes. */
+let stdoutColors: int
+let stderrColors: int
+
+/**
+ * Whether a stream shows colors, as Node decides for console.log: FORCE_COLOR
+ * set turns them on when it is empty, 1, 2, 3 or true, and off otherwise;
+ * NO_COLOR or NODE_DISABLE_COLORS set, or TERM=dumb, turns them off; else
+ * the stream shows them when it is a terminal.
+ */
+function showsColors(fd: int): bool {
+    const force = process.getenv("FORCE_COLOR")
+    if (force !== null) return force === "" || force === "1" || force === "2" || force === "3" || force === "true"
+    if (process.getenv("NO_COLOR") !== null || process.getenv("NODE_DISABLE_COLORS") !== null) return false
+    if (process.getenv("TERM") === "dumb") return false
+    return process.isatty(fd)
+}
+
+/** Whether what this thread prints shows colors; found once per stream. */
+export function printColors(): bool {
+    const stderr = currentTarget() === 2
+    const known = stderr ? stderrColors : stdoutColors
+    if (known !== 0) return known === 2
+    const shows = showsColors(stderr ? 2 : 1)
+    if (stderr) stderrColors = shows ? 2 : 1
+    else stdoutColors = shows ? 2 : 1
+    return shows
+}
+
+/** Starts or ends a color (an SGR code, such as 33 for yellow and 39 for the default) if the output shows colors. */
+//ore:runtime ore_rt_print_color
+function printColor(code: int): void {
+    if (printColors()) put(`\u001b[${code}m`)
+}
+
 //ore:runtime ore_rt_print_string
 function printString(s: string): void {
     put(s)
