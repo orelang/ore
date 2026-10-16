@@ -1312,6 +1312,12 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
         }
     }
     for (const member of members(info.decl)) {
+        if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
+            const field = c.accessorSignature(member, members(info.decl), scope)
+            if (field !== null)
+                addMember(c, found, decls, new InterfaceField(field.name, field.type, field.readonly), nameNode(member), member)
+            continue
+        }
         const memberName = member.child("name")
         if (memberName === null) {
             c.error(

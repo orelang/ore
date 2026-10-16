@@ -609,10 +609,50 @@ export class Checker {
         return decls
     }
 
+    /**
+     * The field that an accessor signature of an interface or object type
+     * declares: `get x(): T` and `set x(value: T)` are a field `x: T`,
+     * read-only without a setter. Null for a setter that follows its getter,
+     * and after an error.
+     */
+    accessorSignature(member: Node, all: Node[], scope: Scope): Field | null {
+        const name = this.memberName(nameNode(member))
+        if (name === null) return null
+        const getter = member.kind === "GetAccessor"
+        let hasSetter = false
+        for (const m of all) {
+            if (m === member || (m.kind !== "GetAccessor" && m.kind !== "SetAccessor")) continue
+            if (this.text(nameNode(m)) !== name) continue
+            if (m.kind === "SetAccessor") hasSetter = true
+            // The pair declares one field, at its getter.
+            else if (!getter) return null
+        }
+        const params = parameters(member)
+        const annotation = getter ? typeNode(member) : params.length === 1 ? typeNode(params[0]) : null
+        if (annotation === null) {
+            this.error(
+                nameNode(member),
+                getter
+                    ? `Getter '${name}' must have a return type annotation.`
+                    : `Setter '${name}' must take one parameter with a type annotation.`,
+            )
+            return null
+        }
+        const type = this.resolveValueType(annotation, scope)
+        if (type === null) return null
+        this.info.types.set(nameNode(member), type)
+        return new Field(name, type, getter && !hasSetter)
+    }
+
     /** The fields of an object type `{ ... }`, in the order written. */
     literalFields(node: Node, scope: Scope): Field[] {
         const fields: Field[] = []
         for (const member of members(node)) {
+            if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
+                const field = this.accessorSignature(member, members(node), scope)
+                if (field !== null) fields.push(field)
+                continue
+            }
             if (member.kind !== "PropertySignature") {
                 this.error(
                     member,

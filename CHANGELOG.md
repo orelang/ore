@@ -5,6 +5,8 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Interfaces and object types can declare fields with accessor
+  signatures, `get x(): T` (read-only) and `set x(value: T)`.
 - `readonly T[]` and `ReadonlyArray<T>` are enforced: the methods that
   change an array and index assignment are errors through them, and a
   read-only array does not convert to a mutable one. `readonly [A, B]` is a

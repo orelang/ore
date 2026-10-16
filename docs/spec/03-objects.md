@@ -43,6 +43,10 @@
   structural interface, as in TypeScript: classes with those members, and
   object literals with those fields and methods, fit it. An interface's
   method can be a field of a function type in the class or object.
+- An interface or object type can declare a field with accessor
+  signatures: `get x(): T` alone is `readonly x: T`, and with
+  `set x(value: T)` it is a writable `x: T`. Fields and accessors of classes
+  and objects implement them alike.
 - `...object` in an object literal copies the fields of an object: the
   public fields of a class instance (not its methods), the fields of an
   object type or an interface. A later property replaces an earlier one
