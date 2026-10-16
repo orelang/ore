@@ -74,7 +74,7 @@ its header.
 | `wordcount` | splitting a generated text into words and counting them in a map | words |
 | `dispatch` | calls through an interface to methods of four classes: dynamic dispatch | passes |
 | `closures` | chains of map, filter and reduce with capturing callbacks | rounds |
-| `structs` | moving particles with an immutable vector type: short-lived objects in Ore and TypeScript, value types in Go and C | steps |
+| `structs` | moving particles with an immutable vector type: a value class in Ore, short-lived objects in TypeScript, value types in Go and C | steps |
 | `bigint` | a factorial by multiplication and a Fibonacci number by addition | n |
 | `fileio` | writing a file of numbers, reading it back and summing them | lines |
 | `startup` | hello world: starting a process and the runtime | lines |
