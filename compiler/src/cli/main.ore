@@ -1,8 +1,9 @@
-// The `ore` command: run, build, check, init, test, fmt, cache, lsp, version, help.
+// The `ore` command: run, build, check, init, test, fmt, doc, cache, lsp, version, help.
 
 import { serve } from "../lsp/server"
 import { cacheCommand } from "./cache"
 import { buildCommand, checkCommand, initCommand, runCommand } from "./commands"
+import { docCommand } from "./doc"
 import { fmtCommand } from "./fmt"
 import { stderr, stdout, Style } from "./style"
 import { testCommand } from "./test"
@@ -37,6 +38,9 @@ Usage:
       -w, --watch                Run them again when their files change
   ore fmt [--check] [paths...]   Format .ore files in place, or list unformatted ones
       --stdout                   Print the formatted files instead
+  ore doc [file.ore | dirs...]   Print the API of modules: their exports and JSDoc
+      --md                       As Markdown (with -o <dir>: a file per module and index.md)
+      --json                     As JSON (with -o <file>: into the file)
   ore init [directory]           Create a project: package.json and src/main.ore
   ore cache [clean]              Print the size of the build cache, or empty it
   ore lsp                        Start the language server on stdio
@@ -79,6 +83,8 @@ export function main(args: string[]): i32 {
             return testCommand(rest)
         case "fmt":
             return fmtCommand(rest)
+        case "doc":
+            return docCommand(rest)
         case "cache":
             return cacheCommand(rest)
         case "lsp":

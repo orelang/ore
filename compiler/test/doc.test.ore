@@ -1,0 +1,43 @@
+// `ore doc` (cli/doc.ore): the Markdown of a sample module with an export of
+// each kind must equal doc/sample.md, and JSDoc comments are taken apart
+// into their description and tags.
+
+import { test, expect, fail } from "ore:test"
+import expected from "./doc/sample.md" with { type: "text" }
+import { documentFile, markdownIndex, parseJsdoc, toMarkdown } from "../src/cli/doc"
+import { quote } from "../src/ir/dump"
+
+test("the Markdown of doc/sample.ore equals doc/sample.md", () => {
+    const module = documentFile("compiler/test/doc/sample.ore", "sample")
+    if (module === null) fail("syntax errors in doc/sample.ore")
+    if (module instanceof Error) fail(module.message)
+    const text = toMarkdown(module)
+    if (text !== expected) {
+        const got = text.split("\n")
+        const want = expected.split("\n")
+        for (let i = 0; i < got.length || i < want.length; i++) {
+            const a = i < got.length ? got[i] : "<end>"
+            const b = i < want.length ? want[i] : "<end>"
+            if (a !== b) fail(`line ${i + 1}: expected ${quote(b)}, got ${quote(a)}`)
+        }
+    }
+    expect(text).toBe(expected)
+    expect(markdownIndex([module])).toBe(
+        "# API\n\n- [sample](sample.md) — A sample module for `ore doc`: an export of each kind, with JSDoc tags.\n",
+    )
+})
+
+test("a JSDoc comment is taken apart into its description and tags", () => {
+    const doc = parseJsdoc(
+        '*\n * Splits a text.\n *\n * @param {text} the text\n *   on two lines\n * @return its parts @throws never\n * @example\n *     split("a b")\n *       // ["a", "b"]\n ',
+    )
+    expect(doc.description).toBe("Splits a text.")
+    expect(doc.params.length).toBe(1)
+    expect(doc.params[0].name).toBe("text")
+    expect(doc.params[0].text).toBe("the text on two lines")
+    expect(doc.returns).toBe("its parts")
+    expect(doc.tags.length).toBe(1)
+    expect(doc.tags[0].tag).toBe("throws")
+    expect(doc.examples.length).toBe(1)
+    expect(doc.examples[0]).toBe('split("a b")\n  // ["a", "b"]')
+})

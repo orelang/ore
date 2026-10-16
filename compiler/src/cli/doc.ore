@@ -1,0 +1,667 @@
+// `ore doc [paths...] [--md | --json] [-o out]`: the API documentation of
+// modules, from their exports and the JSDoc comments before them. A module
+// is loaded and checked as the entry of a program, so that a constant
+// without a type annotation shows the type the checker gives it; errors of
+// the checker do not stop it, syntax errors do. Signatures are the text of
+// the declarations up to their bodies, on one line, as the language
+// server's hover shows them.
+//
+// The output is a colored listing on the terminal, Markdown (`--md`: one
+// file per module and an index.md with `-o dir`, else on stdout), or JSON
+// (`--json`, on stdout or into the file of `-o`).
+
+import { basename, dirname, join, relative } from "ore:path"
+import { check } from "../checker/checker"
+import { type CheckInfo } from "../checker/context"
+import { quote } from "../ir/dump"
+import { typeToString } from "../ir/types"
+import { collapse, jsdocBefore, jsdocLines } from "../lsp/analysis"
+import { loadProgram } from "../project/load"
+import { type Node } from "../syntax/ast"
+import { hasModifier, stringText } from "../syntax/nodes"
+import { type Source } from "../syntax/source"
+import { report, toolError, usageError } from "./commands"
+import { stdout, type Style } from "./style"
+
+/** A `@param` of a JSDoc comment. */
+export class DocParam {
+    constructor(
+        readonly name: string,
+        public text: string,
+    ) {}
+}
+
+/** A tag of a JSDoc comment other than `@param`, `@returns` and `@example`, such as `@throws` or `@deprecated`. */
+export class DocTag {
+    constructor(
+        readonly tag: string,
+        public text: string,
+    ) {}
+}
+
+/** A JSDoc comment taken apart: its description, its parameters, what it returns, its examples and other tags. */
+export class JsDoc {
+    description = ""
+    params: DocParam[] = []
+    returns = ""
+    examples: string[] = []
+    tags: DocTag[] = []
+}
+
+/** A documented declaration: an export of a module, or a public member of a class or interface. */
+export class DocItem {
+    members: DocItem[] = []
+
+    constructor(
+        /** "function", "class", "interface", "type", "const", "let", "var", or for members "constructor", "method", "property", "getter", "setter", "index". */
+        readonly kind: string,
+        readonly name: string,
+        readonly signature: string,
+        readonly doc: JsDoc,
+    ) {}
+}
+
+/** The documentation of a module: its leading `//` comment and its exports, in the order of the source. */
+export class DocModule {
+    constructor(
+        /** The path of the module as given. */
+        readonly path: string,
+        /** Its name in the output: the path below the directory given, without `.ore`. */
+        readonly name: string,
+        readonly doc: string,
+        readonly items: DocItem[],
+    ) {}
+}
+
+/** `ore doc`: see the top of this file. */
+export function docCommand(args: string[]): i32 {
+    let format = "text"
+    let output = ""
+    const paths: string[] = []
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+        if (arg === "--md" || arg === "--markdown") format = "md"
+        else if (arg === "--json") format = "json"
+        else if (arg.startsWith("--output=")) output = arg.slice(9)
+        else if (arg === "-o" || arg === "--output") {
+            if (i + 1 >= args.length) return usageError(`option ${arg} needs a value`)
+            i++
+            output = args[i]
+        } else if (arg.startsWith("-")) return usageError(`unknown option '${arg}'`)
+        else paths.push(arg)
+    }
+    if (output !== "" && format === "text") return usageError("-o needs --md or --json")
+    const files = moduleFiles(paths.length > 0 ? paths : ["."])
+    if (files instanceof Error) return toolError(files)
+    if (files.length === 0) return usageError("no .ore files to document")
+    const modules: DocModule[] = []
+    for (const file of files) {
+        const module = documentFile(file.path, file.name)
+        if (module === null) return 1
+        if (module instanceof Error) return toolError(module)
+        modules.push(module)
+    }
+    if (format === "json") {
+        const json = toJson(modules)
+        if (output === "") {
+            console.write(json)
+            return 0
+        }
+        const error = fs.writeFile(output, json)
+        return error === null ? 0 : toolError(error)
+    }
+    if (format === "md") {
+        if (output === "") {
+            const pages: string[] = []
+            for (const module of modules) pages.push(toMarkdown(module))
+            console.write(pages.join("\n"))
+            return 0
+        }
+        for (const module of modules) {
+            const file = join(output, `${module.name}.md`)
+            const made = fs.mkdir(dirname(file), true)
+            if (made !== null) return toolError(made)
+            const error = fs.writeFile(file, toMarkdown(module))
+            if (error !== null) return toolError(error)
+        }
+        const error = fs.writeFile(join(output, "index.md"), markdownIndex(modules))
+        if (error !== null) return toolError(error)
+        console.log(`Wrote ${modules.length + 1} files to ${output}`)
+        return 0
+    }
+    const listings: string[] = []
+    for (const module of modules) listings.push(toText(module, stdout))
+    console.write(listings.join("\n"))
+    return 0
+}
+
+/** A file to document and its name in the output. */
+class ModuleFile {
+    constructor(
+        readonly path: string,
+        readonly name: string,
+    ) {}
+}
+
+/** The `.ore` files of the paths, but tests: a file by its base name, a directory's files by their paths below it. */
+function moduleFiles(paths: string[]): ModuleFile[] | Error {
+    const files: ModuleFile[] = []
+    for (const path of paths) {
+        const info = fs.stat(path)
+        if (info instanceof Error) return info
+        if (!info.isDir) {
+            files.push(new ModuleFile(path, basename(path, ".ore")))
+            continue
+        }
+        const error = walk(path, path, files)
+        if (error !== null) return error
+    }
+    return files
+}
+
+function walk(root: string, path: string, files: ModuleFile[]): Error | null {
+    const info = fs.stat(path)
+    if (info instanceof Error) return info
+    if (!info.isDir) {
+        if (path.endsWith(".ore") && !path.endsWith(".test.ore")) {
+            const name = relative(root, path)
+            files.push(new ModuleFile(path, name.slice(0, name.length - 4)))
+        }
+        return null
+    }
+    const entries = fs.readDir(path)
+    if (entries instanceof Error) return entries
+    entries.sort()
+    for (const entry of entries) {
+        if (entry === "node_modules" || entry.startsWith(".")) continue
+        const error = walk(root, join(path, entry), files)
+        if (error !== null) return error
+    }
+    return null
+}
+
+/**
+ * The documentation of a module, loaded and checked as the entry of a
+ * program. Null, after reporting them, when the program has syntax errors.
+ */
+export function documentFile(path: string, name: string): DocModule | Error | null {
+    const program = loadProgram(path)
+    if (program instanceof Error) return program
+    if (program.syntaxErrors) {
+        report(program.diagnostics)
+        return null
+    }
+    const info = check(program).info
+    const source = program.entry
+    const items: DocItem[] = []
+    for (const exported of exportsOf(source, program.imports))
+        for (const item of documentDeclaration(exported, info)) items.push(item)
+    return new DocModule(path, name, moduleComment(source.text), items)
+}
+
+/** An exported declaration: its name outside the module, its declarations (overloads), and their source. */
+class Exported {
+    constructor(
+        /** The exported name, "" for all the variables of an exported statement. */
+        readonly name: string,
+        /** The name in the module that declares it. */
+        readonly local: string,
+        readonly decls: Node[],
+        readonly source: Source,
+    ) {}
+}
+
+/** The exports of a module in the order of the source, with `export { a as b }` and re-exports from other modules. */
+function exportsOf(source: Source, imports: Map<Source, Map<string, Source>>): Exported[] {
+    const found: Exported[] = []
+    for (const stmt of source.ast.list("statements")) {
+        if (stmt.kind === "ExportDeclaration") {
+            const clause = stmt.child("exportClause")
+            if (clause === null) continue
+            const specifier = stmt.child("moduleSpecifier")
+            let from = source
+            if (specifier !== null) {
+                const resolved = imports.get(source)
+                const target = resolved === null ? null : resolved.get(stringText(specifier))
+                if (target === null) continue
+                from = target
+            }
+            for (const spec of clause.list("elements")) {
+                const name = spec.child("name")
+                if (name === null) continue
+                const property = spec.child("propertyName")
+                const local = property !== null ? property.text : name.text
+                const decls = declarationsNamed(from, local)
+                if (decls.length > 0) found.push(new Exported(name.text, local, decls, from))
+            }
+            continue
+        }
+        if (!hasModifier(stmt, "ExportKeyword")) continue
+        if (stmt.kind === "VariableStatement") {
+            found.push(new Exported("", "", [stmt], source))
+            continue
+        }
+        const name = stmt.child("name")
+        if (name === null) continue
+        // The overloads of a function after the first are part of its entry.
+        let seen = false
+        for (const e of found) if (e.name === name.text && e.source === source) seen = true
+        if (!seen) found.push(new Exported(name.text, name.text, declarationsNamed(source, name.text), source))
+    }
+    return found
+}
+
+/** The top-level declarations of a name in a module: one, or the overloads of a function. */
+function declarationsNamed(source: Source, local: string): Node[] {
+    const decls: Node[] = []
+    for (const stmt of source.ast.list("statements")) {
+        if (stmt.kind === "VariableStatement") {
+            const list = stmt.child("declarationList")
+            if (list !== null)
+                for (const d of list.list("declarations")) {
+                    const name = d.child("name")
+                    if (name !== null && name.text === local) decls.push(stmt)
+                }
+            continue
+        }
+        const name = stmt.child("name")
+        if (name !== null && name.kind === "Identifier" && name.text === local) decls.push(stmt)
+    }
+    return decls
+}
+
+/** The items of an exported declaration: one, one per variable of a statement, or none for a kind that is not documented. */
+function documentDeclaration(exported: Exported, info: CheckInfo): DocItem[] {
+    const source = exported.source
+    const first = exported.decls[0]
+    if (first.kind === "VariableStatement") return documentVariables(exported, info)
+    const doc = parseJsdoc(jsdocBefore(source.text, first.start))
+    if (first.kind === "FunctionDeclaration") {
+        // The overload signatures, without the implementation, when there are any.
+        const signatures: string[] = []
+        let docText = doc
+        for (const d of exported.decls) {
+            const isDeclared = hasModifier(d, "DeclareKeyword")
+            if (d.child("body") !== null && exported.decls.length > 1 && !isDeclared) continue
+            signatures.push(renamed(header(source, d), exported))
+            if (docText.description === "" && docText.params.length === 0) {
+                docText = parseJsdoc(jsdocBefore(source.text, d.start))
+            }
+        }
+        return [new DocItem("function", exported.name, signatures.join("\n"), docText)]
+    }
+    if (first.kind === "ClassDeclaration" || first.kind === "InterfaceDeclaration") {
+        const kind = first.kind === "ClassDeclaration" ? "class" : "interface"
+        const item = new DocItem(kind, exported.name, renamed(header(source, first), exported), doc)
+        for (const member of first.list("members")) {
+            const documented = documentMember(source, member, info)
+            if (documented !== null) item.members.push(documented)
+        }
+        return [item]
+    }
+    if (first.kind === "TypeAliasDeclaration")
+        return [new DocItem("type", exported.name, renamed(header(source, first), exported), doc)]
+    return []
+}
+
+/** A signature with the exported name instead of the local one, for `export { local as name }`. */
+function renamed(signature: string, exported: Exported): string {
+    if (exported.local === exported.name) return signature
+    const at = signature.indexOf(` ${exported.local}`)
+    if (at < 0) return signature
+    return signature.slice(0, at + 1) + exported.name + signature.slice(at + 1 + exported.local.length)
+}
+
+/** The items of an exported variable statement, one per variable, each with the comment of the statement. */
+function documentVariables(exported: Exported, info: CheckInfo): DocItem[] {
+    const source = exported.source
+    const stmt = exported.decls[0]
+    const list = stmt.child("declarationList")
+    const items: DocItem[] = []
+    if (list === null) return items
+    const listText = source.text.slice(list.start, list.end)
+    const kind = listText.startsWith("const") ? "const" : listText.startsWith("let") ? "let" : "var"
+    const doc = parseJsdoc(jsdocBefore(source.text, stmt.start))
+    for (const d of list.list("declarations")) {
+        const name = d.child("name")
+        if (name === null || name.kind !== "Identifier") continue
+        // `export { x as y }` documents only `x`, under the name `y`.
+        if (exported.local !== "" && name.text !== exported.local) continue
+        const shown = exported.name !== "" ? exported.name : name.text
+        items.push(new DocItem(kind, shown, `${kind} ${shown}: ${typeText(source, d, info)}`, doc))
+    }
+    return items
+}
+
+/** The type of a declaration with a name: its annotation, or the type the checker gave its name or its value. */
+function typeText(source: Source, decl: Node, info: CheckInfo): string {
+    const annotation = decl.child("type")
+    if (annotation !== null) return oneLine(source.text.slice(annotation.start, annotation.end))
+    const name = decl.child("name")
+    if (name !== null) {
+        const type = info.types.get(name)
+        if (type !== null) return typeToString(type)
+    }
+    const init = decl.child("initializer")
+    if (init !== null) {
+        const type = info.types.get(init)
+        if (type !== null) return typeToString(type)
+    }
+    return "unknown"
+}
+
+/** The item of a public member of a class or an interface, or null for a private one. */
+function documentMember(source: Source, member: Node, info: CheckInfo): DocItem | null {
+    if (hasModifier(member, "PrivateKeyword") || hasModifier(member, "ProtectedKeyword")) return null
+    const name = member.child("name")
+    if (name !== null && name.kind === "PrivateIdentifier") return null
+    const doc = parseJsdoc(jsdocBefore(source.text, member.start))
+    const k = member.kind
+    const shown = name === null ? "" : source.text.slice(name.start, name.end)
+    if (k === "Constructor") return new DocItem("constructor", "constructor", header(source, member), doc)
+    if (k === "MethodDeclaration" || k === "MethodSignature")
+        return new DocItem("method", shown, header(source, member), doc)
+    if (k === "GetAccessor") return new DocItem("getter", shown, header(source, member), doc)
+    if (k === "SetAccessor") return new DocItem("setter", shown, header(source, member), doc)
+    if (k === "IndexSignature")
+        return new DocItem("index", "", withoutEnd(oneLine(source.text.slice(member.start, member.end))), doc)
+    if (k === "PropertyDeclaration" || k === "PropertySignature") {
+        // The text up to the value, with the type the checker gives a property without an annotation.
+        const annotation = member.child("type")
+        let end = name === null ? member.start : name.end
+        const optional = member.child("questionToken")
+        if (optional !== null) end = optional.end
+        if (annotation !== null) end = annotation.end
+        let text = withoutPublic(oneLine(source.text.slice(member.start, end)))
+        if (annotation === null) text = `${text}: ${typeText(source, member, info)}`
+        return new DocItem("property", shown, text, doc)
+    }
+    return null
+}
+
+/** The text of a declaration up to its body or its members, on one line, without `export`, `declare` and `public`. */
+function header(source: Source, decl: Node): string {
+    let end = decl.end
+    const body = decl.child("body")
+    if (body !== null) end = body.start
+    else if (decl.kind === "ClassDeclaration" || decl.kind === "InterfaceDeclaration") {
+        const open = source.text.indexOf("{", decl.start)
+        if (open >= 0 && open < decl.end) end = open
+    }
+    let text = withoutEnd(oneLine(source.text.slice(decl.start, end)))
+    if (text.startsWith("export ")) text = text.slice(7)
+    if (text.startsWith("declare ")) text = text.slice(8)
+    return withoutPublic(text)
+}
+
+/**
+ * Code on one line, as the hover shows it, without its comments and without
+ * the trailing commas and the spaces inside parentheses and angle brackets
+ * of a list that was broken over lines.
+ */
+function oneLine(code: string): string {
+    let text = ""
+    let start = 0
+    let quote: u8 = 0
+    for (let i = 0; i < code.length; i++) {
+        const c = code[i]
+        if (quote !== 0) {
+            if (c === 92) i++
+            else if (c === quote) quote = 0
+        } else if (c === 34 || c === 39 || c === 96) quote = c
+        else if (c === 47 && i + 1 < code.length && (code[i + 1] === 47 || code[i + 1] === 42)) {
+            text += code.slice(start, i) + " "
+            const close = code[i + 1] === 47 ? "\n" : "*/"
+            const end = code.indexOf(close, i + 2)
+            i = end < 0 ? code.length : end + close.length - 1
+            start = i + 1
+        }
+    }
+    text = collapse(text + code.slice(start))
+    const pairs = [", )", ")", ", >", ">", "( ", "(", "< ", "<", " )", ")", " >", ">"]
+    for (let i = 0; i < pairs.length; i += 2) text = text.replaceAll(pairs[i], pairs[i + 1])
+    return text
+}
+
+function withoutPublic(text: string): string {
+    return text.startsWith("public ") ? text.slice(7) : text
+}
+
+/** Text without a `;` or `,` that ends a member, and without trailing space. */
+function withoutEnd(text: string): string {
+    let t = text.trimEnd()
+    if (t.endsWith(";") || t.endsWith(",")) t = t.slice(0, t.length - 1)
+    return t.trimEnd()
+}
+
+/** A JSDoc comment (the text between `/**` and `*\/`) taken apart. */
+export function parseJsdoc(inner: string): JsDoc {
+    const doc = new JsDoc()
+    if (inner === "") return doc
+    const description: string[] = []
+    let example: string[] = []
+    // What continuation lines add to: "description", "param", "returns", "example" or "tag".
+    let current = "description"
+    for (const line of jsdocLines(inner)) {
+        if (line.startsWith("@")) {
+            if (current === "example") doc.examples.push(trimLines(example))
+            const space = line.indexOf(" ")
+            const tag = space < 0 ? line.slice(1) : line.slice(1, space)
+            let rest = space < 0 ? "" : line.slice(space + 1).trim()
+            if (tag === "param") {
+                const nameEnd = rest.indexOf(" ")
+                let name = nameEnd < 0 ? rest : rest.slice(0, nameEnd)
+                rest = nameEnd < 0 ? "" : rest.slice(nameEnd + 1).trim()
+                if (name.startsWith("{") && name.endsWith("}")) name = name.slice(1, name.length - 1)
+                if (rest.startsWith("- ")) rest = rest.slice(2)
+                doc.params.push(new DocParam(name, rest))
+                current = "param"
+            } else if (tag === "returns" || tag === "return") {
+                doc.returns = rest
+                current = "returns"
+            } else if (tag === "example") {
+                example = []
+                if (rest !== "") example.push(rest)
+                current = "example"
+            } else {
+                doc.tags.push(new DocTag(tag, rest))
+                current = "tag"
+            }
+            continue
+        }
+        if (current === "description") description.push(line)
+        else if (current === "example") example.push(line)
+        else if (line.trim() !== "") {
+            const text = line.trim()
+            if (current === "param") {
+                const p = doc.params[doc.params.length - 1]
+                p.text = p.text === "" ? text : `${p.text} ${text}`
+            } else if (current === "returns") doc.returns = doc.returns === "" ? text : `${doc.returns} ${text}`
+            else {
+                const t = doc.tags[doc.tags.length - 1]
+                t.text = t.text === "" ? text : `${t.text} ${text}`
+            }
+        }
+    }
+    if (current === "example") doc.examples.push(trimLines(example))
+    doc.description = trimLines(description)
+    return doc
+}
+
+/** Lines joined, without the blank lines at the start and the end, and dedented when all are indented. */
+function trimLines(lines: string[]): string {
+    let start = 0
+    let end = lines.length
+    while (start < end && lines[start].trim() === "") start++
+    while (end > start && lines[end - 1].trim() === "") end--
+    let indent = -1
+    for (let i = start; i < end; i++) {
+        const line = lines[i]
+        if (line.trim() === "") continue
+        const n = line.length - line.trimStart().length
+        if (indent < 0 || n < indent) indent = n
+    }
+    const kept: string[] = []
+    for (let i = start; i < end; i++) kept.push(indent > 0 ? lines[i].slice(indent) : lines[i])
+    return kept.join("\n")
+}
+
+/**
+ * The comment of a module: the `//` lines it starts with, as Markdown, with
+ * the lines indented by two spaces or more as code blocks.
+ */
+export function moduleComment(text: string): string {
+    const out: string[] = []
+    let code: string[] = []
+    for (const raw of text.split("\n")) {
+        const line = raw.trim()
+        if (line.startsWith("//ore:")) continue
+        if (!line.startsWith("//")) break
+        let content = line.slice(2)
+        if (content.startsWith(" ")) content = content.slice(1)
+        if (content.startsWith("  ") || (code.length > 0 && content === "")) {
+            code.push(content)
+            continue
+        }
+        if (code.length > 0) {
+            out.push("```ore\n" + trimLines(code) + "\n```")
+            code = []
+            out.push("")
+        }
+        out.push(content)
+    }
+    if (code.length > 0) out.push("```ore\n" + trimLines(code) + "\n```")
+    return trimLines(out)
+}
+
+/** A module as Markdown: its name, its comment, a table of contents, then each export. */
+export function toMarkdown(module: DocModule): string {
+    const out: string[] = [`# ${module.name}`, "", `\`${module.path}\``, ""]
+    if (module.doc !== "") out.push(module.doc, "")
+    if (module.items.length === 0) {
+        out.push("No exports.", "")
+        return out.join("\n")
+    }
+    for (const item of module.items) out.push(`- [${item.name}](#${anchor(item.name)}) (${item.kind})`)
+    out.push("")
+    for (const item of module.items) markdownItem(item, "##", out)
+    return out.join("\n")
+}
+
+function anchor(name: string): string {
+    return name.toLowerCase()
+}
+
+function markdownItem(item: DocItem, level: string, out: string[]): void {
+    out.push(`${level} ${item.name === "" ? item.kind : item.name}`, "")
+    out.push("```ore", item.signature, "```", "")
+    markdownDoc(item.doc, out)
+    for (const member of item.members) markdownItem(member, `${level}#`, out)
+}
+
+function markdownDoc(doc: JsDoc, out: string[]): void {
+    if (doc.description !== "") out.push(doc.description, "")
+    if (doc.params.length > 0) {
+        out.push("**Parameters**", "")
+        for (const p of doc.params) out.push(`- \`${p.name}\`${p.text === "" ? "" : ` — ${p.text}`}`)
+        out.push("")
+    }
+    if (doc.returns !== "") out.push(`**Returns** ${doc.returns}`, "")
+    for (const t of doc.tags) out.push(`**@${t.tag}**${t.text === "" ? "" : ` ${t.text}`}`, "")
+    for (const example of doc.examples) out.push("**Example**", "", "```ore", example, "```", "")
+}
+
+/** The index of the Markdown files: a link to each module, with the first sentence of its comment. */
+export function markdownIndex(modules: DocModule[]): string {
+    const out: string[] = ["# API", ""]
+    for (const module of modules) {
+        const summary = firstSentence(module.doc)
+        out.push(`- [${module.name}](${module.name}.md)${summary === "" ? "" : ` — ${summary}`}`)
+    }
+    out.push("")
+    return out.join("\n")
+}
+
+/** The first sentence of the first paragraph of a text, on one line. */
+function firstSentence(text: string): string {
+    const paragraph = collapse(text.split("\n\n")[0])
+    if (paragraph.startsWith("```")) return ""
+    const stop = paragraph.indexOf(". ")
+    return stop < 0 ? paragraph : paragraph.slice(0, stop + 1)
+}
+
+/** A module as a listing for the terminal: the signatures in color, the comments indented below them. */
+export function toText(module: DocModule, style: Style): string {
+    const out: string[] = [`${style.bold(module.name)}  ${style.dim(module.path)}`]
+    // The code blocks of the comment without their fences, in the color of code.
+    let inCode = false
+    for (const line of module.doc.split("\n")) {
+        if (line.startsWith("```")) inCode = !inCode
+        else if (inCode) out.push(line === "" ? "" : style.code(`      ${line}`))
+        else out.push(line === "" ? "" : `  ${line}`)
+    }
+    out.push("")
+    if (module.items.length === 0) out.push(style.dim("  No exports."), "")
+    for (const item of module.items) textItem(item, "", style, out)
+    return out.join("\n")
+}
+
+function textItem(item: DocItem, prefix: string, style: Style, out: string[]): void {
+    for (const line of item.signature.split("\n")) out.push(prefix + signatureLine(line, item.name, style))
+    textDoc(item.doc, `${prefix}    `, style, out)
+    for (const member of item.members) textItem(member, `${prefix}    `, style, out)
+    if (prefix === "") out.push("")
+}
+
+/** A signature with its keywords dimmed and its name in the accent color. */
+function signatureLine(line: string, name: string, style: Style): string {
+    const at = name === "" ? -1 : line.indexOf(name)
+    if (at < 0) return style.code(line)
+    return style.dim(line.slice(0, at)) + style.bold(style.accent(name)) + style.code(line.slice(at + name.length))
+}
+
+function textDoc(doc: JsDoc, prefix: string, style: Style, out: string[]): void {
+    if (doc.description !== "") out.push(indent(doc.description, prefix))
+    for (const p of doc.params) out.push(`${prefix}${style.dim("@param")} ${style.code(p.name)} ${p.text}`.trimEnd())
+    if (doc.returns !== "") out.push(`${prefix}${style.dim("@returns")} ${doc.returns}`)
+    for (const t of doc.tags) out.push(`${prefix}${style.dim(`@${t.tag}`)} ${t.text}`.trimEnd())
+    for (const example of doc.examples) {
+        out.push(`${prefix}${style.dim("@example")}`)
+        out.push(style.code(indent(example, `${prefix}  `)))
+    }
+}
+
+function indent(text: string, prefix: string): string {
+    const lines: string[] = []
+    for (const line of text.split("\n")) lines.push(line === "" ? "" : prefix + line)
+    return lines.join("\n")
+}
+
+/** The modules as JSON, for tools. */
+export function toJson(modules: DocModule[]): string {
+    const parts: string[] = []
+    for (const module of modules) {
+        const items: string[] = []
+        for (const item of module.items) items.push(itemJson(item))
+        parts.push(
+            `{"name":${quote(module.name)},"path":${quote(module.path)},"doc":${quote(module.doc)},"items":[${items.join(",")}]}`,
+        )
+    }
+    return `{"modules":[${parts.join(",")}]}\n`
+}
+
+function itemJson(item: DocItem): string {
+    const members: string[] = []
+    for (const member of item.members) members.push(itemJson(member))
+    return `{"kind":${quote(item.kind)},"name":${quote(item.name)},"signature":${quote(item.signature)},"doc":${docJson(item.doc)},"members":[${members.join(",")}]}`
+}
+
+function docJson(doc: JsDoc): string {
+    const params: string[] = []
+    for (const p of doc.params) params.push(`{"name":${quote(p.name)},"text":${quote(p.text)}}`)
+    const examples: string[] = []
+    for (const e of doc.examples) examples.push(quote(e))
+    const tags: string[] = []
+    for (const t of doc.tags) tags.push(`{"tag":${quote(t.tag)},"text":${quote(t.text)}}`)
+    return `{"description":${quote(doc.description)},"params":[${params.join(",")}],"returns":${quote(doc.returns)},"examples":[${examples.join(",")}],"tags":[${tags.join(",")}]}`
+}
