@@ -1,0 +1,54 @@
+// Small value objects: particles under gravity bouncing on the floor, moved
+// with an immutable 3D vector class whose every operation makes a new one.
+// Ore has no value types, so each vector is a short-lived object on the heap.
+// The time step and the factors are powers of two, so that every product is
+// exact and the sums are the same in every language.
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 20000) : 20000
+
+class Vec3 {
+    constructor(
+        readonly x: f64,
+        readonly y: f64,
+        readonly z: f64,
+    ) {}
+
+    add(o: Vec3): Vec3 {
+        return new Vec3(this.x + o.x, this.y + o.y, this.z + o.z)
+    }
+
+    scale(k: f64): Vec3 {
+        return new Vec3(this.x * k, this.y * k, this.z * k)
+    }
+}
+
+class Particle {
+    constructor(
+        public pos: Vec3,
+        public vel: Vec3,
+    ) {}
+}
+
+const dt = 1.0 / 64
+const gravity = new Vec3(0, -9.75, 0)
+const particles: Particle[] = []
+for (let i = 0; i < 1000; i++) {
+    const pos = new Vec3(f64(i % 10), f64(50 + (i % 7)), f64(i % 13))
+    const vel = new Vec3(f64((i % 5) - 2), f64(i % 3), f64((i % 3) - 1))
+    particles.push(new Particle(pos, vel))
+}
+
+for (let step = 0; step < n; step++) {
+    for (const p of particles) {
+        p.vel = p.vel.add(gravity.scale(dt))
+        p.pos = p.pos.add(p.vel.scale(dt))
+        if (p.pos.y < 0) {
+            p.pos = new Vec3(p.pos.x, -p.pos.y, p.pos.z)
+            p.vel = new Vec3(p.vel.x, -p.vel.y * 0.5, p.vel.z)
+        }
+    }
+}
+
+let sum = 0.0
+for (const p of particles) sum += p.pos.x + p.pos.y + p.pos.z
+console.log(int(Math.floor(sum * 1024)))
