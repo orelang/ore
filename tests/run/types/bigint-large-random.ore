@@ -1,0 +1,72 @@
+// Operations on large random bigints, long enough for Karatsuba's
+// multiplication, balanced and unbalanced, and for long additions and
+// subtractions with carries across many limbs. It runs in Node as it is,
+// which gives the expected output.
+
+const MASK64 = (1n << 64n) - 1n
+let state = 6148914691236517205n
+
+/** 64 random bits, from a 64-bit linear congruential generator. */
+function next(): bigint {
+    state = (state * 6364136223846793005n + 1442695040888963407n) & MASK64
+    return state
+}
+
+/** A random value of about `words` 64-bit words: random bits, all ones, or a power of two, of either sign. */
+function random(words: bigint): bigint {
+    const kind = next() % 6n
+    let v = 0n
+    if (kind === 0n) v = (1n << (words * 64n)) - 1n
+    else if (kind === 1n) v = 1n << (words * 64n - (next() % 64n))
+    else for (let i = 0n; i < words; i++) v = (v << 64n) | next()
+    return (next() & 1n) === 1n ? -v : v
+}
+
+/** The low 64 bits of a checksum of results. */
+let checksum = 0n
+function sum(v: bigint) {
+    checksum = (checksum * 1000003n + v) & MASK64
+}
+
+const sizes = [1n, 2n, 7n, 19n, 20n, 21n, 40n, 41n, 63n, 64n, 100n, 150n, 257n]
+for (const x of sizes) {
+    for (const y of sizes) {
+        const a = random(x)
+        const b = random(y)
+        const p = a * b
+        sum(p)
+        sum(a + b)
+        sum(a - b)
+        sum(p + a)
+        sum(p - b)
+        if (b !== 0n) {
+            if (p / b !== a || p % b !== 0n) console.log("bad product", x, y)
+            const r = (p + 12345n) % b
+            sum(r)
+        }
+        // (a + b)^2 = a^2 + 2ab + b^2: squares go through the same multiplication.
+        if ((a + b) * (a + b) !== a * a + 2n * p + b * b) console.log("bad square", x, y)
+    }
+}
+console.log(checksum)
+
+// Carries and borrows that run through every limb.
+const ones = (1n << 8000n) - 1n
+console.log((ones + 1n).toString(16).length, ones + 1n - 1n === ones, (-ones - 1n).toString(16).length)
+console.log((ones * ones).toString(16).slice(0, 20), (ones * ones) % 1000000007n)
+
+// A factorial, a Fibonacci number and a power, in decimal.
+let factorial = 1n
+for (let i = 2n; i <= 1500n; i++) factorial *= i
+const text = factorial.toString()
+console.log(text.length, text.slice(0, 30), text.slice(text.length - 30))
+let f0 = 0n
+let f1 = 1n
+for (let i = 0; i < 5000; i++) {
+    const f2 = f0 + f1
+    f0 = f1
+    f1 = f2
+}
+console.log(f0.toString().length, f0 % 10n ** 20n, ((f1 - f0) * f0) % 999999937n)
+const power = 3n ** 5000n
+console.log(power.toString().length, power.toString().slice(0, 25), (power * power) / (power - 1n) - power)

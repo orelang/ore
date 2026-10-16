@@ -11,7 +11,8 @@
 // Generated code calls the functions marked `//ore:runtime`, which take and
 // return bigints as pointers. Values have at most 2^30 bits, as in V8: a
 // larger result panics. Division is schoolbook long division (Knuth's
-// algorithm D), multiplication schoolbook.
+// algorithm D), multiplication schoolbook, or Karatsuba's for long
+// operands.
 //
 // The exports of this module are the members of the namespace `BigInt`.
 
@@ -119,37 +120,108 @@ function compareMagnitudes(a: ptr, na: int, b: ptr, nb: int): int {
     return 0
 }
 
+/**
+ * Keeps an object alive up to here: a use of its address the optimizer
+ * cannot remove, for blocks that loops reach only through addresses
+ * derived from theirs, which may point past them.
+ */
+//ore:inline
+function keepAlive(p: ptr): void {
+    unsafe.asm("", "r", p)
+}
+
+/** Two limbs at once: limbs i and i + 1 of `p` as one u64, for an even `i`, which is 8-byte aligned. */
+function pair(p: ptr, i: int): u64 {
+    return unsafe.load<u64>(unsafe.add(p, i * 4))
+}
+
+function setPair(p: ptr, i: int, v: u64) {
+    unsafe.store<u64>(unsafe.add(p, i * 4), v)
+}
+
+/**
+ * d = a + b for magnitudes of `na >= nb` limbs into `d`, which has room for
+ * `na` limbs (it may be `a` itself); returns the carry out, 0 or 1. Two
+ * limbs at a time while both have them.
+ */
+function addLimbs(d: ptr, a: ptr, na: int, b: ptr, nb: int): u64 {
+    let carry: u64 = 0
+    let i = 0
+    while (i + 1 < nb) {
+        const x = pair(a, i)
+        const s = x + pair(b, i)
+        const t = s + carry
+        const c = u64(s < x ? 1 : 0) | u64(t < s ? 1 : 0)
+        setPair(d, i, t)
+        carry = c
+        i += 2
+    }
+    if (i < nb) {
+        const s = limb(a, i) + limb(b, i) + carry
+        setLimb(d, i, s)
+        carry = s >> 32
+        i++
+    }
+    while (i < na && carry !== 0) {
+        const s = limb(a, i) + carry
+        setLimb(d, i, s)
+        carry = s >> 32
+        i++
+    }
+    if (i < na && d !== a) unsafe.copy(unsafe.add(d, i * 4), unsafe.add(a, i * 4), (na - i) * 4)
+    return carry
+}
+
+/**
+ * d = a - b for magnitudes with a >= b, `na >= nb` limbs, into `d`, which
+ * has room for `na` limbs (it may be `a` itself); returns the borrow out,
+ * which is 0 when a >= b. Two limbs at a time while both have them.
+ */
+function subtractLimbs(d: ptr, a: ptr, na: int, b: ptr, nb: int): u64 {
+    let borrow: u64 = 0
+    let i = 0
+    while (i + 1 < nb) {
+        const x = pair(a, i)
+        const y = pair(b, i)
+        const s = x - y
+        const c = u64(x < y ? 1 : 0) | u64(s < borrow ? 1 : 0)
+        setPair(d, i, s - borrow)
+        borrow = c
+        i += 2
+    }
+    if (i < nb) {
+        const s = limb(a, i) - limb(b, i) - borrow
+        setLimb(d, i, s)
+        borrow = s >> 63
+        i++
+    }
+    while (i < na && borrow !== 0) {
+        const s = limb(a, i) - borrow
+        setLimb(d, i, s)
+        borrow = s >> 63
+        i++
+    }
+    if (i < na && d !== a) unsafe.copy(unsafe.add(d, i * 4), unsafe.add(a, i * 4), (na - i) * 4)
+    return borrow
+}
+
 /** |a| + |b|, with the sign `negative`. */
 function addMagnitudes(a: ptr, na: int, b: ptr, nb: int, negative: bool): ptr {
     if (na < nb) return addMagnitudes(b, nb, a, na, negative)
     const p = block(na + 1)
     const d = digits(p)
-    let carry: u64 = 0
-    for (let i = 0; i < na; i++) {
-        const s = limb(a, i) + (i < nb ? limb(b, i) : 0) + carry
-        setLimb(d, i, s)
-        carry = s >> 32
-    }
-    setLimb(d, na, carry)
+    setLimb(d, na, addLimbs(d, a, na, b, nb))
+    keepAlive(a)
+    keepAlive(b)
     return finish(p, na + 1, negative)
 }
 
 /** |a| - |b| for |a| >= |b|, with the sign `negative`. */
 function subtractMagnitudes(a: ptr, na: int, b: ptr, nb: int, negative: bool): ptr {
     const p = block(na)
-    const d = digits(p)
-    let borrow: u64 = 0
-    for (let i = 0; i < na; i++) {
-        const x = limb(a, i)
-        const y = (i < nb ? limb(b, i) : 0) + borrow
-        if (x >= y) {
-            setLimb(d, i, x - y)
-            borrow = 0
-        } else {
-            setLimb(d, i, x + 0x100000000 - y)
-            borrow = 1
-        }
-    }
+    subtractLimbs(digits(p), a, na, b, nb)
+    keepAlive(a)
+    keepAlive(b)
     return finish(p, na, negative)
 }
 
@@ -189,20 +261,112 @@ function not(x: ptr): ptr {
     return addSigned(negate(x), fromMagnitude(1, false), true)
 }
 
-/** Adds the product of magnitudes `a` and `b` into `d`, zeroed, of `na + nb` limbs. */
-function multiplyInto(d: ptr, a: ptr, na: int, b: ptr, nb: int) {
+/** d = a * v for a magnitude `a` of `na` limbs and a limb `v`, into `d` of `na` limbs; returns the top limb. */
+function multiplyByLimb(d: ptr, a: ptr, na: int, v: u64): u64 {
+    let carry: u64 = 0
     for (let i = 0; i < na; i++) {
-        const ai = limb(a, i)
-        if (ai === 0) continue
+        // At most (2^32 - 1)^2 + 2^32 - 1 < 2^64.
+        const t = limb(a, i) * v + carry
+        setLimb(d, i, t)
+        carry = t >> 32
+    }
+    return carry
+}
+
+/** Schoolbook: the product of magnitudes `a` and `b` into `d`, zeroed, of `na + nb` limbs, for `na >= nb`. */
+function schoolbook(d: ptr, a: ptr, na: int, b: ptr, nb: int) {
+    // The longer operand in the inner loop, which then runs long.
+    for (let j = 0; j < nb; j++) {
+        const v = limb(b, j)
+        if (v === 0) continue
+        const row = unsafe.add(d, j * 4)
         let carry: u64 = 0
-        for (let j = 0; j < nb; j++) {
+        for (let i = 0; i < na; i++) {
             // At most (2^32 - 1)^2 + 2 (2^32 - 1) = 2^64 - 1.
-            const t = ai * limb(b, j) + limb(d, i + j) + carry
-            setLimb(d, i + j, t)
+            const t = limb(a, i) * v + limb(row, i) + carry
+            setLimb(row, i, t)
             carry = t >> 32
         }
-        setLimb(d, i + nb, carry)
+        setLimb(row, na, carry)
     }
+}
+
+/** The number of limbs of a magnitude of up to `n` limbs, without its leading zero limbs. */
+function trimmed(d: ptr, n: int): int {
+    let k = n
+    while (k > 0 && limb(d, k - 1) === 0) k--
+    return k
+}
+
+/** Where Karatsuba's multiplication takes over from the schoolbook one: both operands of at least this many limbs. */
+const KARATSUBA = 40
+
+/** Scratch memory for limbs, zeroed and 8-byte aligned. */
+function scratch(n: int): ptr {
+    return unsafe.allocBytes(n * 4 + 8)
+}
+
+/**
+ * The product of magnitudes `a` and `b` into `d`, zeroed, of `na + nb`
+ * limbs: schoolbook for short operands, else Karatsuba's three half-size
+ * products, a0 b0, a1 b1 and (a0 + a1)(b0 + b1), from which the middle
+ * term a0 b1 + a1 b0 is the difference.
+ */
+function multiplyInto(d: ptr, a: ptr, na: int, b: ptr, nb: int) {
+    if (na < nb) {
+        multiplyInto(d, b, nb, a, na)
+        return
+    }
+    if (nb < KARATSUBA) {
+        if (nb === 1) setLimb(d, na, multiplyByLimb(d, a, na, limb(b, 0)))
+        else schoolbook(d, a, na, b, nb)
+        return
+    }
+    if (2 * nb <= na) {
+        // Unbalanced: `a` in pieces of about `nb` limbs, each product added in. The
+        // pieces have an even number of limbs, so that every one starts 8-byte aligned.
+        const step = nb + (nb & 1)
+        const t = scratch(step + nb)
+        for (let i = 0; i < na; i += step) {
+            const k = na - i < step ? na - i : step
+            unsafe.fill(t, 0, (k + nb) * 4)
+            multiplyInto(t, unsafe.add(a, i * 4), k, b, nb)
+            const at = unsafe.add(d, i * 4)
+            addLimbs(at, at, na + nb - i, t, trimmed(t, k + nb))
+        }
+        keepAlive(t)
+        return
+    }
+    // a = a1 B^m + a0 and b = b1 B^m + b0, with nb > m, and m even so that the halves are 8-byte aligned.
+    const m = (na / 2) & ~1
+    const a1 = unsafe.add(a, m * 4)
+    const b1 = unsafe.add(b, m * 4)
+    const high = unsafe.add(d, 2 * m * 4)
+    // a0 b0 in the low 2m limbs of d, a1 b1 above them.
+    multiplyInto(d, a, trimmed(a, m), b, trimmed(b, m))
+    multiplyInto(high, a1, na - m, b1, nb - m)
+    // (a0 + a1)(b0 + b1).
+    const la = na - m + 1
+    const sa = scratch(la)
+    setLimb(sa, na - m, addLimbs(sa, a1, na - m, a, m))
+    const lb = (nb - m > m ? nb - m : m) + 1
+    const sb = scratch(lb)
+    if (nb - m >= m) setLimb(sb, lb - 1, addLimbs(sb, b1, nb - m, b, m))
+    else setLimb(sb, lb - 1, addLimbs(sb, b, m, b1, nb - m))
+    const ta = trimmed(sa, la)
+    const tb = trimmed(sb, lb)
+    const z = scratch(ta + tb)
+    if (ta > 0 && tb > 0) multiplyInto(z, sa, ta, sb, tb)
+    // Minus a0 b0 and a1 b1, then added in at B^m.
+    let nz = ta + tb
+    subtractLimbs(z, z, nz, d, trimmed(d, 2 * m))
+    subtractLimbs(z, z, nz, high, trimmed(high, na + nb - 2 * m))
+    nz = trimmed(z, nz)
+    const mid = unsafe.add(d, m * 4)
+    addLimbs(mid, mid, na + nb - m, z, nz)
+    keepAlive(z)
+    keepAlive(sa)
+    keepAlive(sb)
 }
 
 //ore:runtime ore_rt_big_mul
@@ -213,6 +377,8 @@ function multiply(x: ptr, y: ptr): ptr {
     if (nx + ny > MAX_LIMBS + 1) tooLarge()
     const p = block(nx + ny)
     multiplyInto(digits(p), digits(x), nx, digits(y), ny)
+    keepAlive(x)
+    keepAlive(y)
     return finish(p, nx + ny, isNegative(x) !== isNegative(y))
 }
 
@@ -597,6 +763,18 @@ function toF32(x: ptr): f64 {
 
 const DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
 
+/** rest = rest / v for a magnitude of `m` limbs and a limb `v`; returns the remainder. */
+//ore:inline
+function divideByLimb(rest: ptr, m: int, v: u64): u64 {
+    let r: u64 = 0
+    for (let i = m - 1; i >= 0; i--) {
+        const cur = (r << 32) | limb(rest, i)
+        setLimb(rest, i, cur / v)
+        r = cur % v
+    }
+    return r
+}
+
 /** The text of x in a radix from 2 to 36, as `x.toString(radix)`; another radix panics. */
 //ore:runtime ore_rt_big_to_string
 function toText(x: ptr, radix: int): string {
@@ -619,13 +797,9 @@ function toText(x: ptr, radix: int): string {
     let m = n
     const table = unsafe.stringData(DIGITS)
     while (m > 0) {
-        // rest = rest / chunk, the remainder gives the next `per` digits.
-        let r: u64 = 0
-        for (let i = m - 1; i >= 0; i--) {
-            const cur = (r << 32) | limb(rest, i)
-            setLimb(rest, i, cur / chunk)
-            r = cur % chunk
-        }
+        // rest = rest / chunk, the remainder gives the next `per` digits. In
+        // radix 10 the divisor is a constant, which a multiplication replaces.
+        let r = radix === 10 ? divideByLimb(rest, m, 1000000000) : divideByLimb(rest, m, chunk)
         while (m > 0 && limb(rest, m - 1) === 0) m--
         for (let k = 0; k < per && (m > 0 || r !== 0); k++) {
             at--
