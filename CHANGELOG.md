@@ -327,6 +327,10 @@ before 1.0, a minor version may change the language.
   what a task does is posted to the loop.
 - `structuredClone` copies an `unknown` as the value it holds, by its type
   at run time; one that cannot be cloned panics with `DataCloneError`.
+- A module variable of type `string` read before its declaration runs, by a
+  function called earlier, is `""`: it held a string that printed and
+  measured as `""` but was not `=== ""` and became `null` as a `string |
+  null`. A tagged union with `null` (`int | string | null`) is `null` then.
 
 ## 0.5.0
 

@@ -2,7 +2,7 @@
 // together.
 
 import { type Module } from "../ir/nodes"
-import { classTables } from "../ir/types"
+import { type Type, classTables, unionRepr } from "../ir/types"
 import { inlineCalls } from "../opt/inline"
 import { planStack } from "../opt/escape"
 import { valueClasses } from "../opt/values"
@@ -29,6 +29,20 @@ export function emitModule(module: Module, options: EmitOptions | null = null): 
     // Inlining loses the frames of stack traces, so debug builds keep every call.
     if (!opts.debug) inlineCalls(module)
     return emit(new Emitter(module, opts))
+}
+
+/**
+ * What a global holds before its declaration runs, which a function called
+ * earlier may read: the zero value of its type, `""` for a string and null
+ * for a tagged union, which are not all zero bits.
+ */
+function zeroConstant(g: Emitter, type: Type): string {
+    if (type.kind === "string") return g.str("").v
+    if (type.kind === "union" && unionRepr(type).k === "tagged") {
+        const at = type.members.findIndex((m) => m.kind === "null")
+        if (at >= 0) return `{ i32 ${at}, [${g.unionWords(type)} x i64] zeroinitializer }`
+    }
+    return "zeroinitializer"
 }
 
 /** `ModuleEmitter.emit` of the TypeScript. */
@@ -73,7 +87,7 @@ export function emit(g: Emitter): string {
         if (exported) g.decls.delete(`@${exportName ?? ""}`)
         const linkage = exported ? "" : "internal "
         g.out.push(
-            `${g.globalOf(local)} = ${linkage}${local.threadLocal ? "thread_local " : ""}global ${g.mt(local.type)} zeroinitializer`,
+            `${g.globalOf(local)} = ${linkage}${local.threadLocal ? "thread_local " : ""}global ${g.mt(local.type)} ${zeroConstant(g, local.type)}`,
         )
     }
     for (const func of m.functions) {
