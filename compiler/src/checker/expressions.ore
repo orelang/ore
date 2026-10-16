@@ -2006,6 +2006,14 @@ export function instanceTest(c: Checker, value: Expr, target: StructType | Inter
     if (type.kind === "struct" && related(type)) return new Is(types.bool, value, target)
     if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m)))
         return new Is(types.bool, value, target)
+    // A class with the members of an interface is always an instance of it, as an error class is of `Error`.
+    if (
+        type.kind === "struct" &&
+        type.nominal &&
+        target.kind === "interface" &&
+        conformance(c, type, target).reason === null
+    )
+        return new BoolLit(types.bool, true)
     if (target.kind !== "struct") return null
     if (type.kind === "interface" && conformance(c, target, type).reason === null)
         return new Is(types.bool, value, target)

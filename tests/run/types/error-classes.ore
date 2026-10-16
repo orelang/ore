@@ -1,0 +1,39 @@
+// Classes extend Error, which has name, message and cause, as in JavaScript.
+class NotFound extends Error {
+    constructor(readonly path: string) {
+        super(`no such file: ${path}`)
+        this.name = "NotFound"
+    }
+}
+// Without setting it, the name stays "Error", as in JavaScript.
+class Quiet extends Error {}
+
+const nf = new NotFound("/tmp/x")
+console.log(nf.name, nf.message, nf.path, nf instanceof NotFound, nf instanceof Error)
+const q = new Quiet("hush")
+console.log(q.name, q.message, q instanceof Error, q.cause === null)
+
+const plain = new Error("plain")
+console.log(plain.name, plain.message, plain.cause === null, new Error().message === "")
+
+// The cause given in the options.
+const wrapped = new Error("wrapped", { cause: nf })
+const cause = wrapped.cause
+console.log(cause instanceof NotFound)
+if (cause instanceof NotFound) console.log("caused by", cause.path)
+
+// Subclasses are errors: returned as `T | Error` and narrowed back.
+function open(path: string): string | Error {
+    if (path === "") return new NotFound("(empty)")
+    return `opened ${path}`
+}
+for (const p of ["a.txt", ""]) {
+    const r = open(p)
+    if (r instanceof Error) console.log("failed:", r.message)
+    else console.log(r)
+}
+
+// console.log prints "Name: message".
+console.log(plain)
+console.log(nf)
+console.log(q)

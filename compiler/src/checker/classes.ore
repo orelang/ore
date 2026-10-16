@@ -187,6 +187,17 @@ function baseClass(c: Checker, ref: Node, scope: Scope): StructType | null {
         return null
     }
     if (type !== null && type.kind === "struct" && c.classInfos.has(type.id)) return type
+    // `extends Error`: the runtime's Error class, behind the interface that names every error.
+    const basic = c.basicError
+    const errorType = c.errorType
+    if (
+        type !== null &&
+        type.kind === "interface" &&
+        type === errorType &&
+        basic !== null &&
+        c.classInfos.has(basic.id)
+    )
+        return basic
     if (type !== null) c.error(target, "A class can only extend a class.")
     return null
 }

@@ -5,6 +5,12 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `Error` is a class to extend, as in JavaScript: `class NotFound extends
+  Error` calls `super(message)` and sets `this.name`; `new Error(message,
+  { cause })` keeps the cause; errors have `name`, `message`, `cause` and
+  `toString()`, `instanceof Error` is true for the subclasses, and
+  `console.log` prints `Name: message`. The type `Error` stays the
+  interface that any class with a `message` implements.
 - Arrow functions in field initializers capture the instance, as in
   TypeScript: `h = (): int => this.x` works instead of reporting that
   `this` is only allowed inside a class. At the top level of a module and in

@@ -14,7 +14,7 @@ import {
     types,
     unionRepr,
 } from "../ir/types"
-import { counted, dateClass } from "./json"
+import { counted, dateClass, errorClass } from "./json"
 import { ARRAY, MAP, STR } from "./context"
 import { Emitter } from "./base"
 import { fieldPtr, payload, slotTest } from "./expressions"
@@ -391,11 +391,8 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
         }
         return paint(g, s, text, magenta, defaultColor)
     }
-    const ctor = t.ctor
-    if (ctor !== null && ctor.name === "ore_new_BasicError") {
-        const message = g.load(fieldPtr(g, v.v, t, "message"), t.fields[0].type)
-        return g.rt("ore_rt_inspect_error", [g.str("Error"), message])
-    }
+    // The Error class of the runtime and its subclasses: "Name: message".
+    if (errorClass(g, t) !== null) return g.rt("ore_rt_error_inspect", [v])
     const name = t.name
     const isClass = t.nominal && name !== null
     const open = t.tuple ? "[" : isClass ? `${name} {` : "{"

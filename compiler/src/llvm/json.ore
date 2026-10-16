@@ -41,6 +41,20 @@ export function dateClass(g: Emitter, t: StructType): StructType | null {
     return null
 }
 
+/** The runtime's Error class, if `t` is it or a subclass of it. */
+export function errorClass(g: Emitter, t: StructType): StructType | null {
+    const hook = g.runtime.get("ore_rt_error_inspect")
+    if (hook === null) return null
+    const error = hook.params[0].type
+    if (error.kind !== "struct") return null
+    let c: StructType | null = t
+    while (c !== null) {
+        if (c.id === error.id) return error
+        c = c.base
+    }
+    return null
+}
+
 export function json(g: Emitter, e: BuiltinCall): V {
     g.defs.set(SB, `${SB} = type { ptr, i64, i64 }`)
     g.defs.set(JSON_VALUE, `${JSON_VALUE} = type { i32, i8, double, ${STR}, i64, ptr, ptr }`)

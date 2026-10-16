@@ -10,6 +10,7 @@ import { type Program } from "../project/load"
 import { Checker } from "./base"
 import {
     builtinScope,
+    errorModule,
     globalClasses,
     globalClassModules,
     globalTypeModule,
@@ -136,6 +137,14 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
                     new Map<string, Instance>(),
                 )
                 builtins.scope.declareType(generic.name, new TypeSymbol(types.never, stmt, generic))
+            }
+        }
+        // The class of `new Error(...)`, which classes extend with `extends Error`.
+        if (m.source.path === errorModule) {
+            const errorClass = m.scope.ownType("Error")
+            if (errorClass !== null) {
+                const t = errorClass.type
+                if (t.kind === "struct") c.basicError = t
             }
         }
         for (let i = 0; i < globalClasses.length; i++) {

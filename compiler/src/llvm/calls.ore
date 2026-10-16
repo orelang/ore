@@ -795,7 +795,10 @@ export function inlineAsm(g: Emitter, e: BuiltinCall): V {
 export function error(g: Emitter, e: BuiltinCall, message: V): V {
     const err = e.error
     if (err === null) process.panic(`${e.name} without an error constructor`)
-    const object = callDirect(g, err.ctor.name, "ptr", [message])
+    // The Error class's constructor takes options after the message: none.
+    const args: V[] = [message]
+    for (let i = 1; i < err.ctor.type.params.length; i++) args.push({ ty: "ptr", v: "null" })
+    const object = callDirect(g, err.ctor.name, "ptr", args)
     return g.aggregate(IFACE, [object, { ty: "ptr", v: g.names.itab(err.itab.id, err.itab.struct, err.itab.iface) }])
 }
 
