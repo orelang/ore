@@ -61,6 +61,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE1006](ORE1006.md) | Identifier expected. '…' is a reserved word in strict mode. … |
 | [ORE1007](ORE1007.md) | Unterminated regular expression literal. |
 | [ORE1008](ORE1008.md) | Invalid regular expression: …. |
+| [ORE1009](ORE1009.md) | Unterminated string literal. |
 
 ## ORE2xxx: Types and constants
 

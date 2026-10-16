@@ -192,6 +192,9 @@ export class Parser {
 
     private next(): Token {
         const token = this.tokens[this.i]
+        // The lexer ends a string without its closing quote at the line end.
+        if (token.kind === "StringLiteral" && !closedString(this.text, token.start, token.end))
+            this.error("Unterminated string literal")
         if (token.kind !== "EndOfFileToken") this.i++
         this.last = token.end
         return token
@@ -1813,4 +1816,12 @@ export class Parser {
         this.expect("CloseBraceToken")
         return members
     }
+}
+
+/** Whether the string literal from `start` to `end` ends with its quote (not an escaped one). */
+function closedString(text: string, start: int, end: int): bool {
+    if (end - start < 2 || text[end - 1] !== text[start]) return false
+    let backslashes = 0
+    while (end - 2 - backslashes > start && text[end - 2 - backslashes] === 92) backslashes++
+    return backslashes % 2 === 0
 }
