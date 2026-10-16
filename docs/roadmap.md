@@ -50,8 +50,8 @@ exports, type assertions (Ore converts: `i32(x)`).
     functions are not supported);
   - narrowing through `||` and by assigning with `?:`;
   - object spread `{ ...o }` (done);
-  - methods and accessors in object literals (done; accessors do not
-    implement interface fields yet, in classes neither);
+  - methods and accessors in object literals (done; accessors implement
+    interface fields, in classes too);
   - `static` members of classes (done; not of generic classes);
   - default values in destructuring, and `...rest` in object destructuring
     (done), optional properties of object types (done);

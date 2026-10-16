@@ -31,6 +31,12 @@ before 1.0, a minor version may change the language.
   functions. They can only be called; used as a value without a call, such
   a function is an error (ORE6071), and one that calls itself needs a
   return type annotation (ORE6072).
+- Getters and setters, of classes and of object literals, implement
+  interface fields: a getter a `readonly` field, a getter and a setter a
+  writable one. Reads and writes through the interface (and through a union
+  with interface members) call them. Fields of names that no accessor
+  implements are read and written through interfaces as before; the others
+  test the table entry first.
 - Numeric literal types in computations on types (`Prev[D]`,
   `D extends number = 10`, `[D] extends [never]`); `infer` in template
   literal types; `unknown`, `object`, `Function` and `readonly unknown[]`
@@ -57,8 +63,7 @@ before 1.0, a minor version may change the language.
 - Getters and setters in object literals (`{ get x(): int { ... }, set x(v:
   int) { ... } }`), as in classes: closures whose `this` is the object,
   called by reads and writes of the property; a property with only a getter
-  is read-only. Like those of classes, they do not implement interface
-  fields yet, which a type error now says.
+  is read-only.
 - Types computed from others: `keyof T`, indexed access `T["k"]`,
   `T["a" | "b"]` and `T[number]`, and `typeof x` (or `typeof x.y`) as a type.
 - Benchmarks in `bench/`: the same algorithms in Ore, TypeScript (Bun and

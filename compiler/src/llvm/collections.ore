@@ -1,7 +1,7 @@
 // Arrays, maps, channels and interface tables.
 
 import { elementData } from "./gcdata"
-import { type ArrayMethod, type ChanOp, type Itab, type MapOp, type SetOp } from "../ir/nodes"
+import { type ArrayMethod, type ChanOp, type Itab, type ItabAccessor, type MapOp, type SetOp } from "../ir/nodes"
 import {
     findField,
     findMethod,
@@ -654,10 +654,41 @@ function fieldThunk(g: Emitter, struct: StructType, name: string, type: FuncType
     return thunk
 }
 
+/**
+ * The entry of an interface table for a field that a struct implements with
+ * accessors: the address of a pair of functions, the getter `T (ptr this)`
+ * and the setter `void (ptr this, T)` (null for a read-only field), plus
+ * 2^63, which makes the entry negative and tells it from a field's offset.
+ */
+function accessorEntry(g: Emitter, t: Itab, index: int, a: ItabAccessor): string {
+    const m = t.iface.members[index]
+    const writable = m.k === "field" && !m.readonly
+    const pair = globalName(`iacc.${g.names.key(t.struct)}.${m.name}.${writable ? "w" : "r"}`)
+    if (!g.helpers.has(pair)) {
+        let get = "null"
+        let set = "null"
+        const getter = a.get
+        const setter = a.set
+        if (getter !== null) get = globalName(getter.name)
+        else get = fieldThunk(g, t.struct, `get ${m.name}`, new FuncType([], m.type))
+        if (writable && setter !== null) set = globalName(setter.name)
+        else if (writable) set = fieldThunk(g, t.struct, `set ${m.name}`, new FuncType([m.type], types.void))
+        g.helpers.set(pair, `${pair} = internal constant [2 x ptr] [ptr ${get}, ptr ${set}]`)
+    }
+    return `ptr getelementptr (i8, ptr ${pair}, i64 -9223372036854775808)`
+}
+
 export function itab(g: Emitter, t: Itab): string {
     const s = g.structType(t.struct)
     const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${g.names.typeId(t.struct)})`]
-    for (const m of t.iface.members) {
+    for (let i = 0; i < t.iface.members.length; i++) {
+        const m = t.iface.members[i]
+        let accessor: ItabAccessor | null = null
+        for (const a of t.accessors) if (a.index === i) accessor = a
+        if (accessor !== null) {
+            all.push(accessorEntry(g, t, i, accessor))
+            continue
+        }
         if (m.k === "field") {
             const field = findField(t.struct, m.name)
             // A missing optional field: -1.

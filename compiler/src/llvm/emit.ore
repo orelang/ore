@@ -47,6 +47,8 @@ export function emit(g: Emitter): string {
     g.decls.set("@llvm.threadlocal.address.p0", "declare ptr @llvm.threadlocal.address.p0(ptr)")
     g.plan = planStack(m)
     g.tables = classTables(m.structs)
+    // An interface value converted to another keeps its entries under the same names.
+    for (const t of m.itabs) for (const a of t.accessors) g.accessorFields.add(t.iface.members[a.index].name)
     for (const func of m.functions) {
         const attrs = func.attributes
         if (attrs === null) continue

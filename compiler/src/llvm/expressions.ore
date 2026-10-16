@@ -243,22 +243,8 @@ export function expr(g: Emitter, e: Expr): V {
             const value = expr(g, e.value)
             const it = e.value.type
             const member = it.kind === "interface" ? it.members[e.index] : null
-            if (member === null || member.k !== "field" || !member.optional || e.type.kind !== "union")
-                return g.load(ifaceField(g, value, e.index), e.type)
-            // A missing optional field reads as null.
-            const u = e.type
-            const offset = ifaceOffset(g, value, e.index)
-            return choose(
-                g,
-                g.b.value("i1", `icmp eq i64 ${offset.v}, -1`),
-                () => inject(g, u, nullIndex(u), null),
-                () =>
-                    g.load(
-                        g.b.value("ptr", `getelementptr i8, ptr ${g.extract(value, 0, "ptr").v}, i64 ${offset.v}`).v,
-                        u,
-                    ),
-                g.lt(u),
-            )
+            const optional = member !== null && member.k === "field" && member.optional && e.type.kind === "union"
+            return ifaceRead(g, value, it, e.index, e.type, optional)
         }
         case "iface-call": {
             // The receiver is evaluated once, before the arguments.
@@ -481,10 +467,14 @@ export function assign(g: Emitter, e: Assign): V {
     // address is taken, since evaluating the value may grow an array.
     const parts = placeParts(g, target)
     const value = expr(g, e.value)
-    const ptr = placePointer(g, target, parts, e.type)
     const op = e.op
+    // A field of an interface may be implemented with accessors: the getter
+    // fills a slot for a compound assignment, and the setter is called after.
+    const fieldSlot = placeSlot(g, target, parts, e.type, op !== null)
+    const ptr = fieldSlot !== null ? fieldSlot.ptr : placePointer(g, target, parts, e.type)
     if (op === null) {
         g.store(value, ptr, e.type)
+        if (fieldSlot !== null) ifaceWriteBack(g, fieldSlot, e.type)
         return value
     }
     const current = g.load(ptr, e.type)
@@ -500,6 +490,7 @@ export function assign(g: Emitter, e: Assign): V {
     else if (t.kind === "bigint") combined = arith(g, op, current, value, t, e.value.type)
     else process.panic(`compound assignment of ${t.kind}`)
     g.store(combined, ptr, e.type)
+    if (fieldSlot !== null) ifaceWriteBack(g, fieldSlot, e.type)
     return combined
 }
 
@@ -518,16 +509,30 @@ export function placeParts(g: Emitter, target: Place): V[] {
     }
 }
 
+/**
+ * The slot of a place that may be a field implemented with accessors, a field
+ * of an interface or of a union with interface members; null for other places.
+ */
+function placeSlot(g: Emitter, target: Place, parts: V[], type: Type, read: bool): IfaceSlot | null {
+    // The value of a field implemented with accessors, for a field so named somewhere.
+    const temp = (name: string) => (g.accessorFields.has(name) ? g.b.alloca(g.mt(type)) : "null")
+    if (target.k === "iface-field") {
+        const it = target.value.type
+        const name = it.kind === "interface" ? it.members[target.index].name : ""
+        return ifaceSlot(g, it, parts[0], target.index, type, read, temp(name))
+    }
+    if (target.k !== "union-field") return null
+    const u = unionOf(target.value.type)
+    if (!u.members.some((m) => m.kind === "interface")) return null
+    return unionFieldSlot(g, parts[0], u, target.name, type, read, temp(target.name))
+}
+
 export function placePointer(g: Emitter, target: Place, parts: V[], type: Type): string {
     switch (target.k) {
         case "field":
             return fieldPtr(g, parts[0].v, structOf(target.object.type), target.name)
-        case "iface-field": {
-            const it = target.value.type
-            const member = it.kind === "interface" ? it.members[target.index] : null
-            const optional = member !== null && member.k === "field" && member.optional ? member.name : null
-            return ifaceField(g, parts[0], target.index, optional)
-        }
+        case "iface-field":
+            process.panic("a field of an interface is written through placeSlot")
         case "union-field":
             return unionFieldPtr(g, parts[0], unionOf(target.value.type), target.name)
         case "element":
@@ -538,10 +543,16 @@ export function placePointer(g: Emitter, target: Place, parts: V[], type: Type):
 export function incdec(g: Emitter, e: IncDec): V {
     const target = e.target
     let ptr: string
+    let fieldSlot: IfaceSlot | null = null
     if (target.k === "local") ptr = g.place(target.local)
     else if (target.k === "element") ptr = placePointer(g, target, placeParts(g, target), e.type)
     else if (target.k === "field") ptr = placePointer(g, target, placeParts(g, target), e.type)
-    else ptr = placePointer(g, target, placeParts(g, target), e.type)
+    else {
+        const parts = placeParts(g, target)
+        const found = placeSlot(g, target, parts, e.type, true)
+        fieldSlot = found
+        ptr = found !== null ? found.ptr : placePointer(g, target, parts, e.type)
+    }
     const old = g.load(ptr, e.type)
     const t = e.type
     let next: V
@@ -551,6 +562,7 @@ export function incdec(g: Emitter, e: IncDec): V {
         next = g.b.value(old.ty, `${e.op === "++" ? "fadd" : "fsub"} ${old.ty} ${old.v}, ${floatConstant(1, t.bits)}`)
     else next = g.b.value(old.ty, `${e.op === "++" ? "add" : "sub"} ${old.ty} ${old.v}, 1`)
     g.store(next, ptr, e.type)
+    if (fieldSlot !== null) ifaceWriteBack(g, fieldSlot, e.type)
     return e.prefix ? next : old
 }
 
@@ -901,20 +913,133 @@ export function inject(g: Emitter, u: UnionType, i: int, p: V | null): V {
 function ifaceOffset(g: Emitter, value: V, index: int): V {
     const table = g.extract(value, 1, "ptr")
     const entry = g.b.value("ptr", `getelementptr ptr, ptr ${table.v}, i64 ${index + 1}`)
-    return g.b.value("i64", `load i64, ptr ${entry.v}`)
+    // Tables never change: the load can be moved and merged across calls.
+    return g.b.value("i64", `load i64, ptr ${entry.v}, !invariant.load !{}`)
 }
 
-/** The address of a field of an interface value's struct; panics for a missing optional field. */
-export function ifaceField(g: Emitter, value: V, index: int, optional: string | null = null): string {
+/** The pair of accessor functions of an interface table entry below -1 (see `accessorEntry` in llvm/collections.ore). */
+function accessorPair(g: Emitter, entry: V): string {
+    const bits = g.b.value("i64", `xor i64 ${entry.v}, -9223372036854775808`)
+    return g.b.value("ptr", `inttoptr i64 ${bits.v} to ptr`).v
+}
+
+/** Whether the field at `index` of interface `it` may be implemented with accessors: see `Emitter.accessorFields`. */
+function viaAccessors(g: Emitter, it: Type, index: int): bool {
+    return it.kind === "interface" && g.accessorFields.has(it.members[index].name)
+}
+
+/**
+ * Reads the field at `index` of an interface's members: a load at its offset,
+ * or a call of the getter that implements it; a missing `optional` field
+ * reads as null.
+ */
+export function ifaceRead(g: Emitter, value: V, it: Type, index: int, type: Type, optional: bool): V {
     const data = g.extract(value, 0, "ptr")
-    const offset = ifaceOffset(g, value, index)
-    if (optional !== null)
-        check(
+    const entry = ifaceOffset(g, value, index)
+    const load = () => g.load(g.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${entry.v}`).v, type)
+    const ty = g.lt(type)
+    const plain = () => {
+        if (!optional) return load()
+        const u = unionOf(type)
+        return choose(
             g,
-            g.b.value("i1", `icmp ne i64 ${offset.v}, -1`),
-            `assignment to the missing optional field '${optional}'`,
+            g.b.value("i1", `icmp eq i64 ${entry.v}, -1`),
+            () => inject(g, u, nullIndex(u), null),
+            load,
+            ty,
         )
-    return g.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${offset.v}`).v
+    }
+    // A field that no struct implements with accessors is at its offset.
+    if (!viaAccessors(g, it, index)) return plain()
+    const viaAccessor = g.b.label("iget")
+    const direct = g.b.label("iload")
+    const end = g.b.label("iread")
+    // Fields are the common case: the call is off the straight path.
+    g.b.unlikelyBr(g.b.value("i1", `icmp slt i64 ${entry.v}, -1`), viaAccessor, direct)
+    g.b.start(viaAccessor)
+    const get = g.b.value("ptr", `load ptr, ptr ${accessorPair(g, entry)}`)
+    const got = callIndirect(g, get.v, ty, [data])
+    const fromAccessor = g.b.block
+    g.b.br(end)
+    g.b.start(direct)
+    const read = plain()
+    const fromField = g.b.block
+    g.b.br(end)
+    g.b.start(end)
+    return g.b.value(ty, `phi ${ty} [ ${got.v}, %${fromAccessor} ], [ ${read.v}, %${fromField} ]`)
+}
+
+/**
+ * An interface field written by an assignment: the address to store to, which
+ * for a field implemented with accessors is `temp`, written back through the
+ * setter by `ifaceWriteBack`.
+ */
+export class IfaceSlot {
+    constructor(
+        readonly ptr: string,
+        readonly temp: string,
+        readonly accessor: V,
+        readonly entry: V,
+        readonly data: V,
+    ) {}
+}
+
+/**
+ * The slot of the field at `index` of the members of interface `it`, with
+ * `temp` for a field implemented with accessors; `read` calls the getter to
+ * fill it first, for a compound assignment.
+ */
+function ifaceSlot(g: Emitter, it: Type, value: V, index: int, type: Type, read: bool, temp: string): IfaceSlot {
+    const member = it.kind === "interface" ? it.members[index] : null
+    const data = g.extract(value, 0, "ptr")
+    const entry = ifaceOffset(g, value, index)
+    const checkOptional = () => {
+        if (member !== null && member.k === "field" && member.optional)
+            check(
+                g,
+                g.b.value("i1", `icmp ne i64 ${entry.v}, -1`),
+                `assignment to the missing optional field '${member.name}'`,
+            )
+    }
+    if (!viaAccessors(g, it, index)) {
+        checkOptional()
+        const at = g.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${entry.v}`)
+        return new IfaceSlot(at.v, temp, { ty: "i1", v: "false" }, entry, data)
+    }
+    const accessor = g.b.value("i1", `icmp slt i64 ${entry.v}, -1`)
+    const viaAccessor = g.b.label("iacc")
+    const direct = g.b.label("ifield")
+    const end = g.b.label("islot")
+    g.b.unlikelyBr(accessor, viaAccessor, direct)
+    g.b.start(viaAccessor)
+    if (read) {
+        const get = g.b.value("ptr", `load ptr, ptr ${accessorPair(g, entry)}`)
+        g.store(callIndirect(g, get.v, g.lt(type), [data]), temp, type)
+    }
+    const fromAccessor = g.b.block
+    g.b.br(end)
+    g.b.start(direct)
+    checkOptional()
+    const field = g.b.value("ptr", `getelementptr i8, ptr ${data.v}, i64 ${entry.v}`)
+    const fromField = g.b.block
+    g.b.br(end)
+    g.b.start(end)
+    const ptr = g.b.value("ptr", `phi ptr [ ${temp}, %${fromAccessor} ], [ ${field.v}, %${fromField} ]`)
+    return new IfaceSlot(ptr.v, temp, accessor, entry, data)
+}
+
+/** Calls the setter with the value stored to the slot of a field implemented with accessors. */
+function ifaceWriteBack(g: Emitter, place: IfaceSlot, type: Type) {
+    if (place.accessor.v === "false") return
+    const viaAccessor = g.b.label("iset")
+    const end = g.b.label("isetend")
+    g.b.unlikelyBr(place.accessor, viaAccessor, end)
+    g.b.start(viaAccessor)
+    const at = g.b.value("ptr", `getelementptr ptr, ptr ${accessorPair(g, place.entry)}, i64 1`)
+    const set = g.b.value("ptr", `load ptr, ptr ${at.v}`)
+    callIndirect(g, set.v, "void", [place.data, g.load(place.temp, type)])
+    g.b.br(end)
+    g.b.start(end)
 }
 
 /**
@@ -1206,10 +1331,36 @@ export function optional(g: Emitter, e: Optional): V {
     )
 }
 
-/** The address of a field that every member of a union has, with the same type. */
+/** The address of a field that every member of a union, all classes and objects, has with the same type. */
 export function unionFieldPtr(g: Emitter, v: V, u: UnionType, name: string): string {
     const end = g.b.label("ufield")
     const incoming: string[] = []
+    for (let i = 0; i < u.members.length; i++) {
+        const here = g.b.label("umember")
+        const next = g.b.label("unext")
+        g.b.condBr(slotTest(g, u, v, i), here, next)
+        g.b.start(here)
+        const object = payload(g, u, v, i)
+        incoming.push(`[ ${fieldPtr(g, object.v, structOf(u.members[i]), name)}, %${g.b.block} ]`)
+        g.b.br(end)
+        g.b.start(next)
+    }
+    g.b.terminate("unreachable")
+    g.b.start(end)
+    return g.b.value("ptr", `phi ptr ${incoming.join(", ")}`).v
+}
+
+/**
+ * The slot of a field that every member of a union has, with the same type,
+ * some members interfaces: the member's slot, as `ifaceSlot` makes it for an
+ * interface, or the field's address for a class or object.
+ */
+function unionFieldSlot(g: Emitter, v: V, u: UnionType, name: string, type: Type, read: bool, temp: string): IfaceSlot {
+    const end = g.b.label("ufield")
+    const ptrs: string[] = []
+    const accessors: string[] = []
+    const entries: string[] = []
+    const datas: string[] = []
     for (let i = 0; i < u.members.length; i++) {
         const m = u.members[i]
         const here = g.b.label("umember")
@@ -1217,20 +1368,39 @@ export function unionFieldPtr(g: Emitter, v: V, u: UnionType, name: string): str
         g.b.condBr(slotTest(g, u, v, i), here, next)
         g.b.start(here)
         const object = payload(g, u, v, i)
-        let ptr = ""
+        let ptr = "null"
+        let accessor = "false"
+        let entry = "0"
+        let data = "null"
         if (m.kind === "struct") ptr = fieldPtr(g, object.v, m, name)
         else if (m.kind === "interface") {
             let index = -1
             for (let k = 0; k < m.members.length && index === -1; k++) if (m.members[k].name === name) index = k
-            ptr = ifaceField(g, object, index)
+            const slot = ifaceSlot(g, m, object, index, type, read, temp)
+            ptr = slot.ptr
+            accessor = slot.accessor.v
+            entry = slot.entry.v
+            data = slot.data.v
         }
-        incoming.push(`[ ${ptr}, %${g.b.block} ]`)
+        const block = g.b.block
+        ptrs.push(`[ ${ptr}, %${block} ]`)
+        accessors.push(`[ ${accessor}, %${block} ]`)
+        entries.push(`[ ${entry}, %${block} ]`)
+        datas.push(`[ ${data}, %${block} ]`)
         g.b.br(end)
         g.b.start(next)
     }
     g.b.terminate("unreachable")
     g.b.start(end)
-    return g.b.value("ptr", `phi ptr ${incoming.join(", ")}`).v
+    // Without a field so named implemented with accessors, nothing is written back.
+    const none = temp === "null"
+    return new IfaceSlot(
+        g.b.value("ptr", `phi ptr ${ptrs.join(", ")}`).v,
+        temp,
+        none ? { ty: "i1", v: "false" } : g.b.value("i1", `phi i1 ${accessors.join(", ")}`),
+        g.b.value("i64", `phi i64 ${entries.join(", ")}`),
+        g.b.value("ptr", `phi ptr ${datas.join(", ")}`),
+    )
 }
 
 export function unionField(g: Emitter, e: UnionField): V {
@@ -1312,7 +1482,7 @@ export function unionFieldInline(g: Emitter, u: UnionType, v: V, name: string, r
             let index = -1
             for (let k = 0; k < m.members.length && index === -1; k++) if (m.members[k].name === name) index = k
             type = m.members[index].type
-            read = g.load(ifaceField(g, object, index), type)
+            read = ifaceRead(g, object, m, index, type, false)
         }
         g.b.emit(`store ${ty} ${recast(g, read, type, resultType).v}, ptr ${result}`)
         g.b.br(end)

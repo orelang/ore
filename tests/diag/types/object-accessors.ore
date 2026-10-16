@@ -44,13 +44,27 @@ const field = {
     },
 }
 
-// Accessors do not implement interface fields yet, as in classes.
+// A getter implements a read-only interface field; a writable one needs a setter too.
 interface Sized {
     readonly size: int
+}
+interface Resizable {
+    size: int
 }
 const sized = {
     get size(): int {
         return 1
     },
 }
-const s: Sized = sized // error: Type '{ get size(): i64 }' is not assignable to type 'Sized': property 'size' is an accessor, and accessors do not implement interface fields yet.
+const s: Sized = sized
+const r: Resizable = sized // error: Type '{ get size(): i64 }' is not assignable to type 'Resizable': property 'size' has a getter but no setter.
+const setOnly = {
+    set size(v: int) {},
+}
+const t: Sized = setOnly // error: Type '{ set size(value: i64) }' is not assignable to type 'Sized': property 'size' has a setter but no getter.
+const named = {
+    get size(): string {
+        return ""
+    },
+}
+const u: Sized = named // error: Type '{ get size(): string }' is not assignable to type 'Sized': property 'size' has type 'string' instead of 'i64'.

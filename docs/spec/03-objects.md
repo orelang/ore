@@ -33,7 +33,7 @@
   in the object and called by reads and writes of the property; the type of
   the literal has the property (printed `{ get fahrenheit(): f64 }`), and two
   literals with the same properties and accessors have the same type. As in
-  classes, accessors do not implement interface fields.
+  classes, accessors implement interface fields.
 - An intersection `A & B` of object types is the object type with the fields
   of both; with an interface among the parts, it is the interface with the
   members of all. A member in two parts must have the same type in both
@@ -68,8 +68,8 @@
   property read and written like a field, by calling them; a getter needs a
   return type annotation, and both must have the same type. A property with
   only a getter is read-only. `p.x op= v` and `p.x++` call the getter, then
-  the setter, evaluating `p` once. Accessors do not implement interface
-  fields.
+  the setter, evaluating `p` once. Public accessors implement interface
+  fields (see [Interfaces](#interfaces)).
 - `new C(...)` allocates an instance, assigns parameter properties, runs
   field initializers in order, then the constructor body. Field initializers
   cannot use `this`.
@@ -168,6 +168,16 @@ on that slot reads the class table.
   them, with the same types, converts implicitly to the interface: at
   assignments, arguments, returns and array elements. Private members do not
   count, and a `readonly` field cannot satisfy a writable one.
+- A getter implements a field of the interface (`get size(): int` for
+  `readonly size: int`); a writable field needs a getter and a setter.
+  Reading the field through the interface calls the getter, writing it the
+  setter (`x.size += 1` both, also through a union with interface members).
+  In the interface table, the entry of a field is its offset in the object,
+  or, for accessors, the address of the pair of functions offset by 2^63,
+  which makes it negative. A read or write through an interface tests the
+  sign only for a field whose name some class or object in the program
+  implements with accessors; other fields are loaded and stored at their
+  offset, as before.
 - Interfaces are structural: interfaces with the same members are the same
   type. An interface converts implicitly to an interface with a subset of its
   members. `interface A extends B` includes the members of `B`.

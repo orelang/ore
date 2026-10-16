@@ -1,0 +1,105 @@
+// Getters and setters implement interface fields: a getter a read-only one,
+// a getter and a setter a writable one.
+
+interface Reading {
+    readonly value: int
+}
+
+interface Setting {
+    value: int
+}
+
+interface Labeled {
+    readonly label?: string
+}
+
+class Gauge {
+    raw = 20
+    reads = 0
+    get value(): int {
+        this.reads++
+        return this.raw
+    }
+    set value(v: int) {
+        this.raw = v
+    }
+}
+
+class Plain {
+    value = 7
+}
+
+class Generic<T> implements Reading {
+    constructor(readonly item: T) {}
+    get value(): int {
+        return 5
+    }
+}
+
+class Named {
+    get label(): string | null {
+        return "from a getter"
+    }
+}
+
+function show(r: Reading) {
+    console.log(r.value)
+}
+
+/** Writes through the interface: a compound assignment, an increment and an assignment. */
+function bump(s: Setting) {
+    s.value += 10
+    s.value++
+    s.value = s.value * 2
+}
+
+const gauge = new Gauge()
+show(gauge)
+show(new Plain())
+bump(gauge)
+console.log(gauge.raw, gauge.reads)
+
+const plain = new Plain()
+bump(plain)
+console.log(plain.value)
+
+const literal = {
+    n: 3,
+    get value(): int {
+        return this.n
+    },
+    set value(v: int) {
+        this.n = v
+    },
+}
+show(literal)
+bump(literal)
+console.log(literal.n)
+
+const constant: Reading = {
+    get value(): int {
+        return 42
+    },
+}
+const all: Reading[] = [gauge, plain, literal, constant, new Generic<string>("x")]
+for (const r of all) console.log(r.value)
+
+// Narrowed to an interface with fewer members, the getter is kept.
+const setting: Setting = gauge
+const reading: Reading = setting
+console.log(reading.value)
+
+const labeled: Labeled = new Named()
+console.log(labeled.label)
+
+// A union with an interface member reads the field through the getter too.
+const either: Reading | Plain = new Generic<int>(1)
+console.log(either.value)
+
+// Through a union with an interface member, the setter writes the field.
+const settings: Setting | Plain = new Gauge()
+settings.value += 1
+settings.value++
+console.log(settings.value)
+settings.value = 0
+console.log(settings.value)
