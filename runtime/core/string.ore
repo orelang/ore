@@ -277,8 +277,11 @@ function strIndexOf(s: string, sub: string, from: int): int {
     if (sub.length === 0) return start
     // Comparing the rest only where the first byte is there.
     const first = unsafe.load<u8>(q)
-    for (let i = start; i + sub.length <= s.length; i++) {
-        if (unsafe.load<u8>(unsafe.add(p, i)) === first && bytesAt(p, i, q, sub.length)) return i
+    const rest = sub.length - 1
+    const last = s.length - rest
+    for (let i = start; i < last; i++) {
+        if (unsafe.load<u8>(unsafe.add(p, i)) === first && (rest === 0 || bytesAt(p, i + 1, unsafe.add(q, 1), rest)))
+            return i
     }
     return -1
 }
