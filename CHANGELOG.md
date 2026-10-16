@@ -5,6 +5,13 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- The collector marks alongside the program: two short stops (scanning
+  the roots, then finishing) instead of one for the whole collection, with
+  a write barrier the compiler emits before stores of pointers into the
+  heap. It scans objects precisely, by a pointer map of their type, and
+  never scans arrays of numbers; it gives free pages back to the system;
+  and its pace is set by `ORE_GOGC` and `ORE_MEMLIMIT`. `ORE_GCSTW=1`
+  marks with the world stopped, as before.
 - Diagnostics point at the places related to them: the first declaration of
   a name declared twice, the declaration of a variable read before it is
   assigned, the parameter, variable or field a value does not convert to,

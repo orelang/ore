@@ -150,15 +150,22 @@ The architecture of Go's collector, in Ore
 mark-sweep collector that replaced Boehm, with size-classed spans, a page
 table for interior pointers, per-thread allocation without locks, stopping
 the world with a signal, conservative scanning of stacks and precise roots
-for globals, marking on every worker in parallel. Next, in order:
+for globals, marking on every worker in parallel; and now:
 
-- A precise heap: the compiler emits a bitmap of pointer words per type, as
-  Go's `gcdata`, and allocation takes it.
-- Concurrent marking: a hybrid write barrier emitted on every store of a
-  pointer into the heap (and in bulk copies of the runtime), the world
-  stopped only to turn it on and to finish; mark assists for tasks that
-  allocate, and a pacer (`GOGC`, a memory limit).
-- Concurrent and lazy sweeping; returning free pages to the system.
+- A precise heap (done): the compiler emits a pointer map per allocated
+  type (`gcdata`), allocation records it per object, and marking reads
+  only the pointer words; arrays keep their element type, so buffers of
+  numbers are never scanned. Left: maps, sets and channels (in progress).
+- Concurrent marking (done, prototype): the world stops to scan the roots
+  and turn on a snapshot-at-the-beginning write barrier (emitted before
+  every store of a pointer into the heap, and around `unsafe.copy`,
+  `unsafe.fill` and atomic stores), runs while the markers mark, and stops
+  again to finish and sweep; objects allocated meanwhile are marked.
+  Left: mark assists for tasks that allocate during marking (they wait for
+  the collection now), shorter second stops.
+- A pacer (done): `ORE_GOGC` and a soft limit, `ORE_MEMLIMIT`.
+- Giving free pages back to the system (done); left: concurrent and lazy
+  sweeping.
 
 Stacks stay scanned conservatively: precise stack maps in LLVM need
 statepoints around every call, which keep LLVM from inlining Ore calls, and
