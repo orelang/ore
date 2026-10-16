@@ -821,6 +821,47 @@ export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope
     c.fn = null
 }
 
+/** Whether a node is inside the declaration of a class. */
+function insideClass(c: Checker, info: ClassInfo, node: Node): bool {
+    const decl = info.decl
+    return c.sourceOf(decl) === c.sourceOf(node) && decl.start <= node.start && node.end <= decl.end
+}
+
+/** Whether the constructor of a class is declared `private`, `protected`, or neither. */
+export function ctorAccess(info: ClassInfo): "private" | "protected" | "public" {
+    const ctor = info.ctorDecl
+    if (ctor === null) return "public"
+    if (hasModifier(ctor, "PrivateKeyword")) return "private"
+    if (hasModifier(ctor, "ProtectedKeyword")) return "protected"
+    return "public"
+}
+
+/**
+ * Reports `new` of a class whose constructor is private or protected outside
+ * the class's declaration, as TypeScript does: subclasses call a protected
+ * one through `super(...)` only.
+ */
+export function checkCtorAccess(c: Checker, info: ClassInfo, node: Node): bool {
+    const access = ctorAccess(info)
+    if (access === "public" || insideClass(c, info, node)) return true
+    c.error(
+        node,
+        `Constructor of class '${info.type.name}' is ${access} and only accessible within the class declaration.`,
+    )
+    return false
+}
+
+/** Reports a class that extends a class with a private constructor, which only the class itself can call. */
+function checkPrivateBase(c: Checker, info: ClassInfo, baseInfo: ClassInfo) {
+    if (ctorAccess(baseInfo) !== "private" || insideClass(c, baseInfo, info.decl)) return
+    for (const clause of heritageClauses(info.decl)) {
+        if (heritageToken(clause, c.sourceOf(info.decl).text) !== "extends") continue
+        const refs = typeNodes(clause)
+        if (refs.length > 0)
+            c.error(refs[0], `Cannot extend a class '${baseInfo.type.name}': its constructor is private.`)
+    }
+}
+
 export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
     for (const [_, member] of info.statics) {
         const func = member.func
@@ -835,6 +876,7 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
     const thisRef: Expr = new LocalRef(type, self)
     const base = type.base
     const baseInfo = base === null ? null : c.classInfos.get(base.id)
+    if (baseInfo !== null) checkPrivateBase(c, info, baseInfo)
 
     // Constructor: allocate, assign parameter properties, run field initializers, then the body.
     // With a base class, `super(...)` initializes the base class, then assigns and runs those.

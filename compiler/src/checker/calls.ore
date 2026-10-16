@@ -92,7 +92,7 @@ import {
 import { bigFromF64, bigText, bigToI64 } from "./bigint"
 import { type Checker } from "./base"
 import { consoleCall } from "./console"
-import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
+import { checkAccess, checkCtorAccess, dispatch, genericMethod, initOf, itab } from "./classes"
 import { closureCallee, genericCall, instantiate, isInternal } from "./declarations"
 import {
     checkArrayElements,
@@ -1578,6 +1578,7 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         const instanceInfo = c.classInfos.get(instance.id)
         if (instanceInfo !== null && instanceInfo.abstract)
             return c.fail(node, `Cannot create an instance of an abstract class '${instance.name}'.`)
+        if (instanceInfo !== null && !checkCtorAccess(c, instanceInfo, node)) return errorOperand
         return call.bind(
             callFunc(
                 c,
@@ -1599,6 +1600,7 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
     if (ctor === null) return constructEarly(c, type)
     const info = c.classInfos.get(type.id)
     if (info !== null && info.abstract) return c.fail(node, `Cannot create an instance of an abstract class '${name}'.`)
+    if (info !== null && !checkCtorAccess(c, info, node)) return errorOperand
     return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`)
 }
 

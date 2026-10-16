@@ -100,6 +100,11 @@
 - Methods are called on instances; `obj.method` without a call is a
   function value bound to `obj`.
 - `class C implements I` checks that `C` has the members of `I`.
+- A `private` constructor is called with `new` only inside the class
+  declaration (a static factory, a method), and the class cannot be
+  extended ([ORE5060](../errors/ORE5060.md)). A `protected` constructor is
+  also called with `new` only inside the class declaration, and subclasses
+  call it through `super(...)` ([ORE5059](../errors/ORE5059.md)).
 
 ## Inheritance
 

@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `private constructor` and `protected constructor` are enforced, as in
+  TypeScript: `new C()` outside the class declaration is ORE5059, and
+  extending a class with a private constructor is ORE5060; subclasses call
+  a protected one through `super(...)`.
 - Interfaces merge and extend classes, as in TypeScript: a second
   `interface X` adds its members to the first instead of reporting
   ORE5050, and `interface I extends SomeClass` takes the class's public
