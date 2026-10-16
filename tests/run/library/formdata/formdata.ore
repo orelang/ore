@@ -1,0 +1,54 @@
+// FormData, as JavaScript's: entries of a name and a string or a file, in
+// order; get gives the first value of a name, null when there is none.
+const f = new FormData()
+f.append("a", "1")
+f.append("b", "2")
+f.append("a", "3")
+console.log(f.get("a"), f.get("b"), f.get("missing"), f.getAll("a"), f.getAll("missing"))
+console.log(f.has("a"), f.has("A"), f.has("missing"))
+
+// set keeps the place of the first entry of the name and removes the others.
+f.set("a", "4")
+console.log([...f])
+f.set("c", "5")
+f.delete("b")
+f.delete("never")
+console.log([...f])
+
+// Line breaks are kept as given: the multipart encoding changes them, not FormData.
+f.append("a\r\nb", "x\ry\nz\r\n")
+console.log(f.getAll("a\r\nb"))
+
+// A blob becomes a file named "blob", or as the third argument says; a file
+// stays the same file, or a new one of the same bytes, type and time when
+// renamed.
+const blob = new Blob(["xyz"], { type: "text/plain" })
+const file = new File(["zz"], "orig.bin", { type: "application/x-a", lastModified: 5 })
+f.append("blob", blob)
+f.append("named", blob, "q.txt")
+f.append("file", file)
+f.append("renamed", file, "renamed.bin")
+for (const name of ["blob", "named", "file", "renamed"]) {
+    const v = f.get(name)
+    if (v instanceof File) console.log(name, v.name, v.type, v.size, v === file)
+}
+const renamed = f.get("renamed")
+if (renamed instanceof File) console.log(renamed.lastModified, await renamed.text())
+const named = f.get("named")
+if (named instanceof File) console.log(await named.text())
+
+// set takes a blob and a file name too.
+f.set("blob", blob, "set.txt")
+const set = f.get("blob")
+if (set instanceof File) console.log(set.name, f.getAll("blob").length)
+
+// Values are strings or files: typeof and instanceof tell them apart.
+for (const value of f.getAll("a")) console.log(typeof value === "string" ? value : "file")
+
+// forEach gives the value, the name and the FormData, in order.
+const small = new FormData()
+small.append("x", "1")
+small.append("y", file)
+small.forEach((value, name, parent) => {
+    console.log(name, typeof value === "string" ? value : value.name, parent === small)
+})

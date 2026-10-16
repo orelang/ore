@@ -1,0 +1,35 @@
+// console.log prints a FormData as Node does: a property for each name, in
+// the order it came first, with its value, or an array of its values; laid
+// out as an object of its own, never [Object], indented to where it is printed.
+const f = new FormData()
+f.append("a", "1")
+f.append("file", new File(["xyz"], "a.txt", { type: "text/plain", lastModified: 1700000000000 }))
+f.append("big", new File(["zz"], "orig.bin", { lastModified: 5 }), "a-longer-name-than-the-line.bin")
+console.log(f)
+console.log(new FormData())
+console.log([f])
+console.log({ x: { y: { z: f } } })
+
+// Many values of a name are an array; names that are not identifiers are quoted.
+const many = new FormData()
+many.append("a", "1")
+many.append("b-c", "2")
+many.append("a", "3")
+many.append("a", new File([], "e.txt", { lastModified: 0 }))
+many.append("", "empty")
+console.log(many)
+console.log({ list: [many] })
+
+// Longer than a line, or many short ones: one per line.
+const long = new FormData()
+for (let i = 0; i < 6; i++) long.append(`name${i}`, `value number ${i}`)
+console.log(long)
+const short = new FormData()
+short.append("x", "1")
+console.log(short, [short])
+const values = new FormData()
+for (let i = 0; i < 8; i++) values.append("v", `${i}`)
+console.log(values)
+
+// JSON.stringify writes {}, as JavaScript, which sees no properties of its own.
+console.log(JSON.stringify(f), JSON.stringify({ f, n: 1 }))

@@ -1,0 +1,246 @@
+// The global class `FormData` of JavaScript's hosts, after the XMLHttpRequest
+// Standard: a list of names and values, each value a string or a file, as a
+// form sends them. A blob given as a value becomes a file named "blob", or
+// named as the call says. Ore has no form elements, so a `FormData` starts
+// empty; encoding one as `multipart/form-data` is for the bodies of fetch.
+
+import { type Inspection, begin, end, entry, field, key, paint, quote } from "ore:runtime/inspect"
+import { Blob, File, inspectBlob } from "ore:runtime/blob"
+
+/** A value of a `FormData`: a string or a file, as JavaScript's `FormDataEntryValue`. */
+export type FormDataEntryValue = string | File
+
+/**
+ * The value an entry keeps, as the standard's "create an entry": a string
+ * as a scalar value string; a blob as a file named "blob", or `filename`; a
+ * file as it is, or a file of the same bytes, type and time named
+ * `filename` when it is given.
+ */
+function entryValue(value: string | Blob, filename: string | null): FormDataEntryValue {
+    if (typeof value === "string") return value.toWellFormed()
+    if (value instanceof File && filename === null) return value
+    const name = filename === null ? "blob" : filename.toWellFormed()
+    if (value instanceof File) return new File([value], name, { type: value.type, lastModified: value.lastModified })
+    return new File([value], name, { type: value.type })
+}
+
+/** The entries of a `FormData`, for console.log, outside the class: its static block sets it. */
+let entryList: (data: FormData) => [string, FormDataEntryValue][] = (_) => []
+
+/**
+ * Names and values as a form sends them, as JavaScript's `FormData`: `new
+ * FormData()`, then `append("name", "value")` or `append("file", blob,
+ * "a.txt")`. A name may have many values, kept in the order they were added.
+ */
+export class FormData {
+    /** The entries, in order. */
+    private list: [string, FormDataEntryValue][] = []
+
+    static {
+        entryList = (data) => data.list
+    }
+
+    /**
+     * Adds an entry at the end. A blob becomes a file named "blob", or
+     * `filename`; a file is renamed `filename` when it is given.
+     */
+    append(name: string, value: string | Blob, filename: string | null = null): void {
+        this.list.push([name.toWellFormed(), entryValue(value, filename)])
+    }
+
+    /** Removes the entries of a name. */
+    delete(name: string): void {
+        const wanted = name.toWellFormed()
+        this.list = this.list.filter((pair) => pair[0] !== wanted)
+    }
+
+    /** The value of the first entry of a name, or null. */
+    get(name: string): FormDataEntryValue | null {
+        const wanted = name.toWellFormed()
+        for (const pair of this.list) if (pair[0] === wanted) return pair[1]
+        return null
+    }
+
+    /** The values of the entries of a name, in order. */
+    getAll(name: string): FormDataEntryValue[] {
+        const wanted = name.toWellFormed()
+        const out: FormDataEntryValue[] = []
+        for (const pair of this.list) if (pair[0] === wanted) out.push(pair[1])
+        return out
+    }
+
+    /** Whether there is an entry of a name. */
+    has(name: string): bool {
+        const wanted = name.toWellFormed()
+        return this.list.some((pair) => pair[0] === wanted)
+    }
+
+    /**
+     * Sets the first entry of a name to the value and removes the others, or
+     * adds an entry if there is none. The value is taken as by `append`.
+     */
+    set(name: string, value: string | Blob, filename: string | null = null): void {
+        const wanted = name.toWellFormed()
+        const made = entryValue(value, filename)
+        let found = false
+        const out: [string, FormDataEntryValue][] = []
+        for (const pair of this.list) {
+            if (pair[0] !== wanted) {
+                out.push(pair)
+            } else if (!found) {
+                found = true
+                out.push([wanted, made])
+            }
+        }
+        if (!found) out.push([wanted, made])
+        this.list = out
+    }
+
+    /** Calls `callback(value, name, data)` for each entry, in order. */
+    forEach(callback: (value: FormDataEntryValue, key: string, parent: FormData) => void): void {
+        for (let i = 0; i < this.list.length; i++) callback(this.list[i][1], this.list[i][0], this)
+    }
+
+    /** An iterator of the names, in order. */
+    keys(): FormDataIterator<string> {
+        return new FormDataIterator<string>(
+            () => this.list,
+            (pair) => pair[0],
+        )
+    }
+
+    /** An iterator of the values, in order. */
+    values(): FormDataIterator<FormDataEntryValue> {
+        return new FormDataIterator<FormDataEntryValue>(
+            () => this.list,
+            (pair) => pair[1],
+        )
+    }
+
+    /** An iterator of the `[name, value]` pairs, in order. */
+    entries(): FormDataIterator<[string, FormDataEntryValue]> {
+        return new FormDataIterator<[string, FormDataEntryValue]>(
+            () => this.list,
+            (pair): [string, FormDataEntryValue] => [pair[0], pair[1]],
+        )
+    }
+
+    /** The `[name, value]` pairs, as `entries()`: what `for...of` and spread take. */
+    [Symbol.iterator](): FormDataIterator<[string, FormDataEntryValue]> {
+        return this.entries()
+    }
+}
+
+/**
+ * The iterator of `keys()`, `values()` and `entries()`: what `read` makes of
+ * each entry. It is live, as JavaScript's: it reads the entries again at
+ * every step, so it sees the changes made meanwhile; once done, it stays done.
+ */
+export class FormDataIterator<T> {
+    private index = 0
+    private done = false
+
+    constructor(
+        private readonly pairs: () => [string, FormDataEntryValue][],
+        private readonly read: (pair: [string, FormDataEntryValue]) => T,
+    ) {}
+
+    next(): IteratorResult<T, void> {
+        const list = this.pairs()
+        if (this.done || this.index >= list.length) {
+            this.done = true
+            return { value: null, done: true }
+        }
+        const value = this.read(list[this.index])
+        this.index++
+        return { value, done: false }
+    }
+
+    [Symbol.iterator](): IterableIterator<T> {
+        return this
+    }
+
+    /** `[object FormData Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object FormData Iterator]"
+    }
+}
+
+/**
+ * The `[name, value]` pairs of a `FormData` as `new URLSearchParams` takes
+ * them, as JavaScript converts each value to a string: a file is `[object
+ * File]`.
+ */
+export function formDataPairs(data: FormData): [string, string][] {
+    const out: [string, string][] = []
+    for (const pair of entryList(data)) {
+        const value = pair[1]
+        out.push([pair[0], typeof value === "string" ? value : "[object File]"])
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// console.log
+
+/** A value of an entry as Node prints it, `depth` levels deep in the object of the entries. */
+function valueText(s: Inspection, value: FormDataEntryValue, depth: int): string {
+    if (typeof value === "string") return paint(s, quote(value), 32, 39)
+    return inspectBlob(s, value, depth)
+}
+
+/**
+ * A `FormData` as Node prints it, `FormData { a: '1', f: File { ... } }`:
+ * a property for each name, in the order each name came first, with its
+ * value, or an array of its values when it has more than one. Node formats
+ * them as an object of its own, `[Object: null prototype] { ... }`, at the
+ * top level (never `[Object]`), drops the prefix and indents the lines to
+ * where they are printed.
+ */
+//ore:runtime ore_rt_inspect_formdata
+function inspectFormData(s: Inspection, data: FormData, depth: int): string {
+    const names: string[] = []
+    const values: FormDataEntryValue[][] = []
+    for (const pair of entryList(data)) {
+        const at = names.indexOf(pair[0])
+        if (at < 0) {
+            names.push(pair[0])
+            values.push([pair[1]])
+        } else {
+            values[at].push(pair[1])
+        }
+    }
+    if (names.length === 0) return "FormData {}"
+    const open = "[Object: null prototype] {"
+    const outer = s.currentDepth
+    s.currentDepth = 0
+    const shown = begin(s, unsafe.addressOf(data), names.length, 0, open, "}", "[Object]")
+    if (shown !== "") {
+        s.currentDepth = outer
+        return shown
+    }
+    for (let i = 0; i < names.length; i++) {
+        const list = values[i]
+        if (list.length === 1) {
+            field(s, key(s, names[i]), valueText(s, list[0], 1))
+            continue
+        }
+        // The values of a name, as an array one level deeper.
+        const short = begin(s, unsafe.addressOf(list), list.length, 1, "[", "]", "[Array]")
+        if (short !== "") {
+            field(s, key(s, names[i]), short)
+            continue
+        }
+        for (const value of list) entry(s, valueText(s, value, 2))
+        field(s, key(s, names[i]), end(s, "[", "]", 1, true, false))
+    }
+    const text = end(s, open, "}", 0, false, false)
+    s.currentDepth = outer
+    return `FormData ${text.slice(open.length - 1).replaceAll("\n", `\n${" ".repeat(depth * 2)}`)}`
+}
+
+/** How JSON.stringify writes a `FormData`: `{}`, as JavaScript, which sees no properties of its own. */
+//ore:runtime ore_rt_formdata_json
+function jsonFormData(data: FormData): string {
+    return "{}"
+}

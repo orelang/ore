@@ -1,0 +1,42 @@
+// FormData is iterable: the entries in order, with keys, values and entries
+// iterators that see the changes made meanwhile.
+const f = new FormData()
+f.append("a", "1")
+f.append("b", "2")
+f.append("a", "3")
+for (const [name, value] of f) console.log(name, value)
+console.log([...f.keys()], [...f.values()])
+console.log(Array.from(f.entries()), Array.from(f).length)
+
+// The iterator protocol by hand; a done iterator stays done.
+const one = new FormData()
+one.append("a", "1")
+const it = one.keys()
+console.log(it.next(), it.next(), it.next())
+console.log(it.toString(), it[Symbol.iterator]().next())
+console.log(f[Symbol.iterator]().next().value)
+
+// Live: an entry added while iterating is visited, a removed one is not.
+const live = new FormData()
+live.append("a", "1")
+live.append("b", "2")
+const seen: string[] = []
+for (const [k, v] of live) {
+    seen.push(`${k}=${typeof v === "string" ? v : v.name}`)
+    if (k === "a") live.append("c", "3")
+}
+console.log(seen)
+const keys = live.keys()
+console.log(keys.next().value)
+live.delete("b")
+console.log(keys.next().value, keys.next().done, keys.next().done)
+for (const k of new FormData().keys()) console.log("never", k)
+
+// A URLSearchParams from a FormData: a file is "[object File]", as
+// JavaScript makes it a string.
+const form = new FormData()
+form.append("q", "a b")
+form.append("file", new File(["x"], "x.txt"))
+form.append("q", "&")
+const params = new URLSearchParams(form)
+console.log(params.toString(), params.getAll("q"))

@@ -223,6 +223,15 @@ before 1.0, a minor version may change the language.
 - An object literal argument of a generic call converts to the object type
   of its parameter once the type arguments are inferred, optional fields
   left out: `new CustomEvent("x", { detail: 1 })`.
+- `FormData`, the global class of the XMLHttpRequest Standard: `new
+  FormData()` (no form elements in Ore), `append` and `set` with a string
+  or a blob (a blob becomes a `File` named `"blob"` or the file name
+  given), `delete`, `get` (`null` when missing), `getAll`, `has` and
+  `forEach`; iterable in order, with live `keys`, `values` and `entries`;
+  values are `string | File`. `new URLSearchParams(formData)` takes its
+  entries, a file as `[object File]`. `console.log` prints it as Node does
+  and `JSON.stringify` writes `{}`. The `multipart/form-data` encoding
+  waits for the bodies of `fetch`.
 
 ## 0.5.0
 

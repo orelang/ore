@@ -1037,6 +1037,49 @@ header names and values.
   `JSON.stringify` writes the private fields, where JavaScript writes `{}`.
 - `Headers` is a class of the runtime written in Ore
   (`runtime/core/headers.ore`), a global name as in JavaScript.
+
+## Form data
+
+```ts
+const form = new FormData()
+form.append("name", "Ore")
+form.append("logo", new Blob(["<svg/>"], { type: "image/svg+xml" }), "logo.svg")
+const logo = form.get("logo")
+if (logo instanceof File) console.log(logo.name, logo.size)  // logo.svg 6
+console.log([...form.keys()], new URLSearchParams(form).get("name"))  // [ 'name', 'logo' ] Ore
+```
+
+`FormData` is JavaScript's, after the XMLHttpRequest Standard: a list of
+names and values as a form sends them, each value a string or a `File`.
+
+- `new FormData()` starts empty: Ore has no form elements, so the
+  constructor takes no `form` or `submitter`.
+- `append(name, value, filename?)` adds an entry at the end, and `set(name,
+  value, filename?)` replaces the entries of a name by one, in the place of
+  the first. `value` is a `string` or a `Blob`: a blob that is not a file
+  becomes a `File` of the same bytes named `"blob"`, or `filename`; a file
+  is kept as it is, or, with `filename`, becomes a new `File` of the same
+  bytes, type and `lastModified` named `filename`. Line breaks are kept as
+  given.
+- `get(name)` is the value of the first entry of a name, a `string |
+  File`, or `null` when there is none (JavaScript's `null` too);
+  `getAll(name)` the values of all of them; `has(name)`; `delete(name)`
+  removes them. Names are compared exactly.
+- A `FormData` is iterable, of `[name, value]` tuples in order: `for (const
+  [name, value] of form)`, spread and `Array.from` take it. `keys()`,
+  `values()` and `entries()` return lazy iterators that read the entries
+  again at each step, so they see the changes made meanwhile, and
+  `forEach((value, name, form) => ...)` visits the same entries.
+- `new URLSearchParams(form)` takes its entries, a file as `[object File]`,
+  as JavaScript converts it to a string.
+- `console.log` prints it as Node does, `FormData { name: 'Ore', logo: File
+  { ... } }`: a property for each name, in the order it came first, with
+  its value, or an array of its values when it has several.
+  `JSON.stringify` writes `{}`, as JavaScript.
+- Differences from JavaScript: no form element to read the entries from;
+  the `multipart/form-data` encoding waits for the bodies of `fetch`.
+- `FormData` is a class of the runtime written in Ore
+  (`runtime/core/formdata.ore`), a global name as in JavaScript.
 ## Random values and timing
 
 ```ts
