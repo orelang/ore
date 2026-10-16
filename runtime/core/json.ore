@@ -928,10 +928,17 @@ function jsonReplacer(o: JsonOptions, replacer: (key: string, value: unknown) =>
     o.replacer = replacer
 }
 
-/** What the replacer function gives for a value at a key. */
+/** Whether the values go through a replacer function. */
+//ore:runtime ore_rt_json_replacing
+function jsonReplacing(o: JsonOptions): bool {
+    return o.replacer !== null
+}
+
+/** What the replacer function gives for a value at a key; without one (an `unknown` written), the value itself. */
 //ore:runtime ore_rt_json_replace
 function jsonReplace(o: JsonOptions, key: string, value: unknown): unknown {
-    return o.replacer!(key, value)
+    const replacer = o.replacer
+    return replacer === null ? value : replacer(key, value)
 }
 
 /** Whether a replacer's result is left out: `JSON.omit`, or a function, as in JavaScript. */

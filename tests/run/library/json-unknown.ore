@@ -1,0 +1,20 @@
+// JSON.stringify writes an `unknown` as the value it holds: alone, in
+// fields, elements and maps, indented, and through a replacer.
+
+class Event {
+    constructor(
+        readonly name: string,
+        readonly detail: unknown,
+    ) {}
+}
+
+const values: unknown[] = [1, 2.5, "two", true, null, [1, 2], { a: 1, b: ["x"] }, new Event("e", { n: 3 })]
+console.log(JSON.stringify(values))
+for (const v of values) console.log(JSON.stringify(v))
+console.log(JSON.stringify(new Event("e", null)))
+const held: unknown = new Date(0)
+console.log(JSON.stringify({ when: new Date(0), detail: held }))
+console.log(JSON.stringify(new Event("nested", new Event("inner", [{ deep: true }])), null, 2))
+console.log(JSON.stringify(new Event("x", { keep: 1, drop: 2 }), ["name", "detail", "keep"]))
+console.log(JSON.stringify(new Event("r", [1, 2]), (key, value) => (typeof value === "number" ? value * 10 : value)))
+console.log("%j", new Event("format", 1))

@@ -264,6 +264,11 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
         case "string":
             g.rt("ore_rt_json_str", [b, v])
             return
+        case "unknown":
+            // The value it holds, written by the JSON function of its type's descriptor, `null` for none.
+            replacingJson(g)
+            writeReplaced(g, b, v, o, depth)
+            return
         case "literal":
             g.rt("ore_rt_json_str", [b, v])
             return
@@ -525,13 +530,27 @@ export function jsonHeld(g: Emitter, t: Type): string {
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     helper(g, name, `define internal void ${name}(ptr %p, ptr %b, ptr %o, i64 %depth)`, (e) => {
-        if (jsonProblem(t) !== null) {
+        if (jsonProblem(t, null, true) !== null) {
             e.panic(`JSON.stringify: a value of type ${typeToString(t)} cannot be converted to JSON`)
             return
         }
         const v = e.load("%p", t)
-        const write = hasParts(e, t) ? jsonReplacer(e, t) : jsonEncoder(e, t)
-        e.b.emit(`call void ${write}(ptr %b, ${v.ty} ${v.v}, ptr %o, i64 %depth)`)
+        const args = `(ptr %b, ${v.ty} ${v.v}, ptr %o, i64 %depth)`
+        if (!hasParts(e, t)) {
+            e.b.emit(`call void ${jsonEncoder(e, t)}${args}`)
+            e.b.terminate("ret void")
+            return
+        }
+        // The parts go through the replacer function if there is one; an `unknown` written
+        // without one is written as its value would be, a replacer array applied.
+        const replacing = e.b.label("replacing")
+        const plain = e.b.label("plain")
+        e.b.condBr(e.rtBool("ore_rt_json_replacing", [{ ty: "ptr", v: "%o" }]), replacing, plain)
+        e.b.start(replacing)
+        e.b.emit(`call void ${jsonReplacer(e, t)}${args}`)
+        e.b.terminate("ret void")
+        e.b.start(plain)
+        e.b.emit(`call void ${jsonEncoder(e, t)}${args}`)
         e.b.terminate("ret void")
     })
     return name
