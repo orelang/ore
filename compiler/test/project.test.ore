@@ -54,6 +54,48 @@ test("resolves relative paths, index files and packages", () => {
     same(resolved("./missing", from), "<none>")
 })
 
+test("a file wins over a directory of the same name", () => {
+    const files = new Map<string, string>()
+    files.set("main.ore", "")
+    files.set("lib.ore", "")
+    files.set("lib/index.ore", "")
+    files.set("lib/inner.ore", "")
+    files.set("only/index.ore", "")
+    const root = project(files)
+    const from = join(root, "main.ore")
+    same(resolved("./lib", from), join(root, "lib.ore"))
+    same(resolved("./lib/index", from), join(root, "lib/index.ore"))
+    same(resolved("./lib/inner", from), join(root, "lib/inner.ore"))
+    same(resolved("./only", from), join(root, "only/index.ore"))
+    same(resolved("./only/", from), join(root, "only/index.ore"))
+    // A trailing slash, `.` and `..` name directories.
+    same(resolved("./lib/", from), join(root, "lib/index.ore"))
+    same(resolved(".", join(root, "lib/inner.ore")), join(root, "lib/index.ore"))
+    same(resolved("..", join(root, "lib/inner.ore")), "<none>")
+    same(resolved("..", join(root, "lib/sub/x.ore")), join(root, "lib/index.ore"))
+})
+
+test("a name imported through `export *` of a directory's index is defined in its module", () => {
+    const files = new Map<string, string>()
+    files.set("main.ore", 'import { answer } from "./lib"\nconsole.log(answer())\n')
+    files.set("lib/index.ore", 'export * from "./values"\n')
+    files.set("lib/values.ore", "export function answer(): int {\n    return 42\n}\n")
+    const root = project(files)
+    const program = loadProgram(join(root, "main.ore"))
+    if (program instanceof Error) fail(program.message)
+    const result = check(program)
+    same(located(result.diagnostics), "")
+    // Go to definition of `answer` in the import and in the call.
+    const found: string[] = []
+    for (const [node, decl] of result.info.definitions) {
+        const from = result.info.sources.get(node)
+        const to = result.info.sources.get(decl)
+        if (from === null || to === null || from !== program.entry || node.text !== "answer") continue
+        found.push(`${node.start} ${basename(to.path)}:${decl.start}`)
+    }
+    same(found.join(", "), "9 values.ore:0, 43 values.ore:0")
+})
+
 test("loads modules dependencies first and reports missing modules", () => {
     const files = new Map<string, string>()
     files.set("main.ore", 'import { a } from "./a"\nimport { b } from "./b"\nimport { c } from "./nope"\n')

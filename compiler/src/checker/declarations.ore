@@ -500,8 +500,20 @@ export function declareExports(c: Checker, stmt: Node, module: ModuleInfo) {
         const from = specifier !== null ? importedModule(c, specifier, module) : null
         if (specifier !== null && from === null) return
         const clause = exportClause(stmt)
-        if (clause === null || clause.kind !== "NamedExports") {
-            c.error(stmt, "Use 'export { name }' to re-export; 'export *' is not supported.")
+        if (clause === null || clause.kind === "NamespaceExport") {
+            // The loader reported a missing module.
+            if (from === null) return
+            if (clause === null) {
+                module.stars.push(new StarExport(from, stmt))
+                return
+            }
+            // `export * as ns from "./m"`.
+            const name = nameNode(clause)
+            const target = from
+            addExport(c, module, name.text, name.text, name, from)
+            const entry = module.exports.get(name.text)
+            if (entry !== null && entry.namespace === null && entry.from === from)
+                entry.namespace = new ModuleSymbol(name.text, (n) => exportOf(c, target, n), name)
             return
         }
         for (const e of elements(clause)) {
@@ -522,22 +534,104 @@ export function importedModule(c: Checker, specifier: Node, module: ModuleInfo):
     return target === null ? null : c.modules.get(target)
 }
 
-/** What a module exports under a name, following re-exports. */
-export function exportOf(
-    c: Checker,
-    module: ModuleInfo,
-    name: string,
-    seen: Set<ModuleInfo> | null = null,
-): Exported | null {
-    const visited = seen ?? new Set<ModuleInfo>()
+/** Where an export of a module comes from: the module that declares it, and its entry there. */
+class ExportOrigin {
+    constructor(
+        readonly module: ModuleInfo,
+        readonly entry: ExportEntry,
+    ) {}
+
+    same(other: ExportOrigin): bool {
+        return this.module === other.module && this.entry === other.entry
+    }
+}
+
+/**
+ * The origin of what a module exports under a name, following re-exports and
+ * `export *`: null when the module does not export the name, or when two
+ * `export *` give different ones (an ambiguous name is not exported).
+ */
+function exportOrigin(module: ModuleInfo, name: string, path: Set<ModuleInfo>): ExportOrigin | null {
+    // A cycle of re-exports exports nothing.
+    if (path.has(module)) return null
+    path.add(module)
+    let found: ExportOrigin | null = null
     const entry = module.exports.get(name)
-    if (entry === null || visited.has(module)) return null
-    visited.add(module)
-    const from = entry.from
-    if (from !== null) return exportOf(c, from, entry.local, visited)
-    const value = module.scope.ownValue(entry.local)
-    const type = module.scope.ownType(entry.local)
+    if (entry !== null) {
+        const from = entry.from
+        found =
+            from !== null && entry.namespace === null
+                ? exportOrigin(from, entry.local, path)
+                : new ExportOrigin(module, entry)
+    } else {
+        let ambiguous = false
+        for (const star of module.stars) {
+            const origin = exportOrigin(star.from, name, path)
+            if (origin === null) continue
+            if (found !== null && !found.same(origin)) ambiguous = true
+            found = origin
+        }
+        if (ambiguous) found = null
+    }
+    path.delete(module)
+    return found
+}
+
+/** Whether a module exports a name, itself or through `export *`. */
+export function hasExport(module: ModuleInfo, name: string): bool {
+    return exportOrigin(module, name, new Set<ModuleInfo>()) !== null
+}
+
+/** What a module exports under a name, following re-exports. */
+export function exportOf(c: Checker, module: ModuleInfo, name: string): Exported | null {
+    const origin = exportOrigin(module, name, new Set<ModuleInfo>())
+    if (origin === null) return null
+    const namespace = origin.entry.namespace
+    if (namespace !== null) return new ExportedClass(namespace, null)
+    const local = origin.entry.local
+    const value = origin.module.scope.ownValue(local)
+    const type = origin.module.scope.ownType(local)
     return value !== null || type !== null ? new ExportedClass(value, type) : null
+}
+
+/** The names a module exports, itself and through `export *`, ambiguous ones included. */
+function exportNames(module: ModuleInfo, names: Set<string>, path: Set<ModuleInfo>) {
+    if (path.has(module)) return
+    path.add(module)
+    for (const [name, _] of module.exports) names.add(name)
+    for (const star of module.stars) exportNames(star.from, names, path)
+    path.delete(module)
+}
+
+/**
+ * Reports a name that two `export *` of a module give from different
+ * declarations, at the later one, like TypeScript. The module does not
+ * export such a name unless it exports it itself.
+ */
+function checkStarExports(c: Checker, module: ModuleInfo) {
+    const earlier: Set<string>[] = []
+    for (let i = 0; i < module.stars.length; i++) {
+        const star = module.stars[i]
+        const names = new Set<string>()
+        exportNames(star.from, names, new Set<ModuleInfo>())
+        for (const name of names) {
+            if (module.exports.has(name)) continue
+            const origin = exportOrigin(star.from, name, new Set<ModuleInfo>())
+            for (let j = 0; j < i; j++) {
+                if (!earlier[j].has(name)) continue
+                const other = exportOrigin(module.stars[j].from, name, new Set<ModuleInfo>())
+                if (origin === null || other === null || origin.same(other)) continue
+                const previous = moduleSpecifierNode(module.stars[j].node)
+                const at = moduleSpecifierNode(star.node)
+                c.error(
+                    at !== null ? at : star.node,
+                    `Module '${previous !== null ? stringText(previous) : ""}' has already exported a member named '${name}'. Consider explicitly re-exporting to resolve the ambiguity.`,
+                )
+                break
+            }
+        }
+        earlier.push(names)
+    }
 }
 
 export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
@@ -571,7 +665,7 @@ export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
     for (const element of elements(bindings)) {
         const original = propertyName(element)
         const imported = (original ?? nameNode(element)).text
-        if (!target.exports.has(imported)) {
+        if (!hasExport(target, imported)) {
             c.error(
                 original ?? nameNode(element),
                 `Module '${stringText(specifier!)}' has no exported member '${imported}'.`,
@@ -707,6 +801,7 @@ export function typeJsonImports(c: Checker) {
 export function checkExports(c: Checker, modules: ModuleInfo[]) {
     for (const resolve of c.specifiers) resolve()
     for (const module of modules) {
+        checkStarExports(c, module)
         // `export { a, b as c }` refers to declarations of the module.
         for (const stmt of c.statementsOf(module.source)) {
             const clause = stmt.kind === "ExportDeclaration" ? exportClause(stmt) : null
@@ -2081,5 +2176,5 @@ export function unsupportedTopLevel(stmt: Node): string {
     return "This declaration is not supported at the top level."
 }
 
-import { ExportEntry, FuncContext, InstanceInfo } from "./context"
+import { ExportEntry, FuncContext, InstanceInfo, StarExport } from "./context"
 import { StringLit } from "../ir/nodes"

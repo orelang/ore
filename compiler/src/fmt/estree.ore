@@ -1128,8 +1128,9 @@ export class Converter {
         const source = node.child("moduleSpecifier")
         let declaration: ENode
         const isType = this.word(this.tokenAfter(node.start).end) === "type"
-        if (clause === null) {
+        if (clause === null || clause.kind === "NamespaceExport") {
             declaration = this.make("ExportAllDeclaration", node)
+            if (clause !== null) declaration.set("exported", this.opt(clause.child("name")))
         } else {
             declaration = this.make("ExportNamedDeclaration", node)
             const specifiers: ENode[] = []

@@ -211,13 +211,23 @@ class Exported {
     ) {}
 }
 
-/** The exports of a module in the order of the source, with `export { a as b }` and re-exports from other modules. */
-function exportsOf(source: Source, imports: Map<Source, Map<string, Source>>): Exported[] {
+/**
+ * The exports of a module in the order of the source, with `export { a as b }`
+ * and re-exports from other modules; `export *` lists the exports of the
+ * module it names (`seen` guards against cycles).
+ */
+function exportsOf(
+    source: Source,
+    imports: Map<Source, Map<string, Source>>,
+    seen: Set<Source> | null = null,
+): Exported[] {
     const found: Exported[] = []
+    const visited = seen ?? new Set<Source>()
+    if (visited.has(source)) return found
+    visited.add(source)
     for (const stmt of source.ast.list("statements")) {
         if (stmt.kind === "ExportDeclaration") {
             const clause = stmt.child("exportClause")
-            if (clause === null) continue
             const specifier = stmt.child("moduleSpecifier")
             let from = source
             if (specifier !== null) {
@@ -225,6 +235,12 @@ function exportsOf(source: Source, imports: Map<Source, Map<string, Source>>): E
                 const target = resolved === null ? null : resolved.get(stringText(specifier))
                 if (target === null) continue
                 from = target
+            }
+            // `export * as ns from "./m"` is a namespace, not a declaration.
+            if (clause !== null && clause.kind === "NamespaceExport") continue
+            if (clause === null) {
+                if (from !== source) for (const e of exportsOf(from, imports, visited)) found.push(e)
+                continue
             }
             for (const spec of clause.list("elements")) {
                 const name = spec.child("name")

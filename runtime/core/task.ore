@@ -54,6 +54,7 @@ import {
     isNil,
     lock,
     mapGuarded,
+    sigaction,
     nil,
     nowMs,
     writeNumber,
@@ -70,8 +71,14 @@ import {
     unmap,
 } from "ore:runtime/os"
 
-const mainStackSize = 8 << 20
-const taskStackSize = 256 << 10
+/**
+ * The sizes of the stacks of the main task (and of tests) and of other tasks,
+ * without the guard page: ORE_STACK for both, or 8 MiB and 1 MiB. A stack is
+ * mapped at once but takes memory only for the pages it touches. Set by
+ * ore_rt_run_main.
+ */
+let mainStackSize: int
+let taskStackSize: int
 
 export const runnable = 0
 export const blocked = 1
@@ -387,6 +394,218 @@ function takeStack(w: ptr, size: int): ptr {
     if (isNil(r)) r = newStackRecord()
     mapStack(r, size)
     return r
+}
+
+/**
+ * A size of ORE_STACK in bytes: digits with an optional unit K, M or G (powers
+ * of 1024), such as `8M`; rounded up to whole pages, and at least 64 KiB. -1
+ * when it is not such a size.
+ */
+function parseStackSize(text: ptr): int {
+    let n = 0
+    let i = 0
+    while (true) {
+        const c = unsafe.load<u8>(unsafe.add(text, i))
+        if (c < 0x30 || c > 0x39) break
+        n = n * 10 + i64(c - 0x30)
+        if (n > 1 << 40) return -1
+        i++
+    }
+    if (i === 0) return -1
+    const unit = unsafe.load<u8>(unsafe.add(text, i))
+    if (unit !== 0) {
+        const lower = unit | 0x20
+        if (lower === 0x6b) n = n << 10
+        else if (lower === 0x6d) n = n << 20
+        else if (lower === 0x67) n = n << 30
+        else return -1
+        i++
+        // An optional "B" or "iB": `8MB`, `8MiB`.
+        if ((unsafe.load<u8>(unsafe.add(text, i)) | 0x20) === 0x69) i++
+        if ((unsafe.load<u8>(unsafe.add(text, i)) | 0x20) === 0x62) i++
+        if (unsafe.load<u8>(unsafe.add(text, i)) !== 0) return -1
+    }
+    const page = pageSize()
+    n = ((n + page - 1) / page) * page
+    return n < 64 << 10 ? 64 << 10 : n
+}
+
+/** Sets the stack sizes from ORE_STACK, or to the defaults; ends the program when it is not a size. */
+function setStackSizes(): void {
+    mainStackSize = 8 << 20
+    taskStackSize = 1 << 20
+    const configured = getenv("ORE_STACK")
+    if (isNil(configured)) return
+    const size = parseStackSize(configured)
+    if (size < 0) {
+        writeRaw(2, "ORE_STACK: expected a stack size such as 8M, 512K or 1G\n")
+        exitStuck(2)
+    }
+    mainStackSize = size
+    taskStackSize = size
+}
+
+// Stack overflow
+//
+// Every task's stack has a guard page below it. A task that recurses too
+// deep touches it, and the kernel sends SIGSEGV (or SIGBUS on macOS), whose
+// handler runs on an alternate signal stack of the thread, since the task's
+// own stack is full. When the fault address is in the guard page of a stack,
+// the handler reports a panic "stack overflow" with the shadow stack of debug
+// frames and ends the program; other faults get the default action, which
+// kills the process as before. The handler allocates nothing and takes no
+// lock: the thread may be anywhere, even in the allocator.
+
+/** The size of a thread's alternate signal stack. */
+const signalStackSize = 64 << 10
+
+/** Lines printed of a stack that overflowed: the innermost ones, then the outermost ones. */
+const overflowInner = 40
+const overflowOuter = 10
+
+/**
+ * Memory of the handler, which cannot allocate: a flag set by the first
+ * thread that reports an overflow (another one waits for the process to
+ * end), a zeroed sigaction (the default action), a second to sleep, and
+ * scratch for numbers.
+ */
+let overflowReported: ptr
+let defaultAction: ptr
+let oneSecond: ptr
+let faultScratch: ptr
+
+declare function sigaltstack(stack: ptr, previous: ptr): i32
+
+/** SIGBUS: the signal of a guard page on macOS; Linux sends SIGSEGV. */
+function busSignal(): i32 {
+    return target.os === "darwin" ? 10 : 7
+}
+
+/** Installs the overflow handler for SIGSEGV and SIGBUS, on the alternate stack, with the fault's siginfo. */
+function installOverflowHandler(): void {
+    overflowReported = permanent(8)
+    defaultAction = permanent(256)
+    oneSecond = permanent(16)
+    unsafe.store<i64>(oneSecond, 1)
+    faultScratch = permanent(32)
+    const action = permanent(256)
+    unsafe.store<ptr>(action, unsafe.functionAddress(onFault))
+    // SA_ONSTACK | SA_SIGINFO: 0x41 on macOS (flags after a 4-byte mask), 0x08000004 on Linux (after 128 bytes).
+    if (target.os === "darwin") unsafe.store<i32>(unsafe.add(action, 12), 0x41)
+    else unsafe.store<i32>(unsafe.add(action, 136), 0x08000004)
+    sigaction(11, action, nil())
+    sigaction(busSignal(), action, nil())
+}
+
+/** Gives the current thread an alternate signal stack, on which the overflow handler runs. */
+function setSignalStack(): void {
+    const map = mapGuarded(signalStackSize + pageSize())
+    if (isNil(map)) return
+    const stack = permanent(32)
+    unsafe.store<ptr>(stack, unsafe.add(map, pageSize()))
+    // stack_t: the stack, then its size and flags (macOS) or flags and its size (Linux).
+    unsafe.store<i64>(unsafe.add(stack, target.os === "darwin" ? 8 : 16), signalStackSize)
+    sigaltstack(stack, nil())
+}
+
+/** Whether an address is in the guard page of a task's stack. */
+function inGuardPage(address: ptr): bool {
+    const a = unsafe.toInt(address)
+    const page = u64(pageSize())
+    let r = firstStack()
+    while (!isNil(r)) {
+        const map = unsafe.toInt(stackField(r, stackMap))
+        if (map !== 0 && a >= map && a < map + page) return true
+        r = stackField(r, stackAllNext)
+    }
+    return false
+}
+
+/** The handler of SIGSEGV and SIGBUS: a stack overflow is a panic; any other fault kills the process. */
+function onFault(signal: i32, info: ptr, context: ptr): void {
+    // siginfo_t: si_addr after the signal's number, errno, code (and on macOS pid, uid, status).
+    const address = unsafe.load<ptr>(unsafe.add(info, target.os === "darwin" ? 24 : 16))
+    if (!inGuardPage(address)) {
+        // The default action, taken when the faulting instruction runs again.
+        sigaction(signal, defaultAction, nil())
+        return
+    }
+    if (!unsafe.atomicCompareExchange<u64>(overflowReported, 0, 1)) {
+        while (true) nanosleep(oneSecond, nil())
+    }
+    flushOutputIfFree()
+    writeRaw(2, "panic: stack overflow\n\n")
+    writeOverflowTrace(address)
+    writeRaw(2, "\nThe stack of a task is limited: ORE_STACK sets its size, such as ORE_STACK=64M.\n")
+    exitStuck(2)
+}
+
+/**
+ * Writes the shadow stack of debug frames. Runs of the same frame, as
+ * recursion makes, are one line with their count; of a deep stack, only the
+ * innermost and the outermost lines.
+ */
+function writeOverflowTrace(guard: ptr): void {
+    const page = u64(pageSize())
+    const guardStart = unsafe.toInt(guard) & ~(page - 1)
+    // A frame in the guard page was being pushed when the stack overflowed: it is not one yet.
+    let first = getTop()
+    while (!isNil(first) && unsafe.toInt(first) >= guardStart && unsafe.toInt(first) < guardStart + page)
+        first = unsafe.load<ptr>(first)
+    if (isNil(first)) {
+        writeRaw(2, "  (no stack trace in release builds; rebuild without --release)\n")
+        return
+    }
+    const lines = traceLines(first, -1, 0)
+    if (lines <= overflowInner + overflowOuter) {
+        traceLines(first, 0, lines)
+        return
+    }
+    traceLines(first, 0, overflowInner)
+    writeRaw(2, "  ...\n")
+    traceLines(first, lines - overflowOuter, lines)
+}
+
+/** Whether two debug frames are the same function at the same line. */
+function sameFrame(a: ptr, b: ptr): bool {
+    return (
+        unsafe.load<ptr>(unsafe.add(a, 8)) === unsafe.load<ptr>(unsafe.add(b, 8)) &&
+        unsafe.load<i32>(unsafe.add(a, 24)) === unsafe.load<i32>(unsafe.add(b, 24))
+    )
+}
+
+/**
+ * Counts the lines of a trace from `first`, a run of the same frame being
+ * one, and writes those from `from` to before `to` (none when `from` is -1).
+ */
+function traceLines(first: ptr, from: int, to: int): int {
+    let line = 0
+    let f = first
+    while (!isNil(f)) {
+        let run = 1
+        let next = unsafe.load<ptr>(f)
+        while (!isNil(next) && sameFrame(f, next)) {
+            run++
+            next = unsafe.load<ptr>(next)
+        }
+        if (from >= 0 && line >= from && line < to) {
+            writeRaw(2, "  ")
+            writeCString(unsafe.load<ptr>(unsafe.add(f, 8)))
+            writeRaw(2, " at ")
+            writeCString(unsafe.load<ptr>(unsafe.add(f, 16)))
+            writeRaw(2, ":")
+            writeNumber(2, i64(unsafe.load<i32>(unsafe.add(f, 24))), false, faultScratch)
+            if (run > 1) {
+                writeRaw(2, " (")
+                writeNumber(2, run, false, faultScratch)
+                writeRaw(2, " times)")
+            }
+            writeRaw(2, "\n")
+        }
+        line++
+        f = next
+    }
+    return line
 }
 
 /** Takes back the stack record of an ended task. */
@@ -1095,6 +1314,7 @@ function schedule(): void {
 
 function workerMain(argument: ptr): ptr {
     registerThread()
+    setSignalStack()
     newWorker()
     schedule()
     return argument
@@ -1122,6 +1342,9 @@ export function runMain(entry: ptr): void {
     schedulerAddress = unsafe.addressOf(s)
     stackLock = permanentMutex()
     allStacks = permanent(8)
+    setStackSizes()
+    setSignalStack()
+    installOverflowHandler()
     unsafe.store<i64>(s.timerAt, -1)
     const count = workerCount()
     s.maxWorkers = count + 64

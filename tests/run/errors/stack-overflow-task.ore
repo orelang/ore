@@ -1,0 +1,22 @@
+// exit: 2
+// threads: 4
+// env: ORE_STACK=256K
+// stderr: panic: stack overflow
+// stderr: depth at tests/run/errors/stack-overflow-task.ore:10 (
+// stderr: <lambda> at tests/run/errors/stack-overflow-task.ore:
+
+// A spawned task's stack overflows on another worker: ORE_STACK sets its size.
+function depth(n: int): int {
+    return n === 0 ? 0 : 1 + depth(n - 1)
+}
+
+const results = new Chan<int>()
+const deeper = new Chan<bool>()
+task.spawn(() => {
+    results.send(depth(1000))
+    deeper.receive()
+    results.send(depth(1 << 40))
+})
+console.log(results.receive())
+deeper.send(true)
+results.receive()

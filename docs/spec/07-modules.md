@@ -5,13 +5,24 @@
 - Each `.ore` file is a module. `export` marks declarations visible to other
   modules; everything else is private to its module. `export { a, b as c }`
   exports declared or imported names, also from another module
-  (`export { x } from "./m"`). Default exports and `export *` are rejected.
+  (`export { x } from "./m"`). Default exports are rejected.
+- `export * from "./m"` re-exports every export of `./m`, and
+  `export * as ns from "./m"` exports the module as the namespace `ns`
+  (`import { ns } from ...; ns.f()`). A name the module exports itself takes
+  precedence over `export *`. Two `export *` that give the same name from
+  different declarations make it ambiguous, as in TypeScript: it is not
+  exported, and the later `export *` is an error
+  ([ORE6073](../errors/ORE6073.md)); re-exporting it explicitly resolves it.
+  The same declaration reached through two `export *` is not ambiguous, and
+  cycles of `export *` are allowed.
 - `import { a, b as c } from "./m"` imports names; `import * as m from "./m"`
   imports a module, used as `m.f()`, `m.value`, `m.Type` and `new m.Class()`.
   Modules may import each other in cycles; top-level constants are evaluated
   with imported modules first.
-- Specifiers resolve like Node: `./x` and `../x` to `x.ore` or
-  `x/index.ore`; a package name to `node_modules/<name>` in the directory of
+- Specifiers resolve like Node: `./x` and `../x` to `x.ore` or, when
+  there is no such file, the directory's `x/index.ore` (a file wins over a
+  directory of the same name); `./x/`, `.` and `..` to the directory's
+  `index.ore`; a package name to `node_modules/<name>` in the directory of
   the importing file or above, using its package.json `main` (or
   `index.ore`); `name/sub/path` to a file of the package. `ore:` names
   standard modules embedded in the compiler. `https://github.com/...` names

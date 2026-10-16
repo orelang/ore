@@ -1032,8 +1032,14 @@ export class Parser {
             this.next()
             if (this.at("TypeKeyword")) this.next()
             const node = new Node("ExportDeclaration", start, start)
-            if (this.eat("AsteriskToken")) {
-                // `export * from "m"`
+            if (this.at("AsteriskToken")) {
+                // `export * from "m"`, or `export * as ns from "m"`.
+                const namespaceStart = this.next().start
+                if (this.eat("AsKeyword"))
+                    node.add(
+                        this.node("NamespaceExport", namespaceStart, [this.identifierName()], ["name"]),
+                        "exportClause",
+                    )
             } else {
                 node.add(this.namedBindings("NamedExports", "ExportSpecifier"), "exportClause")
             }

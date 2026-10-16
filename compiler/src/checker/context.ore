@@ -13,7 +13,7 @@ import { type InterfaceType, type StructType, type Type } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Diagnostic } from "../syntax/diagnostic"
 import { type Source } from "../syntax/source"
-import { type Generic, type Scope } from "./symbols"
+import { type Generic, type ModuleSymbol, type Scope } from "./symbols"
 
 export class CheckResult {
     constructor(
@@ -42,6 +42,18 @@ export class ExportEntry {
         readonly local: string,
         readonly from: ModuleInfo | null = null,
     ) {}
+
+    /** `export * as ns from "./m"`: the module `ns`, whose exports are those of `from`. */
+    namespace: ModuleSymbol | null = null
+}
+
+/** `export * from "./m"` in a module: every export of `from` but the names the module exports itself. */
+export class StarExport {
+    constructor(
+        readonly from: ModuleInfo,
+        /** The `export *` statement. */
+        readonly node: Node,
+    ) {}
 }
 
 /** A module being checked. */
@@ -54,6 +66,9 @@ export class ModuleInfo {
         /** Exported names and the local names they refer to; `from` for re-exports. */
         readonly exports: Map<string, ExportEntry>,
     ) {}
+
+    /** The `export *` statements of the module, in the order of the source. */
+    stars: StarExport[] = []
 }
 
 /** `import name from "./file.json" with { type: "json" }` in `module`: the module of the file is `target`. */

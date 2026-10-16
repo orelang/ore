@@ -437,6 +437,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6070](ORE6070.md) | Unknown import attribute '…'. Only 'type' is supported. |
 | [ORE6071](ORE6071.md) | A generic function value must be instantiated: give its type arguments or call it. |
 | [ORE6072](ORE6072.md) | '…' calls itself, so it needs a return type annotation. |
+| [ORE6073](ORE6073.md) | Module '…' has already exported a member named '…'. Consider explicitly re-exporting to resolve the ambiguity. |
 
 ## ORE7xxx: Statements
 
