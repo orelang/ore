@@ -243,7 +243,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `time.now()`, `time.unixNanos()` | nanoseconds on a monotonic clock (for durations); since the Unix epoch on the wall clock |
 | `time.nanosecond`, `time.microsecond`, `time.millisecond`, `time.second`, `time.minute`, `time.hour`, `time.day` | durations in nanoseconds, `int` |
 | `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
-| `JSON.stringify(value, null?, space?)` | the JSON text of a value, indented by `space` spaces per level; the replacer must be null |
+| `JSON.stringify(value, keys?, space?)` | the JSON text of a value; a replacer array `keys` keeps only those keys of each object, in its order; `space` indents each level by that many spaces (at most 10) or by a string (its first 10 characters); a replacer function is not supported |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
 Numbers of every numeric type have the methods of JavaScript's

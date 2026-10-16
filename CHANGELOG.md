@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `JSON.stringify(value, replacer, space)` takes a replacer array, the
+  keys of objects to keep, in its order, at every level (maps too), and a
+  string `space`, its first 10 characters indenting each level; a number
+  `space` is at most 10, as in JavaScript.
 - `TextEncoder` and `TextDecoder` (UTF-8: `encode`, `encodeInto`, `decode`
   with `fatal` and `ignoreBOM`) and `atob` and `btoa` (base64 of binary
   strings), global names as in JavaScript, with `u8[]` for `Uint8Array`.
