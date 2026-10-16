@@ -5,6 +5,13 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `Map` and `Set` have JavaScript's whole API: `map.forEach((value, key,
+  map) => ...)`, `Map.groupBy(items, (element, index) => key)`,
+  `set.forEach((value, value2, set) => ...)`, `set.keys()`,
+  `set.entries()`, and the set methods of ES2024: `union`, `intersection`,
+  `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf` and
+  `isDisjointFrom`, with JavaScript's order of elements. `keys()`,
+  `values()` and `entries()` still return arrays.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with

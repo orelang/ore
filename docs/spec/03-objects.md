@@ -361,7 +361,14 @@ names them is:
 - `get(key)` returns `V | null`; `set(key, value)` returns the map;
   `has`, `delete` (returns whether the key was present), `clear`, `size`.
   `keys()`, `values()` and `entries()` (`[key, value]` tuples) return arrays
-  in insertion order.
+  in insertion order (JavaScript returns iterators; Ore will too once it has
+  them).
+- `forEach((value, key, map) => ...)` calls the function for each entry in
+  insertion order; entries set during the loop are visited, deleted ones
+  are not, and `clear` ends it. The function may take fewer parameters.
+- `Map.groupBy(items, (element, index) => key)` groups the elements of an
+  array into a `Map<K, T[]>` by the key the function returns, the keys in
+  the order they first appear.
 - `for (const [key, value] of map)` iterates entries in insertion order.
 - Keys compare like SameValueZero: numbers and strings by value (`NaN`
   equals `NaN`, `-0` equals `0`), objects, arrays, maps, sets and interface
@@ -381,8 +388,17 @@ names them is:
 - `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`) or
   of another set; without a type argument, `T` is their element type.
 - `add(value)` returns the set; `has`, `delete` (returns whether the value
-  was present), `clear`, `size`; `values()` returns an array in insertion
-  order.
+  was present), `clear`, `size`; `values()` and `keys()` return an array in
+  insertion order, `entries()` an array of `[value, value]` tuples (arrays
+  for now, as for maps). `forEach((value, value2, set) => ...)` passes each
+  value twice, as JavaScript does, and visits values added during the loop.
+- The set methods of ES2024 take another `Set<T>` and return a new set or a
+  `bool`: `union` (the elements of this set, then the new ones of the
+  other), `intersection` (in the order of the smaller set, this one when
+  they are as large), `difference`, `symmetricDifference` (this set's
+  elements, then the other's), `isSubsetOf`, `isSupersetOf` and
+  `isDisjointFrom`. JavaScript also takes set-like objects (a `Map`, or any
+  object with `size`, `has` and `keys`); Ore takes sets only.
 - `for (const x of set)` iterates the elements in insertion order, including
   those added during the loop, as in JavaScript.
 - Sets cannot be converted to JSON.
