@@ -1,0 +1,26 @@
+// Reads the texts of tests/fuzz/json/gen.mjs as a Doc and writes each again,
+// or `error` where JSON.parse rejects it.
+
+type Item = { id: int; tag: string; on: bool }
+type Doc = {
+    name: string
+    count: int
+    ratio: f64
+    note: string | null
+    items: Item[]
+    scores: f64[]
+    extra: Record<string, int>
+    kind: "one" | "two"
+}
+
+const file = fs.readFile(process.args[0])
+if (file instanceof Error) process.panic(file.message)
+const out: string[] = []
+for (const line of file.split("\n")) {
+    if (line === "") continue
+    const text = JSON.parse<string>(line)
+    if (text instanceof Error) process.panic(text.message)
+    const doc = JSON.parse<Doc>(text)
+    out.push(doc instanceof Error ? "error" : JSON.stringify(doc))
+}
+console.log(out.join("\n"))
