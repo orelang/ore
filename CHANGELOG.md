@@ -5,6 +5,9 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `fs.appendFile(path, data)`, Node's `appendFileSync`: appends to a file,
+  created if missing. `process.platform` (`"darwin"`, `"linux"`) and
+  `process.arch` (`"arm64"`, `"x64"`), Node's names for the target.
 - Breaking: `task.sleep(ns)` and `task.after(ns, handler)` count
   nanoseconds, as everything in `time`: `task.sleep(10 * time.millisecond)`
   (they counted milliseconds). The timers still wait whole milliseconds,

@@ -209,6 +209,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.panic(message)` | aborts with the message and a stack trace (status 2) |
 | `process.exit(code)` | exits with a status code |
 | `process.args` | the command-line arguments after the program name |
+| `process.platform`, `process.arch` | the platform, with Node's names: `"darwin"` or `"linux"`, `"arm64"` or `"x64"`; constants of the target, as `target.os` and `target.arch` (which names the latter `"x86_64"`) |
 | `process.getenv(name)` | an environment variable, or `null` |
 | `process.cwd()` | the working directory, as an absolute path |
 | `process.env()` | the environment variables, as a `Map<string, string>` |
@@ -230,6 +231,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `Map.groupBy(items, keyFn)` | the elements of an array grouped by a key (see [maps](03-objects.md#maps)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
+| `fs.appendFile(path, data)` | appends to a file, created if missing (Node's `appendFileSync`); `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
 | `fs.read(fd, max)` | up to `max` bytes from a file descriptor (0 is stdin), waiting for some; `""` at the end; or an `Error` |
 | `fs.write(fd, data)` | writes all of `data` to a file descriptor, unbuffered; `null`, or an `Error` |
