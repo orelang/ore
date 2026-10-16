@@ -112,9 +112,9 @@
 - `class C implements I` checks that `C` has the members of `I`.
 - A `private` constructor is called with `new` only inside the class
   declaration (a static factory, a method), and the class cannot be
-  extended ([ORE5060](../errors/ORE5060.md)). A `protected` constructor is
+  extended ([ORE5063](../errors/ORE5063.md)). A `protected` constructor is
   also called with `new` only inside the class declaration, and subclasses
-  call it through `super(...)` ([ORE5059](../errors/ORE5059.md)).
+  call it through `super(...)` ([ORE5062](../errors/ORE5062.md)).
 
 ## Inheritance
 
@@ -242,8 +242,8 @@ on that slot reads the class table.
   arguments are evaluated once, then the method of the class the value
   holds runs (an override in a subclass too), with that class's default
   values. Methods of different types are an error
-  ([ORE4085](../errors/ORE4085.md)), and spread arguments are not
-  supported there ([ORE4086](../errors/ORE4086.md)).
+  ([ORE4093](../errors/ORE4093.md)), and spread arguments are not
+  supported there ([ORE4094](../errors/ORE4094.md)).
 - Representation: a reference type with `null` is a nullable reference; a
   union of string literals is a string, and one of numeric literals an
   `f64` (see [numeric literal types](02-types.md#numeric-literal-types));

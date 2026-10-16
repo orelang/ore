@@ -309,8 +309,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE4082](ORE4082.md) | 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '…'. |
 | [ORE4083](ORE4083.md) | 'Array.from' takes an object only as '{ length: n }'. |
 | [ORE4084](ORE4084.md) | 'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'. |
-| [ORE4085](ORE4085.md) | Method '…' has different types in the members of '…': '…' and '…'. |
-| [ORE4086](ORE4086.md) | Spread arguments are not supported in a call of '…' on a union. |
+| [ORE4093](ORE4093.md) | Method '…' has different types in the members of '…': '…' and '…'. |
+| [ORE4094](ORE4094.md) | Spread arguments are not supported in a call of '…' on a union. |
 
 ## ORE5xxx: Classes and interfaces
 
@@ -374,8 +374,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE5056](ORE5056.md) | This interface member is not supported. |
 | [ORE5057](ORE5057.md) | '…' is protected and only accessible inside class '…' and its subclasses. |
 | [ORE5058](ORE5058.md) | '…' is private and only accessible inside class '…'. |
-| [ORE5059](ORE5059.md) | Constructor of class '…' is … and only accessible within the class declaration. |
-| [ORE5060](ORE5060.md) | Cannot extend a class '…': its constructor is private. |
+| [ORE5062](ORE5062.md) | Constructor of class '…' is … and only accessible within the class declaration. |
+| [ORE5063](ORE5063.md) | Cannot extend a class '…': its constructor is private. |
 
 ## ORE6xxx: Declarations, functions, generics, modules and C
 

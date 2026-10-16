@@ -24,8 +24,8 @@ before 1.0, a minor version may change the language.
   method with the same type: `(a: Cat | Dog) => a.speak()` runs the method
   of the class the value holds, instead of reporting ORE4071.
 - `private constructor` and `protected constructor` are enforced, as in
-  TypeScript: `new C()` outside the class declaration is ORE5059, and
-  extending a class with a private constructor is ORE5060; subclasses call
+  TypeScript: `new C()` outside the class declaration is ORE5062, and
+  extending a class with a private constructor is ORE5063; subclasses call
   a protected one through `super(...)`.
 - Interfaces merge and extend classes, as in TypeScript: a second
   `interface X` adds its members to the first instead of reporting
