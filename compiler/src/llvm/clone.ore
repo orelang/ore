@@ -1,0 +1,223 @@
+// structuredClone: a deep copy by a function generated per type. The
+// objects copied so far are kept in a map from the address of each original
+// to its copy, so that an object reached twice is copied once and cycles
+// close on the copies, as in JavaScript's structured clone algorithm.
+
+import { elementData, entryData } from "./gcdata"
+import { type BuiltinCall } from "../ir/nodes"
+import { type StructType, type Type, type UnionType, types, unionRepr } from "../ir/types"
+import { helper } from "./calls"
+import { keyFunctions, keyKind } from "./collections"
+import { ARRAY, MAP } from "./context"
+import { Emitter } from "./base"
+import { expr, fieldPtr, inject, payload, slotTest } from "./expressions"
+import { counted } from "./json"
+import { globalName, sizeOf, type V } from "./ll"
+
+/** Whether values of a type hold objects that a copy must not share: strings, numbers and bigints never change. */
+function needsCopy(g: Emitter, t: Type): bool {
+    switch (t.kind) {
+        case "array":
+        case "map":
+        case "set":
+            return true
+        case "struct":
+            return !g.isValue(t)
+        case "union":
+            return t.members.some((m) => needsCopy(g, m))
+        default:
+            return false
+    }
+}
+
+export function structuredClone(g: Emitter, e: BuiltinCall): V {
+    const t = e.args[0].type
+    const v = expr(g, e.args[0])
+    if (!needsCopy(g, t)) return v
+    // The copies made so far, by the address of their originals.
+    const keys = keyFunctions(g, types.i64)
+    const seen = g.rt("ore_rt_map_new", [
+        g.i64(8),
+        g.i64(8),
+        { ty: "ptr", v: keys.hash },
+        { ty: "ptr", v: keys.eq },
+        elementData(g, "i64"),
+        elementData(g, "ptr"),
+        entryData(g, "i64", "ptr"),
+        { ty: "i64", v: keyKind(g, types.i64) },
+    ])
+    return cloneAt(g, v, t, seen)
+}
+
+/** Calls the cloner of type `t` on `v`, with the map of copies `s`. */
+function cloneAt(g: Emitter, v: V, t: Type, s: V): V {
+    if (!needsCopy(g, t)) return v
+    const ty = g.lt(t)
+    return g.b.value(ty, `call ${ty} ${cloner(g, t, false)}(${ty} ${v.v}, ptr ${s.v})`)
+}
+
+/** The function copying a value of a type: `T (T v, ptr s)`; `exact` for an instance of exactly that class. */
+function cloner(g: Emitter, t: Type, exact: bool): string {
+    const name = globalName(`clone.${exact ? "exact." : ""}${g.names.key(t)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const ty = g.lt(t)
+    helper(g, name, `define internal ${ty} ${name}(${ty} %v, ptr %s)`, (e) => {
+        const r = cloneValue(e, t, { ty, v: "%v" }, exact)
+        e.b.terminate(`ret ${ty} ${r.v}`)
+    })
+    return name
+}
+
+/** Returns the copy of the object `v` if it was copied already, and returns null for a null reference. */
+function returnIfSeen(g: Emitter, v: V) {
+    const isNull = g.b.label("cnull")
+    const present = g.b.label("cpresent")
+    g.b.condBr(g.b.value("i1", `icmp eq ptr ${v.v}, null`), isNull, present)
+    g.b.start(isNull)
+    g.b.terminate("ret ptr null")
+    g.b.start(present)
+    const key = g.b.alloca("i64")
+    g.b.emit(`store i64 ${g.b.value("i64", `ptrtoint ptr ${v.v} to i64`).v}, ptr ${key}`)
+    const found = g.rt("ore_rt_map_get", [
+        { ty: "ptr", v: "%s" },
+        { ty: "ptr", v: key },
+    ])
+    const known = g.b.label("cseen")
+    const fresh = g.b.label("cfresh")
+    g.b.condBr(g.b.value("i1", `icmp ne ptr ${found.v}, null`), known, fresh)
+    g.b.start(known)
+    g.b.terminate(`ret ptr ${g.b.value("ptr", `load ptr, ptr ${found.v}`).v}`)
+    g.b.start(fresh)
+}
+
+/** Records `copy` as the copy of `v`, before the objects inside are copied, so that cycles find it. */
+function remember(g: Emitter, v: V, copy: V) {
+    const key = g.b.alloca("i64")
+    g.b.emit(`store i64 ${g.b.value("i64", `ptrtoint ptr ${v.v} to i64`).v}, ptr ${key}`)
+    const value = g.b.alloca("ptr")
+    g.b.emit(`store ptr ${copy.v}, ptr ${value}`)
+    g.rt("ore_rt_map_set", [
+        { ty: "ptr", v: "%s" },
+        { ty: "ptr", v: key },
+        { ty: "ptr", v: value },
+    ])
+}
+
+function cloneValue(g: Emitter, t: Type, v: V, exact: bool): V {
+    const s: V = { ty: "ptr", v: "%s" }
+    switch (t.kind) {
+        case "union":
+            return cloneUnion(g, t, v, s)
+        case "array": {
+            returnIfSeen(g, v)
+            const elemType = t.elem
+            const elem = g.mt(elemType)
+            const n = g.b.value("i64", `load i64, ptr ${g.field(v.v, ARRAY, 1)}`)
+            const a = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, n, elementData(g, elem)])
+            remember(g, v, a)
+            counted(g, n, (i) => {
+                const from = g.b.value("ptr", `load ptr, ptr ${g.field(v.v, ARRAY, 0)}`)
+                const x = g.load(g.b.value("ptr", `getelementptr ${elem}, ptr ${from.v}, i64 ${i.v}`).v, elemType)
+                const copy = cloneAt(g, x, elemType, s)
+                const to = g.b.value("ptr", `load ptr, ptr ${g.field(a.v, ARRAY, 0)}`)
+                g.store(copy, g.b.value("ptr", `getelementptr ${elem}, ptr ${to.v}, i64 ${i.v}`).v, elemType)
+            })
+            return a
+        }
+        case "map":
+            return cloneEntries(g, v, t.key, t.value, s)
+        case "set":
+            return cloneEntries(g, v, t.elem, null, s)
+        case "struct":
+            return cloneStruct(g, t, v, s, exact)
+        default:
+            return v
+    }
+}
+
+/** A map, or a set without values: a new one, with the copies of the entries inserted in order, as their keys are new objects. */
+function cloneEntries(g: Emitter, v: V, keyType: Type, valueType: Type | null, s: V): V {
+    returnIfSeen(g, v)
+    const keys = keyFunctions(g, keyType)
+    const kt = g.mt(keyType)
+    const vt = valueType !== null ? g.mt(valueType) : ""
+    const m = g.rt("ore_rt_map_new", [
+        { ty: "i64", v: sizeOf(kt) },
+        valueType !== null ? { ty: "i64", v: sizeOf(vt) } : g.i64(0),
+        { ty: "ptr", v: keys.hash },
+        { ty: "ptr", v: keys.eq },
+        elementData(g, kt),
+        valueType !== null ? elementData(g, vt) : { ty: "ptr", v: "null" },
+        entryData(g, kt, vt),
+        { ty: "i64", v: keyKind(g, keyType) },
+    ])
+    remember(g, v, m)
+    const slots = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 6)}`)
+    counted(g, slots, (i) => {
+        const live = g.b.label("clive")
+        const skip = g.b.label("cskip")
+        g.b.condBr(g.rtBool("ore_rt_map_live", [v, i]), live, skip)
+        g.b.start(live)
+        const key = cloneAt(g, g.load(g.rt("ore_rt_map_key", [v, i]).v, keyType), keyType, s)
+        const kp = g.b.alloca(kt)
+        g.store(key, kp, keyType, false)
+        if (valueType !== null) {
+            const value = cloneAt(g, g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType), valueType, s)
+            const xp = g.b.alloca(vt)
+            g.store(value, xp, valueType, false)
+            g.rt("ore_rt_map_set", [m, { ty: "ptr", v: kp }, { ty: "ptr", v: xp }])
+        } else {
+            g.rt("ore_rt_map_set", [m, { ty: "ptr", v: kp }, { ty: "ptr", v: kp }])
+        }
+        g.b.br(skip)
+        g.b.start(skip)
+    })
+    return m
+}
+
+/** A union value: the copy of the member it holds. */
+function cloneUnion(g: Emitter, t: UnionType, v: V, s: V): V {
+    const repr = unionRepr(t)
+    if (repr.k === "strings" || repr.k === "numbers") return v
+    const ty = g.lt(t)
+    for (let i = 0; i < t.members.length; i++) {
+        const m = t.members[i]
+        const here = g.b.label("cmember")
+        const next = g.b.label("cnext")
+        g.b.condBr(slotTest(g, t, v, i), here, next)
+        g.b.start(here)
+        const r = m.kind === "null" || !needsCopy(g, m) ? v : inject(g, t, i, cloneAt(g, payload(g, t, v, i), m, s))
+        g.b.terminate(`ret ${ty} ${r.v}`)
+        g.b.start(next)
+    }
+    return v
+}
+
+/** An object, a tuple or an instance of a class: a new one of the same class with copies of the fields. */
+function cloneStruct(g: Emitter, t: StructType, v: V, s: V, exact: bool): V {
+    if (g.isValue(t)) return v
+    returnIfSeen(g, v)
+    if (!exact && g.tables.has(t.id)) {
+        // An instance of a subclass is copied as one.
+        const table = g.b.value("ptr", `load ptr, ptr ${v.v}`)
+        for (const sub of g.subclasses(t)) {
+            if (sub === t) continue
+            const here = g.b.label("csubclass")
+            const next = g.b.label("cnextclass")
+            g.b.condBr(g.b.value("i1", `icmp eq ptr ${table.v}, ${g.classTable(sub)}`), here, next)
+            g.b.start(here)
+            const f = cloner(g, sub, true)
+            g.b.terminate(`ret ptr ${g.b.value("ptr", `call ptr ${f}(ptr ${v.v}, ptr %s)`).v}`)
+            g.b.start(next)
+        }
+    }
+    const o = g.alloc(g.structType(t))
+    g.setTable(o, t)
+    remember(g, v, o)
+    for (const f of t.fields) {
+        const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
+        g.store(cloneAt(g, x, f.type, s), fieldPtr(g, o.v, t, f.name), f.type)
+    }
+    return o
+}

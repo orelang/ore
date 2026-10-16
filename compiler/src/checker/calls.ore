@@ -91,6 +91,7 @@ import {
 } from "../syntax/nodes"
 import { bigFromF64, bigText, bigToI64 } from "./bigint"
 import { type Checker } from "./base"
+import { cloneCall } from "./clone"
 import { consoleCall } from "./console"
 import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
 import { closureCallee, genericCall, instantiate, isInternal } from "./declarations"
@@ -851,6 +852,7 @@ export function builtinCall(
     expected: Type | null = null,
 ): Operand {
     if (name === "JSON.stringify" || name === "JSON.parse") return jsonCall(c, name, node, scope)
+    if (name === "structuredClone") return cloneCall(c, name, node, scope, expected)
     if (name === "Math.min" || name === "Math.max") return minMax(c, name, node, scope, expected)
     if (name === "internal.inspect") return inspectCall(c, name, node, scope)
     if (name === "Array.from" || name === "Array.of" || name === "Array.isArray")

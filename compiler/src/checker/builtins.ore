@@ -154,9 +154,10 @@ export function builtinScope(): Builtins {
             if (type !== null) scope.declareType(name, new TypeSymbol(type, stmt))
         } else if (stmt.kind === "FunctionDeclaration" && optionalName(stmt) !== null) {
             const name = nameNode(stmt).text
+            // A function named by a type converts to it; others are global functions, as `structuredClone`.
             const found = scope.lookupType(name)
-            if (found === null) process.panic(`unknown builtin function ${name}`)
-            scope.declareValue(name, new ConversionSymbol(found.type, stmt))
+            if (found !== null) scope.declareValue(name, new ConversionSymbol(found.type, stmt))
+            else scope.declareValue(name, new BuiltinSymbol(name, stmt))
         } else if (isNamespace(stmt)) {
             const ns = nameNode(stmt).text
             scope.declareValue(ns, builtinNamespace(ns, stmt))
