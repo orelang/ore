@@ -1,0 +1,44 @@
+type User = { id: int; name: string; email?: string }
+const p: Partial<User> = { name: "a" }
+console.log(p.id === null, p.name)
+const r: Required<User> = { id: 1, name: "b", email: "e" }
+console.log(r.email.length)
+const ro: Readonly<User> = { id: 2, name: "c" }
+console.log(ro.id)
+const pk: Pick<User, "id" | "name"> = { id: 3, name: "d" }
+const om: Omit<User, "email"> = { id: 4, name: "e" }
+console.log(pk.id + om.id)
+type Status = "on" | "off" | "idle"
+const rec: Record<Status, int> = { on: 1, off: 2, idle: 3 }
+console.log(rec.on + rec.off + rec.idle)
+type Active = Exclude<Status, "off">
+const a: Active = "idle"
+type Off = Extract<Status, "off" | "x">
+const o: Off = "off"
+const nn: NonNullable<string | null> = "s"
+function add(x: int, y: int): string {
+    return `${x + y}`
+}
+type R = ReturnType<typeof add>
+const rv: R = add(1, 2)
+type Ps = Parameters<typeof add>
+const ps: Ps = [1, 2]
+console.log(a, o, nn, rv, ps[0] + ps[1])
+type Events = `on${Capitalize<Status>}`
+const ev: Events = "onIdle"
+type Getters<T> = { [K in keyof T as `get${Capitalize<K>}`]: () => T[K] }
+const g: Getters<{ x: int }> = { getX: () => 5 }
+console.log(ev, g.getX())
+type ElemOf<T> = T extends (infer E)[] ? E : never
+const e: ElemOf<string[]> = "elem"
+type IsStr<T> = T extends string ? "yes" : "no"
+const y: IsStr<"q"> = "yes"
+const n2: IsStr<int> = "no"
+console.log(e, y, n2)
+type H<T> = T extends { a: infer X } ? X : never
+const h: H<{ a: int }> = 7
+type L<T> = T extends string ? "s" : T extends int ? "i" : "other"
+const l: L<bool> = "other"
+type Wrap<T> = T extends string ? `<${T}>` : never
+const w: Wrap<"a" | "b"> = "<b>"
+console.log(h, l, w)

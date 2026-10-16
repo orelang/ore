@@ -107,6 +107,12 @@ The codes are grouped by the part of the language they concern:
 | [ORE2056](ORE2056.md) | '…' is not known yet here: give it a type annotation to use 'typeof …' before it. |
 | [ORE2057](ORE2057.md) | 'typeof …' needs a variable or a function with a known type. |
 | [ORE2058](ORE2058.md) | This type operator is not supported. |
+| [ORE2059](ORE2059.md) | The keys of a mapped type are string literal types, not '…'; for any string, use a Map. |
+| [ORE2060](ORE2060.md) | A key of a mapped type is a string literal type, not '…'. |
+| [ORE2061](ORE2061.md) | A mapped type needs the type of its fields: '{ [K in Keys]: T }'. |
+| [ORE2062](ORE2062.md) | 'infer' declares a type only in the 'extends' clause of a conditional type. |
+| [ORE2063](ORE2063.md) | 'infer' is supported in array, tuple, object, function, Map, Set and generic class types. |
+| [ORE2064](ORE2064.md) | 'intrinsic' is only the type of Uppercase, Lowercase, Capitalize and Uncapitalize. |
 
 ## ORE3xxx: Expressions
 

@@ -163,6 +163,8 @@ export class Parser {
     private last = 0
     /** Inside the initializer of a `for`, where `in` is not an operator. */
     private noIn = false
+    /** Whether a type stops before `extends`: in the `extends` clause of a conditional type. */
+    private noConditional = false
     errors: string[] = []
     /** The same errors, with the span of their token instead of its offset in the message. */
     diagnostics: SyntaxError[] = []
@@ -1540,7 +1542,33 @@ export class Parser {
             const functionType = this.speculate(() => this.functionType())
             if (functionType !== null) return functionType
         }
-        return this.unionType()
+        const start = this.token().start
+        const check = this.unionType()
+        if (this.noConditional || !this.at("ExtendsKeyword") || this.token().newline) return check
+        // `T extends U ? X : Y`: the `extends` clause cannot be conditional itself.
+        this.next()
+        const noConditional = this.noConditional
+        this.noConditional = true
+        const extendsType = this.type()
+        this.noConditional = noConditional
+        this.expect("QuestionToken")
+        const trueType = this.type()
+        this.expect("ColonToken")
+        const falseType = this.type()
+        return this.make("ConditionalType", start)
+            .add(check, "checkType")
+            .add(extendsType, "extendsType")
+            .add(trueType, "trueType")
+            .add(falseType, "falseType")
+    }
+
+    /** A type in brackets or parentheses, where a conditional type is allowed again. */
+    private nestedType(): Node {
+        const noConditional = this.noConditional
+        this.noConditional = false
+        const type = this.type()
+        this.noConditional = noConditional
+        return type
     }
 
     private functionType(): Node {
@@ -1580,7 +1608,7 @@ export class Parser {
             if (this.eat("CloseBracketToken")) {
                 type = this.make("ArrayType", start).add(type, "elementType")
             } else {
-                const index = this.type()
+                const index = this.nestedType()
                 this.expect("CloseBracketToken")
                 type = this.make("IndexedAccessType", start).add(type, "objectType").add(index, "indexType")
             }
@@ -1621,13 +1649,23 @@ export class Parser {
                 this.next()
                 return this.node("TypeOperator", start, [this.postfixType()], ["type"])
             }
+            case "InferKeyword": {
+                if (!this.isIdentifier(this.peek(1).kind)) break
+                this.next()
+                const nameStart = this.token().start
+                const parameter = this.make("TypeParameter", nameStart).add(this.identifier(), "name")
+                return this.make("InferType", start).add(this.finish(parameter, nameStart), "typeParameter")
+            }
+            case "TemplateHead":
+                return this.templateType()
             case "OpenParenToken": {
                 this.next()
-                const inner = this.type()
+                const inner = this.nestedType()
                 this.expect("CloseParenToken")
                 return this.make("ParenthesizedType", start).add(inner, "type")
             }
             case "OpenBraceToken": {
+                if (this.atMappedType()) return this.mappedType()
                 const node = new Node("TypeLiteral", start, start).addAll(this.typeMembers(), "members")
                 return this.finish(node, start)
             }
@@ -1656,11 +1694,79 @@ export class Parser {
         this.expect("LessThanToken")
         const list: Node[] = []
         while (!this.at("GreaterThanToken") && !this.at("EndOfFileToken")) {
-            list.push(this.type())
+            list.push(this.nestedType())
             if (!this.eat("CommaToken")) break
         }
         this.expect("GreaterThanToken")
         return list
+    }
+
+    /** Whether a `{` starts a mapped type: `{ [K in T]: X }`, maybe with `readonly`, `+readonly` or `-readonly`. */
+    private atMappedType(): bool {
+        let n = 1
+        let k = this.peek(n).kind
+        if (k === "PlusToken" || k === "MinusToken") {
+            n++
+            k = this.peek(n).kind
+            if (k !== "ReadonlyKeyword") return false
+        }
+        if (k === "ReadonlyKeyword") {
+            n++
+            k = this.peek(n).kind
+        }
+        return (
+            k === "OpenBracketToken" &&
+            this.isIdentifier(this.peek(n + 1).kind) &&
+            this.peek(n + 2).kind === "InKeyword"
+        )
+    }
+
+    /** `{ readonly [K in T as N]?: X }`. */
+    private mappedType(): Node {
+        const start = this.next().start
+        const node = new Node("MappedType", start, start)
+        if (this.at("PlusToken") || this.at("MinusToken")) {
+            node.add(this.tokenNode(), "readonlyToken")
+            this.expect("ReadonlyKeyword")
+        } else if (this.at("ReadonlyKeyword")) node.add(this.tokenNode(), "readonlyToken")
+        this.expect("OpenBracketToken")
+        const parameterStart = this.token().start
+        const parameter = this.make("TypeParameter", parameterStart).add(this.identifier(), "name")
+        this.expect("InKeyword")
+        parameter.add(this.nestedType(), "constraint")
+        node.add(this.finish(parameter, parameterStart), "typeParameter")
+        if (this.eat("AsKeyword")) node.add(this.nestedType(), "nameType")
+        this.expect("CloseBracketToken")
+        if (this.at("PlusToken") || this.at("MinusToken")) {
+            node.add(this.tokenNode(), "questionToken")
+            this.expect("QuestionToken")
+        } else if (this.at("QuestionToken")) node.add(this.tokenNode(), "questionToken")
+        if (this.eat("ColonToken")) node.add(this.nestedType(), "type")
+        if (!this.eat("SemicolonToken")) this.eat("CommaToken")
+        this.expect("CloseBraceToken")
+        return this.finish(node, start)
+    }
+
+    /** A template literal type: `` `on${Capitalize<K>}` ``. */
+    private templateType(): Node {
+        const start = this.token().start
+        const node = new Node("TemplateLiteralType", start, start).add(this.tokenNode(), "head")
+        for (;;) {
+            const spanStart = this.token().start
+            const type = this.nestedType()
+            const k = this.kind()
+            if (k !== "TemplateMiddle" && k !== "TemplateTail") {
+                this.error("Template continuation expected")
+                break
+            }
+            const literal = this.tokenNode()
+            node.add(
+                this.make("TemplateLiteralTypeSpan", spanStart).add(type, "type").add(literal, "literal"),
+                "templateSpans",
+            )
+            if (k === "TemplateTail") break
+        }
+        return this.finish(node, start)
     }
 
     /** `{ members }` of an interface or object type. */

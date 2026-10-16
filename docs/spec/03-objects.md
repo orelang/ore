@@ -278,6 +278,24 @@ names them is:
   a field of one. A top-level variable used this way before its declaration
   needs a type annotation, since its value is checked later than the types.
 - `readonly T[]` is accepted and is `T[]`: arrays are not read-only yet.
+- `T extends U ? X : Y` is X when T is assignable to U, else Y. When T is a
+  type parameter of a generic alias and its argument a union, it is
+  distributed over the members (`Exclude<"a" | "b", "a">` is `"b"`).
+  `infer X` in the `extends` clause binds X to the matching part of T, in
+  array, tuple, object, function, Map, Set and generic class types:
+  `T extends (infer E)[] ? E : never`.
+- A mapped type `{ [K in Keys]: X }` has a field for each string literal type
+  of Keys, of type X with K bound to it; `readonly`, `?`, and `-readonly`,
+  `-?` add or remove the modifiers, which a mapped type over `keyof T` takes
+  from T. `as N` renames a key, and leaves it out when N is `never`.
+- A template literal type `` `on${K}` `` is the union of the strings it makes
+  of the string literal types in it, and `string` with any other type.
+  `Uppercase`, `Lowercase`, `Capitalize` and `Uncapitalize` change their
+  letters.
+- The utility types of TypeScript are global names: `Partial`, `Required`,
+  `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys; a Map for any
+  string), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and `Parameters`
+  (declared in runtime/core/types.ore).
 
 ## Maps
 

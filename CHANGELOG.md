@@ -5,6 +5,12 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Conditional types `T extends U ? X : Y`, distributed over unions, with
+  `infer`; mapped types `{ [K in keyof T]?: T[K] }` with `readonly`, `?`,
+  `-`/`+` and `as`; template literal types and `Uppercase` and the other
+  intrinsic string types. The utility types `Partial`, `Required`,
+  `Readonly`, `Pick`, `Omit`, `Record`, `Exclude`, `Extract`, `NonNullable`,
+  `ReturnType` and `Parameters` are global names.
 - Types computed from others: `keyof T`, indexed access `T["k"]`,
   `T["a" | "b"]` and `T[number]`, and `typeof x` (or `typeof x.y`) as a type.
 - Benchmarks in `bench/`: the same algorithms in Ore, TypeScript (Bun and

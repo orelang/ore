@@ -1,11 +1,25 @@
-// Types computed from other types and values: `keyof T`, `T["k"]` and
-// `typeof x`, resolved when the type that names them is.
+// Types computed from other types and values: `keyof T`, `T["k"]`,
+// `typeof x`, conditional types `T extends U ? X : Y`, mapped types
+// `{ [K in keyof T]?: T[K] }` and template literal types, resolved when the
+// type that names them is. A generic type alias is resolved for each list of
+// type arguments, so their type parameters are known types here.
 
-import { type Type, typeToString } from "../ir/types"
+import { Field, FuncType, type Type, membersOf, typeToString, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
-import { declarationList, declarations, isIdentifier, nameNode, typeNode } from "../syntax/nodes"
+import {
+    constraint,
+    declarationList,
+    declarations,
+    dotDotDotToken,
+    isIdentifier,
+    nameNode,
+    parameters,
+    typeNode,
+    typeParameters,
+} from "../syntax/nodes"
 import { type Checker } from "./base"
-import { type Scope } from "./symbols"
+import { satisfiesConstraint } from "./declarations"
+import { Scope, TypeSymbol } from "./symbols"
 
 /** The names of the members of a type that `keyof` lists: public fields and methods, or interface members. */
 function memberNames(type: Type): string[] | null {
@@ -115,10 +129,37 @@ export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
     return found.length === 1 ? found[0] : c.unionOf(found)
 }
 
-/** The declared type of a top-level variable named `name` of a module, from its annotation; null without one. */
+/** The type of a function declaration from its annotations; null when one is missing or it is generic. */
+function annotatedFunction(c: Checker, decl: Node, scope: Scope): Type | null {
+    const resultNode = typeNode(decl)
+    if (resultNode === null || typeParameters(decl).length > 0) return null
+    const params: Type[] = []
+    let required = -1
+    for (const p of parameters(decl)) {
+        const annotation = typeNode(p)
+        if (annotation === null || dotDotDotToken(p) !== null) return null
+        let type = c.resolveValueType(annotation, scope)
+        if (type === null) return null
+        const optional = p.child("questionToken") !== null || p.child("initializer") !== null
+        if (optional && required === -1) required = params.length
+        if (p.child("questionToken") !== null) type = c.unionOf([type, types.null])
+        params.push(type)
+    }
+    const result = c.resolveType(resultNode, scope)
+    if (result === null) return null
+    const type = new FuncType(params, result)
+    if (required !== -1) type.required = required
+    return type
+}
+
+/** The declared type of a top-level variable or function named `name` of a module, from its annotations; null without them. */
 function annotatedTopLevel(c: Checker, scope: Scope, name: string, at: Node): Type | null {
     const source = c.sourceOf(at)
     for (const stmt of source.ast.list("statements")) {
+        if (stmt.kind === "FunctionDeclaration") {
+            const fn = stmt.child("name")
+            if (fn !== null && fn.text === name) return annotatedFunction(c, stmt, scope)
+        }
         if (stmt.kind !== "VariableStatement") continue
         for (const d of declarations(declarationList(stmt))) {
             const n = nameNode(d)
@@ -180,4 +221,248 @@ export function typeOperator(c: Checker, node: Node, scope: Scope): Type | null 
     }
     c.error(node, "This type operator is not supported.")
     return null
+}
+
+/** Whether a type node names a type parameter of the generic being resolved: `T`. */
+function isTypeParameter(node: Node, scope: Scope): bool {
+    if (node.kind !== "TypeReference" || node.list("typeArguments").length > 0) return false
+    const name = node.child("typeName")
+    if (name === null || !isIdentifier(name)) return false
+    const symbol = scope.lookupType(name.text)
+    return symbol !== null && symbol.decl.kind === "TypeParameter"
+}
+
+/** Whether a type node has an `infer X` in it. */
+function hasInfer(node: Node): bool {
+    if (node.kind === "InferType") return true
+    for (const child of node.children) if (hasInfer(child)) return true
+    return false
+}
+
+/**
+ * Whether a type matches the `extends` clause of a conditional type, binding
+ * the names its `infer X` declare. A clause without `infer` matches the types
+ * assignable to it; in a function type, only the parts with `infer` count.
+ */
+function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: Map<string, Type>): bool {
+    if (pattern.kind === "ParenthesizedType") return matches(c, typeNode(pattern)!, type, scope, bindings)
+    if (pattern.kind === "InferType") {
+        const name = nameNode(pattern.child("typeParameter")!).text
+        const bound = bindings.get(name)
+        if (bound !== null) return c.unionOf([bound, type]) === bound
+        bindings.set(name, type)
+        return true
+    }
+    if (!hasInfer(pattern)) {
+        const target = c.resolveType(pattern, scope)
+        return target !== null && satisfiesConstraint(c, type, target)
+    }
+    if (pattern.kind === "ArrayType") {
+        const elem = pattern.child("elementType")!
+        return type.kind === "array" && matches(c, elem, type.elem, scope, bindings)
+    }
+    if (pattern.kind === "TupleType") {
+        const elems = pattern.list("elements")
+        if (type.kind !== "struct" || !type.tuple || type.fields.length !== elems.length) return false
+        for (let i = 0; i < elems.length; i++)
+            if (!matches(c, elems[i], type.fields[i].type, scope, bindings)) return false
+        return true
+    }
+    if (pattern.kind === "TypeLiteral") {
+        // `{ a: infer X }`: the fields named, of an object type or a class.
+        if (type.kind !== "struct" || type.tuple) return false
+        for (const m of pattern.list("members")) {
+            const annotation = typeNode(m)
+            if (m.kind !== "PropertySignature" || annotation === null) return false
+            const field = memberType(type, c.text(nameNode(m)))
+            if (field === null || !matches(c, annotation, field, scope, bindings)) return false
+        }
+        return true
+    }
+    if (pattern.kind === "FunctionType") {
+        if (type.kind !== "func") return false
+        const params = parameters(pattern)
+        // `(...args: infer P) => R`: the parameters as a tuple.
+        if (params.length === 1 && dotDotDotToken(params[0]) !== null) {
+            const rest = typeNode(params[0])
+            if (rest !== null && hasInfer(rest) && !matches(c, rest, c.tupleOf(type.params), scope, bindings))
+                return false
+        } else {
+            for (let i = 0; i < params.length; i++) {
+                const p = typeNode(params[i])
+                if (p === null || !hasInfer(p)) continue
+                if (i >= type.params.length || !matches(c, p, type.params[i], scope, bindings)) return false
+            }
+        }
+        const result = typeNode(pattern)
+        return result === null || !hasInfer(result) || matches(c, result, type.result, scope, bindings)
+    }
+    if (pattern.kind === "TypeReference") {
+        const name = pattern.child("typeName")!
+        const args = pattern.list("typeArguments")
+        const text = c.text(name)
+        if ((text === "Array" || text === "Set") && args.length === 1) {
+            if (text === "Array" && type.kind === "array") return matches(c, args[0], type.elem, scope, bindings)
+            if (text === "Set" && type.kind === "set") return matches(c, args[0], type.elem, scope, bindings)
+            return false
+        }
+        if (text === "Map" && args.length === 2) {
+            return (
+                type.kind === "map" &&
+                matches(c, args[0], type.key, scope, bindings) &&
+                matches(c, args[1], type.value, scope, bindings)
+            )
+        }
+        // An instance of a generic class or interface: `Box<infer T>`.
+        const instance = type.kind === "struct" || type.kind === "interface" ? c.instanceOf.get(type) : null
+        if (instance === null || instance.generic.name !== text || instance.args.length !== args.length) return false
+        for (let i = 0; i < args.length; i++) if (!matches(c, args[i], instance.args[i], scope, bindings)) return false
+        return true
+    }
+    c.error(pattern, "'infer' is supported in array, tuple, object, function, Map, Set and generic class types.")
+    return false
+}
+
+/** One branch of a conditional type for a checked type that is not a union to distribute. */
+function conditionalBranch(c: Checker, node: Node, check: Type, param: Node | null, scope: Scope): Type | null {
+    const inner = new Scope(scope)
+    // Distributed over a union, the type parameter is each member in the branches.
+    if (param !== null) {
+        const symbol = scope.lookupType(c.text(param))!
+        inner.declareType(c.text(param), new TypeSymbol(check, symbol.decl))
+    }
+    const bindings = new Map<string, Type>()
+    if (matches(c, node.child("extendsType")!, check, inner, bindings)) {
+        for (const [name, type] of bindings) inner.declareType(name, new TypeSymbol(type, node))
+        return c.resolveType(node.child("trueType")!, inner)
+    }
+    return c.resolveType(node.child("falseType")!, inner)
+}
+
+/** `T extends U ? X : Y`, distributed over a union when T is a type parameter, as in TypeScript. */
+export function conditionalType(c: Checker, node: Node, scope: Scope): Type | null {
+    const checkNode = node.child("checkType")!
+    const check = c.resolveType(checkNode, scope)
+    if (check === null) return null
+    if (!isTypeParameter(checkNode, scope)) return conditionalBranch(c, node, check, null, scope)
+    const name = checkNode.child("typeName")!
+    const results: Type[] = []
+    for (const m of membersOf(check).filter((t) => t.kind !== "never")) {
+        const result = conditionalBranch(c, node, m, name, scope)
+        if (result === null) return null
+        results.push(result)
+    }
+    return results.length === 0 ? types.never : c.unionOf(results)
+}
+
+/** The fields of a type whose keys a mapped type over `keyof T` takes, for their `?` and `readonly`. */
+function homomorphicSource(c: Checker, keysNode: Node, scope: Scope): Field[] {
+    if (keysNode.kind !== "TypeOperator" || !c.text(keysNode).startsWith("keyof")) return []
+    const source = c.resolveType(typeNode(keysNode)!, scope)
+    return source !== null && source.kind === "struct" ? source.fields : []
+}
+
+/** `{ readonly [K in Keys as Name]?: X }`: an object type with a field for each key. */
+export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
+    const parameter = node.child("typeParameter")!
+    const keysNode = constraint(parameter)!
+    const keys = c.resolveType(keysNode, scope)
+    if (keys === null) return null
+    const valueNode = typeNode(node)
+    if (valueNode === null) {
+        c.error(node, "A mapped type needs the type of its fields: '{ [K in Keys]: T }'.")
+        return null
+    }
+    const source = homomorphicSource(c, keysNode, scope)
+    const readonlyToken = node.child("readonlyToken")
+    const questionToken = node.child("questionToken")
+    const fields: Field[] = []
+    for (const key of membersOf(keys).filter((t) => t.kind !== "never")) {
+        if (key.kind !== "literal") {
+            c.error(
+                keysNode,
+                `The keys of a mapped type are string literal types, not '${typeToString(key)}'; for any string, use a Map.`,
+            )
+            return null
+        }
+        const inner = new Scope(scope)
+        inner.declareType(nameNode(parameter).text, new TypeSymbol(key, parameter))
+        let name = key.value
+        const nameType = node.child("nameType")
+        if (nameType !== null) {
+            const renamed = c.resolveType(nameType, inner)
+            if (renamed === null) return null
+            if (renamed.kind === "never") continue
+            if (renamed.kind !== "literal") {
+                c.error(nameType, `A key of a mapped type is a string literal type, not '${typeToString(renamed)}'.`)
+                return null
+            }
+            name = renamed.value
+        }
+        let type = c.resolveValueType(valueNode, inner)
+        if (type === null) return null
+        let optional = false
+        let isReadonly = false
+        for (const f of source) {
+            if (f.name !== key.value) continue
+            optional = f.optional
+            isReadonly = f.readonly
+        }
+        const wasOptional = optional
+        if (questionToken !== null) optional = questionToken.kind !== "MinusToken"
+        if (readonlyToken !== null) isReadonly = readonlyToken.kind !== "MinusToken"
+        if (optional) type = c.unionOf([type, types.null])
+        else if (wasOptional) type = c.withoutNull(type)
+        const field = new Field(name, type, isReadonly)
+        field.optional = optional
+        fields.push(field)
+    }
+    return c.shape(fields)
+}
+
+/** The text of a part of a template literal type, without its `` ` ``, `${` and `}`. */
+function templateText(c: Checker, token: Node): string {
+    let text = c.text(token)
+    if (text.startsWith("`") || text.startsWith("}")) text = text.slice(1)
+    if (text.endsWith("${")) text = text.slice(0, text.length - 2)
+    else if (text.endsWith("`")) text = text.slice(0, text.length - 1)
+    return text
+}
+
+/** `` `on${K}` ``: the union of the strings it makes of string literal types; `string` with any other type in it. */
+export function templateLiteralType(c: Checker, node: Node, scope: Scope): Type | null {
+    let strings = [templateText(c, node.child("head")!)]
+    for (const span of node.list("templateSpans")) {
+        const type = c.resolveType(span.child("type")!, scope)
+        if (type === null) return null
+        const tail = templateText(c, span.child("literal")!)
+        const next: string[] = []
+        for (const m of membersOf(type)) {
+            if (m.kind !== "literal") return types.string
+            for (const s of strings) next.push(s + m.value + tail)
+        }
+        strings = next
+    }
+    const literals: Type[] = []
+    for (const s of strings) literals.push(c.literal(s))
+    return c.unionOf(literals)
+}
+
+/** `Uppercase<S>` and the other intrinsic string types, of a string literal type or a union of them. */
+export function intrinsicType(c: Checker, name: string, args: Type[], node: Node): Type | null {
+    if (name !== "Uppercase" && name !== "Lowercase" && name !== "Capitalize" && name !== "Uncapitalize") {
+        c.error(node, "'intrinsic' is only the type of Uppercase, Lowercase, Capitalize and Uncapitalize.")
+        return null
+    }
+    const literals: Type[] = []
+    for (const m of membersOf(args[0])) {
+        // The constraint `S extends string` leaves string types only.
+        if (m.kind !== "literal") return types.string
+        const v = m.value
+        if (name === "Uppercase") literals.push(c.literal(v.toUpperCase()))
+        else if (name === "Lowercase") literals.push(c.literal(v.toLowerCase()))
+        else if (name === "Capitalize") literals.push(c.literal(v.slice(0, 1).toUpperCase() + v.slice(1)))
+        else literals.push(c.literal(v.slice(0, 1).toLowerCase() + v.slice(1)))
+    }
+    return c.unionOf(literals)
 }

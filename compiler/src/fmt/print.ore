@@ -586,6 +586,12 @@ function needsParens(n: ENode): bool {
             return typeNeedsParens(n, parent, key, true)
         case "TSTypeOperator":
             return typeNeedsParens(n, parent, key, false)
+        case "TSInferType":
+            return (
+                (key === "objectType" && parent.type === "TSIndexedAccessType") ||
+                (key === "elementType" && parent.type === "TSArrayType") ||
+                parent.type === "TSTypeOperator"
+            )
         case "TSTypeQuery":
             return (
                 (key === "objectType" && parent.type === "TSIndexedAccessType") ||
@@ -1057,6 +1063,12 @@ function printNode(n: ENode, args: Args): Doc {
             return pk(n, "literal")
         case "TSIndexedAccessType":
             return c([pk(n, "objectType"), t("["), pk(n, "indexType"), t("]")])
+        case "TSConditionalType":
+            return printConditionalType(n)
+        case "TSInferType":
+            return c([t("infer "), pk(n, "typeParameter")])
+        case "TSMappedType":
+            return printMappedType(n)
         case "TSTypeOperator":
             return c([t(n.operator + " "), pk(n, "typeAnnotation")])
         case "TSMethodSignature":
@@ -3488,6 +3500,9 @@ function printTypeParameters(n: ENode): Doc {
 }
 
 function printTypeParameter(n: ENode): Doc {
+    // `K in keyof T` of a mapped type.
+    const parent = n.parent
+    if (parent !== null && parent.type === "TSMappedType") return c([pk(n, "name"), t(" in "), pk(n, "constraint")])
     const parts: Doc[] = [t(n.isConst ? "const " : ""), pk(n, "name")]
     const constraint = n.get("constraint")
     if (constraint !== null) {
@@ -3586,4 +3601,34 @@ function printIntersection(n: ENode): Doc {
         }
     }
     return g(c(parts))
+}
+
+/**
+ * `T extends U ? X : Y` on one line, or broken with `?` and `:` indented
+ * below it; a conditional type in the false branch is indented by 2 more, as
+ * Prettier prints nested conditional types and ternaries.
+ */
+function printConditionalType(n: ENode): Doc {
+    const parent = n.parent
+    // A conditional type in the false branch is already indented by the `: ` before it.
+    const chained = parent !== null && parent.type === "TSConditionalType" && n.key === "falseType"
+    const branches = c([line, t("? "), align(2, pk(n, "trueType")), line, t(": "), align(2, pk(n, "falseType"))])
+    const parts = c([pk(n, "checkType"), t(" extends "), pk(n, "extendsType"), chained ? branches : indent(branches)])
+    return chained ? parts : g(parts)
+}
+
+/** `{ readonly [K in keyof T as N]?: X }`. */
+function printMappedType(n: ENode): Doc {
+    const nameType = n.get("nameType")
+    const typeAnnotation = n.get("typeAnnotation")
+    const body = c([
+        t(n.operator !== "" ? n.operator + " " : ""),
+        t("["),
+        pk(n, "typeParameter"),
+        nameType !== null ? c([t(" as "), pk(n, "nameType")]) : empty,
+        t("]"),
+        t(n.raw),
+        typeAnnotation !== null ? c([t(": "), pk(n, "typeAnnotation")]) : empty,
+    ])
+    return g(c([t("{"), indent(c([line, body])), line, t("}")]))
 }

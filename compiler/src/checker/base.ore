@@ -66,7 +66,7 @@ import { type Source } from "../syntax/source"
 import { type Program } from "../project/load"
 import { bigGt, bigLt, bigOf, bigOfU64, bigText, bigToF64, bigToI64 } from "./bigint"
 import { conformance, intersection, itab, objectInterface, resolveBase } from "./classes"
-import { indexedType, typeOperator, typeQuery } from "./computed"
+import { conditionalType, indexedType, mappedType, templateLiteralType, typeOperator, typeQuery } from "./computed"
 import {
     type Accessor,
     type ClassInfo,
@@ -152,6 +152,8 @@ export class Checker {
     readonly instanceOf = new Map<Type, InstanceInfo>()
 
     instanceCount = 0
+    /** The type that names the generic type alias being resolved, outermost first: where errors in the runtime's aliases are reported. */
+    typeSite: Node | null = null
 
     nextLambda = 0
 
@@ -360,6 +362,13 @@ export class Checker {
         if (node.kind === "TypeOperator") return typeOperator(this, node, scope)
         if (node.kind === "IndexedAccessType") return indexedType(this, node, scope)
         if (node.kind === "TypeQuery") return typeQuery(this, node, scope)
+        if (node.kind === "ConditionalType") return conditionalType(this, node, scope)
+        if (node.kind === "MappedType") return mappedType(this, node, scope)
+        if (node.kind === "TemplateLiteralType") return templateLiteralType(this, node, scope)
+        if (node.kind === "InferType") {
+            this.error(node, "'infer' declares a type only in the 'extends' clause of a conditional type.")
+            return null
+        }
         if (node.kind === "TypeLiteral") return this.resolveTypeLiteral(node, scope)
         if (node.kind === "FunctionType") {
             const typeParams = typeParameters(node)
@@ -868,6 +877,14 @@ export class Checker {
 
     error(node: Node, message: string) {
         const context = this.context
+        // An error in a utility type of the runtime, as `Record<string, int>`, is the program's.
+        const site = this.typeSite
+        if (
+            site !== null &&
+            this.sourceOf(node).path.startsWith("ore:") &&
+            !this.sourceOf(site).path.startsWith("ore:")
+        )
+            node = site
         const d = diagnosticAt(this.sourceOf(node), node, context !== null ? `${message} (in '${context}')` : message)
         // Generic instances can repeat the same error.
         let seen = false

@@ -4,13 +4,14 @@
 import { Block, Func } from "../ir/nodes"
 import { type Type, FuncType, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
-import { hasModifier, members, nameNode } from "../syntax/nodes"
+import { hasModifier, members, nameNode, typeParameters } from "../syntax/nodes"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
 import {
     builtinScope,
     globalClasses,
     globalClassModule,
+    globalTypeModule,
     namespaceAtPath,
     namespaceModule,
     namespaceNames,
@@ -46,7 +47,7 @@ import {
 } from "./declarations"
 import { isDeclaration } from "./helpers"
 import { checkStatements } from "./statements"
-import { Scope } from "./symbols"
+import { Generic, type Instance, Scope, TypeSymbol } from "./symbols"
 
 /** A function declaration and its function, whose body is checked in the last pass. */
 class Body {
@@ -110,8 +111,22 @@ export function check(program: Program): CheckResult {
         else if (stmt.kind === "InterfaceDeclaration") declareInterface(c, stmt, m.scope)
         else if (stmt.kind === "ImportDeclaration") declareImport(c, stmt, m)
     })
-    // Classes of the runtime that are global names: `RegExp`, `RegExpMatch`.
+    // Classes of the runtime that are global names: `RegExp`, `RegExpMatch`;
+    // and the utility types, `Partial` and the others.
     for (const m of modules) {
+        if (m.source.path === globalTypeModule) {
+            for (const stmt of c.statementsOf(m.source)) {
+                if (stmt.kind !== "TypeAliasDeclaration") continue
+                const generic = new Generic(
+                    nameNode(stmt).text,
+                    stmt,
+                    typeParameters(stmt),
+                    m.scope,
+                    new Map<string, Instance>(),
+                )
+                builtins.scope.declareType(generic.name, new TypeSymbol(types.never, stmt, generic))
+            }
+        }
         if (m.source.path !== globalClassModule) continue
         for (const name of globalClasses) {
             const type = m.scope.ownType(name)

@@ -88,6 +88,7 @@ import {
     resolveBase,
 } from "./classes"
 import { type ClassInfo as ClassInfoType, type ModuleInfo, Directive, InterfaceInfo, Signature } from "./context"
+import { intrinsicType } from "./computed"
 import { checkExpr } from "./expressions"
 import {
     cIdent,
@@ -1080,7 +1081,14 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
     const decl = generic.decl
 
     if (decl.kind === "TypeAliasDeclaration") {
-        const type = c.resolveType(typeNode(decl)!, scope)
+        // `type Uppercase<S extends string> = intrinsic`: computed by the checker.
+        const outer = c.typeSite
+        if (outer === null) c.typeSite = node
+        const type =
+            c.text(typeNode(decl)!) === "intrinsic"
+                ? intrinsicType(c, generic.name, args, node)
+                : c.resolveType(typeNode(decl)!, scope)
+        c.typeSite = outer
         if (type !== null && type.kind === "struct" && type.name === null) type.name = label
         if (type !== null) generic.instances.set(key, type)
         return type
@@ -1132,7 +1140,7 @@ export function genericMethodOwner(c: Checker, generic: Generic): ClassInfoType 
 
 /** Whether a type argument satisfies a constraint. */
 export function satisfiesConstraint(c: Checker, arg: Type, bound: Type): bool {
-    if (sameType(arg, bound)) return true
+    if (sameType(arg, bound) || arg.kind === "never") return true
     const source = structOrInterface(arg)
     if (bound.kind === "interface" && source !== null) return conformance(c, source, bound).reason === null
     return membersOf(arg).every((a) => membersOf(bound).some((b) => memberOf(a, b)))

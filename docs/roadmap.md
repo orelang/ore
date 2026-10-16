@@ -68,7 +68,10 @@ exports, type assertions (Ore converts: `i32(x)`).
     interfaces (done; not methods), generic methods in interfaces;
   - `keyof`, `typeof x` as a type, indexed access `T["k"]` (done);
   - conditional types, mapped types and template literal types, and with
-    them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...).
+    them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...)
+    (done); numeric literal types, `infer` in template literal types,
+    `object`, `Function` and `unknown` in conditional types, and a library of
+    more utility types (`DeepPartial`, `Paths`, `PathValue`, ...).
 - Regular expressions: literals `/re/`, `RegExp` and the string methods
   that take one, with a backtracking engine in the runtime (done; not
   lookbehind and the `u`, `v` and `d` flags).

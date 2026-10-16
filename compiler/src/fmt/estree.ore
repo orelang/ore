@@ -754,6 +754,45 @@ export class Converter {
                 return this.make("TSIndexedAccessType", node)
                     .set("objectType", this.req(node.child("objectType")))
                     .set("indexType", this.req(node.child("indexType")))
+            case "ConditionalType":
+                return this.make("TSConditionalType", node)
+                    .set("checkType", this.req(node.child("checkType")))
+                    .set("extendsType", this.req(node.child("extendsType")))
+                    .set("trueType", this.req(node.child("trueType")))
+                    .set("falseType", this.req(node.child("falseType")))
+            case "InferType":
+                return this.make("TSInferType", node).set("typeParameter", this.req(node.child("typeParameter")))
+            case "MappedType": {
+                const mapped = this.make("TSMappedType", node)
+                    .set("typeParameter", this.req(node.child("typeParameter")))
+                    .set("nameType", this.opt(node.child("nameType")))
+                    .set("typeAnnotation", this.opt(node.child("type")))
+                // The modifiers as written: `readonly`, `+readonly` or `-readonly`, and `?`, `+?` or `-?`.
+                const readonlyToken = node.child("readonlyToken")
+                if (readonlyToken !== null)
+                    mapped.operator =
+                        readonlyToken.kind === "ReadonlyKeyword"
+                            ? "readonly"
+                            : `${this.text[readonlyToken.start] === 45 ? "-" : "+"}readonly`
+                const questionToken = node.child("questionToken")
+                if (questionToken !== null)
+                    mapped.raw =
+                        questionToken.kind === "QuestionToken"
+                            ? "?"
+                            : `${this.text[questionToken.start] === 45 ? "-" : "+"}?`
+                return mapped
+            }
+            case "TemplateLiteralType": {
+                const template = this.make("TemplateLiteral", node)
+                const quasis = [this.templateElement(must(node.child("head")), false)]
+                const types: ENode[] = []
+                for (const span of node.list("templateSpans")) {
+                    types.push(this.req(span.child("type")))
+                    const literal = must(span.child("literal"))
+                    quasis.push(this.templateElement(literal, literal.kind === "TemplateTail"))
+                }
+                return template.setAll("quasis", quasis).setAll("expressions", types)
+            }
             case "TupleType":
                 return this.make("TSTupleType", node).setAll("elementTypes", this.convertList(node.list("elements")))
             case "TypeParameter": {
