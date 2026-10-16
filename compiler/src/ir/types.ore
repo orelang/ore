@@ -790,6 +790,46 @@ export function isStringLike(type: Type): bool {
     return type.kind === "string" || type.kind === "literal"
 }
 
+/** Why values of a type cannot be converted to or from JSON, if they cannot. */
+export function jsonProblem(type: Type, seen: Set<StructType> | null = null): string | null {
+    const visited = seen ?? new Set<StructType>()
+    switch (type.kind) {
+        case "int":
+        case "float":
+        case "bool":
+        case "string":
+        case "literal":
+        case "null":
+            return null
+        case "array":
+            // Only a tagged template makes the strings with their raw strings: JSON has an array of them.
+            if (type.template) return `Type '${typeToString(type)}' cannot be converted to or from JSON.`
+            return jsonProblem(type.elem, visited)
+        case "map":
+            if (!isStringLike(type.key))
+                return `Type '${typeToString(type)}' cannot be converted to or from JSON: the keys of a Map must be strings.`
+            return jsonProblem(type.value, visited)
+        case "struct": {
+            if (visited.has(type)) return null
+            visited.add(type)
+            for (const f of type.fields) {
+                const problem = jsonProblem(f.type, visited)
+                if (problem !== null) return problem
+            }
+            return null
+        }
+        case "union": {
+            for (const m of type.members) {
+                const problem = jsonProblem(m, visited)
+                if (problem !== null) return problem
+            }
+            return null
+        }
+        default:
+            return `Type '${typeToString(type)}' cannot be converted to or from JSON.`
+    }
+}
+
 /** What JavaScript's `typeof` says of a value of a type. */
 export function typeofName(type: Type): string {
     if (isNumeric(type) || type.kind === "number-literal") return "number"

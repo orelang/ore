@@ -69,14 +69,14 @@ object files come from the build cache when it has them (see below).
 | `syntax/nodes.ore` | Typed accessors of the tree for the checker (`expression(node)`, `parameters(fn)`, ...), and what TypeScript keeps in flags and token kinds: `declarationKind`, `prefixOperator`, `leadingCommentRanges` |
 | `project/resolve.ore` | The `ore:` modules embedded in the compiler, the runtime's load order, import resolution |
 | `project/load.ore` | `loadProgram`: the entry file and every module it imports |
-| `ir/types.ore` | The type model (`compiler/ir/src/types.ts`): `Type`, `types`, `sameType`, `typeToString`, `typeKey`, `unionRepr` |
+| `ir/types.ore` | The type model (`compiler/ir/src/types.ts`): `Type`, `types`, `sameType`, `typeToString`, `typeKey`, `unionRepr`, `jsonProblem` |
 | `ir/nodes.ore` | The IR nodes (`compiler/ir/src/nodes.ts`): `Module`, `Func`, `Local`, statements and expressions |
 | `ir/dump.ore` | `dump(module)`: the canonical text of a module, the same as `dump` of `compiler/ir/src/dump.ts` |
 | `checker/bigint.ore` | Untyped integer constants, `bigint` in TypeScript: sign and magnitude in 32-bit limbs |
 | `checker/operand.ore`, `fold.ore` | Operands (`untyped-int`, `untyped-float`, `typed`, `error`) and folding of constants |
 | `checker/symbols.ore` | Value and type symbols, generics, scopes |
 | `checker/context.ore` | The types shared by the layers: `CheckResult`, `FuncContext`, `ClassInfo`, facts... |
-| `checker/helpers.ore` | Tables and pure functions: operators, string and array methods, `terminates`, `visitLocals`, `jsonProblem` |
+| `checker/helpers.ore` | Tables and pure functions: operators, string and array methods, `terminates`, `visitLocals` |
 | `checker/builtins.ore` | The root scope, from `runtime/std/builtin.d.ore`, and the runtime modules that implement namespaces (`fs`, `process`), also nested ones (`process.command`, a member of `process` with a module of its own) |
 | `checker/assigned.ore` | Definite assignment |
 | `checker/base.ore` | `Checker`: the state of a check, type resolution, unions and shapes, `coerce`, diagnostics |

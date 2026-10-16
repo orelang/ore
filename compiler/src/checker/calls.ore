@@ -69,6 +69,7 @@ import {
     findOverloads,
     isNumeric,
     isStringLike,
+    jsonProblem,
     membersOf,
     paramsToString,
     sameType,
@@ -129,7 +130,6 @@ import {
     hasZeroValue,
     numericType,
     wellKnownSymbol,
-    jsonProblem,
     stringMethods,
     typed,
     typeOf,
@@ -982,20 +982,28 @@ export function jsonCall(c: Checker, name: string, node: Node, scope: Scope): Op
         const value = c.toDefault(operand_, args[0])
         const problem = jsonProblem(value.type)
         if (problem !== null) return c.fail(args[0], problem)
-        // As in JavaScript, the second argument is the replacer, null or an
-        // array of the keys to keep, and the third the indentation: a number
-        // of spaces or a string.
+        // As in JavaScript, the second argument is the replacer, null, an
+        // array of the keys to keep or a function, and the third the
+        // indentation: a number of spaces or a string.
         const values: Expr[] = [value]
         const keys = arrayOf(types.string)
+        const replacer = new FuncTypeClass([types.string, types.unknown], types.unknown)
+        let result: Type = types.string
         if (args.length > 1 && args[1].kind !== "NullKeyword") {
-            const replacer = checkExpr(c, args[1], scope, keys)
-            if (replacer.k === "error") return replacer
-            if (replacer.k !== "typed" || !sameType(replacer.expr.type, keys))
+            const literal = args[1].kind === "ArrowFunction" || args[1].kind === "FunctionExpression"
+            const given = checkExpr(c, args[1], scope, literal ? replacer : keys)
+            if (given.k === "error") return given
+            if (given.k === "typed" && given.expr.type.kind === "func") {
+                // A function sees each value boxed and returns the one to write, or JSON.omit to leave
+                // it out: the whole value left out makes the result null, JavaScript's undefined.
+                values.push(c.coerce(given, replacer, args[1]))
+                result = c.unionOf([types.string, types.null])
+            } else if (given.k === "typed" && sameType(given.expr.type, keys)) values.push(given.expr)
+            else
                 return c.fail(
                     args[1],
-                    "The second argument of 'JSON.stringify' is a replacer, null or an array of keys: write 'JSON.stringify(value, null, 2)' to indent.",
+                    "The second argument of 'JSON.stringify' is a replacer, null, an array of keys or a function '(key: string, value: unknown) => unknown': write 'JSON.stringify(value, null, 2)' to indent.",
                 )
-            values.push(replacer.expr)
         } else values.push(new NullLit(types.null))
         if (args.length > 2) {
             const space = checkExpr(c, args[2], scope, types.i64)
@@ -1004,7 +1012,7 @@ export function jsonCall(c: Checker, name: string, node: Node, scope: Scope): Op
                 values.push(c.coerce(space, types.string, args[2]))
             else values.push(c.coerce(space, types.i64, args[2]))
         }
-        return typed(new BuiltinCall(types.string, name, values))
+        return typed(new BuiltinCall(result, name, values))
     }
     const typeArgs = typeArguments(node)
     if (typeArgs.length !== 1)

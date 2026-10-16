@@ -5,6 +5,11 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `JSON.stringify(value, replacer, space)` takes a replacer function, `(key:
+  string, value: unknown) => unknown`, called as in JavaScript (the whole
+  value under `""`, then each property and element depth-first, the parts
+  of what it returns too); it returns `JSON.omit` to leave a value out,
+  where JavaScript returns `undefined`, and the call returns `string | null`.
 - A literal assigned to a variable of a union of literal types narrows it to
   that literal, as in TypeScript: after `const k: keyof T = "label"`, `k` is
   `"label"`, and `o[k] = "text"` assigns only that member.

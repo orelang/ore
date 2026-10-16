@@ -1,0 +1,115 @@
+// JSON.stringify with a replacer function: it sees every key and value, the
+// whole first under "", then depth-first; what it returns is written, and
+// JSON.omit leaves a value out, as JavaScript's undefined.
+
+type Point = {
+    x: int
+    y: f64
+}
+
+class User {
+    constructor(
+        public name: string,
+        public password: string,
+        public age: int,
+        public tags: string[],
+    ) {}
+}
+
+type Item = {
+    id: int
+    note?: string
+    at: Point | null
+    when: Date
+}
+
+// The calls in order, the keys of elements as strings.
+const seen: string[] = []
+const mixed: (int | string | null)[] = [1, "two", null]
+const traced = JSON.stringify({ a: mixed, b: { c: true } }, (key: string, value: unknown): unknown => {
+    seen.push(`${key}:${typeof value}`)
+    return value
+})
+console.log(traced)
+console.log(seen.join(" "))
+
+// Leaving out a field, and changing numbers.
+const user = new User("ann", "secret", 41, ["a", "b"])
+console.log(
+    JSON.stringify(user, (key, value) => {
+        if (key === "password") return JSON.omit
+        if (typeof value === "number") return value * 2
+        return value
+    }),
+)
+
+// Indented, with a property left out and elements of an array written as null.
+console.log(
+    JSON.stringify(
+        { list: [1, 2, 3, 4], keep: "yes", drop: "no" },
+        (key, value) => {
+            if (key === "drop") return JSON.omit
+            if (typeof value === "number" && value % 2 === 0) return JSON.omit
+            return value
+        },
+        2,
+    ),
+)
+
+// What the replacer returns is written, and its parts go through the replacer too.
+console.log(
+    JSON.stringify([1, 2], (key, value) => {
+        if (key === "") return value
+        if (key !== "n" && typeof value === "number") return { n: value, s: `${value}` }
+        return typeof value === "string" ? value.toUpperCase() : value
+    }),
+)
+
+// null is written as null; a function is left out, as in JavaScript.
+console.log(JSON.stringify({ a: 1, b: 2 }, (key, value) => (key === "a" ? null : key === "b" ? () => 1 : value)))
+
+// The whole value left out: the result is null (JavaScript's undefined).
+const none = JSON.stringify([1], (key, value) => JSON.omit)
+console.log(none === null)
+
+// An optional field that is absent is not seen; a date is seen as its toJSON().
+const items: Item[] = [{ id: 1, at: { x: 1, y: 2.5 }, when: new Date(0) }]
+const keys: string[] = []
+console.log(
+    JSON.stringify(items, (key, value) => {
+        keys.push(key)
+        if (key === "when") return typeof value === "string" ? value.slice(0, 4) : "?"
+        return value
+    }),
+)
+console.log(keys.join(","))
+
+// Maps, tuples and unions.
+const m = new Map<string, int | string>([
+    ["one", 1],
+    ["two", "2"],
+])
+const pair: [string, int] = ["p", 7]
+console.log(JSON.stringify({ m, pair }, (key, value) => (typeof value === "string" ? `<${value}>` : value), 1))
+
+// A replacer that is a named function.
+function stars(key: string, value: unknown): unknown {
+    return typeof value === "boolean" ? "*" : value
+}
+const flags: (bool | bool[] | { k: int })[] = [true, [false], { k: 1 }]
+console.log(JSON.stringify(flags, stars))
+
+// Empty containers with indentation.
+const empty: { a: int[]; b: Map<string, int> } = { a: [], b: new Map<string, int>() }
+console.log(JSON.stringify(empty, (key, value) => value, 2))
+console.log(JSON.stringify({ a: 1 }, (key, value) => (key === "a" ? JSON.omit : value), 2))
+
+// Dictionaries, and a URL seen as its toJSON().
+const d: Record<string, int> = { x: 1, y: 2 }
+const site = { d, url: new URL("https://example.com/a?b=1") }
+console.log(
+    JSON.stringify(site, (key, value) => (key === "y" ? JSON.omit : typeof value === "string" ? value.length : value)),
+)
+
+// A replacer array still keeps keys.
+console.log(JSON.stringify({ a: 1, b: 2 }, ["b"]))

@@ -3,13 +3,16 @@
 // that type would. A descriptor (`%ore.type`) is a constant per type, made
 // when a value of the type is first boxed:
 //
-//     { typeof name, flags, inspect function, equality function, f64 function }
+//     { typeof name, flags, inspect function, equality function, f64 function,
+//       JSON function }
 //
 // The functions take pointers to the words. The f64 function is null but for
 // numbers, which it converts to `f64`, the type `typeof x === "number"`
-// narrows to. A value is boxed with the type it has at run time: a string
-// literal as a string, a union as its member, an interface as its class, an
-// instance of a class with subclasses as its own class.
+// narrows to. The JSON function, which writes the value through a replacer
+// function of JSON.stringify, is null until a program calls one
+// (`replacingJson`). A value is boxed with the type it has at run time: a
+// string literal as a string, a union as its member, an interface as its
+// class, an instance of a class with subclasses as its own class.
 
 import { type StructType, type Type, type UnionType, isNumeric, typeofName, typeToString, types } from "../ir/types"
 import { Emitter } from "./base"
@@ -17,6 +20,7 @@ import { STR, TYPE, UNKNOWN } from "./context"
 import { check, choose, convert, equals, inject, payload, slotTest } from "./expressions"
 import { helper } from "./calls"
 import { inspectAt } from "./inspect"
+import { jsonHeld } from "./json"
 import { globalName, type V } from "./ll"
 
 // The fields of a descriptor.
@@ -25,6 +29,7 @@ const FLAGS = 1
 const INSPECT = 2
 const EQUALS = 3
 const TO_F64 = 4
+const JSON_FN = 5
 
 /** A descriptor flag: the value is a string, which console.log prints as it is. */
 export const STRING_FLAG = 1
@@ -50,19 +55,39 @@ export function descriptor(g: Emitter, type: Type): string {
     helper(g, eq, `define internal i1 ${eq}(ptr %a, ptr %b)`, (e) => {
         e.b.terminate(`ret i1 ${equals(e, e.load("%a", t), e.load("%b", t), t).v}`)
     })
-    let toF64 = "null"
     if (isNumeric(t)) {
-        toF64 = globalName(`ore.unknown.f64.${key}`)
+        const toF64 = globalName(`ore.unknown.f64.${key}`)
         helper(g, toF64, `define internal double ${toF64}(ptr %p)`, (e) => {
             e.b.terminate(`ret double ${convert(e, e.load("%p", t), t, types.f64).v}`)
         })
     }
-    const flags = t.kind === "string" ? STRING_FLAG : 0
-    g.helpers.set(
-        name,
-        `${name} = internal constant ${TYPE} { ${STR} ${g.str(typeofName(t)).v}, i64 ${flags}, ptr ${inspect}, ptr ${eq}, ptr ${toF64} }`,
-    )
+    g.descriptorTypes.push(t)
+    g.helpers.set(name, descriptorConstant(g, t))
     return name
+}
+
+/** The constant of a type's descriptor, whose functions `descriptor` made. */
+function descriptorConstant(g: Emitter, t: Type): string {
+    const key = g.names.key(t)
+    const name = globalName(`ore.type.${key}`)
+    const inspect = globalName(`ore.unknown.inspect.${key}`)
+    const eq = globalName(`ore.unknown.eq.${key}`)
+    const toF64 = isNumeric(t) ? globalName(`ore.unknown.f64.${key}`) : "null"
+    const json = g.jsonReplacing ? jsonHeld(g, t) : "null"
+    const flags = t.kind === "string" ? STRING_FLAG : 0
+    return `${name} = internal constant ${TYPE} { ${STR} ${g.str(typeofName(t)).v}, i64 ${flags}, ptr ${inspect}, ptr ${eq}, ptr ${toF64}, ptr ${json} }`
+}
+
+/** Gives every descriptor its JSON function, made and to be made, for a replacer of JSON.stringify. */
+export function replacingJson(g: Emitter) {
+    if (g.jsonReplacing) return
+    g.jsonReplacing = true
+    // Making the functions makes descriptors of the types in values, which have theirs then.
+    const done = g.descriptorTypes.length
+    for (let i = 0; i < done; i++) {
+        const t = g.descriptorTypes[i]
+        g.helpers.set(globalName(`ore.type.${g.names.key(t)}`), descriptorConstant(g, t))
+    }
 }
 
 /** The descriptor of an `unknown` value. */
@@ -258,6 +283,16 @@ export function unknownTypeof(g: Emitter, v: V): V {
         () => descriptorField(g, desc, NAME, STR),
         STR,
     )
+}
+
+/**
+ * Writes an `unknown` that is not null as JSON, by its descriptor's JSON
+ * function, passing the values in it through the replacer function of the
+ * options `o`.
+ */
+export function encodeHeld(g: Emitter, v: V, b: V, o: V, depth: V) {
+    const f = descriptorField(g, descriptorOf(g, v), JSON_FN, "ptr")
+    g.b.emit(`call void ${f.v}(ptr ${words(g, v)}, ptr ${b.v}, ptr ${o.v}, i64 ${depth.v})`)
 }
 
 /** Whether a descriptor is that of a string. */

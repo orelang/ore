@@ -145,11 +145,13 @@ function jsonU64(b: ptr, v: u64): void {
 
 /**
  * The options of a `JSON.stringify` call: `gap`, the indentation of each
- * level ("" for none), and the keys the replacer array keeps, in its order
- * without repeats, or null when there is none.
+ * level ("" for none), the keys the replacer array keeps, in its order
+ * without repeats, or null when there is none, and the replacer function.
+ * Not exported: the exports of this module are members of `JSON`.
  */
-export class JsonOptions {
+class JsonOptions {
     keys: string[] | null = null
+    replacer: ((key: string, value: unknown) => unknown) | null = null
     constructor(readonly gap: string) {}
 }
 
@@ -905,4 +907,35 @@ function jsonError(c: ptr): string {
     const message = unsafe.load<string>(unsafe.add(c, 8))
     const path = unsafe.load<string>(unsafe.add(c, 24))
     return path.length > 0 ? `JSON: ${message} at ${path}` : `JSON: ${message}`
+}
+
+// ---------------------------------------------------------------------------
+// Replacer functions of JSON.stringify
+
+/** The class of `JSON.omit`. */
+class Omitted {}
+
+/**
+ * What a replacer function of `JSON.stringify` returns to leave a value out,
+ * as JavaScript's `undefined`: a property is not written, an element of an
+ * array is written as `null`, and the whole value makes the result `null`.
+ */
+export const omit = new Omitted()
+
+/** Passes the values through a replacer function. */
+//ore:runtime ore_rt_json_replacer
+function jsonReplacer(o: JsonOptions, replacer: (key: string, value: unknown) => unknown): void {
+    o.replacer = replacer
+}
+
+/** What the replacer function gives for a value at a key. */
+//ore:runtime ore_rt_json_replace
+function jsonReplace(o: JsonOptions, key: string, value: unknown): unknown {
+    return o.replacer!(key, value)
+}
+
+/** Whether a replacer's result is left out: `JSON.omit`, or a function, as in JavaScript. */
+//ore:runtime ore_rt_json_omits
+function omits(value: unknown): bool {
+    return value instanceof Omitted || typeof value === "function"
 }

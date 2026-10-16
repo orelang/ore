@@ -279,7 +279,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `time.now()`, `time.unixNanos()` | nanoseconds on a monotonic clock (for durations); since the Unix epoch on the wall clock |
 | `time.nanosecond`, `time.microsecond`, `time.millisecond`, `time.second`, `time.minute`, `time.hour`, `time.day` | durations in nanoseconds, `int` |
 | `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
-| `JSON.stringify(value, keys?, space?)` | the JSON text of a value; a replacer array `keys` keeps only those keys of each object, in its order; `space` indents each level by that many spaces (at most 10) or by a string (its first 10 characters); a replacer function is not supported |
+| `JSON.stringify(value, keys?, space?)` | the JSON text of a value; a replacer array `keys` keeps only those keys of each object, in its order; a replacer function, as told below, makes the result `string \| null`; `space` indents each level by that many spaces (at most 10) or by a string (its first 10 characters) |
+| `JSON.omit` | what a replacer function returns to leave a value out, as JavaScript's `undefined` |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 | `structuredClone(value)` | a deep copy of a value, keeping shared references and cycles: a global function, as in JavaScript |
 
@@ -524,6 +525,27 @@ type must match, and a field must be present unless its type includes
 `JSON: expected a string, got a number at .tags[1]`. Fields are written in
 the order of the object's keys (see
 [The namespace Object](03-objects.md#the-namespace-object)); non-finite floats are written as `null`.
+
+A replacer function of `JSON.stringify` has the type `(key: string, value:
+unknown) => unknown`, and works as in JavaScript but for `this`, which it
+has not. It is called first with the key `""` and the whole value, then
+with each property of what it returned, depth-first: the fields of an
+object or a class, the entries of a `Map` or a dictionary, and the elements
+of an array or a tuple, whose keys are their indexes as strings. The value
+is boxed as an `unknown` (a date or a URL as its `toJSON()`), and an
+optional field that is `null` is no property, which the replacer does not
+see. What it returns is written in place of the value, `null` as `null`; a
+value of a type that JSON cannot convert panics. To leave a value out,
+where JavaScript returns `undefined`, it returns `JSON.omit`: a property is
+not written, an element is written as `null`, and the whole value left out
+makes the result `null`, which is why `JSON.stringify` with a replacer
+function returns `string | null`. A function returned is left out the same
+way, as in JavaScript. `JSON.parse` takes no reviver function.
+
+```ts
+JSON.stringify(user, (key, value) => (key === "password" ? JSON.omit : value))
+JSON.stringify([1, 2], (key, value) => (typeof value === "number" ? value * 10 : value)) // "[10,20]"
+```
 
 Strings and bytes convert as with the globals of JavaScript's hosts, which
 are global names in Ore too, with `u8[]` where JavaScript has a
@@ -1000,4 +1022,5 @@ Standard, whose parser they follow over the UTF-8 bytes of the input:
 - `typeof x === "object"` is true for `null`, arrays, maps, sets and
   objects, as in JavaScript.
 - An `unknown` cannot be formatted in a template literal, converted to or
-  from JSON, or be a `Map` key or a `Set` element.
+  from JSON (but as what a replacer of `JSON.stringify` returns), or be a
+  `Map` key or a `Set` element.

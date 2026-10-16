@@ -24,14 +24,12 @@ import {
     type FloatType,
     type IntType,
     type FuncType,
-    type StructType,
     type Type,
     Field,
     arrayOf,
     findField,
     findMethod,
     isNumeric,
-    isStringLike,
     isSubclass,
     membersOf,
     sameType,
@@ -873,44 +871,4 @@ export function visitLocalsExpr(e: Expr, visit: (local: Local) => void) {
 export function paramName(p: Node, index: int): string {
     const name = nameNode(p)
     return isIdentifier(name) ? name.text : `param${index}`
-}
-
-/** Why values of a type cannot be converted to or from JSON, if they cannot. */
-export function jsonProblem(type: Type, seen: Set<StructType> | null = null): string | null {
-    const visited = seen ?? new Set<StructType>()
-    switch (type.kind) {
-        case "int":
-        case "float":
-        case "bool":
-        case "string":
-        case "literal":
-        case "null":
-            return null
-        case "array":
-            // Only a tagged template makes the strings with their raw strings: JSON has an array of them.
-            if (type.template) return `Type '${typeToString(type)}' cannot be converted to or from JSON.`
-            return jsonProblem(type.elem, visited)
-        case "map":
-            if (!isStringLike(type.key))
-                return `Type '${typeToString(type)}' cannot be converted to or from JSON: the keys of a Map must be strings.`
-            return jsonProblem(type.value, visited)
-        case "struct": {
-            if (visited.has(type)) return null
-            visited.add(type)
-            for (const f of type.fields) {
-                const problem = jsonProblem(f.type, visited)
-                if (problem !== null) return problem
-            }
-            return null
-        }
-        case "union": {
-            for (const m of type.members) {
-                const problem = jsonProblem(m, visited)
-                if (problem !== null) return problem
-            }
-            return null
-        }
-        default:
-            return `Type '${typeToString(type)}' cannot be converted to or from JSON.`
-    }
 }

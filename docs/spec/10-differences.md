@@ -36,6 +36,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `typeof x === "number"` on an `unknown` | narrows to `number` | narrows to `f64`; an integer converts |
 | `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it |
 | `map.get(missing)` | `undefined` | `null` |
+| a replacer function of `JSON.stringify` leaving a value out | returns `undefined` | returns `JSON.omit` (`null` writes `null`, as in JavaScript); the call returns `string \| null`, where TypeScript declares `string` |
 | `d[k]` of `{ [k: string]: V }` | `V` (`V \| undefined` with `noUncheckedIndexedAccess`) | `V \| null` |
 | `d[k] += 1` on a dictionary | `NaN` when missing | compile error: `d[k] = (d[k] ?? 0) + 1` |
 | `Object.keys`, printing and JSON of an object type | the order each object's properties were added | the order the shape was first written, the same for every object of it |

@@ -695,8 +695,18 @@ declare namespace JSON {
      * order; with a `space`, nested values go on their own lines, indented
      * per level by that many spaces (at most 10) or by the string (its first
      * 10 characters).
+     *
+     * A replacer function is given each key and value, the whole first under
+     * `""`, and returns the value to write instead, or `JSON.omit` to leave
+     * it out; then the result is null if the whole value is left out (it is
+     * a string otherwise). `omit` is written in Ore, in runtime/core/json.ore,
+     * whose exports are members of the namespace.
      */
-    function stringify<T>(value: T, replacer?: string[] | null, space?: int | string): string
+    function stringify<T>(
+        value: T,
+        replacer?: string[] | ((key: string, value: unknown) => unknown) | null,
+        space?: int | string,
+    ): string | null
 
     /**
      * Reads a value of type `T` from JSON text, checking its shape:

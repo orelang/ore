@@ -5,6 +5,7 @@ import { type BuiltinCall } from "../ir/nodes"
 import {
     displayFields,
     intRange,
+    jsonProblem,
     sameType,
     typeToString,
     types,
@@ -28,10 +29,12 @@ import {
     MAP,
     SB,
     STR,
+    UNKNOWN,
 } from "./context"
 import { Emitter } from "./base"
 import { choose, equals, expr, fieldPtr, inject, payload, recast, slotTest, unionOf } from "./expressions"
 import { globalName, sizeOf, type V } from "./ll"
+import { box, encodeHeld, replacingJson, unknownIsNull } from "./unknown"
 
 /**
  * The runtime's class `Date` if a class is it or extends it, or null:
@@ -88,18 +91,42 @@ export function json(g: Emitter, e: BuiltinCall): V {
     g.defs.set(JSON_VALUE, `${JSON_VALUE} = type { i32, i8, double, ${STR}, i64, ptr, ptr }`)
     g.defs.set(JSON_CTX, `${JSON_CTX} = type { i8, ${STR}, ${STR} }`)
     if (e.name === "JSON.stringify") {
-        // The arguments: the value, the replacer (null or an array of keys), then the space if given.
+        // The arguments: the value, the replacer (null, an array of keys or a function), then the space if given.
         const value = expr(g, e.args[0])
+        const replacer = e.args.length > 1 && e.args[1].type.kind !== "null" ? expr(g, e.args[1]) : null
         let o: V
         if (e.args.length > 2) {
             const space = expr(g, e.args[2])
             o = g.rt(e.args[2].type.kind === "string" ? "ore_rt_json_gap" : "ore_rt_json_spaces", [space])
         } else o = g.rt("ore_rt_json_spaces", [g.i64(0)])
-        if (e.args.length > 1 && e.args[1].type.kind !== "null") g.rt("ore_rt_json_keep", [o, expr(g, e.args[1])])
-        const b = g.b.alloca(SB)
-        g.b.emit(`store ${SB} zeroinitializer, ptr ${b}`)
-        g.b.emit(`call void ${jsonEncoder(g, e.args[0].type)}(ptr ${b}, ${value.ty} ${value.v}, ptr ${o.v}, i64 0)`)
-        return g.rt("ore_sb_string", [{ ty: "ptr", v: b }])
+        const b: V = { ty: "ptr", v: g.b.alloca(SB) }
+        g.b.emit(`store ${SB} zeroinitializer, ptr ${b.v}`)
+        if (replacer !== null && e.args[1].type.kind === "func") {
+            // A function: what it gives for the whole is written, unless it leaves it out (null, JavaScript's undefined).
+            g.rt("ore_rt_json_replacer", [o, replacer])
+            replacingJson(g)
+            const u = unionOf(e.type)
+            let text = -1
+            let none = -1
+            for (let i = 0; i < u.members.length; i++) {
+                if (u.members[i].kind === "null") none = i
+                else text = i
+            }
+            const top = replaced(g, o, e.args[0].type, value, g.str(""))
+            return choose(
+                g,
+                omitted(g, top),
+                () => inject(g, u, none, null),
+                () => {
+                    writeReplaced(g, b, top, o, g.i64(0))
+                    return inject(g, u, text, g.rt("ore_sb_string", [b]))
+                },
+                g.lt(u),
+            )
+        }
+        if (replacer !== null) g.rt("ore_rt_json_keep", [o, replacer])
+        g.b.emit(`call void ${jsonEncoder(g, e.args[0].type)}(ptr ${b.v}, ${value.ty} ${value.v}, ptr ${o.v}, i64 0)`)
+        return g.rt("ore_sb_string", [b])
     }
     // JSON.parse<T>(text): parses, then reads a T, or makes an Error from the first problem.
     const u = unionOf(e.type)
@@ -425,6 +452,215 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
         }
         default:
             put(g, b, "null")
+    }
+}
+
+/**
+ * The value at `key` passed through the replacer function of the options
+ * `o`: boxed, and a date or a URL as its `toJSON()`, which JavaScript calls
+ * first.
+ */
+function replaced(g: Emitter, o: V, t: Type, v: V, key: V): V {
+    let boxed = box(g, v, t)
+    for (const hook of ["ore_rt_date_json_value", "ore_rt_url_json_value"])
+        if (g.runtime.get(hook) !== null) boxed = g.rt(hook, [boxed])
+    return g.rt("ore_rt_json_replace", [o, key, boxed])
+}
+
+/** Whether a replacer left a value out: it returned `JSON.omit` or a function. */
+function omitted(g: Emitter, u: V): V {
+    return g.rtBool("ore_rt_json_omits", [u])
+}
+
+/** Writes a value a replacer returned, not left out: `@json.any`. */
+function writeReplaced(g: Emitter, b: V, u: V, o: V, depth: V) {
+    const name = globalName("json.any")
+    if (!g.helpers.has(name)) {
+        g.helpers.set(name, "")
+        helper(g, name, `define internal void ${name}(ptr %b, ${UNKNOWN} %u, ptr %o, i64 %depth)`, (e) => {
+            const held: V = { ty: UNKNOWN, v: "%u" }
+            const isNull = e.b.label("anynull")
+            const present = e.b.label("anyheld")
+            e.b.condBr(unknownIsNull(e, held), isNull, present)
+            e.b.start(isNull)
+            put(e, { ty: "ptr", v: "%b" }, "null")
+            e.b.terminate("ret void")
+            e.b.start(present)
+            encodeHeld(e, held, { ty: "ptr", v: "%b" }, { ty: "ptr", v: "%o" }, { ty: "i64", v: "%depth" })
+            e.b.terminate("ret void")
+        })
+    }
+    g.b.emit(`call void ${name}(ptr ${b.v}, ${UNKNOWN} ${u.v}, ptr ${o.v}, i64 ${depth.v})`)
+}
+
+/** Whether a type has values whose parts go through a replacer: arrays, maps, objects and classes but dates and URLs. */
+function hasParts(g: Emitter, t: Type): bool {
+    if (t.kind === "array" || t.kind === "map") return true
+    return t.kind === "struct" && dateClass(g, t) === null && !hookedClass(g, t, "ore_rt_url_json", 0)
+}
+
+/**
+ * The JSON function of a descriptor (llvm/unknown.ore), which writes the
+ * value held at `%p` through the replacer function of the options:
+ * `(ptr p, ptr b, ptr options, i64 depth)`. It panics for a type that JSON
+ * cannot convert.
+ */
+export function jsonHeld(g: Emitter, t: Type): string {
+    const name = globalName(`json.held.${g.names.key(t)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    helper(g, name, `define internal void ${name}(ptr %p, ptr %b, ptr %o, i64 %depth)`, (e) => {
+        if (jsonProblem(t) !== null) {
+            e.panic(`JSON.stringify: a value of type ${typeToString(t)} cannot be converted to JSON`)
+            return
+        }
+        const v = e.load("%p", t)
+        const write = hasParts(e, t) ? jsonReplacer(e, t) : jsonEncoder(e, t)
+        e.b.emit(`call void ${write}(ptr %b, ${v.ty} ${v.v}, ptr %o, i64 %depth)`)
+        e.b.terminate("ret void")
+    })
+    return name
+}
+
+/** A helper writing an array, map, object or class through the replacer function of the options: `(ptr b, T v, ptr options, i64 depth)`. */
+function jsonReplacer(g: Emitter, type: Type): string {
+    const name = globalName(`json.rep.${g.names.key(type)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const ty = g.lt(type)
+    helper(g, name, `define internal void ${name}(ptr %b, ${ty} %v, ptr %o, i64 %depth)`, (e) => {
+        encodeReplaced(e, type, { ty: "ptr", v: "%b" }, { ty, v: "%v" })
+        e.b.terminate("ret void")
+    })
+    return name
+}
+
+/**
+ * Writes the parts of a value, each the value the replacer function gives
+ * for it with its key (the index of an element as a string): a part it
+ * leaves out is not written, or written as `null` in an array, as in
+ * JavaScript.
+ */
+function encodeReplaced(g: Emitter, type: Type, b: V, v: V) {
+    const o: V = { ty: "ptr", v: "%o" }
+    const depth: V = { ty: "i64", v: "%depth" }
+    const deeper = g.b.value("i64", `add i64 %depth, 1`)
+    const newline = (d: V) => {
+        g.rt("ore_rt_json_newline", [b, o, d])
+    }
+    // An element of an array or a tuple.
+    const element = (i: V, t: Type, x: V) => {
+        commaAfterFirst(g, b, i)
+        newline(deeper)
+        const u = replaced(g, o, t, x, g.rt("ore_rt_str_from_i64", [i]))
+        const left = g.b.label("left")
+        const kept = g.b.label("kept")
+        const end = g.b.label("element")
+        g.b.condBr(omitted(g, u), left, kept)
+        g.b.start(left)
+        put(g, b, "null")
+        g.b.br(end)
+        g.b.start(kept)
+        writeReplaced(g, b, u, o, deeper)
+        g.b.br(end)
+        g.b.start(end)
+    }
+    // A property of an object, counted in `written` when it is not left out.
+    const written = g.b.alloca("i64")
+    g.b.emit(`store i64 0, ptr ${written}`)
+    const property = (key: V, t: Type, x: V) => {
+        const u = replaced(g, o, t, x, key)
+        const kept = g.b.label("kept")
+        const end = g.b.label("property")
+        g.b.condBr(omitted(g, u), end, kept)
+        g.b.start(kept)
+        const count = g.b.value("i64", `load i64, ptr ${written}`)
+        commaAfterFirst(g, b, count)
+        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${count.v}, 1`).v}, ptr ${written}`)
+        newline(deeper)
+        g.rt("ore_rt_json_str", [b, key])
+        putc(g, b, ":")
+        const space = g.b.label("space")
+        const value = g.b.label("value")
+        g.b.condBr(g.rtBool("ore_rt_json_spaced", [o]), space, value)
+        g.b.start(space)
+        putc(g, b, " ")
+        g.b.br(value)
+        g.b.start(value)
+        writeReplaced(g, b, u, o, deeper)
+        g.b.br(end)
+        g.b.start(end)
+    }
+    const closeObject = () => {
+        ifNonZero(g, g.b.value("i64", `load i64, ptr ${written}`), () => newline(depth))
+        putc(g, b, "}")
+    }
+    switch (type.kind) {
+        case "array": {
+            const elemType = type.elem
+            const elem = g.mt(elemType)
+            putc(g, b, "[")
+            const len = g.b.value("i64", `load i64, ptr ${g.field(v.v, ARRAY, 1)}`)
+            counted(g, len, (i) => {
+                const data = g.b.value("ptr", `load ptr, ptr ${g.field(v.v, ARRAY, 0)}`)
+                const at = g.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${i.v}`)
+                element(i, elemType, g.load(at.v, elemType))
+            })
+            ifNonZero(g, len, () => newline(depth))
+            putc(g, b, "]")
+            return
+        }
+        case "map": {
+            const keyType = type.key
+            const valueType = type.value
+            putc(g, b, "{")
+            const count = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 6)}`)
+            counted(g, count, (i) => {
+                const live = g.b.label("live")
+                const dead = g.b.label("dead")
+                g.b.condBr(g.rtBool("ore_rt_map_live", [v, i]), live, dead)
+                g.b.start(live)
+                const key = g.load(g.rt("ore_rt_map_key", [v, i]).v, keyType)
+                property(key, valueType, g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType))
+                g.b.br(dead)
+                g.b.start(dead)
+            })
+            closeObject()
+            return
+        }
+        case "struct": {
+            if (type.tuple) {
+                putc(g, b, "[")
+                for (let i = 0; i < type.fields.length; i++) {
+                    const f = type.fields[i]
+                    element(g.i64(i), f.type, g.load(fieldPtr(g, v.v, type, f.name), f.type))
+                }
+                if (type.fields.length > 0) newline(depth)
+                putc(g, b, "]")
+                return
+            }
+            putc(g, b, "{")
+            for (const f of displayFields(type)) {
+                const x = g.load(fieldPtr(g, v.v, type, f.name), f.type)
+                const ft = f.type
+                // An optional field that is null is no property, as JavaScript's undefined one: the replacer does not see it.
+                const end = g.b.label("absent")
+                if (f.optional && ft.kind === "union") {
+                    let at = -1
+                    for (let i = 0; i < ft.members.length; i++) if (ft.members[i].kind === "null") at = i
+                    const present = g.b.label("present")
+                    g.b.condBr(slotTest(g, ft, x, at), end, present)
+                    g.b.start(present)
+                }
+                property(g.str(f.name), ft, x)
+                g.b.br(end)
+                g.b.start(end)
+            }
+            closeObject()
+            return
+        }
+        default:
+            process.panic(`no parts in ${typeToString(type)}`)
     }
 }
 
