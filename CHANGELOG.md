@@ -3,7 +3,9 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
-## Unreleased
+## 0.4.0
+
+JavaScript's built-in API (Array, String, Map, Set, Number, Math, console), the time namespace, modules with export * and directory imports, and promises with async and await.
 
 - Promises and async functions, in JavaScript's order of microtasks and
   timers, without rejections: `Promise<T>` (`then`, `finally`,
@@ -139,6 +141,10 @@ before 1.0, a minor version may change the language.
 - `Number.parseInt` gives `null` for a number too large for an `int`
   instead of a wrapped one.
 
+## 0.3.0
+
+Ore's own garbage collector, precise and concurrent; faster tasks, regular expressions and JSON; benchmarks against C, Go, Bun and Node.
+
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with
@@ -205,13 +211,6 @@ before 1.0, a minor version may change the language.
   (`size<U = T>(): int`), as those of functions do; ORE5019 is no longer
   reported. A generic method is checked only for the calls it has, so such
   a method of a generic class can use what only some of its instances have.
-- Diagnostics point at the places related to them: the first declaration of
-  a name declared twice, the declaration of a variable read before it is
-  assigned, the parameter, variable or field a value does not convert to,
-  the interface member that is missing or differs, and the overload
-  signatures of a call. The command line prints each as a `note:` with its
-  position and source line under the error; the language server sends them
-  as `relatedInformation`.
 - `unknown` as the type of values: any value converts to it, boxed with
   its type, and `console.log` prints it as that type. It can be compared
   with `===`, tested for `null` and narrowed with `typeof` (to `string`,
@@ -253,6 +252,23 @@ before 1.0, a minor version may change the language.
   negated class that may hold strings is an error. With `u` (or `v`) and
   `i`, `\w`, `\W`, `\b` and `\B` count `ſ` and the Kelvin sign as word
   characters, as in JavaScript.
+- Maps, sets and channels are scanned precisely by the collector: the
+  compiler passes the pointer maps of their keys, values and entries, map
+  entries and channel buffers are allocated with them (never scanned when
+  they hold no pointers), and the arrays of `keys()` and `values()` carry
+  the pointer map of their elements.
+
+## 0.2.0
+
+Closing the gaps with TypeScript, and the toolchain around the language.
+
+- Diagnostics point at the places related to them: the first declaration of
+  a name declared twice, the declaration of a variable read before it is
+  assigned, the parameter, variable or field a value does not convert to,
+  the interface member that is missing or differs, and the overload
+  signatures of a call. The command line prints each as a `note:` with its
+  position and source line under the error; the language server sends them
+  as `relatedInformation`.
 - Numeric literal types in computations on types (`Prev[D]`,
   `D extends number = 10`, `[D] extends [never]`); `infer` in template
   literal types; `unknown`, `object`, `Function` and `readonly unknown[]`
@@ -279,7 +295,8 @@ before 1.0, a minor version may change the language.
 - Getters and setters in object literals (`{ get x(): int { ... }, set x(v:
   int) { ... } }`), as in classes: closures whose `this` is the object,
   called by reads and writes of the property; a property with only a getter
-  is read-only.
+  is read-only. Like those of classes, they do not implement interface
+  fields yet, which a type error now says.
 - Types computed from others: `keyof T`, indexed access `T["k"]`,
   `T["a" | "b"]` and `T[number]`, and `typeof x` (or `typeof x.y`) as a type.
 - Benchmarks in `bench/`: the same algorithms in Ore, TypeScript (Bun and
@@ -416,11 +433,6 @@ before 1.0, a minor version may change the language.
   `--` and `&&`) and the `d` flag (`m.indices`, `m.groupIndices`).
 - A narrowing `return` inside a loop body no longer narrows after the loop,
   which may run zero times or skip the `return` with `continue` or `break`.
-- Maps, sets and channels are scanned precisely by the collector: the
-  compiler passes the pointer maps of their keys, values and entries, map
-  entries and channel buffers are allocated with them (never scanned when
-  they hold no pointers), and the arrays of `keys()` and `values()` carry
-  the pointer map of their elements.
 
 ## 0.1.1
 
