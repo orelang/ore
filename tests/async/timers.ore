@@ -1,12 +1,14 @@
 // Timers fire in order of time, then of creation; immediates come before timers.
+// The times are 80 ms apart at least, so that a late tick on a slow machine
+// keeps the order (an interval counts from when its callback ran).
 
 const start = "start"
 console.log(start)
 
-time.timeout(() => console.log("timeout 100"), 100 * time.millisecond)
-time.timeout(() => console.log("timeout 20 a"), 20 * time.millisecond)
+time.timeout(() => console.log("timeout 400"), 400 * time.millisecond)
+time.timeout(() => console.log("timeout 80 a"), 80 * time.millisecond)
 time.timeout(() => console.log("timeout 0"), 0)
-time.timeout(() => console.log("timeout 20 b"), 20 * time.millisecond)
+time.timeout(() => console.log("timeout 80 b"), 80 * time.millisecond)
 time.immediate(() => console.log("immediate"))
 task.microtask(() => console.log("microtask"))
 
@@ -18,17 +20,17 @@ const ticker = time.interval(() => {
     ticks++
     console.log("tick", ticks)
     if (ticks === 3) ticker.cancel()
-}, 40 * time.millisecond)
+}, 160 * time.millisecond)
 
 time.timeout(() => {
-    console.log("timeout 150")
+    console.log("timeout 600")
     time.immediate(() => console.log("immediate from timer"))
     time.timeout(() => console.log("timeout 0 from timer"), 0)
     task.microtask(() => console.log("microtask from timer"))
-}, 150 * time.millisecond)
+}, 600 * time.millisecond)
 
 async function waits() {
-    await time.delay(60 * time.millisecond)
-    console.log("delay 60")
+    await time.delay(240 * time.millisecond)
+    console.log("delay 240")
 }
 waits()
