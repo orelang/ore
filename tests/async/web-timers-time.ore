@@ -1,0 +1,24 @@
+// reference: none, Node has no time namespace
+// The web timers and those of time and task share the loop's queues: they
+// run in one order, of creation for the same delay.
+
+time.immediate(() => console.log("time.immediate"))
+setImmediate(() => console.log("setImmediate"))
+time.immediate(() => console.log("time.immediate 2"))
+task.microtask(() => console.log("task.microtask"))
+queueMicrotask(() => console.log("queueMicrotask"))
+task.microtask(() => console.log("task.microtask 2"))
+time.timeout(() => console.log("time.timeout"), 5 * time.millisecond)
+setTimeout(() => console.log("setTimeout"), 5)
+time.timeout(() => console.log("time.timeout 2"), 5 * time.millisecond)
+// The timers are one class: time.timeout's has unref() and refresh(), setTimeout's cancel().
+setTimeout(() => console.log("never"), 1).cancel()
+time.timeout(() => console.log("never: unref'd"), 50 * time.millisecond).unref()
+const t = time.timeout(() => console.log("refreshed"), 30 * time.millisecond)
+setTimeout(() => t.refresh(), 5)
+setTimeout(() => console.log("before the refreshed timer"), 32)
+console.log("sync")
+// A timer kept in a variable is a time.Timer.
+let kept: time.Timer | null = null
+kept = setInterval(() => {}, 1000)
+clearInterval(kept)

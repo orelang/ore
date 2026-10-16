@@ -1,0 +1,59 @@
+// The timers of the web and Node, global names as in JavaScript: setTimeout,
+// setInterval and setImmediate, their clear functions, and queueMicrotask.
+// They are `time.timeout`, `time.interval`, `time.immediate` and
+// `task.microtask` with delays in milliseconds: the same queues of the event
+// loop (runtime/core/loop.ore), so that both run in one order.
+
+import { immediate, interval, microtask, timeout, Timer } from "ore:runtime/loop"
+
+/**
+ * A delay in milliseconds in nanoseconds. As in Node, one below 1 ms, NaN,
+ * or beyond 2^31 - 1 ms (24.8 days) is 1 ms; a fraction is kept.
+ */
+function nanoseconds(ms: number): int {
+    const d = ms >= 1 && ms <= 2147483647 ? ms : 1
+    return int(d * 1_000_000)
+}
+
+/**
+ * Runs `callback` with `args` once, `delay` milliseconds from now or later
+ * (1 ms when left out, or below 1): `setTimeout(f, 50)`. Returns its timer
+ * (`clearTimeout(timer)`), as Node's `Timeout`, with `ref()`, `unref()`,
+ * `hasRef()` and `refresh()`.
+ */
+export function setTimeout<A extends unknown[]>(callback: (...args: A) => void, delay: number = 1, ...args: A): Timer {
+    return timeout(() => callback(...args), nanoseconds(delay))
+}
+
+/** Runs `callback` with `args` every `delay` milliseconds (at least 1), until `clearInterval`. */
+export function setInterval<A extends unknown[]>(callback: (...args: A) => void, delay: number = 1, ...args: A): Timer {
+    return interval(() => callback(...args), nanoseconds(delay))
+}
+
+/** Runs `callback` with `args` on the next turn of the event loop, before its timers. */
+export function setImmediate<A extends unknown[]>(callback: (...args: A) => void, ...args: A): Timer {
+    return immediate(() => callback(...args))
+}
+
+/** Cancels a timer of `setTimeout`; harmless after it ran, twice, and for null. */
+export function clearTimeout(timer: Timer | null = null): void {
+    if (timer !== null) timer.cancel()
+}
+
+/** Cancels a timer of `setInterval`; harmless twice, and for null. */
+export function clearInterval(timer: Timer | null = null): void {
+    if (timer !== null) timer.cancel()
+}
+
+/** Cancels an immediate of `setImmediate`; harmless after it ran, twice, and for null. */
+export function clearImmediate(timer: Timer | null = null): void {
+    if (timer !== null) timer.cancel()
+}
+
+/**
+ * Queues `callback` to run after the current code and the microtasks queued
+ * before it, ahead of any immediate or timer: `task.microtask`.
+ */
+export function queueMicrotask(callback: () => void): void {
+    microtask(callback)
+}

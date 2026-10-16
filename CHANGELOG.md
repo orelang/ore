@@ -5,6 +5,15 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- The timers of the web and Node are global names: `setTimeout(f, ms?,
+  ...args)`, `setInterval`, `setImmediate`, `clearTimeout`,
+  `clearInterval`, `clearImmediate` and `queueMicrotask`, over the queues
+  of `time.timeout` and `task.microtask`, so that both run in one order.
+  Delays are milliseconds, a `number`, and one below 1 ms or `NaN` is 1 ms,
+  as in Node. They return Node's `Timeout`, the `time.Timer` of
+  `time.timeout`, which now has `ref()`, `unref()`, `hasRef()` and
+  `refresh()` beside `cancel()`: a timer or immediate unref'd does not keep
+  the program running, but runs while something else does.
 - A rest parameter can have a tuple type, `...p: [string, int?]`: it takes
   as many arguments as the tuple has elements, and in a function type it is
   its elements. Typed by a type parameter, `...args: A` with `A extends

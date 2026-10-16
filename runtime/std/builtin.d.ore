@@ -427,8 +427,13 @@ declare namespace time {
     function delay(ns: int): Promise<void>
     /** Blocks the current task, or the event loop, for `ns` nanoseconds. */
     function sleep(ns: int): void
-    /** A callback of `timeout`, `interval` or `immediate`; `cancel()` stops it, harmlessly after it ran. */
-    type Timer = { cancel(): void }
+    /**
+     * A callback of `timeout`, `interval` or `immediate`, and of `setTimeout`
+     * and the other global timers: `cancel()` stops it, harmlessly after it
+     * ran; `unref()` lets the program end while it waits, `ref()` undoes
+     * that, `hasRef()` tells which; `refresh()` starts its delay again.
+     */
+    type Timer = { cancel(): void; ref(): Timer; unref(): Timer; hasRef(): bool; refresh(): Timer }
 }
 
 /**

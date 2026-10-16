@@ -56,5 +56,6 @@ Rules for this code:
 | `net.ore` | TCP on non-blocking sockets: listen, connect, accept, read, write, with the socket layouts and constants of each platform |
 | `io.ore` | Printing through one shared buffer, and the end of the program |
 | `time.ore` | The namespace `time`: the clocks and durations in nanoseconds, `parse` and `format` |
+| `timers.ore` | The global timers of the web and Node, `setTimeout`, `setInterval`, `setImmediate`, their clear functions and `queueMicrotask`: those of `time` and `task` with delays in milliseconds |
 | `types.ore` | The utility types of TypeScript (`Partial`, `Pick`, `Record`...) and more (`DeepPartial`, `Paths`...), global names in every module |
 | `program.ore` | The entry point (`main`), arguments, panics with their stack trace, and what `ore:test` needs: a body run in a task whose panic is caught, and a call when the top-level code ends |

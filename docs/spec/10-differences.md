@@ -62,3 +62,6 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `BigInt(9007199254740993)` | `9007199254740992n` (the double) | `9007199254740993n` (constants are exact) |
 | `BigInt(x)` of a fraction or bad text, `1n / 0n` | throw | panic (`BigInt(1.5)` of a constant is a compile error) |
 | generic bodies | checked once | checked per instance |
+| `setTimeout(f, ms)`, `setInterval`, `setImmediate` | a `Timeout` object (Node) or a number (browsers) | Node's `Timeout`, the class `time.Timer` of `time.timeout`: `ref`, `unref`, `hasRef`, `refresh`, but no `Symbol.toPrimitive` (not a number) |
+| `clearTimeout(id)` | takes a timer, its number, `undefined` or `null` | takes a timer, `null` or nothing |
+| `setTimeout(f, -1)`, `NaN`, beyond 2^31 - 1 ms | 1 ms with a warning (Node), 0 ms (browsers) | 1 ms, without a warning |

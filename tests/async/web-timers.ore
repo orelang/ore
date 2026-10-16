@@ -1,0 +1,86 @@
+// reference: node --experimental-transform-types
+// The timers of the web and Node: setTimeout, setInterval, setImmediate,
+// their clear functions and queueMicrotask, with delays in milliseconds, in
+// Node's order. Each phase starts the next, so that the order does not
+// depend on the machine's speed.
+
+console.log("sync")
+queueMicrotask(() => console.log("microtask"))
+Promise.resolve(1).then((v) => console.log("promise", v))
+setTimeout(phase1, 5)
+
+function phase1(): void {
+    console.log("phase 1")
+    // Microtasks after the callback, then the immediates, then the timers.
+    setTimeout(() => console.log("timeout 0"), 0)
+    setImmediate(() => {
+        console.log("immediate")
+        queueMicrotask(() => console.log("microtask of the immediate"))
+    })
+    setImmediate(() => console.log("immediate 2"))
+    queueMicrotask(() => console.log("microtask of the timer"))
+    Promise.resolve(2).then((v) => console.log("promise", v))
+    setTimeout(phase2, 5)
+}
+
+function phase2(): void {
+    console.log("phase 2")
+    // Extra arguments are passed to the callback, typed by it or by them.
+    setTimeout((a: string, b: number) => console.log("arguments", a, b), 1, "x", 2)
+    setTimeout((n) => console.log("inferred", n + 1), 1, 41)
+    // A delay below 1 ms, NaN or left out is 1 ms: these run in order of creation.
+    setTimeout(() => console.log("negative"), -5)
+    setTimeout(() => console.log("NaN"), Number.NaN)
+    setTimeout(() => console.log("0"), 0)
+    setTimeout(() => console.log("0.5"), 0.5)
+    setTimeout(() => console.log("left out"))
+    setTimeout(() => console.log("1"), 1)
+    setImmediate((s: string) => console.log("immediate with", s), "an argument")
+    setTimeout(phase3, 5)
+}
+
+function phase3(): void {
+    console.log("phase 3")
+    const cleared = setTimeout(() => console.log("never"), 1)
+    clearTimeout(cleared)
+    clearTimeout(cleared)
+    const never = setImmediate(() => console.log("never immediate"))
+    clearImmediate(never)
+    clearTimeout(null)
+    clearInterval(null)
+    clearImmediate(null)
+    clearTimeout()
+    let n = 0
+    const interval = setInterval(
+        (label: string) => {
+            n++
+            console.log(label, n)
+            if (n === 3) {
+                clearInterval(interval)
+                phase4()
+            }
+        },
+        1,
+        "interval",
+    )
+}
+
+function phase4(): void {
+    console.log("phase 4")
+    // refresh() runs a timer that ran once again.
+    let runs = 0
+    const again = setTimeout(() => {
+        runs++
+        console.log("ran", runs)
+        if (runs === 1) again.refresh()
+    }, 1)
+    console.log("hasRef", again.hasRef(), again.unref().hasRef(), again.ref().hasRef())
+    // refresh() starts the delay again: the 40 ms timer, refreshed after 5 ms, runs after the 42 ms one.
+    const late = setTimeout(() => console.log("refreshed: last"), 40)
+    setTimeout(() => late.refresh(), 5)
+    setTimeout(() => console.log("not refreshed: first"), 42)
+    // A cleared timer does not start again.
+    const gone = setTimeout(() => console.log("never refreshed"), 1)
+    clearTimeout(gone)
+    gone.refresh()
+}

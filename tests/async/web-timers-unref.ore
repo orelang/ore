@@ -1,0 +1,15 @@
+// reference: node --experimental-transform-types
+// A timer or an immediate unref'd does not keep the program running, but
+// runs while something else does; ref() makes it keep it running again.
+
+setImmediate(() => console.log("unref'd immediate, while the keeper waits")).unref()
+setTimeout(() => console.log("unref'd timer, while the keeper waits"), 5).unref()
+setTimeout(() => console.log("keeper"), 20)
+const back = setTimeout(() => console.log("ref'd again"), 30)
+back.unref()
+back.ref()
+// Nothing keeps the program running past the 30 ms timer.
+setTimeout(() => console.log("never"), 60).unref()
+const interval = setInterval(() => console.log("never: interval"), 100)
+interval.unref()
+console.log("end")

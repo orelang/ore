@@ -88,21 +88,43 @@ console.log(counts) // [ 1, 3 ]
   value; `await value` of anything else takes one tick, as for a fulfilled
   promise. The top-level code of a module may `await` too: it runs the
   event loop until the promise is fulfilled. A top-level `await` that
-  nothing can settle any more (no timer, no task left that could) ends the
-  program with "Warning: unsettled top-level await" and status 13, as in
-  Node.
+  nothing can settle any more (no timer but those unref'd, no task left
+  that could) ends the program with "Warning: unsettled top-level await"
+  and status 13, as in Node.
 - `task.microtask(f)` queues a microtask (`queueMicrotask`). `time.timeout(f,
-  ns)`, `time.interval(f, ns)` and `time.immediate(f)` return a timer with
-  `cancel()` (`setTimeout`, `setInterval`, `setImmediate`); `time.delay(ns)`
-  is a promise fulfilled after `ns` nanoseconds. Durations are nanoseconds,
-  as everywhere in `time`: `time.timeout(f, 50 * time.millisecond)`.
+  ns)`, `time.interval(f, ns)` and `time.immediate(f)` return a timer
+  (`setTimeout`, `setInterval`, `setImmediate`); `time.delay(ns)` is a
+  promise fulfilled after `ns` nanoseconds. Durations are nanoseconds, as
+  everywhere in `time`: `time.timeout(f, 50 * time.millisecond)`.
+- The timers of the web and Node are global functions over the same queues,
+  with delays in milliseconds: `setTimeout(f, ms?, ...args)`,
+  `setInterval(f, ms?, ...args)`, `setImmediate(f, ...args)`,
+  `clearTimeout(timer?)`, `clearInterval(timer?)`, `clearImmediate(timer?)`
+  and `queueMicrotask(f)`. As in Node, a delay is a `number`, and one below
+  1 ms, `NaN`, left out or beyond 2^31 - 1 ms is 1 ms (a fraction is kept,
+  and the 4 ms of nested timers in browsers does not apply; Node's warnings
+  for such delays are not written). The extra arguments are passed to the
+  callback and typed by it, or by them (`setTimeout((n) => ..., 10, 41)`
+  makes `n` an `int`). A clear function cancels the timer it is given and
+  ignores `null` or nothing.
+- Timers, of `time` and of the globals alike, are one class, `time.Timer`,
+  Node's `Timeout` and `Immediate`: `cancel()` (what the clear functions
+  call), `unref()` and `ref()` (both return the timer), `hasRef()`, and
+  `refresh()`, which starts a timer's delay again from now, also after it
+  ran once (not after `cancel()`, nor for an immediate). A timer unref'd
+  does not keep the program running: it runs only while something else
+  does, a timer or immediate that is not unref'd, or a task that could
+  settle a top-level `await`. Unlike Node, a timer is not a number in
+  arithmetic (there is no `Symbol.toPrimitive`), so the clear functions
+  take only timers, and `clearTimeout` also cancels an immediate.
 - Order: the code that runs now, then all microtasks (including those they
   queue), then the immediates queued before this turn, then the timers that
   are due, by deadline and then creation, with the microtasks after each
   callback.
 - The program ends when its top-level code has ended and the event loop has
-  nothing left that can run: timers keep it running, a promise that nobody
-  settles does not, and tasks still running are stopped then.
+  nothing left that can run: timers keep it running (unless unref'd), a
+  promise that nobody settles does not, and tasks still running are
+  stopped then.
 - Async code is single-threaded: only the top-level code and async functions
   hold the event loop, one at a time, so between two `await`s nothing else
   of them runs, however many threads there are. Tasks still run in

@@ -11,9 +11,10 @@
 //
 // The loop runs when the top-level code awaits, until what it awaits is
 // settled, and when the top-level code ends, until nothing is left that can
-// run: no microtask, immediate or timer. A promise that nobody settles does
-// not keep the program running, and tasks still running are stopped then,
-// as when main returns in Go.
+// run: no microtask, immediate or timer, other than those unref'd, which
+// run only while something else keeps the loop running, as in Node. A
+// promise that nobody settles does not keep the program running, and tasks
+// still running are stopped then, as when main returns in Go.
 
 import { exitProgram, flushOutput, writeString } from "ore:runtime/io"
 import { clock_gettime, lock, permanentMutex, unlock } from "ore:runtime/os"
@@ -34,7 +35,11 @@ import {
     setTaskEnded,
 } from "ore:runtime/task"
 
-/** A callback of `time.timeout`, `time.interval` or `time.immediate`; `cancel` stops it. */
+/**
+ * A callback of `time.timeout`, `time.interval` or `time.immediate`, and of
+ * `setTimeout`, `setInterval` and `setImmediate`: `cancel` stops it, `unref`
+ * lets the program end while it waits, `refresh` starts its delay again.
+ */
 export class Timer {
     /** When it is due, in nanoseconds of the monotonic clock. */
     deadline = 0
@@ -42,18 +47,71 @@ export class Timer {
     seq = 0
     /** For an interval, its period in nanoseconds; 0 for a timer that runs once. */
     period = 0
+    /** Its delay in nanoseconds, which `refresh` starts again; -1 for an immediate. */
+    delay = -1
+    /** Whether it is not to run (any more): cancelled, or a timer that ran once. */
     cancelled = false
+    /** Cancelled by `cancel`: `refresh` does not start it again. */
+    stopped = false
+    /** Whether it keeps the program running while it waits (see `unref`). */
+    refed = true
+    /** Whether it is in the heap of the loop's timers. */
+    queued = false
 
     constructor(readonly callback: () => void) {}
 
     /** Stops the timer: it does not run again, or at all. Harmless after it ran, and twice. */
     cancel(): void {
         if (onLoop()) {
+            this.stopped = true
             this.cancelled = true
             return
         }
         post(() => {
+            this.stopped = true
             this.cancelled = true
+        })
+    }
+
+    /** Has the timer keep the program running while it waits, as it does when made; returns it. */
+    ref(): Timer {
+        this.setRef(true)
+        return this
+    }
+
+    /**
+     * Lets the program end while the timer waits: it still runs while
+     * something else keeps the program running. Returns it.
+     */
+    unref(): Timer {
+        this.setRef(false)
+        return this
+    }
+
+    /** Whether the timer keeps the program running while it waits. */
+    hasRef(): bool {
+        return this.refed
+    }
+
+    /**
+     * Starts the timer's delay again from now, and a timer that ran once
+     * again; not a cancelled timer, nor an immediate. Returns it.
+     */
+    refresh(): Timer {
+        if (onLoop()) restart(this)
+        else post(() => restart(this))
+        return this
+    }
+
+    private setRef(refed: bool): void {
+        if (onLoop()) {
+            this.refed = refed
+            if (!refed) loop().unrefs = true
+            return
+        }
+        post(() => {
+            this.refed = refed
+            if (!refed) loop().unrefs = true
         })
     }
 }
@@ -67,6 +125,8 @@ class Loop {
     /** The timers, as a binary heap by deadline, then creation. */
     timers: Timer[] = []
     seq = 0
+    /** Whether a timer was ever unref'd: until then, every timer keeps the program running. */
+    unrefs = false
     /** What other tasks posted, under `inboxLock`. */
     inbox: (() => void)[] = []
     inboxLock = permanentMutex()
@@ -131,11 +191,21 @@ export function interval(callback: () => void, ns: int): Timer {
 }
 
 function addTimer(t: Timer, ns: int, period: int): Timer {
-    t.deadline = monotonic() + (ns > 0 ? ns : 0)
+    t.delay = ns > 0 ? ns : 0
+    t.deadline = monotonic() + t.delay
     t.period = period
     if (onLoop()) pushTimer(t)
     else post(() => pushTimer(t))
     return t
+}
+
+/** Starts the delay of timer `t` again, from now: `refresh`. */
+function restart(t: Timer): void {
+    if (t.stopped || t.delay < 0) return
+    if (t.queued) removeTimer(t)
+    t.deadline = monotonic() + t.delay
+    t.cancelled = false
+    pushTimer(t)
 }
 
 /** Whether timer `a` runs before timer `b`. */
@@ -146,9 +216,41 @@ function before(a: Timer, b: Timer): bool {
 function pushTimer(t: Timer): void {
     const l = loop()
     t.seq = l.seq++
-    const heap = l.timers
-    heap.push(t)
-    let i = heap.length - 1
+    t.queued = true
+    l.timers.push(t)
+    siftUp(l.timers.length - 1)
+}
+
+function popTimer(): Timer {
+    const heap = loop().timers
+    const first = heap[0]
+    const last = heap.pop()
+    if (heap.length > 0) {
+        heap[0] = last
+        siftDown(0)
+    }
+    first.queued = false
+    return first
+}
+
+/** Takes timer `t` out of the heap, wherever it is. */
+function removeTimer(t: Timer): void {
+    const heap = loop().timers
+    let i = 0
+    while (i < heap.length && heap[i] !== t) i++
+    if (i === heap.length) return
+    const last = heap.pop()
+    if (i < heap.length) {
+        heap[i] = last
+        siftDown(i)
+        siftUp(i)
+    }
+    t.queued = false
+}
+
+/** Moves the timer at `i` up the heap to its place. */
+function siftUp(i: int): void {
+    const heap = loop().timers
     while (i > 0) {
         const parent = (i - 1) >> 1
         if (!before(heap[i], heap[parent])) break
@@ -159,27 +261,21 @@ function pushTimer(t: Timer): void {
     }
 }
 
-function popTimer(): Timer {
+/** Moves the timer at `i` down the heap to its place. */
+function siftDown(i: int): void {
     const heap = loop().timers
-    const first = heap[0]
-    const last = heap.pop()
-    if (heap.length > 0) {
-        heap[0] = last
-        let i = 0
-        while (true) {
-            const l = 2 * i + 1
-            const r = l + 1
-            let least = i
-            if (l < heap.length && before(heap[l], heap[least])) least = l
-            if (r < heap.length && before(heap[r], heap[least])) least = r
-            if (least === i) break
-            const swap = heap[i]
-            heap[i] = heap[least]
-            heap[least] = swap
-            i = least
-        }
+    while (true) {
+        const l = 2 * i + 1
+        const r = l + 1
+        let least = i
+        if (l < heap.length && before(heap[l], heap[least])) least = l
+        if (r < heap.length && before(heap[r], heap[least])) least = r
+        if (least === i) break
+        const swap = heap[i]
+        heap[i] = heap[least]
+        heap[least] = swap
+        i = least
     }
-    return first
 }
 
 /** Drops cancelled timers from the top of the heap. */
@@ -187,6 +283,15 @@ function firstTimer(): Timer | null {
     const heap = loop().timers
     while (heap.length > 0 && heap[0].cancelled) popTimer()
     return heap.length > 0 ? heap[0] : null
+}
+
+/** Whether an immediate or a timer is left that keeps the program running: one not unref'd. */
+function kept(): bool {
+    const l = loop()
+    if (!l.unrefs) return l.immediates.length > 0 || firstTimer() !== null
+    for (const t of l.immediates) if (!t.cancelled && t.refed) return true
+    for (const t of l.timers) if (!t.cancelled && t.refed) return true
+    return false
 }
 
 /** Runs the queued microtasks, and those they queue, in order. */
@@ -312,6 +417,14 @@ export function drive(done: (() => bool) | null): void {
         runMicrotasks()
         if (done !== null && done()) return
         if (runInbox()) continue
+        // Timers and immediates unref'd run only while something else keeps
+        // the program running: a timer or an immediate that is not, or, for a
+        // top-level await, a task that could still settle it.
+        if (l.unrefs && !kept() && !(done !== null && liveTasks() > 0)) {
+            if (done === null) return
+            if (!sleep(-1, true)) unsettled()
+            continue
+        }
         // The immediates queued before this turn; those they queue wait for the next one.
         if (l.immediates.length > 0) {
             const batch = l.immediates
@@ -346,10 +459,13 @@ export function drive(done: (() => bool) | null): void {
         const next = firstTimer()
         // Without timers, only a task could still post to the loop.
         if (next === null && done === null) return
-        if (!sleep(next !== null ? next.deadline : -1, next === null)) {
-            flushOutput()
-            writeString(2, "Warning: unsettled top-level await\n")
-            exitProgram(13)
-        }
+        if (!sleep(next !== null ? next.deadline : -1, next === null)) unsettled()
     }
+}
+
+/** Ends the program for a top-level await that nothing can settle any more, as Node does. */
+function unsettled(): void {
+    flushOutput()
+    writeString(2, "Warning: unsettled top-level await\n")
+    exitProgram(13)
 }
