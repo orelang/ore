@@ -47,7 +47,7 @@ import {
     typeJsonImports,
     unsupportedTopLevel,
 } from "./declarations"
-import { resolveGlobalThis } from "./globals"
+import { globalObject, resolveGlobalThis } from "./globals"
 import { isDeclaration } from "./helpers"
 import { checkStatements } from "./statements"
 import { addTemplateSites } from "./templates"
@@ -173,7 +173,9 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
         for (let i = 0; i < globalClasses.length; i++) {
             if (m.source.path !== globalClassModules[i] || m.scope.ownType(globalClasses[i]) !== null) continue
             const value = m.scope.ownValue(globalClasses[i])
-            if (value !== null) builtins.scope.declareValue(globalClasses[i], value)
+            if (value === null) continue
+            builtins.scope.declareValue(globalClasses[i], value)
+            builtins.scope.declareValue(`${globalObject}.${globalClasses[i]}`, value)
         }
     }
     // Overload signatures without an implementation after them.

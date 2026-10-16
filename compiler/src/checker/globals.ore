@@ -11,6 +11,7 @@ import { Node } from "../syntax/ast"
 import { isIdentifier } from "../syntax/nodes"
 import { type Source } from "../syntax/source"
 import { type Checker } from "./base"
+import { globalClasses } from "./builtins"
 import { errorOperand } from "./operand"
 import { ConstSymbol, type Scope } from "./symbols"
 
@@ -63,13 +64,15 @@ function globalMember(c: Checker, node: Node, inType: bool, source: Source, root
 function declareGlobal(c: Checker, id: Node, name: string, inType: bool, root: Scope): void {
     const value = root.ownValue(name)
     const type = root.ownType(name)
-    if (value === null && type === null && !inType)
+    // The functions of the runtime that are global names, `atob` and `btoa`, are declared later.
+    const later = value === null && type === null && globalClasses.includes(name)
+    if (value === null && type === null && !inType && !later)
         c.error(id, `Property '${name}' does not exist on type 'typeof ${globalObject}'.`)
     const qualified = id.text
     if (root.ownValue(qualified) !== null || root.ownType(qualified) !== null) return
     if (value !== null) root.declareValue(qualified, value)
     if (type !== null) root.declareType(qualified, type)
     // Checked as an error that is not reported again.
-    if (value === null && type === null && !inType)
+    if (value === null && type === null && !inType && !later)
         root.declareValue(qualified, new ConstSymbol(errorOperand, null, id))
 }
