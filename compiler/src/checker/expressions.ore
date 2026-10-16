@@ -859,6 +859,11 @@ export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool
             if (key === null) return null
             return entryTarget(c, node, array, at, key, entries)
         }
+        // A match is read-only, though a class: its captures are what the expression matched.
+        if (matchCaptures(array) !== null) {
+            c.error(node, `Index signature in type '${typeToString(at)}' only permits reading.`)
+            return null
+        }
         const indexNode = argumentExpression(node)
         if ((at.kind === "struct" && !at.tuple) || at.kind === "interface" || at.kind === "union") {
             if (indexNode.kind !== "StringLiteral" && indexNode.kind !== "NoSubstitutionTemplateLiteral") {
@@ -876,10 +881,6 @@ export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool
         }
         if (at.kind === "unknown") {
             c.error(expression(node), unknownObject)
-            return null
-        }
-        if (matchCaptures(array) !== null) {
-            c.error(node, `Index signature in type '${typeToString(at)}' only permits reading.`)
             return null
         }
         if (at.kind === "struct" && at.tuple) {

@@ -258,7 +258,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE4021](ORE4021.md) | An array of '…' cannot be spread into '…' of '…'. |
 | [ORE4022](ORE4022.md) | '…' expects … argument(s), got …. |
 | [ORE4023](ORE4023.md) | '…' expects 1 to 3 argument(s), got …. |
-| [ORE4024](ORE4024.md) | The second argument of 'JSON.stringify' is a replacer, and only null is supported: write 'JSON.stringify(value, null, 2)' to indent. |
+| [ORE4024](ORE4024.md) | The second argument of 'JSON.stringify' is a replacer, null or an array of keys: write 'JSON.stringify(value, null, 2)' to indent. |
 | [ORE4025](ORE4025.md) | 'JSON.parse' needs the type to read, e.g. 'JSON.parse<Config>(text)'. |
 | [ORE4026](ORE4026.md) | '…' expects 1 argument(s), got …. |
 | [ORE4027](ORE4027.md) | '…' takes one type argument. |
