@@ -26,8 +26,9 @@
 #   ci/farm.sh status                      slots, queue and recent results
 #
 # The machines are listed in $ORE_FARM (default ~/.config/ore/farm), a line
-# each: `user@host slots`. A slot runs one job with the machine's cores
-# divided among its slots. Each needs LLVM 22 with lld and clang (see
+# each: `user@host slots light`. A slot runs one job with the machine's
+# cores divided among its slots; a light slot runs a probe or a filtered
+# test, beside them. Each needs LLVM 22 with lld and clang (see
 # ci/Dockerfile), rsync, and the seed of ci/bootstrap.sh in ~/.cache/ore.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -38,11 +39,15 @@ mkdir -p "$home/slots" "$home/logs" "$home/queue" "$home/done"
 
 machines() { grep -v '^\s*\(#\|$\)' "$hosts"; }
 
-# Takes a free slot, waiting for one: prints `host slots slot`.
+# Takes a free slot, waiting for one: prints `host slots slot`. A light job
+# (a probe, a filtered test) takes one of the light slots, named l1, l2...
 acquire() {
     while true; do
-        while read -r host slots; do
-            for ((i = 1; i <= slots; i++)); do
+        while read -r host slots light; do
+            local count=$slots prefix=""
+            if [ "${2:-}" = light ]; then count=${light:-0} prefix=l; fi
+            for ((n = 1; n <= count; n++)); do
+                i=$prefix$n
                 lock="$home/slots/$host-$i"
                 # A slot whose owner died is free again.
                 if [ -d "$lock" ] && ! kill -0 "$(cat "$lock/pid" 2>/dev/null || echo 0)" 2>/dev/null; then
@@ -65,10 +70,10 @@ release() { rm -f "$home/slots/$1-$2/pid" "$home/slots/$1-$2/job"; rmdir "$home/
 
 # Runs a command in the tree of a commit on a free slot; the status is the command's.
 job() {
-    local name=$1 ref=$2 command=$3
+    local name=$1 ref=$2 command=$3 weight=${4:-heavy}
     local commit host slots slot
     commit=$(git rev-parse --verify "$ref^{commit}")
-    read -r host slots slot < <(acquire "$name")
+    read -r host slots slot < <(acquire "$name" "$weight")
     trap 'release "$host" "$slot"' EXIT
     local log="$home/logs/$name.log"
     echo "== $name: $(git log -1 --format='%h %s' "$commit") on $host (slot $slot)" | tee "$log"
@@ -92,14 +97,15 @@ test)
     name=$2 ref=$3
     shift 3
     job "$name" "$ref" "[ -x ~/farm/base/ore ] || { echo 'no base compiler: ci/farm.sh base main'; exit 1; }; \
-        ORE=~/farm/base/ore ORE_TEST_CACHE=\$PWD/.test-cache ORE_TEST_JOBS=\$FARM_JOBS ci/test.sh --timeout 1500 $* | tail -40"
+        ORE=~/farm/base/ore ORE_TEST_CACHE=\$PWD/.test-cache ORE_TEST_JOBS=\$FARM_JOBS ci/test.sh --timeout 1500 $* | tail -40" \
+        "$([ $# -gt 0 ] && echo light || echo heavy)"
     ;;
 probe)
     name=$2 ref=$3
     shift 3
     job "$name" "$ref" "[ -x ~/farm/base/ore ] || { echo 'no base compiler: ci/farm.sh base main'; exit 1; }; \
         ~/farm/base/ore build compiler/src/main.ore -o .farm-ore --release 2>&1 | tail -30 && \
-        for f in $*; do echo \"== \$f\"; ./.farm-ore run \"\$f\" 2>&1 | head -200; done"
+        for f in $*; do echo \"== \$f\"; ./.farm-ore run \"\$f\" 2>&1 | head -200; done" light
     ;;
 verify)
     job "$2" "$3" "ORE=$seed ci/bootstrap.sh dist >/dev/null 2>&1 && \
@@ -161,8 +167,8 @@ base)
     ;;
 status)
     echo "slots:"
-    while read -r host slots; do
-        for ((i = 1; i <= slots; i++)); do
+    while read -r host slots light; do
+        for i in $(seq 1 "$slots") $(seq 1 "${light:-0}" | sed 's/^/l/'); do
             lock="$home/slots/$host-$i"
             echo "  $host/$i: $([ -d "$lock" ] && cat "$lock/job" 2>/dev/null || echo free)"
         done
