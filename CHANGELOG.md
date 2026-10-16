@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Indexed access and `keyof` on a union of object types, as in
+  TypeScript: `U["x"]` is the union of the members' field types, and
+  `keyof U` their common names, so `Omit<U, "z">` gives one object type of
+  the common fields but `z` (TypeScript's `Omit` is not distributive).
 - Type predicates, as in TypeScript: `x is T` and `this is T` narrow the
   argument or receiver of a call in conditions, `filter` with such a
   callback gives an array of `T`, and `asserts x is T` and `asserts x`

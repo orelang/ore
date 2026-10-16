@@ -43,6 +43,17 @@ function memberNames(type: Type): string[] | null {
         for (const m of type.members) names.push(m.name)
         return names
     }
+    // Of a union, as in TypeScript: the names that every member has.
+    if (type.kind === "union") {
+        let common: string[] | null = null
+        for (const m of type.members) {
+            const own = memberNames(m)
+            if (own === null) return null
+            const before = common
+            common = before === null ? own : before.filter((n) => own.includes(n))
+        }
+        return common
+    }
     return null
 }
 
@@ -76,6 +87,18 @@ function memberType(type: Type, name: string): Type | null {
         for (const m of type.members) if (m.name === name) return m.type
     }
     return null
+}
+
+/** The type of a member of a type by name, or null; of a union, the union of its members' types when each has it. */
+function indexedMember(c: Checker, type: Type, name: string): Type | null {
+    if (type.kind !== "union") return memberType(type, name)
+    const found: Type[] = []
+    for (const m of type.members) {
+        const t = memberType(m, name)
+        if (t === null) return null
+        found.push(t)
+    }
+    return c.unionOf(found)
 }
 
 /** `T["k"]`, `T["a" | "b"]`, `T[number]` of an array or tuple, `T[0]` of a tuple. */
@@ -140,7 +163,7 @@ export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
     }
     const found: Type[] = []
     for (const k of keys) {
-        const t = memberType(object, k)
+        const t = indexedMember(c, object, k)
         if (t === null) {
             c.error(indexNode, `Property '${k}' does not exist on type '${typeToString(object)}'.`)
             return null

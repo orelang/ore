@@ -350,7 +350,11 @@ names them is:
   the public fields and methods of a class or an object type, the members of
   an interface. `keyof { x: int; y: int }` is `"x" | "y"`.
 - `T["k"]` is the type of member `k` of T; `T["a" | "b"]` the union of the
-  types of both. `T[number]` is the element type of an array, or the union of
+  types of both. Of a union of object types, `U["k"]` is the union of the
+  members' types of `k`, which every member must have, and `keyof U` the
+  names that every member has; so `Omit<U, "k">`, as in TypeScript, is not
+  distributive: one object type of the common members but `k`, each of the
+  union of its types. `T[number]` is the element type of an array, or the union of
   the element types of a tuple; `T[0]` an element of a tuple.
 - `typeof x` is the type of a variable or a function, and `typeof x.y` that of
   a field of one. Types are resolved before the values of top-level variables
