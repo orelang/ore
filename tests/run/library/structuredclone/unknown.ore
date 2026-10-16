@@ -1,0 +1,31 @@
+// structuredClone of an `unknown`: a copy of the value it holds, by its type at run time.
+
+type Node = { name: string; next: Node | null; extra: unknown }
+
+const n: unknown = 42
+const s: unknown = "text"
+const nothing: unknown = null
+console.log(structuredClone(n), structuredClone(s), structuredClone(nothing))
+console.log(structuredClone(n) === n, structuredClone(s) === s, structuredClone(nothing) === null)
+
+const list: unknown = [1, 2, 3]
+const listCopy = structuredClone(list)
+console.log(listCopy, listCopy === list)
+
+// A cycle through an object and an `unknown` in it closes on the copies.
+const a: Node = { name: "a", next: null, extra: null }
+a.next = a
+a.extra = a
+const held: unknown = a
+const copy = structuredClone(held)
+console.log(copy, copy === held)
+
+// An `unknown` inside other values, and values shared through them, are copied once.
+const shared = [1, 2]
+const parts: unknown[] = [shared, shared, "x", new Map<string, number>([["k", 1]])]
+const partsCopy = structuredClone(parts)
+console.log(partsCopy, partsCopy[0] === partsCopy[1], partsCopy[0] === shared)
+
+const date: unknown = new Date(0)
+const dateCopy = structuredClone(date)
+if (dateCopy instanceof Date) console.log(dateCopy.toISOString(), dateCopy === date)

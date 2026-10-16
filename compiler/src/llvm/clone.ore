@@ -1,18 +1,22 @@
 // structuredClone: a deep copy by a function generated per type. The
 // objects copied so far are kept in a map from the address of each original
 // to its copy, so that an object reached twice is copied once and cycles
-// close on the copies, as in JavaScript's structured clone algorithm.
+// close on the copies, as in JavaScript's structured clone algorithm. An
+// `unknown` is copied by the clone function of its descriptor
+// (llvm/unknown.ore), which panics with `DataCloneError` for a type that
+// cannot be cloned, as JavaScript throws.
 
 import { elementData, entryData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
-import { ordered, type StructType, type Type, type UnionType, types, unionRepr } from "../ir/types"
+import { ordered, type StructType, type Type, typeToString, type UnionType, types, unionRepr } from "../ir/types"
 import { helper } from "./calls"
 import { keyFunctions, keyKind } from "./collections"
 import { ARRAY, MAP } from "./context"
 import { Emitter } from "./base"
 import { expr, fieldPtr, inject, payload, slotTest } from "./expressions"
-import { counted } from "./json"
+import { counted, dateClass } from "./json"
 import { globalName, sizeOf, type V } from "./ll"
+import { cloneHeld } from "./unknown"
 
 /** Whether values of a type hold objects that a copy must not share: strings, numbers and bigints never change. */
 function needsCopy(g: Emitter, t: Type): bool {
@@ -20,6 +24,7 @@ function needsCopy(g: Emitter, t: Type): bool {
         case "array":
         case "map":
         case "set":
+        case "unknown":
             return true
         case "struct":
             return !g.isValue(t)
@@ -34,9 +39,13 @@ export function structuredClone(g: Emitter, e: BuiltinCall): V {
     const t = e.args[0].type
     const v = expr(g, e.args[0])
     if (!needsCopy(g, t)) return v
-    // The copies made so far, by the address of their originals.
+    return cloneAt(g, v, t, seenMap(g))
+}
+
+/** A new map of the copies made, by the address of their originals. */
+function seenMap(g: Emitter): V {
     const keys = keyFunctions(g, types.i64)
-    const seen = g.rt("ore_rt_map_new", [
+    return g.rt("ore_rt_map_new", [
         g.i64(8),
         g.i64(8),
         { ty: "ptr", v: keys.hash },
@@ -46,7 +55,66 @@ export function structuredClone(g: Emitter, e: BuiltinCall): V {
         entryData(g, "i64", "ptr"),
         { ty: "i64", v: keyKind(g, types.i64) },
     ])
-    return cloneAt(g, v, t, seen)
+}
+
+/**
+ * Whether values of a type can be cloned, as the checker tells for
+ * structuredClone (checker/clone.ore): for the values an `unknown` holds,
+ * whose types are known only at run time.
+ */
+function cloneable(g: Emitter, t: Type, seen: Set<StructType>): bool {
+    switch (t.kind) {
+        case "int":
+        case "float":
+        case "bool":
+        case "string":
+        case "bigint":
+        case "literal":
+        case "number-literal":
+        case "null":
+        case "unknown":
+            return true
+        case "array":
+            return !t.template && cloneable(g, t.elem, seen)
+        case "set":
+            return cloneable(g, t.elem, seen)
+        case "map":
+            return cloneable(g, t.key, seen) && cloneable(g, t.value, seen)
+        case "union":
+            return t.members.every((m) => cloneable(g, m, seen))
+        case "struct": {
+            if (seen.has(t)) return true
+            seen.add(t)
+            const date = dateClass(g, t)
+            if (date !== null && date.id === t.id) return true
+            if (t.nominal && !t.tuple && t.methods.length > 0) return false
+            return t.fields.every((f) => cloneable(g, f.type, seen))
+        }
+        default:
+            return false
+    }
+}
+
+/**
+ * The clone function of the descriptor of type `t`, for an `unknown`:
+ * `void (ptr p, ptr out, ptr s)` copies the value at `p` into `out`, with the
+ * map of copies `s`; for a type that cannot be cloned, it panics with
+ * `DataCloneError`, as JavaScript throws.
+ */
+export function heldCloner(g: Emitter, t: Type): string {
+    const name = globalName(`ore.unknown.clone.${g.names.key(t)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    helper(g, name, `define internal void ${name}(ptr %p, ptr %out, ptr %s)`, (e) => {
+        if (!cloneable(e, t, new Set<StructType>())) {
+            e.panic(`DataCloneError: ${typeToString(t)} could not be cloned.`)
+            return
+        }
+        const copy = cloneAt(e, e.load("%p", t), t, { ty: "ptr", v: "%s" })
+        e.store(copy, "%out", t, false)
+        e.b.terminate("ret void")
+    })
+    return name
 }
 
 /** Calls the cloner of type `t` on `v`, with the map of copies `s`. */
@@ -131,6 +199,8 @@ function cloneValue(g: Emitter, t: Type, v: V, exact: bool): V {
             return cloneEntries(g, v, t.elem, null, s)
         case "struct":
             return cloneStruct(g, t, v, s, exact)
+        case "unknown":
+            return cloneHeld(g, v, s)
         default:
             return v
     }

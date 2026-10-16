@@ -4,19 +4,22 @@
 // when a value of the type is first boxed:
 //
 //     { typeof name, flags, inspect function, equality function, f64 function,
-//       JSON function }
+//       JSON function, clone function }
 //
 // The functions take pointers to the words. The f64 function is null but for
 // numbers, which it converts to `f64`, the type `typeof x === "number"`
 // narrows to. The JSON function, which writes the value through a replacer
 // function of JSON.stringify, is null until a program calls one
-// (`replacingJson`). A value is boxed with the type it has at run time: a
+// (`replacingJson`); the clone function, which copies the value for
+// structuredClone, until a program clones an `unknown` (`cloningUnknown`).
+// A value is boxed with the type it has at run time: a
 // string literal as a string, a union as its member, an interface as its
 // class, an instance of a class with subclasses as its own class.
 
 import { type StructType, type Type, type UnionType, isNumeric, typeofName, typeToString, types } from "../ir/types"
 import { Emitter } from "./base"
 import { STR, TYPE, UNKNOWN } from "./context"
+import { heldCloner } from "./clone"
 import { check, choose, convert, equals, inject, payload, slotTest } from "./expressions"
 import { helper } from "./calls"
 import { inspectAt } from "./inspect"
@@ -30,6 +33,7 @@ const INSPECT = 2
 const EQUALS = 3
 const TO_F64 = 4
 const JSON_FN = 5
+const CLONE_FN = 6
 
 /** A descriptor flag: the value is a string, which console.log prints as it is. */
 export const STRING_FLAG = 1
@@ -74,8 +78,42 @@ function descriptorConstant(g: Emitter, t: Type): string {
     const eq = globalName(`ore.unknown.eq.${key}`)
     const toF64 = isNumeric(t) ? globalName(`ore.unknown.f64.${key}`) : "null"
     const json = g.jsonReplacing ? jsonHeld(g, t) : "null"
+    const clone = g.cloningUnknown ? heldCloner(g, t) : "null"
     const flags = t.kind === "string" ? STRING_FLAG : 0
-    return `${name} = internal constant ${TYPE} { ${STR} ${g.str(typeofName(t)).v}, i64 ${flags}, ptr ${inspect}, ptr ${eq}, ptr ${toF64}, ptr ${json} }`
+    return `${name} = internal constant ${TYPE} { ${STR} ${g.str(typeofName(t)).v}, i64 ${flags}, ptr ${inspect}, ptr ${eq}, ptr ${toF64}, ptr ${json}, ptr ${clone} }`
+}
+
+/** Gives every descriptor its clone function, made and to be made, for structuredClone of an `unknown`. */
+export function cloningUnknown(g: Emitter) {
+    if (g.cloningUnknown) return
+    g.cloningUnknown = true
+    const done = g.descriptorTypes.length
+    for (let i = 0; i < done; i++) {
+        const t = g.descriptorTypes[i]
+        g.helpers.set(globalName(`ore.type.${g.names.key(t)}`), descriptorConstant(g, t))
+    }
+}
+
+/**
+ * The copy of an `unknown` for structuredClone, in a cloner whose map of
+ * copies is `s`: of the same type, with the words its descriptor's clone
+ * function writes; null stays null.
+ */
+export function cloneHeld(g: Emitter, v: V, s: V): V {
+    cloningUnknown(g)
+    const desc = descriptorOf(g, v)
+    return choose(
+        g,
+        g.b.value("i1", `icmp eq ptr ${desc.v}, null`),
+        () => v,
+        () => {
+            const out = g.spill(v)
+            const f = descriptorField(g, desc, CLONE_FN, "ptr")
+            g.b.emit(`call void ${f.v}(ptr ${words(g, v)}, ptr ${g.field(out, UNKNOWN, 1)}, ptr ${s.v})`)
+            return g.b.value(UNKNOWN, `load ${UNKNOWN}, ptr ${out}`)
+        },
+        UNKNOWN,
+    )
 }
 
 /** Gives every descriptor its JSON function, made and to be made, for a replacer of JSON.stringify. */

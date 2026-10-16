@@ -21,7 +21,8 @@ function dateType(c: Checker): StructType | null {
 
 /**
  * Why values of a type cannot be cloned, if they cannot. JavaScript throws
- * a DataCloneError for a function at run time; here the type tells.
+ * a DataCloneError for a function at run time; here the type tells, but for
+ * an `unknown`, whose copy panics with it (llvm/clone.ore).
  */
 export function cloneProblem(c: Checker, type: Type, seen: Set<StructType> | null = null): string | null {
     const visited = seen ?? new Set<StructType>()
@@ -34,6 +35,7 @@ export function cloneProblem(c: Checker, type: Type, seen: Set<StructType> | nul
         case "literal":
         case "number-literal":
         case "null":
+        case "unknown":
             return null
         case "func":
             return `structuredClone cannot clone a function: '${typeToString(type)}' could not be cloned.`
