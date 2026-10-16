@@ -6,6 +6,7 @@
 
 import {
     type ArrayType,
+    type BigIntType,
     type BoolType,
     type ChanType,
     type FloatType,
@@ -299,6 +300,7 @@ export type Expr =
     | FloatLit
     | BoolLit
     | StringLit
+    | BigIntLit
     | LocalRef
     | Assign
     | IncDec
@@ -379,6 +381,15 @@ export class StringLit {
     ) {}
 }
 
+/** A `bigint` constant, such as `10n`: its decimal digits, after a minus sign if negative. */
+export class BigIntLit {
+    readonly k: "bigint" = "bigint"
+    constructor(
+        public type: BigIntType,
+        public value: string,
+    ) {}
+}
+
 export class LocalRef {
     readonly k: "local" = "local"
     constructor(
@@ -453,7 +464,7 @@ export class Assign {
 export class IncDec {
     readonly k: "incdec" = "incdec"
     constructor(
-        public type: IntType | FloatType,
+        public type: IntType | FloatType | BigIntType,
         public target: LValue,
         public op: "++" | "--",
         public prefix: bool,
@@ -462,12 +473,13 @@ export class IncDec {
 
 /**
  * Arithmetic and bitwise operations. Both operands have the result type,
- * except the right operand of `<<` / `>>`, which may be any integer type.
+ * except the right operand of `<<` / `>>` of integers, which may be any
+ * integer type. Operations on `bigint` are calls of the runtime.
  */
 export class Arith {
     readonly k: "arith" = "arith"
     constructor(
-        public type: IntType | FloatType,
+        public type: IntType | FloatType | BigIntType,
         public op: ArithOp,
         public left: Expr,
         public right: Expr,
@@ -497,7 +509,7 @@ export class Logical {
 export class Unary {
     readonly k: "unary" = "unary"
     constructor(
-        public type: IntType | FloatType,
+        public type: IntType | FloatType | BigIntType,
         public op: "-" | "~",
         public operand: Expr,
     ) {}
@@ -511,11 +523,11 @@ export class Not {
     ) {}
 }
 
-/** Numeric conversion between distinct numeric types. */
+/** Numeric conversion between distinct numeric types, `bigint` included. */
 export class Convert {
     readonly k: "convert" = "convert"
     constructor(
-        public type: IntType | FloatType,
+        public type: IntType | FloatType | BigIntType,
         public value: Expr,
     ) {}
 }

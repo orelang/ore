@@ -35,6 +35,15 @@ export class StringType {
     readonly kind: "string" = "string"
 }
 
+/**
+ * `bigint`: an arbitrary-precision integer, as in JavaScript. A value is a
+ * pointer to an immutable block of the runtime (runtime/core/bigint.ore),
+ * compared by value; 0n is the null pointer, so that zeroed memory holds it.
+ */
+export class BigIntType {
+    readonly kind: "bigint" = "bigint"
+}
+
 export class VoidType {
     readonly kind: "void" = "void"
 }
@@ -246,6 +255,7 @@ export type PrimitiveType =
     | FloatType
     | BoolType
     | StringType
+    | BigIntType
     | VoidType
     | NeverType
     | NullType
@@ -257,6 +267,7 @@ export type Type =
     | FloatType
     | BoolType
     | StringType
+    | BigIntType
     | VoidType
     | NeverType
     | NullType
@@ -345,6 +356,7 @@ export const types = {
     f64: new FloatType("f64", 64),
     bool: new BoolType(),
     string: new StringType(),
+    bigint: new BigIntType(),
     void: new VoidType(),
     never: new NeverType(),
     null: new NullType(),
@@ -537,6 +549,7 @@ export function isStringLike(type: Type): bool {
 /** What JavaScript's `typeof` says of a value of a type. */
 export function typeofName(type: Type): string {
     if (isNumeric(type)) return "number"
+    if (type.kind === "bigint") return "bigint"
     if (type.kind === "bool") return "boolean"
     if (isStringLike(type)) return "string"
     if (type.kind === "func") return "function"

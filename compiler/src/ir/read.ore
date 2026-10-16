@@ -18,6 +18,7 @@ import {
     Bind,
     BindLocal,
     Block,
+    BigIntLit,
     BoolLit,
     BoundMethod,
     BreakStmt,
@@ -109,6 +110,7 @@ import {
     StructType,
     UnionType,
     types,
+    type BigIntType,
     type BoolType,
     type FloatType,
     type IntType,
@@ -393,6 +395,8 @@ class Reader {
                 return types.bool
             case "string":
                 return types.string
+            case "bigint":
+                return types.bigint
             case "void":
                 return types.void
             case "never":
@@ -521,11 +525,18 @@ class Reader {
         return types.string
     }
 
-    numericType(t: Type): IntType | FloatType {
+    numericType(t: Type): IntType | FloatType | BigIntType {
         if (t.kind === "int") return t
         if (t.kind === "float") return t
+        if (t.kind === "bigint") return t
         this.fail("expected a numeric type")
         return types.i64
+    }
+
+    bigintType(t: Type): BigIntType {
+        if (t.kind === "bigint") return t
+        this.fail("expected bigint")
+        return types.bigint
     }
 
     structType(t: Type): StructType {
@@ -965,6 +976,11 @@ class Reader {
                 c.expect(" ")
                 const value = c.quoted()
                 return new StringLit(this.stringLike(this.exprType(c)), value)
+            }
+            case "bigint": {
+                c.expect(" ")
+                const value = c.word()
+                return new BigIntLit(this.bigintType(this.exprType(c)), value)
             }
             case "local": {
                 c.expect(" ")

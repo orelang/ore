@@ -243,6 +243,8 @@ export function toStr(g: Emitter, v: V, t: Type): V {
             return g.rt(`ore_rt_str_from_${t.name}`, [v])
         case "bool":
             return g.rt("ore_rt_str_from_bool", [v])
+        case "bigint":
+            return g.rt("ore_rt_big_to_string", [v, g.i64(10)])
         default:
             process.panic(`cannot format ${t.kind}`)
     }
@@ -282,6 +284,11 @@ export function print(g: Emitter, v: V, t: Type) {
             return
         case "bool":
             g.rt("ore_rt_print_bool", [v])
+            return
+        case "bigint":
+            // As Node prints a bigint: with its suffix.
+            g.rt("ore_rt_print_string", [g.rt("ore_rt_big_to_string", [v, g.i64(10)])])
+            g.rt("ore_rt_print_string", [g.str("n")])
             return
         default:
             g.rt("ore_rt_print_string", [inspectTop(g, v, t)])
@@ -457,6 +464,10 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
         }
         case "Math.random":
             return g.rt("ore_rt_random", [])
+        case "BigInt.toString":
+            return g.rt("ore_rt_big_to_string", [a[0], a[1]])
+        case "BigInt.fromString":
+            return g.rt("ore_rt_big_from_string", [a[0]])
         case "Number.toFixed":
             return g.rt("ore_rt_str_fixed", [a[0], a[1]])
         case "Number.parseInt":

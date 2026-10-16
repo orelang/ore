@@ -23,6 +23,7 @@ import {
     typeToString,
     types,
     unionRepr,
+    type BigIntType,
     type FloatType,
     type IntType,
     type StructType,
@@ -84,6 +85,8 @@ export function expr(g: Emitter, e: Expr): V {
             return { ty: "i1", v: e.value ? "true" : "false" }
         case "string":
             return g.str(e.value)
+        case "bigint":
+            return bigConstant(g, e.value)
         case "local":
             return g.read(e.local)
         case "assign":
@@ -104,6 +107,7 @@ export function expr(g: Emitter, e: Expr): V {
             return logical(g, e)
         case "unary": {
             const v = expr(g, e.operand)
+            if (e.type.kind === "bigint") return g.rt(e.op === "-" ? "ore_rt_big_neg" : "ore_rt_big_not", [v])
             if (e.op === "~") return g.b.value(v.ty, `xor ${v.ty} ${v.v}, -1`)
             if (e.type.kind === "float") return g.b.value(v.ty, `fneg ${v.ty} ${v.v}`)
             return g.b.value(v.ty, `sub ${v.ty} 0, ${v.v}`)
@@ -472,6 +476,7 @@ export function assign(g: Emitter, e: Assign): V {
         ])
     else if (t.kind === "int") combined = arith(g, op, current, value, t, e.value.type)
     else if (t.kind === "float") combined = arith(g, op, current, value, t, e.value.type)
+    else if (t.kind === "bigint") combined = arith(g, op, current, value, t, e.value.type)
     else process.panic(`compound assignment of ${t.kind}`)
     g.store(combined, ptr, e.type)
     return combined
@@ -519,15 +524,18 @@ export function incdec(g: Emitter, e: IncDec): V {
     const old = g.load(ptr, e.type)
     const t = e.type
     let next: V
-    if (t.kind === "float")
+    if (t.kind === "bigint")
+        next = g.rt(e.op === "++" ? "ore_rt_big_add" : "ore_rt_big_sub", [old, bigConstant(g, "1")])
+    else if (t.kind === "float")
         next = g.b.value(old.ty, `${e.op === "++" ? "fadd" : "fsub"} ${old.ty} ${old.v}, ${floatConstant(1, t.bits)}`)
     else next = g.b.value(old.ty, `${e.op === "++" ? "add" : "sub"} ${old.ty} ${old.v}, 1`)
     g.store(next, ptr, e.type)
     return e.prefix ? next : old
 }
 
-export function arith(g: Emitter, op: ArithOp, l: V, r: V, type: IntType | FloatType, rightType: Type): V {
+export function arith(g: Emitter, op: ArithOp, l: V, r: V, type: IntType | FloatType | BigIntType, rightType: Type): V {
     const ty = l.ty
+    if (type.kind === "bigint") return g.rt(bigOps.get(op) ?? "", [l, r])
     if (type.kind === "float") {
         let ins = "undefined"
         if (op === "+") ins = "fadd"
@@ -566,6 +574,63 @@ export function arith(g: Emitter, op: ArithOp, l: V, r: V, type: IntType | Float
         case ">>":
             return shift(g, ">>", l, r, type, rightType.kind === "int" ? rightType : type)
     }
+}
+
+/** The runtime functions of the operators on bigints (runtime/core/bigint.ore). */
+const bigOps = new Map<string, string>([
+    ["+", "ore_rt_big_add"],
+    ["-", "ore_rt_big_sub"],
+    ["*", "ore_rt_big_mul"],
+    ["/", "ore_rt_big_div"],
+    ["%", "ore_rt_big_rem"],
+    ["**", "ore_rt_big_pow"],
+    ["&", "ore_rt_big_and"],
+    ["|", "ore_rt_big_or"],
+    ["^", "ore_rt_big_xor"],
+    ["<<", "ore_rt_big_shl"],
+    [">>", "ore_rt_big_shr"],
+])
+
+/** The limbs of a number in decimal, 32 bits each, least significant first. */
+function decimalLimbs(text: string): u32[] {
+    const limbs: u32[] = []
+    for (let i = 0; i < text.length; i++) {
+        let carry = u64(text[i] - 0x30)
+        for (let k = 0; k < limbs.length; k++) {
+            const t = u64(limbs[k]) * u64(10) + carry
+            limbs[k] = u32(t & u64(0xffffffff))
+            carry = t >> u64(32)
+        }
+        if (carry !== u64(0)) limbs.push(u32(carry))
+    }
+    return limbs
+}
+
+/**
+ * A bigint constant: the null pointer for 0n, else a block in the layout of
+ * the runtime's values (the signed number of limbs, then the limbs), a
+ * private constant named after its value.
+ */
+export function bigConstant(g: Emitter, text: string): V {
+    const negative = text.startsWith("-")
+    const limbs = decimalLimbs(negative ? text.slice(1) : text)
+    if (limbs.length === 0) return { ty: "ptr", v: "null" }
+    const items: string[] = []
+    for (const l of limbs) items.push(`i32 ${i32(l)}`)
+    const n = limbs.length
+    const type = `{ i64, [${n} x i32] }`
+    const definition = `private unnamed_addr constant ${type} { i64 ${negative ? -n : n}, [${n} x i32] [${items.join(", ")}] }, align 8`
+    const base = `@big.${fnvHex(text)}`
+    let name = base
+    let k = 2
+    let known = g.helpers.get(name)
+    while (known !== null && known !== `${name} = ${definition}`) {
+        name = `${base}.${k}`
+        k++
+        known = g.helpers.get(name)
+    }
+    if (known === null) g.helpers.set(name, `${name} = ${definition}`)
+    return { ty: "ptr", v: name }
 }
 
 /** An integer power, which wraps like `*`; a negative exponent panics. */
@@ -617,6 +682,27 @@ export function shift(g: Emitter, op: "<<" | ">>", l: V, r: V, type: IntType, co
 
 export function convert(g: Emitter, v: V, from: Type, to: Type): V {
     const target = g.lt(to)
+    if (to.kind === "bigint") {
+        if (from.kind === "float")
+            return g.rt("ore_rt_big_from_f64", [
+                from.bits === 32 ? g.b.value("double", `fpext float ${v.v} to double`) : v,
+            ])
+        if (from.kind === "int")
+            return from.signed
+                ? g.rt("ore_rt_big_from_i64", [g.toI64(v)])
+                : g.rt("ore_rt_big_from_u64", [g.toI64(v, false)])
+        return v
+    }
+    if (from.kind === "bigint") {
+        if (to.kind === "float") {
+            // The nearest f32 comes as a double that converts to it exactly.
+            if (to.bits === 64) return g.rt("ore_rt_big_to_f64", [v])
+            return g.b.value("float", `fptrunc double ${g.rt("ore_rt_big_to_f32", [v]).v} to float`)
+        }
+        // The low bits in two's complement.
+        const bits = g.rt("ore_rt_big_to_u64", [v])
+        return target === "i64" ? bits : g.b.value(target, `trunc i64 ${bits.v} to ${target}`)
+    }
     if (to.kind === "int" && from.kind === "float") {
         // Truncates toward zero, saturates out of range, NaN gives 0.
         const name = `@llvm.fpto${to.signed ? "s" : "u"}i.sat.${target}.${v.ty === "float" ? "f32" : "f64"}`
@@ -638,6 +724,14 @@ export function convert(g: Emitter, v: V, from: Type, to: Type): V {
 }
 
 export function compare(g: Emitter, op: CompareOp, l: V, r: V, type: Type): V {
+    if (type.kind === "bigint" && op !== "===" && op !== "!==") {
+        const c = g.rt("ore_rt_big_cmp", [l, r])
+        let pred = "sge"
+        if (op === "<") pred = "slt"
+        else if (op === "<=") pred = "sle"
+        else if (op === ">") pred = "sgt"
+        return g.b.value("i1", `icmp ${pred} i64 ${c.v}, 0`)
+    }
     if (type.kind === "string" && op !== "===" && op !== "!==") {
         const c = g.fromI64(g.rt("ore_rt_str_cmp", [l, r]), "i32")
         let pred = "sge"
@@ -646,7 +740,7 @@ export function compare(g: Emitter, op: CompareOp, l: V, r: V, type: Type): V {
         else if (op === ">") pred = "sgt"
         return g.b.value("i1", `icmp ${pred} i32 ${c.v}, 0`)
     }
-    if (type.kind === "int" || type.kind === "bool" || g.lt(type) === "ptr") {
+    if (type.kind === "int" || type.kind === "bool" || (g.lt(type) === "ptr" && type.kind !== "bigint")) {
         const signed = type.kind === "int" && type.signed
         let pred = "eq"
         if (op === "!==") pred = "ne"
@@ -678,6 +772,7 @@ export function equals(g: Emitter, a: V, b: V, type: Type): V {
         return equals(g, a, b, repr.k === "nullable" ? repr.base : types.string)
     }
     if (isStringLike(type)) return g.rtBool("ore_rt_str_eq", [a, b])
+    if (type.kind === "bigint") return g.rtBool("ore_rt_big_eq", [a, b])
     if (type.kind === "func") {
         const fn = g.b.value("i1", `icmp eq ptr ${g.extract(a, 0, "ptr").v}, ${g.extract(b, 0, "ptr").v}`)
         const env = g.b.value("i1", `icmp eq ptr ${g.extract(a, 1, "ptr").v}, ${g.extract(b, 1, "ptr").v}`)
