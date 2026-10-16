@@ -12,7 +12,10 @@ import {
     CallValue,
     Closure,
     ExprStmt,
+    FieldGet,
+    FieldInit,
     LocalRef,
+    ObjectLit,
     ReturnStmt,
     Func,
     Itab,
@@ -65,7 +68,10 @@ import {
     parameters,
     questionToken,
     dotDotDotToken,
+    isOptionalTupleElement,
+    isRestTupleElement,
     stringText,
+    tupleElementType,
     typeArguments,
     typeName,
     typeNode,
@@ -350,17 +356,59 @@ export class Checker {
         }
         if (node.kind === "TupleType") {
             // A tuple can hold `never` and numeric literal types in computations on types: `[D] extends [never]`.
+            // Names of elements are documentation only. An optional element `T?` is of type `T | null`, and
+            // a rest element `...T` spreads the elements of a tuple type `T` into this one.
             const elems: Type[] = []
+            const optional: bool[] = []
+            // Optional elements that a spread brings in become required, of type `T | null`, when required
+            // ones follow them, as in TypeScript; written ones cannot be followed by required ones.
+            let afterOptional = false
+            let writtenOptional = false
+            const self = this
+            function required(e: Node): bool {
+                if (!afterOptional) return true
+                if (writtenOptional) {
+                    self.error(e, "A required element cannot follow an optional element.")
+                    return false
+                }
+                for (let i = 0; i < optional.length; i++) optional[i] = false
+                afterOptional = false
+                return true
+            }
             for (const e of node.list("elements")) {
-                const type = this.resolveType(e, scope)
+                const inner = tupleElementType(e)
+                const type = this.resolveType(inner, scope)
                 if (type === null) return null
                 if (type.kind === "void") {
-                    this.error(e, "A value cannot have type 'void'.")
+                    this.error(inner, "A value cannot have type 'void'.")
                     return null
                 }
-                elems.push(type)
+                if (isRestTupleElement(e)) {
+                    if (type.kind !== "struct" || !type.tuple) {
+                        this.error(
+                            e,
+                            `A rest element of type '${typeToString(type)}' is not supported: tuples have a fixed length in Ore. Spread a tuple type, or use an array.`,
+                        )
+                        return null
+                    }
+                    for (const f of type.fields) {
+                        if (!f.optional && !required(e)) return null
+                        if (f.optional) afterOptional = true
+                        elems.push(f.type)
+                        optional.push(f.optional)
+                    }
+                    continue
+                }
+                const isOptional = isOptionalTupleElement(e)
+                if (!isOptional && !required(e)) return null
+                if (isOptional) {
+                    afterOptional = true
+                    writtenOptional = true
+                }
+                elems.push(isOptional ? this.unionOf([type, types.null]) : type)
+                optional.push(isOptional)
             }
-            return this.tupleOf(elems)
+            return this.tupleOf(elems, optional)
         }
         if (node.kind === "TypeReference") {
             const name = typeName(node)
@@ -765,13 +813,23 @@ export class Checker {
         return struct
     }
 
-    /** The interned tuple type of these element types. */
-    tupleOf(elems: Type[]): StructType {
-        const key = `[${elems.map(typeKey).join(",")}]`
+    /**
+     * The interned tuple type of these element types; `optional` marks the
+     * optional elements, `T?`, which a literal can leave out as null.
+     */
+    tupleOf(elems: Type[], optional: bool[] = []): StructType {
+        const keys: string[] = []
+        for (let i = 0; i < elems.length; i++)
+            keys.push(`${typeKey(elems[i])}${i < optional.length && optional[i] ? "?" : ""}`)
+        const key = `[${keys.join(",")}]`
         let struct = this.shapes.get(key)
         if (struct === null) {
             const fields: Field[] = []
-            for (let i = 0; i < elems.length; i++) fields.push(new Field(`${i}`, elems[i], false))
+            for (let i = 0; i < elems.length; i++) {
+                const field = new Field(`${i}`, elems[i], false)
+                field.optional = i < optional.length && optional[i]
+                fields.push(field)
+            }
             struct = new StructType(this.nextStructId++, null, false, fields, [])
             struct.tuple = true
             this.shapes.set(key, struct)
@@ -818,6 +876,30 @@ export class Checker {
         return type
     }
 
+    /**
+     * A copy of a tuple as a tuple type of as many elements, some of them
+     * optional, each of the same type or of the type with null added; null
+     * when it does not convert so.
+     */
+    private tupleCopy(expr: Expr, from: StructType, target: StructType, node: Node): Expr | null {
+        if (!from.tuple || !target.tuple || from.fields.length !== target.fields.length) return null
+        if (!target.fields.some((f) => f.optional)) return null
+        for (let i = 0; i < from.fields.length; i++) {
+            const a = from.fields[i].type
+            const b = target.fields[i].type
+            if (!sameType(a, b) && !(target.fields[i].optional && sameType(this.unionOf([a, types.null]), b)))
+                return null
+        }
+        const local = this.newLocal("tuple", from, false)
+        const fields: FieldInit[] = []
+        for (let i = 0; i < from.fields.length; i++) {
+            const f = from.fields[i]
+            const get = new FieldGet(f.type, new LocalRef(from, local), f.name)
+            fields.push(new FieldInit(f.name, this.coerce(new Typed(get), target.fields[i].type, node)))
+        }
+        return new Bind(target, [new BindLocal(local, expr)], new ObjectLit(target, fields))
+    }
+
     /** Converts an operand to `target`, reporting an error if it is not assignable. */
     coerce(value: Operand, target: Type, node: Node): Expr {
         switch (value.k) {
@@ -861,6 +943,11 @@ export class Checker {
                 }
                 // An instance of a subclass is an instance of its base classes, as it is.
                 if (from.kind === "struct" && target.kind === "struct" && isSubclass(from, target)) return expr
+                // A tuple converts to a tuple type with optional elements, `[int, string]` to `[int, string?]`, as a copy.
+                if (from.kind === "struct" && target.kind === "struct") {
+                    const copy = this.tupleCopy(expr, from, target, node)
+                    if (copy !== null) return copy
+                }
                 const targetMembers = membersOf(target)
                 // A string literal expression has the literal type its context asks for.
                 if (expr.k === "string") {

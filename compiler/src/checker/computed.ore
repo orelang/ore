@@ -16,10 +16,13 @@ import {
     expression,
     initializer,
     isIdentifier,
+    isOptionalTupleElement,
+    isRestTupleElement,
     nameNode,
     operand,
     parameters,
     properties,
+    tupleElementType,
     typeArguments,
     typeNode,
     typeParameters,
@@ -346,6 +349,53 @@ function hasInfer(node: Node): bool {
 }
 
 /**
+ * Whether a tuple type matches a tuple pattern: `[infer H, ...infer R]` binds
+ * `H` to the first element and `R` to a tuple of the rest. A rest element of
+ * array type, `...unknown[]`, matches any number of elements of its type.
+ */
+function matchesTuple(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: Map<string, Type>): bool {
+    if (type.kind !== "struct" || !type.tuple) return false
+    const elems = pattern.list("elements")
+    const fields = type.fields
+    let rest = -1
+    for (let i = 0; i < elems.length; i++) {
+        if (!isRestTupleElement(elems[i])) continue
+        if (rest >= 0) return false
+        rest = i
+    }
+    function element(e: Node, f: Field): bool {
+        // An optional element `T?` matches an optional element of type `T`.
+        if (isOptionalTupleElement(e) !== f.optional) return false
+        const ft = f.optional ? c.withoutNull(f.type) : f.type
+        return matches(c, tupleElementType(e), ft, scope, bindings)
+    }
+    if (rest < 0) {
+        if (fields.length !== elems.length) return false
+        for (let i = 0; i < elems.length; i++) if (!element(elems[i], fields[i])) return false
+        return true
+    }
+    const after = elems.length - rest - 1
+    const n = fields.length
+    if (n < rest + after) return false
+    for (let i = 0; i < rest; i++) if (!element(elems[i], fields[i])) return false
+    for (let j = 0; j < after; j++) if (!element(elems[rest + 1 + j], fields[n - after + j])) return false
+    const middle: Type[] = []
+    const optional: bool[] = []
+    for (let i = rest; i < n - after; i++) {
+        middle.push(fields[i].type)
+        optional.push(fields[i].optional)
+    }
+    let inner = tupleElementType(elems[rest])
+    while (inner.kind === "ParenthesizedType") inner = typeNode(inner)!
+    if (inner.kind === "ArrayType") {
+        const elem = inner.child("elementType")!
+        for (const t of middle) if (!matches(c, elem, t, scope, bindings)) return false
+        return true
+    }
+    return matches(c, inner, c.tupleOf(middle, optional), scope, bindings)
+}
+
+/**
  * Whether a type matches the `extends` clause of a conditional type, binding
  * the names its `infer X` declare. A clause without `infer` matches the types
  * assignable to it; in a function type, only the parts with `infer` count.
@@ -362,6 +412,8 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
     const wildcard = matchesKind(c, pattern, type, scope)
     if (wildcard !== null) return wildcard
     if (pattern.kind === "TemplateLiteralType" && hasInfer(pattern)) return matchesTemplate(c, pattern, type, bindings)
+    if (pattern.kind === "TupleType" && (hasInfer(pattern) || pattern.list("elements").some(isRestTupleElement)))
+        return matchesTuple(c, pattern, type, scope, bindings)
     if (!hasInfer(pattern)) {
         const target = c.resolveType(pattern, scope)
         return target !== null && (satisfiesConstraint(c, type, target) || fitsShape(c, type, target))
@@ -369,13 +421,6 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
     if (pattern.kind === "ArrayType") {
         const elem = pattern.child("elementType")!
         return type.kind === "array" && matches(c, elem, type.elem, scope, bindings)
-    }
-    if (pattern.kind === "TupleType") {
-        const elems = pattern.list("elements")
-        if (type.kind !== "struct" || !type.tuple || type.fields.length !== elems.length) return false
-        for (let i = 0; i < elems.length; i++)
-            if (!matches(c, elems[i], type.fields[i].type, scope, bindings)) return false
-        return true
     }
     if (pattern.kind === "TypeLiteral") {
         // `{ a: infer X }`: the fields named, of an object type or a class.

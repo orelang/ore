@@ -133,6 +133,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE2065](ORE2065.md) | An integer constant is not assignable to type 'bigint'. Write a bigint literal: '…n'. |
 | [ORE2066](ORE2066.md) | Type '…' exists only in computations on types: values cannot have 'never' in a tuple or an object type yet. |
 | [ORE2067](ORE2067.md) | Constant … is not assignable to type '…'. |
+| [ORE2068](ORE2068.md) | A required element cannot follow an optional element. |
+| [ORE2069](ORE2069.md) | A rest element of type '…' is not supported: tuples have a fixed length in Ore. Spread a tuple type, or use an array. |
 
 ## ORE3xxx: Expressions
 

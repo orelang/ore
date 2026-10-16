@@ -636,10 +636,20 @@ export function decodeJson(g: Emitter, type: Type) {
             if (type.tuple) {
                 d.expect(JSON_ARRAY, "an array")
                 const n = type.fields.length
+                // Optional elements, `T?`, can be left out of the array: they are null.
+                let required = 0
+                while (required < n && !type.fields[required].optional) required++
                 const len = g.b.value("i64", `load i64, ptr ${g.field("%v", JSON_VALUE, 4)}`)
                 const right = g.b.label("length")
                 const wrong = g.b.label("badlength")
-                g.b.condBr(g.b.value("i1", `icmp eq i64 ${len.v}, ${n}`), right, wrong)
+                const fits =
+                    required === n
+                        ? g.b.value("i1", `icmp eq i64 ${len.v}, ${n}`)
+                        : g.b.value(
+                              "i1",
+                              `and i1 ${g.b.value("i1", `icmp sge i64 ${len.v}, ${required}`).v}, ${g.b.value("i1", `icmp sle i64 ${len.v}, ${n}`).v}`,
+                          )
+                g.b.condBr(fits, right, wrong)
                 g.b.start(wrong)
                 g.rt("ore_rt_json_length", [d.c, g.i64(n), len])
                 d.fail()
@@ -648,6 +658,20 @@ export function decodeJson(g: Emitter, type: Type) {
                 const items = g.b.value("ptr", `load ptr, ptr ${g.field("%v", JSON_VALUE, 5)}`)
                 for (let i = 0; i < n; i++) {
                     const f = type.fields[i]
+                    const ft_ = f.type
+                    let next = ""
+                    if (i >= required && ft_.kind === "union") {
+                        let nullIndex = -1
+                        for (let j = 0; j < ft_.members.length; j++) if (ft_.members[j].kind === "null") nullIndex = j
+                        const present = g.b.label("present")
+                        const missing = g.b.label("missing")
+                        next = g.b.label("nextelem")
+                        g.b.condBr(g.b.value("i1", `icmp slt i64 ${i}, ${len.v}`), present, missing)
+                        g.b.start(missing)
+                        g.store(inject(g, ft_, nullIndex, null), fieldPtr(g, t.v, type, f.name), f.type)
+                        g.b.br(next)
+                        g.b.start(present)
+                    }
                     const item = g.b.value(
                         "ptr",
                         `load ptr, ptr ${g.b.value("ptr", `getelementptr ptr, ptr ${items.v}, i64 ${i}`).v}`,
@@ -658,6 +682,10 @@ export function decodeJson(g: Emitter, type: Type) {
                         g.rt("ore_rt_json_at_index", [d.c, g.i64(i)])
                     })
                     g.store(x, fieldPtr(g, t.v, type, f.name), f.type)
+                    if (next !== "") {
+                        g.b.br(next)
+                        g.b.start(next)
+                    }
                 }
                 d.ret(t)
                 return

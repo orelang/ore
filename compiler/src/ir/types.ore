@@ -473,6 +473,16 @@ function withoutNullMembers(u: UnionType): string {
     return members.join(" | ")
 }
 
+/** An element of a tuple type: an optional one as `T?`, without its null. */
+function tupleElementToString(f: Field): string {
+    const ft = f.type
+    if (!f.optional || ft.kind !== "union") return typeToString(ft)
+    let count = 0
+    for (const m of ft.members) if (m.kind !== "null") count++
+    const inner = withoutNullMembers(ft)
+    return count > 1 ? `(${inner})?` : `${inner}?`
+}
+
 export function typeToString(t: Type): string {
     switch (t.kind) {
         case "int":
@@ -486,7 +496,7 @@ export function typeToString(t: Type): string {
             return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
         case "struct": {
             if (t.name !== null) return t.name
-            if (t.tuple) return `[${t.fields.map((f) => typeToString(f.type)).join(", ")}]`
+            if (t.tuple) return `[${t.fields.map(tupleElementToString).join(", ")}]`
             const fields: string[] = []
             for (const f of t.fields) {
                 // The hidden fields of an object literal's accessors: `get x(): T` and `set x(value: T)`.
