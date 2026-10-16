@@ -378,6 +378,11 @@ console.timeEnd()`) go to stderr. `console.table` formats each cell as
 Node does: an object with more than two properties as `[Object]`, three
 entries of an array, on one line.
 
+An object literal's accessors print as Node prints accessor properties,
+`{ a: 1, b: [Getter], c: [Getter/Setter] }`, and a `RegExpMatch` as Node
+prints a match array: `[ '12', '1', index: 3, input: 'a 12', groups:
+undefined ]`, with `undefined` for a group that took no part.
+
 When the output shows colors, values are colored as Node colors them, with
 the same codes: numbers, bigints and booleans yellow, strings inside values
 (and quoted property names) green, `null` bold, functions, `[Object]`,

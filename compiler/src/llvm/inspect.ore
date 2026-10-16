@@ -4,6 +4,7 @@
 // colored as Node colors them when the output shows colors.
 
 import {
+    type Field,
     type InterfaceType,
     type StructType,
     type Type,
@@ -343,6 +344,21 @@ function inspectInterface(g: Emitter, t: InterfaceType, v: V, s: V, depth: V): V
     return g.str("{}")
 }
 
+/**
+ * Whether a field holds an accessor of an object literal, `get x()` or
+ * `set x(value)`, which are hidden fields named so: "get" or "set" for one
+ * alone, "get+" for a getter with a setter, "set+" for a setter with a
+ * getter; "" for other fields.
+ */
+function accessorOf(t: StructType, f: Field): string {
+    if (!f.private || f.type.kind !== "func" || t.nominal) return ""
+    const getter = f.name.startsWith("get ")
+    if (!getter && !f.name.startsWith("set ")) return ""
+    const other = `${getter ? "set" : "get"} ${f.name.slice(4)}`
+    const paired = t.fields.some((x) => x.name === other && x.private)
+    return `${getter ? "get" : "set"}${paired ? "+" : ""}`
+}
+
 /** An object: `{ x: 1 }`, `Point { x: 1 }` for a class, `[ 1, 2 ]` for a tuple, `Error: message` for an Error. */
 function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: bool): V {
     if (!exact && g.tables.has(t.id)) {
@@ -359,6 +375,9 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
             g.b.start(next)
         }
     }
+    // A match of a regular expression, as Node prints a match array.
+    if (t.nominal && t.name === "RegExpMatch" && t.fields.some((f) => f.name === "captures"))
+        return g.rt("ore_rt_inspect_match", [s, v, depth])
     const ctor = t.ctor
     if (ctor !== null && ctor.name === "ore_new_BasicError") {
         const message = g.load(fieldPtr(g, v.v, t, "message"), t.fields[0].type)
@@ -378,6 +397,11 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
         const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
         values.push(x)
         const ft = f.type
+        if (accessorOf(t, f) === "set+") {
+            // Shown with its getter.
+            present.push(null)
+            continue
+        }
         let isPresent: V | null = null
         if (f.optional && ft.kind === "union") {
             let at = -1
@@ -396,6 +420,15 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
     for (let i = 0; i < t.fields.length; i++) {
         const f = t.fields[i]
         if (!numeric(f.type)) numbers = false
+        const accessor = accessorOf(t, f)
+        if (accessor === "set+") continue
+        if (accessor !== "") {
+            // As Node shows an accessor property: `x: [Getter/Setter]`.
+            const label = accessor === "get" ? "[Getter]" : accessor === "get+" ? "[Getter/Setter]" : "[Setter]"
+            const text = paint(g, s, g.str(label), cyan, defaultColor)
+            g.rt("ore_rt_inspect_field", [s, fieldName(g, s, f.name.slice(4)), text])
+            continue
+        }
         const skip = g.b.label("absent")
         const isPresent = present[i]
         if (isPresent !== null) {

@@ -9,6 +9,7 @@
 // (a code point) at a time; positions and `lastIndex` are byte offsets, as
 // everywhere in strings.
 
+import { type Inspection, begin, end, entry, field, paint, quote } from "ore:runtime/inspect"
 import {
     type Program,
     canonicalize,
@@ -548,6 +549,94 @@ export class RegExpMatch {
         if (k < 0 || k >= this.captures.length) return null
         return this.captures[k]
     }
+}
+
+// ---------------------------------------------------------------------------
+// console.log of a match
+
+/** `undefined` as Node prints it, for a group that took no part: gray. */
+function undefinedText(s: Inspection): string {
+    return paint(s, "undefined", 90, 39)
+}
+
+/** A string inside a value: quoted, green. */
+function stringText(s: Inspection, text: string): string {
+    return paint(s, quote(text), 32, 39)
+}
+
+/** A number: yellow. */
+function numberText(s: Inspection, n: int): string {
+    return paint(s, `${n}`, 33, 39)
+}
+
+/** The groups of a match as Node prints them: `undefined` without names, else an object without a prototype. */
+function groupsText(s: Inspection, names: Map<string, string>, depth: int): string {
+    if (names.size === 0) return undefinedText(s)
+    const open = "[Object: null prototype] {"
+    const shown = begin(s, unsafe.addressOf(names), names.size, depth, open, "}", "[Object: null prototype]")
+    if (shown !== "") return shown
+    for (const [name, text] of names) field(s, name, text)
+    return end(s, open, "}", depth, false, false)
+}
+
+/** `[start, end]`, or `undefined` for a group that took no part. */
+function pairText(s: Inspection, pair: [int, int] | null, depth: int): string {
+    if (pair === null) return undefinedText(s)
+    const shown = begin(s, unsafe.addressOf(pair), 2, depth, "[", "]", "[Array]")
+    if (shown !== "") return shown
+    entry(s, numberText(s, pair[0]))
+    entry(s, numberText(s, pair[1]))
+    return end(s, "[", "]", depth, true, true)
+}
+
+/**
+ * A match as console.log prints it, as Node prints a match array: the
+ * captures (`undefined` for a group that took no part), then `index`,
+ * `input`, `groups` and, with the `d` flag, `indices`. The matches of
+ * `s.match` with the `g` flag are only strings.
+ */
+//ore:runtime ore_rt_inspect_match
+function inspectMatch(s: Inspection, m: RegExpMatch, depth: int): string {
+    const all = m.index < 0
+    const count = m.captures.length + (all ? 0 : m.indices.length > 0 ? 4 : 3)
+    const shown = begin(s, unsafe.addressOf(m), count, depth, "[", "]", "[Array]")
+    if (shown !== "") return shown
+    for (const c of m.captures) entry(s, c === null ? undefinedText(s) : stringText(s, c))
+    if (!all) {
+        field(s, "index", numberText(s, m.index))
+        field(s, "input", stringText(s, m.input))
+        field(s, "groups", m.hasNames() ? matchGroups(s, m, depth + 1) : undefinedText(s))
+        if (m.indices.length > 0) field(s, "indices", indicesText(s, m, depth + 1))
+    }
+    return end(s, "[", "]", depth, true, false)
+}
+
+/** The named groups of a match: their texts. */
+function matchGroups(s: Inspection, m: RegExpMatch, depth: int): string {
+    const texts = new Map<string, string>()
+    for (const [name, text] of m.groups) texts.set(name, text === null ? undefinedText(s) : stringText(s, text))
+    return groupsText(s, texts, depth)
+}
+
+/** The `indices` of a match with the `d` flag: a pair for each capture, then the pairs of the named groups. */
+function indicesText(s: Inspection, m: RegExpMatch, depth: int): string {
+    const shown = begin(s, unsafe.addressOf(m.indices), m.indices.length + 1, depth, "[", "]", "[Array]")
+    if (shown !== "") return shown
+    for (const pair of m.indices) entry(s, pairText(s, pair, depth + 1))
+    let groups = undefinedText(s)
+    if (m.hasNames()) {
+        // Formatted after the object begins, one level deeper, as Node formats them.
+        const open = "[Object: null prototype] {"
+        const named = m.groupIndices
+        const begun = begin(s, unsafe.addressOf(named), named.size, depth + 1, open, "}", "[Object: null prototype]")
+        if (begun !== "") groups = begun
+        else {
+            for (const [name, pair] of named) field(s, name, pairText(s, pair, depth + 2))
+            groups = end(s, open, "}", depth + 1, false, false)
+        }
+    }
+    field(s, "groups", groups)
+    return end(s, "[", "]", depth, true, false)
 }
 
 /** What a function given to `s.replace(re, fn)` receives: the matched text and the match. */

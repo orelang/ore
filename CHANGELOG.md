@@ -13,6 +13,9 @@ before 1.0, a minor version may change the language.
   a set or an object) and `dir`. A first string with more values after it
   is a format, as in Node: `%s`, `%d`, `%i`, `%f`, `%j`, `%o`, `%O`, `%c`
   and `%%`.
+- `console.log` prints an object literal's accessors as Node does
+  (`b: [Getter]`, `c: [Getter/Setter]`), and a `RegExpMatch` as Node prints
+  a match array (`[ '12', index: 3, input: 'a 12', groups: undefined ]`).
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with
