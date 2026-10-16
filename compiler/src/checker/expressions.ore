@@ -1824,6 +1824,14 @@ export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
     const nameId = nameNode(node)
     const found = moduleMember(c, node, scope)
     if (found !== null) return symbolValue(c, found, nameId)
+    // A member of a built-in namespace that is no value: a function, or none.
+    const ns = c.namespaceAt(expression(node), scope)
+    if (ns !== null) {
+        const member_ = ns.members.get(nameId.text)
+        if (member_ !== null)
+            return c.fail(nameId, `'${ns.name}.${nameId.text}' is a function and cannot be used as a value yet.`)
+        return c.fail(nameId, `'${ns.name}' has no member '${nameId.text}'.`)
+    }
     const target = checkExpr(c, expression(node), scope)
     if (target.k === "error") return target
     const value = c.toDefault(target, expression(node))
