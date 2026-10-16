@@ -2,13 +2,13 @@
 // by a function generated per type. Arrays, maps, sets and objects give
 // their entries to runtime/core/inspect.ore, which lays them out.
 
-import { type InterfaceType, type StructType, type Type, type UnionType, isNumeric, unionRepr } from "../ir/types"
+import { type InterfaceType, type StructType, type Type, type UnionType, isNumeric, types, unionRepr } from "../ir/types"
 import { counted } from "./json"
 import { ARRAY, MAP, STR } from "./context"
 import { Emitter } from "./base"
 import { fieldPtr, payload, slotTest } from "./expressions"
 import { globalName, type V } from "./ll"
-import { helper } from "./calls"
+import { concat, helper } from "./calls"
 
 /** The value as console.log prints it: strings as they are, other values as they are inside an array. */
 export function inspectTop(g: Emitter, v: V, t: Type): V {
@@ -119,6 +119,9 @@ function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
             return g.rt(t.bits === 32 ? "ore_rt_inspect_f32" : "ore_rt_inspect_f64", [v])
         case "bool":
             return g.rt("ore_rt_str_from_bool", [v])
+        case "bigint":
+            // With its suffix, as Node prints it: `10n`.
+            return concat(g, [{ v: v, t: t }, { v: g.str("n"), t: types.string }])
         case "string":
             return g.rt("ore_rt_inspect_string", [v])
         case "literal":
