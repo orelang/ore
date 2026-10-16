@@ -19,6 +19,22 @@
 - Nested function declarations are hoisted: they can be called anywhere in
   their block, call each other recursively, and use every variable of the
   block. Arrow functions can only use variables declared before them.
+- A nested function declaration can be [generic](03-objects.md#generics)
+  (`function id<T>(x: T): T { ... }` in a function body), and so can a
+  function literal assigned to a `const` (`const id = <T>(x: T): T => x`).
+  Like a top-level generic, each list of type arguments, written
+  (`id<string>(s)`) or inferred from a call's arguments, makes an instance
+  checked with the concrete types; unlike one, an instance is a closure: it
+  uses and changes the variables of the enclosing functions like other
+  nested functions do. An instance is checked at its first call, in the
+  scope of the declaration as it is at that call, so it sees the variables
+  declared before the call (or every variable of the block, when the call
+  is in a hoisted function), and each call creates its closure. Such a function can only be called: using it as
+  a value is an error (ORE6071), and so are generic function literals
+  anywhere else (`xs.map(<T>(x: T) => x)`, ORE7038) and generic function
+  types (`<T>(x: T) => T`, ORE2012), since a function value has one
+  function type. A generic closure that calls itself needs a return type
+  annotation (ORE6072).
 - Top-level functions, methods and constructors can have optional
   parameters after the required ones: `b = 1` (its type may come from the
   value), or `b?: T`, which is `T | null` and `null` when missing. A default

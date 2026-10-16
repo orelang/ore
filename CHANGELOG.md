@@ -24,6 +24,13 @@ before 1.0, a minor version may change the language.
   member (ORE2067); `===` and `switch` narrow them, and a `switch` with a
   case for each is exhaustive. ORE2066 now concerns only `never` inside
   tuples and object types.
+- Generic nested functions (`function id<T>(x: T): T` in a function body)
+  and generic function literals of a `const` (`const id = <T>(x: T): T =>
+  x`): each list of type arguments makes an instance, a closure that
+  captures the variables of the enclosing functions like other nested
+  functions. They can only be called; used as a value without a call, such
+  a function is an error (ORE6071), and one that calls itself needs a
+  return type annotation (ORE6072).
 - Numeric literal types in computations on types (`Prev[D]`,
   `D extends number = 10`, `[D] extends [never]`); `infer` in template
   literal types; `unknown`, `object`, `Function` and `readonly unknown[]`

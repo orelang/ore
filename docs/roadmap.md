@@ -60,7 +60,9 @@ exports, type assertions (Ore converts: `i32(x)`).
     operators, conversions and the namespace `BigInt` (done);
   - overloads (several signatures of one function; done for top-level
     functions);
-  - generic closures, nested generic functions; default type arguments
+  - generic closures, nested generic functions (done: nested declarations
+    and function literals of a `const`, called only; generic function
+    types as values are not supported); default type arguments
     (`<T = X>`, done); type aliases in any order and recursive object types
     (done).
 - Types:

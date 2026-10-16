@@ -261,6 +261,8 @@ literal is exhaustive: like a `default`, it lets a function end without
   whose arguments do not bind it, takes the default.
 - Functions, classes, interfaces and type aliases may have type parameters,
   optionally constrained: `function longest<T extends Named>(items: T[]): T`.
+  So may nested functions and function literals assigned to a `const`,
+  whose instances are closures ([generic closures](04-functions.md#functions-and-closures)).
 - Type arguments are written (`id<int>(5)`, `new Box<string>()`) or inferred
   from the arguments, also through arrays, unions, generic classes,
   interfaces and aliases (`map(xs, new Doubler())` infers `Mapper<A, B>`).
