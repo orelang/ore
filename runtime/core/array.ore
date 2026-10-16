@@ -5,7 +5,7 @@
 // an element for the collector (see `allocTyped` in gc.ore), or is nil to
 // have the buffer scanned word by word.
 
-import { allocElements, writeBarrier } from "ore:runtime/gc"
+import { allocElements } from "ore:runtime/gc"
 
 const lenOffset = 8
 const capOffset = 16
@@ -212,172 +212,49 @@ function swap(x: ptr, y: ptr, size: int): void {
     }
 }
 
-/** The length of the runs that the sort orders by insertion before it merges them. */
-const RUN = 16
-
 /**
- * Keeps an object alive up to here: a use of its address the optimizer
- * cannot remove, for buffers that loops reach only through addresses
- * derived from theirs, which may point past them.
- */
-//ore:inline
-function keepAlive(p: ptr): void {
-    unsafe.asm("", "r", p)
-}
-
-/** The address of element `i` of a buffer of elements of `size` bytes. */
-//ore:inline
-function at(base: ptr, i: int, size: int): ptr {
-    return unsafe.add(base, i * size)
-}
-
-/**
- * Whether the elements of an array may hold references, as `allocElements`
- * decides it: then a store of one needs the write barrier.
- */
-function hasPointers(a: ptr): bool {
-    const gcdata = elements(a)
-    if (unsafe.toInt(gcdata) === 0) return true
-    const words = unsafe.load<int>(gcdata) >> 3
-    for (let w = 0; w < words; w += 64) if (unsafe.load<int>(unsafe.add(gcdata, 8 + (w >> 6) * 8)) !== 0) return true
-    return false
-}
-
-/**
- * Copies one element, after the write barrier when it may hold references.
- * One or two words are moved whole, so that a reference is always whole in
- * memory or in a local.
- */
-//ore:inline
-function move(to: ptr, from: ptr, size: int, pointers: bool): void {
-    if (size === 8) {
-        const v = unsafe.load<int>(from)
-        if (pointers) writeBarrier(to, 1)
-        unsafe.store<int>(to, v)
-    } else if (size === 16) {
-        const low = unsafe.load<int>(from)
-        const high = unsafe.load<int>(unsafe.add(from, 8))
-        if (pointers) writeBarrier(to, 2)
-        unsafe.store<int>(to, low)
-        unsafe.store<int>(unsafe.add(to, 8), high)
-    } else unsafe.copy(to, from, size)
-}
-
-/** Sorts elements [lo, hi) by insertion, stably; `hold` has room for one element. */
-//ore:inline
-function insertionSort(
-    base: ptr,
-    lo: int,
-    hi: int,
-    size: int,
-    hold: ptr,
-    pointers: bool,
-    before: (x: ptr, y: ptr) => i32,
-): void {
-    for (let i = lo + 1; i < hi; i++) {
-        if (before(at(base, i, size), at(base, i - 1, size)) >= 0) continue
-        move(hold, at(base, i, size), size, pointers)
-        let j = i
-        while (true) {
-            move(at(base, j, size), at(base, j - 1, size), size, pointers)
-            j--
-            if (j === lo || before(hold, at(base, j - 1, size)) >= 0) break
-        }
-        move(at(base, j, size), hold, size, pointers)
-    }
-}
-
-/**
- * Merges the ordered runs [lo, mid) and [mid, hi), stably: the shorter one
- * is copied to `tmp` and merged back from its end of the range, taking the
- * left element on ties.
- */
-//ore:inline
-function merge(
-    base: ptr,
-    lo: int,
-    mid: int,
-    hi: int,
-    size: int,
-    tmp: ptr,
-    pointers: bool,
-    before: (x: ptr, y: ptr) => i32,
-): void {
-    // Already in order: the last of the left run is not after the first of the right one.
-    if (before(at(base, mid, size), at(base, mid - 1, size)) >= 0) return
-    if (mid - lo <= hi - mid) {
-        const n = mid - lo
-        unsafe.copy(tmp, at(base, lo, size), n * size)
-        let i = 0
-        let j = mid
-        let k = lo
-        while (i < n && j < hi) {
-            if (before(at(base, j, size), at(tmp, i, size)) < 0) {
-                move(at(base, k, size), at(base, j, size), size, pointers)
-                j++
-            } else {
-                move(at(base, k, size), at(tmp, i, size), size, pointers)
-                i++
-            }
-            k++
-        }
-        // What is left of the right run is in place already.
-        if (i < n) unsafe.copy(at(base, k, size), at(tmp, i, size), (n - i) * size)
-        return
-    }
-    const n = hi - mid
-    unsafe.copy(tmp, at(base, mid, size), n * size)
-    let i = mid - 1
-    let j = n - 1
-    let k = hi - 1
-    while (i >= lo && j >= 0) {
-        if (before(at(tmp, j, size), at(base, i, size)) < 0) {
-            move(at(base, k, size), at(base, i, size), size, pointers)
-            i--
-        } else {
-            move(at(base, k, size), at(tmp, j, size), size, pointers)
-            j--
-        }
-        k--
-    }
-    if (j >= 0) unsafe.copy(at(base, lo, size), tmp, (j + 1) * size)
-}
-
-/**
- * Sorts in place, stably as JavaScript requires: runs of `RUN` elements by
- * insertion, then merged bottom-up, with a buffer for half the elements.
- * `before` compares the elements at two addresses, -1, 0 or 1: a closure
- * the compiler makes of a generated function and the comparator. The sort
- * is inlined where it is called, so that the size of the elements and the
- * function of the closure are constants there, and the comparison is
- * inlined in turn.
+ * Sorts in place, stably as JavaScript requires: a bottom-up merge sort.
+ * `compare` is a function `(ctx, a, b) => i32` on the addresses of two
+ * elements, generated by the compiler; with `ctx` it has the layout of a
+ * closure (function, environment), which is how it is called here.
  */
 //ore:runtime ore_rt_array_sort
-//ore:inline
-function arraySort(a: ptr, size: int, before: (x: ptr, y: ptr) => i32): void {
+function arraySort(a: ptr, size: int, compare: ptr, ctx: ptr): void {
     const n = length(a)
     if (n < 2) return
-    // The buffer of the array when the sort began, even if the comparison grows the array.
-    const base = data(a)
-    const pointers = size % 8 === 0 && hasPointers(a)
-    const hold = newBuffer(a, size)
-    for (let lo = 0; lo < n; lo += RUN)
-        insertionSort(base, lo, lo + RUN < n ? lo + RUN : n, size, hold, pointers, before)
-    if (n <= RUN) {
-        keepAlive(hold)
-        keepAlive(base)
-        return
-    }
-    const tmp = newBuffer(a, (n / 2) * size)
-    for (let width = RUN; width < n; width *= 2) {
-        for (let lo = 0; lo + width < n; lo += 2 * width) {
+    const cell = unsafe.alloc(16)
+    unsafe.store<ptr>(cell, compare)
+    unsafe.store<ptr>(unsafe.add(cell, 8), ctx)
+    const before = unsafe.load<(x: ptr, y: ptr) => i32>(cell)
+
+    let src = data(a)
+    let buf = newBuffer(a, n * size)
+    for (let width = 1; width < n; width *= 2) {
+        for (let lo = 0; lo < n; lo += 2 * width) {
+            const mid = lo + width < n ? lo + width : n
             const hi = lo + 2 * width < n ? lo + 2 * width : n
-            merge(base, lo, lo + width, hi, size, tmp, pointers, before)
+            let i = lo
+            let j = mid
+            let k = lo
+            while (i < mid && j < hi) {
+                // Taking the left element on ties keeps the sort stable.
+                if (before(unsafe.add(src, j * size), unsafe.add(src, i * size)) < 0) {
+                    unsafe.copy(unsafe.add(buf, k * size), unsafe.add(src, j * size), size)
+                    j++
+                } else {
+                    unsafe.copy(unsafe.add(buf, k * size), unsafe.add(src, i * size), size)
+                    i++
+                }
+                k++
+            }
+            if (i < mid) unsafe.copy(unsafe.add(buf, k * size), unsafe.add(src, i * size), (mid - i) * size)
+            else if (j < hi) unsafe.copy(unsafe.add(buf, k * size), unsafe.add(src, j * size), (hi - j) * size)
         }
+        const t = src
+        src = buf
+        buf = t
     }
-    keepAlive(tmp)
-    keepAlive(hold)
-    keepAlive(base)
+    if (src !== data(a)) unsafe.copy(data(a), src, n * size)
 }
 
 /** A JavaScript `slice` offset resolved against a length: negative counts from the end, then clamped. */

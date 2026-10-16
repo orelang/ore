@@ -5,19 +5,6 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
-- `Array.prototype.sort` is faster: still a stable merge sort, now with
-  insertion-sorted runs of 16, merges that skip runs already in order and a
-  buffer for half the elements instead of all of them, and inlined where it
-  is called, so that the element size is a constant, elements move by
-  loads and stores instead of `memmove`, and the comparison (the default
-  order or the comparator's closure) is inlined too. `bench/sort` takes 40%
-  less CPU time.
-- bigint arithmetic is faster: addition and subtraction work two limbs at a
-  time, multiplication runs its long operand in the inner loop, has a path
-  for a one-limb operand and uses Karatsuba's algorithm when both operands
-  have 40 limbs or more, and `toString()` in decimal divides by a constant.
-  `bench/bigint` takes 40% less CPU time; its wall time is mostly
-  allocation of the immutable results.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

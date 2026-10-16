@@ -467,20 +467,19 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
             return out
         }
         default: {
-            // sort, in place, and toSorted, of a copy. The comparison is a closure whose function
-            // is a constant: the runtime's sort is inlined here, and the comparison in it.
+            // sort, in place, and toSorted, of a copy.
             const target = m === "toSorted" ? copyArray(g, array, size) : array
             if (fn === null) {
-                const natural: V = { ty: FN, v: `{ ptr ${naturalOrder(g, T)}, ptr null }` }
-                g.rt("ore_rt_array_sort", [target, size, natural])
+                g.rt("ore_rt_array_sort", [
+                    target,
+                    size,
+                    { ty: "ptr", v: naturalOrder(g, T) },
+                    { ty: "ptr", v: "null" },
+                ])
                 return target
             }
             const ctx = g.spill(fn)
-            const before = g.aggregate(FN, [
-                { ty: "ptr", v: comparator(g, ft) },
-                { ty: "ptr", v: ctx },
-            ])
-            g.rt("ore_rt_array_sort", [target, size, before])
+            g.rt("ore_rt_array_sort", [target, size, { ty: "ptr", v: comparator(g, ft) }, { ty: "ptr", v: ctx }])
             return target
         }
     }
