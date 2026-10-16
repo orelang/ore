@@ -132,6 +132,11 @@ export class Fetched {
  */
 export type Progress = (phase: string, percent: int) => void
 
+/** The key of a repository at a ref: its URL and the ref. */
+export function repositoryKey(module: GithubModule): string {
+    return `${module.url}@${module.ref}`
+}
+
 /** The commits found this process, by repository URL and ref, so that GitHub is asked once. */
 const fetched = new Map<string, Fetched>()
 
@@ -238,9 +243,9 @@ function recorded(root: string, module: GithubModule): string | null {
 export function fetchRepository(root: string, module: GithubModule, progress: Progress): Fetched | Error {
     if (root === "")
         return new Error(`Cannot import ${module.url}: modules from GitHub are kept in the cache, which is off.`)
-    const key = `${module.url}@${module.ref}`
-    const known = fetched.get(key)
-    if (known !== null) return known
+    const key = repositoryKey(module)
+    const found = fetched.get(key)
+    if (found !== null) return found
     let commit = module.ref
     let warning: string | null = null
     if (!isCommitHash(commit)) {
@@ -268,7 +273,53 @@ export function fetchRepository(root: string, module: GithubModule, progress: Pr
     return result
 }
 
-/** The repository of a module in the cache in `cacheRoot()`, without progress; see `fetchRepository`. */
+/**
+ * The repositories someone else downloads, for a process that must not wait
+ * for downloads: the language server downloads in tasks of its own and
+ * records here what it found. When `enabled`, `fetchModule` never downloads:
+ * it takes a repository from `found`; otherwise it adds the module to
+ * `wanted` and takes the commit the cache has (its ref resolved to last),
+ * or fails.
+ */
+export class KnownRepositories {
+    enabled = false
+    /** The repositories found, or why they could not be, by `repositoryKey`. */
+    readonly found = new Map<string, Fetched | Error>()
+    /** The modules looked up that are not in `found`, once per repository, for the downloader to take. */
+    wanted: GithubModule[] = []
+    private readonly asked = new Set<string>()
+
+    /** Adds a module to `wanted`, unless its repository was asked for already. */
+    want(module: GithubModule): void {
+        const key = repositoryKey(module)
+        if (this.asked.has(key)) return
+        this.asked.add(key)
+        this.wanted.push(module)
+    }
+}
+
+export const known = new KnownRepositories()
+
+/** The repository of a module as the cache in `root` has it, without the network; null when it has not. */
+export function cachedRepository(root: string, module: GithubModule): Fetched | null {
+    if (root === "") return null
+    if (isCommitHash(module.ref)) {
+        const dir = commitDir(root, module.owner, module.repo, module.ref)
+        return fs.isDir(dir) ? new Fetched(dir, module.ref, null) : null
+    }
+    const commit = recorded(root, module)
+    return commit === null ? null : new Fetched(commitDir(root, module.owner, module.repo, commit), commit, null)
+}
+
+/** The repository of a module in the cache in `cacheRoot()`, without progress; see `fetchRepository` and `known`. */
 export function fetchModule(module: GithubModule): Fetched | Error {
+    if (known.enabled) {
+        const found = known.found.get(repositoryKey(module))
+        if (found !== null) return found
+        known.want(module)
+        const cached = cachedRepository(cacheRoot(), module)
+        if (cached !== null) return cached
+        return new Error(`${module.url} is being downloaded.`)
+    }
     return fetchRepository(cacheRoot(), module, (phase: string, percent: int) => {})
 }

@@ -1,7 +1,8 @@
 // The language server of the compiler written in Ore, spoken to as an editor
 // would: the base protocol's framing (also split across reads), the
 // lifecycle, documents with full and incremental changes, syntax diagnostics
-// with UTF-16 positions, cancellation and errors.
+// with UTF-16 positions, cancellation and errors, and the download of a
+// module from GitHub, from a cache prepared without the network.
 //
 // The server runs in this process, in a task, on two pipes: the client writes
 // to the server's input pipe, and a task reads the server's output pipe and
@@ -14,9 +15,13 @@ import { test, expect, fail } from "ore:test"
 import { Connection, frame, Reader } from "../src/lsp/jsonrpc"
 import { Server } from "../src/lsp/server"
 import { docsUrl as docs } from "../src/syntax/codes"
+import { commitDir } from "../src/project/remote"
+import { pathToUri } from "../src/lsp/text"
+import { join } from "ore:path"
 
 declare function pipe(fds: ptr): i32
 declare function close(fd: i32): i32
+declare function setenv(name: string, value: string, overwrite: i32): i32
 
 /** How long to wait for the server, in milliseconds. */
 const timeout = 20000
@@ -482,6 +487,84 @@ test("cancellation, and messages that are not JSON-RPC", () => {
     // The server still answers.
     expect(client.request("12", "shutdown", "{}")).toBe(message(`"id":12,"result":null`))
     expect(client.close()).toBe(0)
+})
+
+type Progress = { params: { token: string; value: { kind: string; title: string | null; message: string | null } } }
+
+test("modules from GitHub: work-done progress of the download, and its state in the hover", () => {
+    const root = fs.mkdtemp("ore-lsp-github-")
+    if (root instanceof Error) fail(root.message)
+    // A commit in the cache, named by its hash: found without asking GitHub.
+    const sha = "89abcdef0123456789abcdef0123456789abcdef"
+    const dir = commitDir(root, "acme", "geo", sha)
+    const made = fs.mkdir(dir, true)
+    if (made !== null) fail(made.message)
+    const wrote = fs.writeFile(join(dir, "index.ore"), "export const answer = 42\n")
+    if (wrote !== null) fail(wrote.message)
+    const previous = process.getenv("ORE_CACHE")
+    setenv("ORE_CACHE", root, 1)
+
+    const client = new Client()
+    const init = client.request(
+        "0",
+        "initialize",
+        `{"processId":null,"rootUri":null,"capabilities":{"window":{"workDoneProgress":true}}}`,
+    )
+    expect(decode(init).error === null).toBe(true)
+    client.notify("initialized", "{}")
+    const main = pathToUri(join(root, "main.ore"))
+    const url = `https://github.com/acme/geo/tree/${sha}`
+    const text = `import { answer } from "${url}"\nimport { y } from "https://github.com/acme"\nconst x: int = answer\n`
+    const document = `{"uri":${JSON.stringify(main)},"languageId":"ore","version":1,"text":${JSON.stringify(text)}}`
+    client.notify("textDocument/didOpen", `{"textDocument":${document}}`)
+    // The cached commit is used at once; only the URL that is not a repository's is an error.
+    const opened = client.diagnostics(main)
+    expect(opened.length).toBe(1)
+    expect(opened[0].message.startsWith("Invalid GitHub module URL 'https://github.com/acme'")).toBe(true)
+
+    // The download, which finds the commit in the cache, is reported as work-done progress.
+    const create = decode(client.wait("the progress token", (m) => m.method === "window/workDoneProgress/create"))
+    const token = "ore/github/0"
+    expect(JSON.stringify(create.id)).toBe(JSON.stringify(token))
+    client.send(message(`"id":${JSON.stringify(create.id)},"result":null`))
+    const progress = (kind: string): Progress => {
+        const body = client.wait(`$/progress ${kind}`, (m) => m.method === "$/progress")
+        const p = JSON.parse<Progress>(body)
+        if (p instanceof Error) fail(`${p.message} in ${body}`)
+        expect(p.params.token).toBe(token)
+        return p
+    }
+    const begin = progress("begin")
+    expect(begin.params.value.kind).toBe("begin")
+    expect(begin.params.value.title ?? "").toBe("GitHub: acme/geo")
+    let end = progress("report or end")
+    while (end.params.value.kind === "report") end = progress("end")
+    expect(end.params.value.kind).toBe("end")
+    expect(end.params.value.message ?? "").toBe("at commit 89abcdef0123")
+    // Then the document is analyzed again.
+    expect(client.diagnostics(main).length).toBe(1)
+
+    const at = (line: int, character: int) =>
+        `{"textDocument":{"uri":${JSON.stringify(main)}},"position":{"line":${line},"character":${character}}}`
+    const hover = (id: string, line: int, character: int) => {
+        const body = client.request(id, "textDocument/hover", at(line, character))
+        const parsed = JSON.parse<{ result: { contents: { value: string }; range: Range } | null }>(body)
+        if (parsed instanceof Error) fail(`${parsed.message} in ${body}`)
+        const result = parsed.result
+        if (result === null) fail(`no hover in ${body}`)
+        return result
+    }
+    const cached = hover("1", 0, 30)
+    expect(cached.contents.value).toBe("GitHub: **acme/geo**: cached at commit `89abcdef0123`")
+    expect(JSON.stringify(cached.range)).toBe(range(0, 23, 0, 23 + url.length + 2))
+    expect(hover("2", 1, 25).contents.value.startsWith("Invalid GitHub module URL")).toBe(true)
+    // Not on a specifier: the checker's hover.
+    expect(hover("3", 2, 6).contents.value.includes("int")).toBe(true)
+
+    expect(client.request("4", "shutdown", "{}")).toBe(message(`"id":4,"result":null`))
+    expect(client.close()).toBe(0)
+    setenv("ORE_CACHE", previous ?? "", 1)
+    fs.remove(root, true)
 })
 
 /** The next body read, "<error: ...>" or "<end>". */

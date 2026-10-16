@@ -1,8 +1,18 @@
 // The Ore language server, over the JSON-RPC of ./jsonrpc. Documents are
 // kept as the client edits them (full or incremental changes, positions in
 // UTF-16 units) and analyzed on every change, which publishes diagnostics.
+// Repositories imported by GitHub URLs are downloaded in tasks, one at a
+// time and once per session, reported with work-done progress.
 
-import { analyze, tokenModifiers, tokenTypes, type Analysis, type Location, type Reference } from "./analysis"
+import {
+    analyze,
+    tokenModifiers,
+    tokenTypes,
+    type Analysis,
+    type Hover,
+    type Location,
+    type Reference,
+} from "./analysis"
 import {
     Connection,
     InvalidParams,
@@ -14,12 +24,22 @@ import {
 } from "./jsonrpc"
 import { dirname, isAbsolute, join } from "ore:path"
 import { resolveImport } from "../project/resolve"
+import {
+    Fetched,
+    fetchRepository,
+    GithubModule,
+    isCommitHash,
+    isGithubUrl,
+    known,
+    parseGithubUrl,
+    repositoryKey,
+} from "../project/remote"
 import { moduleSpecifier, stringValue } from "../syntax/imports"
 import { parse as parseFile } from "../syntax/parse"
 import { cacheRoot } from "../driver/cache"
 import { docsUrl } from "../syntax/codes"
 import { format } from "../fmt/print"
-import { offsetAt, pathToUri, positionAt, uriToPath, type Position, type Range } from "./text"
+import { offsetAt, pathToUri, positionAt, rangeOf, uriToPath, type Position, type Range } from "./text"
 
 // ---------------------------------------------------------------------------
 // The params and results of the methods, as JSON
@@ -27,7 +47,11 @@ import { offsetAt, pathToUri, positionAt, uriToPath, type Position, type Range }
 type TextDocumentIdentifier = { uri: string }
 type TextDocumentItem = { uri: string; languageId: string; version: int; text: string }
 type WorkspaceFolder = { uri: string; name: string }
-type InitializeParams = { rootUri: string | null; workspaceFolders: WorkspaceFolder[] | null }
+type InitializeParams = {
+    rootUri: string | null
+    workspaceFolders: WorkspaceFolder[] | null
+    capabilities: { window: { workDoneProgress: bool | null } | null } | null
+}
 type DidOpenParams = { textDocument: TextDocumentItem }
 type ContentChange = { range: Range | null; text: string }
 type DidChangeParams = { textDocument: { uri: string; version: int | null }; contentChanges: ContentChange[] }
@@ -77,6 +101,59 @@ const kindField = 5
 /** MessageType.Error of window/logMessage */
 const messageError = 1
 
+/** The method of the notifications the server's download tasks post to it. */
+const remoteMethod = "ore/remote"
+
+/**
+ * What a download task reports: a phase of the download of a repository
+ * ("checking", "downloading", "done"), or its end ("fetched" with the
+ * commit, or "failed" with the error).
+ */
+type RemoteEvent = {
+    key: string
+    phase: string
+    percent: int
+    dir: string
+    commit: string
+    warning: string | null
+    error: string | null
+}
+
+/** A repository imported by a GitHub URL, downloaded once per session. */
+class Remote {
+    constructor(
+        readonly module: GithubModule,
+        /** The token of its work-done progress. */
+        readonly token: string,
+    ) {}
+
+    /** "waiting", "checking", "downloading" or "done", then "fetched" or "failed". */
+    phase = "waiting"
+    fetched: Fetched | null = null
+    error = ""
+
+    /** The repository's name, with the branch or tag when the URL names one. */
+    get name(): string {
+        const module = this.module
+        const ref = module.ref
+        const named = ref !== "" && !isCommitHash(ref)
+        return named ? `${module.owner}/${module.repo} (${ref})` : `${module.owner}/${module.repo}`
+    }
+}
+
+/** What a phase of a download is doing, for the editor. */
+function phaseText(phase: string): string {
+    switch (phase) {
+        case "waiting":
+            return "waiting for another download"
+        case "checking":
+            return "checking for a new commit"
+        case "downloading":
+            return "downloading"
+    }
+    return phase
+}
+
 /** An open document: its text as the client has it. */
 class Document {
     constructor(
@@ -116,11 +193,23 @@ export class Server {
     private roots: string[] = []
     private initialized = false
     private shutdown = false
+    /** The repositories imported by GitHub URLs, by `repositoryKey`. */
+    private readonly remotes = new Map<string, Remote>()
+    /** The repositories to download after the one being downloaded, in order. */
+    private waiting: Remote[] = []
+    private downloading = false
+    /** Whether the client shows work-done progress the server creates. */
+    private workDoneProgress = false
+    private progressTokens = 0
 
     constructor(
         private readonly connection: Connection,
         private readonly version: string,
-    ) {}
+    ) {
+        // Analyses take repositories from GitHub that are in the cache or
+        // downloaded by the server, and never wait for a download.
+        known.enabled = true
+    }
 
     /** Handles messages until `exit` or the end of the input; the exit code. */
     run(): int {
@@ -129,8 +218,10 @@ export class Server {
             const m = this.connection.next()
             if (m === null) return this.shutdown ? 0 : 1
             if (m.method === "exit") return this.shutdown ? 0 : 1
-            if (m.method === "") continue // a response: the server sends no requests
+            // A response: to window/workDoneProgress/create, whose result the server does not need.
+            if (m.method === "") continue
             this.handle(m)
+            this.fetchWanted()
         }
     }
 
@@ -149,6 +240,9 @@ export class Server {
                 this.initialize(m)
                 return
             case "initialized":
+                return
+            case remoteMethod:
+                this.remoteEvent(m)
                 return
             case "shutdown":
                 this.shutdown = true
@@ -249,6 +343,9 @@ export class Server {
         if (folders !== null) for (const f of folders) roots.push(uriToPath(f.uri))
         else if (p.rootUri !== null) roots.push(uriToPath(p.rootUri))
         this.roots = roots
+        const capabilities = p.capabilities
+        const window = capabilities === null ? null : capabilities.window
+        this.workDoneProgress = window !== null && window.workDoneProgress === true
         this.initialized = true
         const result = {
             capabilities: {
@@ -393,14 +490,159 @@ export class Server {
     }
 
     // -------------------------------------------------------------------------
+    // Modules from GitHub
+
+    /** Queues the downloads of the repositories the analyses looked up and did not find. */
+    private fetchWanted(): void {
+        if (known.wanted.length === 0) return
+        const wanted = known.wanted
+        known.wanted = []
+        for (const module of wanted) {
+            const key = repositoryKey(module)
+            if (this.remotes.has(key)) continue
+            const remote = new Remote(module, `ore/github/${this.progressTokens}`)
+            this.progressTokens++
+            this.remotes.set(key, remote)
+            this.waiting.push(remote)
+            if (this.workDoneProgress) {
+                // The client handles the request before the notifications that follow it.
+                const create: { token: string } = { token: remote.token }
+                this.connection.request(remote.token, "window/workDoneProgress/create", JSON.stringify(create))
+                const begin: { kind: string; title: string; message: string; percentage: int; cancellable: bool } = {
+                    kind: "begin",
+                    title: `GitHub: ${remote.name}`,
+                    message: phaseText(remote.phase),
+                    percentage: 0,
+                    cancellable: false,
+                }
+                this.progress(remote, JSON.stringify(begin))
+            }
+        }
+        this.nextDownload()
+    }
+
+    /** Sends the work-done progress of a download, given its value as JSON text. */
+    private progress(remote: Remote, value: string): void {
+        if (!this.workDoneProgress) return
+        this.connection.notify("$/progress", `{"token":${JSON.stringify(remote.token)},"value":${value}}`)
+    }
+
+    /**
+     * Starts downloading the next repository in a task, unless one is being
+     * downloaded: one at a time, since the downloads share the record of the
+     * repositories found in the process. The task posts its progress and its
+     * result to the server's own queue of messages.
+     */
+    private nextDownload(): void {
+        if (this.downloading || this.waiting.length === 0) return
+        const remote = this.waiting[0]
+        this.waiting = this.waiting.slice(1)
+        this.downloading = true
+        const connection = this.connection
+        const module = remote.module
+        const key = repositoryKey(module)
+        const root = cacheRoot()
+        task.spawn(() => {
+            const progress = (phase: string, percent: int) => {
+                const event: RemoteEvent = { key, phase, percent, dir: "", commit: "", warning: null, error: null }
+                connection.post(remoteMethod, JSON.stringify(event))
+            }
+            const result = fetchRepository(root, module, progress)
+            const end: RemoteEvent = {
+                key,
+                phase: "failed",
+                percent: 100,
+                dir: "",
+                commit: "",
+                warning: null,
+                error: null,
+            }
+            if (result instanceof Error) end.error = result.message
+            else {
+                end.phase = "fetched"
+                end.dir = result.dir
+                end.commit = result.commit
+                end.warning = result.warning
+            }
+            connection.post(remoteMethod, JSON.stringify(end))
+        })
+    }
+
+    /** A phase of a download, or its end: reported, and at the end the open documents analyzed again. */
+    private remoteEvent(m: Message): void {
+        const p = params<RemoteEvent>(m)
+        if (p instanceof Error) return this.invalid(m, p)
+        const remote = this.remotes.get(p.key)
+        if (remote === null) return
+        remote.phase = p.phase
+        const failed = p.phase === "failed"
+        if (!failed && p.phase !== "fetched") {
+            const report: { kind: string; message: string; percentage: int } = {
+                kind: "report",
+                message: phaseText(p.phase),
+                percentage: p.percent,
+            }
+            this.progress(remote, JSON.stringify(report))
+            return
+        }
+        let message = ""
+        if (failed) {
+            const error = p.error ?? ""
+            remote.error = error
+            known.found.set(p.key, new Error(error))
+            message = error
+        } else {
+            const fetched = new Fetched(p.dir, p.commit, p.warning)
+            remote.fetched = fetched
+            known.found.set(p.key, fetched)
+            message = `at commit ${p.commit.slice(0, 12)}`
+        }
+        const end: { kind: string; message: string } = { kind: "end", message }
+        this.progress(remote, JSON.stringify(end))
+        this.downloading = false
+        this.nextDownload()
+        // Any open document may import the repository, through other modules too.
+        for (const document of this.documents.values()) this.update(document)
+    }
+
+    /** The hover of an import specifier that is a GitHub URL: the state of its repository's download. */
+    private remoteHover(uri: string, position: Position): Hover | null {
+        const document = this.documents.get(uri)
+        if (document === null || !document.text.includes("https://github.com/")) return null
+        const text = document.text
+        const offset = offsetAt(text, position)
+        const parsed = parseFile(uriToPath(uri), text)
+        for (const stmt of parsed.source.ast.list("statements")) {
+            const specifier = moduleSpecifier(stmt)
+            if (specifier === null || offset < specifier.start || offset >= specifier.end) continue
+            const url = stringValue(specifier)
+            if (!isGithubUrl(url)) return null
+            const range = rangeOf(text, specifier.start, specifier.end)
+            const module = parseGithubUrl(url)
+            if (module instanceof Error) return { contents: module.message, range }
+            const remote = this.remotes.get(repositoryKey(module))
+            const contents =
+                remote !== null ? remoteText(remote) : `GitHub: **${module.owner}/${module.repo}**: not downloaded`
+            return { contents, range }
+        }
+        return null
+    }
+
+    // -------------------------------------------------------------------------
     // Language features
 
     private hover(m: Message): void {
         const p = params<PositionParams>(m)
         if (p instanceof Error) return this.invalid(m, p)
+        const remote = this.remoteHover(p.textDocument.uri, p.position)
+        if (remote !== null) return this.respondHover(m, remote)
         const analysis = this.analysisOf(p.textDocument.uri)
         const hover = analysis === null ? null : analysis.hover(p.position)
         if (hover === null) return this.connection.respond(m.id, "null")
+        this.respondHover(m, hover)
+    }
+
+    private respondHover(m: Message, hover: Hover): void {
         const result: { contents: { kind: string; value: string }; range: Range } = {
             contents: { kind: "markdown", value: hover.contents },
             range: hover.range,
@@ -575,6 +817,19 @@ function locationUri(location: Location, current: string): string {
     fs.mkdir(dirname(path), true)
     fs.writeFile(path, text)
     return pathToUri(path)
+}
+
+/** The markdown that tells the state of a repository's download: its phase, its commit, or why it failed. */
+function remoteText(remote: Remote): string {
+    const name = `GitHub: **${remote.name}**`
+    const fetched = remote.fetched
+    if (fetched !== null) {
+        const cached = `${name}: cached at commit \`${fetched.commit.slice(0, 12)}\``
+        const warning = fetched.warning
+        return warning === null ? cached : `${cached}\n\n${warning}`
+    }
+    if (remote.phase === "failed") return `${name}: ${remote.error}`
+    return `${name}: ${phaseText(remote.phase)}`
 }
 
 /** A fix of a diagnostic: what it does, and the edit. */

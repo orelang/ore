@@ -249,6 +249,21 @@ export class Connection {
         return false
     }
 
+    /**
+     * Queues a notification from the server to itself, after the messages
+     * received so far: how a task of the server hands its results over to
+     * the loop that handles messages. Safe to call from any task.
+     */
+    post(method: string, params: string): void {
+        const body = `{"jsonrpc":"2.0","method":${JSON.stringify(method)},"params":${params}}`
+        this.incoming.send([new Message(null, method, body)])
+    }
+
+    /** Sends a request with params, given as JSON text; its response is read like any message. */
+    request(id: Id, method: string, params: string): void {
+        this.send(`{"jsonrpc":"2.0","id":${JSON.stringify(id)},"method":${JSON.stringify(method)},"params":${params}}`)
+    }
+
     /** Writes a message. */
     send(body: string): void {
         fs.write(this.output, frame(body))
