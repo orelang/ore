@@ -1909,6 +1909,46 @@ function chanOpName(name: string): ChanOpName {
     }
 }
 
+/** The methods of numbers, as of JavaScript's Number.prototype. */
+const numberMethods = ["toString", "toFixed", "toPrecision", "toExponential", "toLocaleString", "valueOf"]
+
+/**
+ * A method of a number: integers keep all their digits in `toString` and
+ * `toLocaleString`, and are converted to f64 for the others, as floats.
+ */
+function numberMethod(c: Checker, value: Expr, type: Type, name: string, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    const most = name === "toLocaleString" || name === "valueOf" ? 0 : 1
+    if (args.length > most) {
+        const count = most === 0 ? "0" : "0 to 1"
+        return c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+    }
+    if (name === "valueOf") return typed(value)
+    // Without an argument: toString() and toPrecision() are String(x), toFixed() has no decimals, toExponential() as many as needed.
+    const given = args.length > 0
+    let arg: Expr = new IntLit(types.i64, 0)
+    if (args.length > 0) arg = c.coerce(checkExpr(c, args[0], scope, types.i64), types.i64, args[0])
+    const isInt = type.kind === "int"
+    const unsigned = type.kind === "int" && !type.signed
+    const float: Expr = type.kind === "float" && type.bits === 64 ? value : new Convert(types.f64, value)
+    if (name === "toString" || name === "toLocaleString") {
+        if (name === "toString" && !given) return typed(new Concat(types.string, [value]))
+        const whole: Expr = type.kind === "int" && type.bits === 64 ? value : new Convert(types.i64, value)
+        const flag = new BoolLit(types.bool, unsigned)
+        if (name === "toLocaleString") {
+            if (isInt) return typed(new BuiltinCall(types.string, "Number.intToLocaleString", [whole, flag]))
+            return typed(new BuiltinCall(types.string, "Number.floatToLocaleString", [float]))
+        }
+        if (isInt) return typed(new BuiltinCall(types.string, "Number.intToString", [whole, flag, arg]))
+        return typed(new BuiltinCall(types.string, "Number.floatToString", [float, arg]))
+    }
+    if (name === "toPrecision" && !given) return typed(new Concat(types.string, [value]))
+    if (name === "toFixed") return typed(new BuiltinCall(types.string, "Number.toFixed", [float, arg]))
+    if (name === "toPrecision") return typed(new BuiltinCall(types.string, "Number.toPrecision", [float, arg]))
+    const digitsGiven = new BoolLit(types.bool, given)
+    return typed(new BuiltinCall(types.string, "Number.toExponential", [float, arg, digitsGiven]))
+}
+
 export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, scope: Scope): Operand {
     const nameId = nameNode(callee)
     const name = nameId.text
@@ -2057,15 +2097,10 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         const radix = c.coerce(checkExpr(c, args[0], scope, types.i64), types.i64, args[0])
         return typed(new BuiltinCall(types.string, "BigInt.toString", [value, radix]))
     }
-    if ((isNumeric(type) || type.kind === "bool") && name === "toString" && args.length === 0) {
+    if (type.kind === "bool" && name === "toString" && args.length === 0) {
         return typed(new Concat(types.string, [value]))
     }
-    if (isNumeric(type) && name === "toFixed") {
-        if (args.length !== 1) return c.fail(node, `'toFixed' expects 1 argument(s), got ${args.length}.`)
-        const digits = c.coerce(checkExpr(c, args[0], scope, types.i64), types.i64, args[0])
-        const number: Expr = type.kind === "float" && type.bits === 64 ? value : new Convert(types.f64, value)
-        return typed(new BuiltinCall(types.string, "Number.toFixed", [number, digits]))
-    }
+    if (isNumeric(type) && numberMethods.includes(name)) return numberMethod(c, value, type, name, node, scope)
     const stringLike = isStringLike(type) || (type.kind === "union" && type.members.every(isStringLike))
     // The first argument of a method that takes a regular expression, checked once.
     let first: Operand = errorOperand

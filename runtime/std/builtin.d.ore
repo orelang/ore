@@ -60,10 +60,26 @@ declare namespace console {
     function error(...values: any[]): void
 }
 
-/** Mathematical constants and functions, as in JavaScript. */
+/**
+ * Mathematical constants and functions, as in JavaScript. `hypot`, `clz32`,
+ * `imul`, `fround` and `f16round` are written in Ore, in runtime/core/math.ore,
+ * whose exports are members of the namespace.
+ */
 declare namespace Math {
     const PI: f64
     const E: f64
+    /** The natural logarithm of 10. */
+    const LN10: f64
+    /** The natural logarithm of 2. */
+    const LN2: f64
+    /** The base-10 logarithm of e. */
+    const LOG10E: f64
+    /** The base-2 logarithm of e. */
+    const LOG2E: f64
+    /** The square root of 1/2. */
+    const SQRT1_2: f64
+    /** The square root of 2. */
+    const SQRT2: f64
 
     /** The absolute value, for any numeric type. */
     function abs<T extends numeric>(x: T): T
@@ -84,9 +100,14 @@ declare namespace Math {
 
     function sqrt(x: f64): f64
     function cbrt(x: f64): f64
+    /** x to the power y, as `**`; NaN for a NaN y, and for ±1 to ±Infinity. */
     function pow(x: f64, y: f64): f64
     function exp(x: f64): f64
+    /** e^x - 1, exact for x near 0. */
+    function expm1(x: f64): f64
     function log(x: f64): f64
+    /** The natural logarithm of 1 + x, exact for x near 0. */
+    function log1p(x: f64): f64
     function log2(x: f64): f64
     function log10(x: f64): f64
     function sin(x: f64): f64
@@ -96,10 +117,15 @@ declare namespace Math {
     function acos(x: f64): f64
     function atan(x: f64): f64
     function atan2(y: f64, x: f64): f64
-    function hypot(x: f64, y: f64): f64
+    function sinh(x: f64): f64
+    function cosh(x: f64): f64
+    function tanh(x: f64): f64
+    function asinh(x: f64): f64
+    function acosh(x: f64): f64
+    function atanh(x: f64): f64
     function floor(x: f64): f64
     function ceil(x: f64): f64
-    /** Rounds half up, toward +Infinity, as JavaScript does. */
+    /** Rounds half up, toward +Infinity, as JavaScript does: -0 for the values from -0.5 to -0. */
     function round(x: f64): f64
     function trunc(x: f64): f64
     /** -1, 0 or 1, by the sign of x. */
@@ -108,7 +134,11 @@ declare namespace Math {
     function random(): f64
 }
 
-/** Parsing numbers. */
+/**
+ * The constants of numbers and parsing them. The predicates `isNaN`,
+ * `isFinite`, `isInteger` and `isSafeInteger` are written in Ore, in
+ * runtime/core/number.ore, whose exports are members of the namespace.
+ */
 declare namespace Number {
     /** Not a number: the result of `0 / 0` on floats; it equals nothing, itself included. */
     const NaN: f64
@@ -127,7 +157,8 @@ declare namespace Number {
     /**
      * Parses an integer like JavaScript: leading whitespace, a sign, then digits
      * in `radix` (default 10, or 16 after "0x") up to the first other character.
-     * Null when there are no digits.
+     * Null when there are no digits, and when the number is too large for an
+     * `int`, which JavaScript would round to a float.
      */
     function parseInt(s: string, radix?: int): int | null
     /** Parses a decimal number at the start of `s`; null when there is none. */

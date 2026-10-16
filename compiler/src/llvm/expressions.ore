@@ -577,6 +577,8 @@ export function arith(g: Emitter, op: ArithOp, l: V, r: V, type: IntType | Float
         else if (op === "/") ins = "fdiv"
         else if (op === "%") ins = "frem"
         else if (op === "**") {
+            // JavaScript's powers of f64, which differ from C's at NaN and ±1.
+            if (ty === "double") return g.rt("ore_rt_pow_f64", [l, r])
             const f = `@llvm.pow.${ty === "float" ? "f32" : "f64"}`
             g.decls.set(f, `declare ${ty} ${f}(${ty}, ${ty})`)
             return g.b.value(ty, `call ${ty} ${f}(${ty} ${l.v}, ${ty} ${r.v})`)

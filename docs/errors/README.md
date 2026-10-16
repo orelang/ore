@@ -290,7 +290,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE4069](ORE4069.md) | Field '…' is not a method. |
 | [ORE4070](ORE4070.md) | Method '….…' expects … argument(s), got …. |
 | [ORE4071](ORE4071.md) | Method '…' does not exist on type '…'. |
-| [ORE4072](ORE4072.md) | 'toFixed' expects 1 argument(s), got …. |
+| [ORE4072](ORE4072.md) | 'toFixed' expects 0 to 1 argument(s), got …. |
 | [ORE4073](ORE4073.md) | Only an array can be spread into an array. |
 | [ORE4074](ORE4074.md) | 'pop' expects no arguments, got …. |
 | [ORE4075](ORE4075.md) | 'slice' expects at most 2 arguments, got …. |
