@@ -54,7 +54,7 @@ class Matcher {
 
     constructor(
         readonly program: Program,
-        readonly s: string,
+        public s: string,
     ) {
         for (let i = 0; i < program.slots; i++) this.slots.push(-1)
     }
@@ -580,11 +580,16 @@ export class RegExp {
     /** Where `exec` and `test` start, with the `g` or `y` flag: a byte offset, set past each match and to 0 after none. */
     lastIndex = 0
     private program: Program
+    /** The matcher that calls use again, one at a time. */
+    private spare: Matcher
+    /** A word that is 1 while a call uses `spare`. */
+    private busy: ptr = unsafe.allocBytes(8)
 
     constructor(pattern: string, flags = "") {
         const program = compileRegExp(pattern, flags)
         if (program.error !== "") process.panic(`Invalid regular expression: /${pattern}/${flags}: ${program.error}`)
         this.program = program
+        this.spare = new Matcher(program, "")
         this.source = escapeSource(pattern)
         this.global = program.global
         this.ignoreCase = program.ignoreCase
@@ -609,25 +614,51 @@ export class RegExp {
     /** The first match in `s` (from `lastIndex` with `g` or `y`, which it then updates), or null. */
     exec(s: string): RegExpMatch | null {
         const matcher = this.find(s)
-        return matcher === null ? null : matcher.result()
+        if (matcher === null) return null
+        const match = matcher.result()
+        this.release(matcher)
+        return match
     }
 
     /** Whether `s` has a match, as `exec` finds it. */
     test(s: string): bool {
-        return this.find(s) !== null
+        const matcher = this.find(s)
+        if (matcher === null) return false
+        this.release(matcher)
+        return true
     }
 
     toString(): string {
         return `/${this.source}/${this.flags}`
     }
 
-    /** `exec` without building the match. */
+    /**
+     * A matcher over `s`: the expression's own one when no other call (of
+     * this task or another) is using it, which saves allocating one per call.
+     */
+    private matcher(s: string): Matcher {
+        if (!unsafe.atomicCompareExchange<i64>(this.busy, 0, 1)) return new Matcher(this.program, s)
+        this.spare.s = s
+        return this.spare
+    }
+
+    /** Gives back a matcher done with: the expression's own one is free again, without its input. */
+    private release(matcher: Matcher) {
+        if (matcher !== this.spare) return
+        matcher.s = ""
+        // A big stack, from one long backtracking run, is not kept.
+        if (matcher.stack.length > 4096) matcher.stack = []
+        unsafe.atomicStore<i64>(this.busy, 0)
+    }
+
+    /** `exec` without building the match; `release` the matcher when done with it. */
     private find(s: string): Matcher | null {
         const tracked = this.global || this.sticky
         const start = tracked ? (this.lastIndex < 0 ? 0 : this.lastIndex) : 0
-        const matcher = new Matcher(this.program, s)
+        const matcher = this.matcher(s)
         if (!matcher.search(start, this.sticky)) {
             if (tracked) this.lastIndex = 0
+            this.release(matcher)
             return null
         }
         if (tracked) this.lastIndex = matcher.slots[1]
@@ -669,8 +700,10 @@ export class RegExp {
 
     /** `s.search(re)`: the offset of the first match, or -1; `lastIndex` is left as it was. */
     private stringSearch(s: string): int {
-        const matcher = new Matcher(this.program, s)
-        return matcher.search(0, this.sticky) ? matcher.slots[0] : -1
+        const matcher = this.matcher(s)
+        const at = matcher.search(0, this.sticky) ? matcher.slots[0] : -1
+        this.release(matcher)
+        return at
     }
 
     /**
@@ -692,7 +725,10 @@ export class RegExp {
             this.all(s, 0, each)
         } else {
             const matcher = this.find(s)
-            if (matcher !== null) each(matcher)
+            if (matcher !== null) {
+                each(matcher)
+                this.release(matcher)
+            }
         }
         if (parts.length === 0) return s
         parts.push(s.slice(from))
