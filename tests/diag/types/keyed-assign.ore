@@ -1,14 +1,20 @@
 type P = { x: int; y: int; label: string; readonly id: int }
 const p: P = { x: 1, y: 2, label: "p", id: 0 }
-const xy: "x" | "y" = "x"
-const any: keyof P = "x"
-const name: string = "x"
-p[xy] = "a" // error: Type 'string' is not assignable to type 'i64'.
-p[any] = 1 // error: Cannot assign to 'id' because it is a read-only property.
-const mixed: "x" | "label" = "x"
-p[mixed] = 1 // error: An integer constant is not assignable to type 'string'.
-p[mixed] += 1 // error: Operator '+=' cannot be applied to type 'i64 | string'.
-p[mixed]++ // error: Operator '++' cannot be applied to type 'i64 | string'.
-p[mixed] ??= 1 // error: Operator '??=' cannot be applied to type 'i64 | string'.
-p[name] = 1 // error: Only a member named by a string literal or a 'keyof' type can be assigned to
-p[xy] ??= 1 // error: Type 'i64' cannot be null; '??=' is not needed.
+
+// Parameters: a constant initialized to a key is narrowed to that key.
+function assign(xy: "x" | "y", any: keyof P, mixed: "x" | "label", name: string) {
+    p[xy] = "a" // error: Type 'string' is not assignable to type 'i64'.
+    p[any] = 1 // error: Cannot assign to 'id' because it is a read-only property.
+    p[mixed] = 1 // error: An integer constant is not assignable to type 'string'.
+    p[mixed] += 1 // error: Operator '+=' cannot be applied to type 'i64 | string'.
+    p[mixed]++ // error: Operator '++' cannot be applied to type 'i64 | string'.
+    p[mixed] ??= 1 // error: Operator '??=' cannot be applied to type 'i64 | string'.
+    p[name] = 1 // error: Only a member named by a string literal or a 'keyof' type can be assigned to
+    p[xy] ??= 1 // error: Type 'i64' cannot be null; '??=' is not needed.
+}
+
+// A constant narrowed to one key names only that member.
+const label: keyof P = "label"
+p[label] = 1 // error: An integer constant is not assignable to type 'string'.
+const id: keyof P = "id"
+p[id] = 1 // error: Cannot assign to 'id' because it is a read-only property.

@@ -5,6 +5,9 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- A literal assigned to a variable of a union of literal types narrows it to
+  that literal, as in TypeScript: after `const k: keyof T = "label"`, `k` is
+  `"label"`, and `o[k] = "text"` assigns only that member.
 - A member is assigned through a key of a `keyof` type, as in TypeScript:
   `o[k] = v`, `o[k] += v`, `o[k]++` and `o[k] ??= v` store into the member
   `k` names, and `v` must convert to the type of each member `k` can name;

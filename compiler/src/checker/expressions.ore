@@ -533,9 +533,9 @@ export function compare(
     }
     // Comparing with null tests a nullable value.
     if ((op === "===" || op === "!==") && (isNull(l) || isNull(r))) {
-        const other = isNull(l) ? r : l
+        // Not widened: a narrowed reference is tested through its declared type.
+        const other = isNull(l) ? r_ : l_
         if (other.k !== "typed") return c.fail(opNode, "A constant cannot be null.")
-        // A narrowed reference is tested through its declared type.
         const oe = other.expr
         const value = oe.k === "recast" && canBeNull(oe.value.type) ? oe.value : oe
         if (!canBeNull(value.type)) {
@@ -598,7 +598,8 @@ export function checkAssign(c: Checker, node: Node, op: ArithOp | null, scope: S
         invalidate(c, key)
         // After `x = value`, x has the type of the value until it changes again.
         const assigned = c.info.types.get(right(node))
-        if (op === null && result.k === "typed" && assigned !== null) narrowTo(c, key, result.expr.type, assigned)
+        if (op === null && result.k === "typed" && assigned !== null)
+            narrowTo(c, key, result.expr.type, assigned, right(node))
     }
     return result
 }
@@ -812,12 +813,37 @@ export function settle(c: Checker, local: Local, value: Operand, node: Node): bo
     return true
 }
 
-/** Adds a fact that a reference of a union type holds a value of a narrower type. */
-export function narrowTo(c: Checker, key: string, declared: Type, actual: Type) {
+/**
+ * Adds a fact that a reference of a union type holds a value of a narrower
+ * type. A literal `value` stored into a union with its literal type narrows
+ * to that literal: after `const k: "id" | "label" = "label"`, k is "label".
+ */
+export function narrowTo(c: Checker, key: string, declared: Type, actual_: Type, value: Node | null = null) {
     if (declared.kind !== "union") return
+    const literal = value !== null ? literalMember(c, declared, value) : null
+    const actual = literal ?? actual_
     if (sameType(declared, actual) || actual.kind === "null") return
     const members_ = declared.members
     if (membersOf(actual).every((a) => members_.some((m) => sameType(m, a)))) addFacts(c, [new Fact(key, actual)])
+}
+
+/** The literal type of a literal value that is a member of a union: `"label"`, `-1` or `true`, or null. */
+function literalMember(c: Checker, union: UnionType, node: Node): Type | null {
+    if (node.kind === "ParenthesizedExpression") return literalMember(c, union, expression(node))
+    const k = node.kind
+    let literal: Type | null = null
+    if (k === "StringLiteral" || k === "NoSubstitutionTemplateLiteral") literal = c.literal(literalText(node))
+    else if (k === "NumericLiteral") literal = c.numberLiteral(c.text(node))
+    else if (k === "TrueKeyword") literal = types.boolTrue
+    else if (k === "FalseKeyword") literal = types.boolFalse
+    else if (
+        k === "PrefixUnaryExpression" &&
+        prefixOperator(node, c.sourceOf(node).text) === "-" &&
+        operand(node).kind === "NumericLiteral"
+    )
+        literal = c.numberLiteral(`-${c.text(operand(node))}`)
+    const found = literal
+    return found !== null && union.members.some((m) => sameType(m, found)) ? found : null
 }
 
 function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Scope): Operand {

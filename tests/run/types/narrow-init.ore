@@ -1,0 +1,81 @@
+// A variable of a union type is narrowed to the type of the value it is
+// initialized or assigned with, until it is assigned again; a literal value
+// narrows a union of literal types to that literal. Assignments still take
+// any value of the declared type. The output is node's for the same program.
+
+type Item = { id: int; label: string; count: int }
+const item: Item = { id: 1, label: "one", count: 0 }
+
+// A key initialized to one name assigns and reads only that member.
+const k: keyof Item = "label"
+item[k] = "text"
+const text: string = item[k]
+console.log(item, text, k)
+
+let s: string | null = "a"
+console.log(s.length)
+s = null
+console.log(s)
+
+let v: int | string = 1
+console.log(v * 2)
+v = "seven"
+console.log(v.length, v.toUpperCase())
+v = 7
+console.log(v + 1)
+
+// Literal types, as a parameter of a literal type takes the value.
+function onlyA(x: "a"): string {
+    return x
+}
+let mode: "a" | "b" = "a"
+console.log(onlyA(mode))
+mode = "b"
+console.log(mode === "b")
+
+function onlyTwo(x: 2): number {
+    return x + 1
+}
+const n: 1 | 2 | "many" = 2
+const neg: -1 | 1 = -1
+const minus: -1 = neg
+console.log(onlyTwo(n), minus)
+
+const t: true | string = true
+const yes: true = t
+console.log(yes)
+
+// A constant stays narrowed in the functions that use it.
+const side: "left" | "right" = "left"
+const pickSide = (): "left" => side
+console.log(pickSide())
+
+// In a loop, a variable assigned in the loop has its declared type.
+let state: "idle" | "busy" | "done" = "idle"
+const seen: string[] = []
+for (let i = 0; i < 3; i++) {
+    seen.push(state)
+    if (state === "idle") state = "busy"
+    else if (state === "busy") state = "done"
+}
+console.log(seen, state)
+
+// Field paths narrow the same way.
+class Light {
+    color: "red" | "green" = "red"
+
+    go(): "green" {
+        this.color = "green"
+        return this.color
+    }
+}
+console.log(new Light().go())
+
+// A narrowed key in a function: the member is chosen by the assigned key.
+function relabel(o: Item, value: string): Item {
+    let key: keyof Item = "id"
+    key = "label"
+    o[key] = value
+    return o
+}
+console.log(relabel({ id: 2, label: "two", count: 1 }, "deux"))

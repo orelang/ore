@@ -329,8 +329,13 @@ Narrowing applies inside `if` / `else`, `while` and `for` bodies, the
 operands of `&&`, `||` and `?:` (where `a || b` narrows a reference to the
 union of what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`),
 and `switch` clauses on a literal (clauses reached by falling through code
-are not narrowed). An assignment narrows to the assigned value's type until
-the next assignment; a `?:` keeps the union of its branches' types
+are not narrowed). An initialization or an assignment narrows to the
+assigned value's type until the next assignment, while the next assignment
+still takes any value of the declared type: after
+`let v: int | string = 1`, `v` is an `int`, and after `v = "s"` a
+`string`. A literal narrows a union of literal types to that literal, so
+`const k: keyof T = "label"` is `"label"` where it is used, and `o[k] = v`
+assigns that member only. A `?:` keeps the union of its branches' types
 (`u = t !== null ? t : "none"` makes `u` a string). A `while` loop
 without a `break` that leaves it ends with its condition false: after
 `while (!r.done) r = it.next()`, `r` is narrowed to the member whose
