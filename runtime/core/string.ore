@@ -264,8 +264,11 @@ export function fromCodePoint(...points: int[]): string {
 function strIndexOf(s: string, sub: string, from: int): int {
     const p = unsafe.stringData(s)
     const q = unsafe.stringData(sub)
+    if (sub.length === 0) return from < 0 ? 0 : from <= s.length ? from : -1
+    // Comparing the rest only where the first byte is there.
+    const first = unsafe.load<u8>(q)
     for (let i = from < 0 ? 0 : from; i + sub.length <= s.length; i++) {
-        if (bytesAt(p, i, q, sub.length)) return i
+        if (unsafe.load<u8>(unsafe.add(p, i)) === first && bytesAt(p, i, q, sub.length)) return i
     }
     return -1
 }
