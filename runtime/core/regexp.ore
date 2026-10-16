@@ -17,6 +17,7 @@ import {
     inRanges,
     isLineTerminator,
     isWordChar,
+    isFoldedWordChar,
     lowercase,
     OP_ANY,
     OP_ANY_ALL,
@@ -126,6 +127,12 @@ class Matcher {
     set(slot: int, value: int) {
         this.push(-1 - slot, this.slots[slot])
         this.slots[slot] = value
+    }
+
+    /** Whether the character before (or at) a position is a word character of `\b`. */
+    wordAt(pos: int, before: bool): bool {
+        if (!this.program.unicode || !this.program.ignoreCase) return isWordChar(int(this.s[before ? pos - 1 : pos]))
+        return isFoldedWordChar(before ? this.decodeBefore(pos) : this.decode(pos))
     }
 
     /** Whether a class (by set) holds a character, ignoring case when asked. */
@@ -291,8 +298,8 @@ class Matcher {
                 ok = pos === n || (program.multiline && isLineTerminator(this.decode(pos)))
                 pc++
             } else if (op === OP_WORD) {
-                const before = pos > 0 && isWordChar(int(s[pos - 1]))
-                const after = pos < n && isWordChar(int(s[pos]))
+                const before = pos > 0 && this.wordAt(pos, true)
+                const after = pos < n && this.wordAt(pos, false)
                 ok = (before !== after) !== (code[pc + 1] === 1)
                 pc += 2
             } else if (op === OP_BACKREF) {

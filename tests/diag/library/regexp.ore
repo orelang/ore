@@ -26,8 +26,12 @@ const u9 = /\k<a>/u // error: Invalid regular expression: Invalid named capture 
 const v1 = /[a-z&&b]/v // error: Invalid regular expression: Invalid set operation in character class.
 const v2 = /[a&&&b]/v // error: Invalid regular expression: Invalid character in character class.
 const v3 = /[(]/v // error: Invalid regular expression: Invalid character in character class.
-const v4 = /[\q{ab}]/v // error: Invalid regular expression: Class string disjunctions are not supported.
-const fine = [/(?<=a)b/, /\p{L}/u, /[\w--\d]/v, /a/dgimsvy]
+const v4 = /[^\q{ab}]/v // error: Invalid regular expression: Negated character class may contain strings.
+const v5 = /[^[\q{ab}--\q{ab}]]/v // error: Invalid regular expression: Negated character class may contain strings.
+const v6 = /[\q{a(b}]/v // error: Invalid regular expression: Invalid character in character class.
+const v7 = /[\q{a\db}]/v // error: Invalid regular expression: Invalid escape.
+const v8 = /[\q{ab}]/u // error: Invalid regular expression: Invalid escape.
+const fine = [/(?<=a)b/, /\p{L}/u, /[\w--\d]/v, /a/dgimsvy, /[^\q{a|b}]/v, /[^\q{ab}&&a]/v]
 
 const re = /a/g
 "abc".match(5) // error: An integer constant is not assignable to type 'string'.

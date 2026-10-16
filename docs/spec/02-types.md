@@ -449,9 +449,10 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   `\P{...}` (not in the property), and the strict escapes and quantifier
   braces without Annex B (`/\a/u` is an error). Ignoring case compares
   simple case foldings: also `ſ` with `s`, the Kelvin sign with `k`, the Ohm
-  sign with `Ω` and `ẞ` with `ß`. Matching is by code point with or without
-  it. The properties of `\p{...}`, from Unicode 17.0: the General_Category
-  values of letters and numbers (`L`, `LC`, `Lu`, `Ll`, `Lt`, `Lm`, `Lo`,
+  sign with `Ω` and `ẞ` with `ß`; so `\w` and `\b` take `ſ` and the Kelvin
+  sign as word characters, and `\W` takes neither. Matching is by code
+  point with or without it. The properties of `\p{...}`, from Unicode
+  17.0: the General_Category values of letters and numbers (`L`, `LC`, `Lu`, `Ll`, `Lt`, `Lm`, `Lo`,
   `N`, `Nd`, `Nl`, `No`, by their short or long names, alone or as
   `gc=`/`General_Category=`), the scripts `Latin`, `Greek`, `Cyrillic` and
   `Han` (`sc=`/`Script=`, also `Latn`, `Grek`, `Cyrl`, `Hani`), `Any` and
@@ -462,8 +463,10 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   (`[[a-z][0-9]]`), differences `[\p{L}--[a-z]]` and intersections
   `[\w&&\d]`, and the characters that must be escaped in them
   (`[(]` is an error). With `i`, each operand is closed under case before
-  the operators. String disjunctions `\q{...}` are not supported (an
-  error).
+  the operators. String disjunctions `\q{abc|d}` put strings in a class,
+  which tries its longest strings first, then its characters, then the
+  empty string; the operators take them too, and a negated class that may
+  hold strings is an error.
 - The matcher backtracks over the UTF-8 bytes a character (a code point) at
   a time: `.` and `[^a]` match a whole character, also one beyond U+FFFF
   (JavaScript matches half of its surrogate pair). Positions — `index`,

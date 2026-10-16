@@ -37,6 +37,11 @@ before 1.0, a minor version may change the language.
   with interface members) call them. Fields of names that no accessor
   implements are read and written through interfaces as before; the others
   test the table entry first.
+- Regular expressions of the `v` flag take string disjunctions
+  (`[\q{abc|d}x]`), longest strings first, in their set operations too; a
+  negated class that may hold strings is an error. With `u` (or `v`) and
+  `i`, `\w`, `\W`, `\b` and `\B` count `ſ` and the Kelvin sign as word
+  characters, as in JavaScript.
 - Numeric literal types in computations on types (`Prev[D]`,
   `D extends number = 10`, `[D] extends [never]`); `infer` in template
   literal types; `unknown`, `object`, `Function` and `readonly unknown[]`

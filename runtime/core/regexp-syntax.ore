@@ -136,6 +136,7 @@ export function compileRegExp(pattern: string, flags: string): Program {
     parser.unicode = program.unicode
     parser.sets = program.unicodeSets
     parser.caseless = program.unicodeSets && program.ignoreCase
+    parser.folded = program.unicode && program.ignoreCase
     const root = parser.parse()
     if (parser.error !== "") {
         program.error = parser.error
@@ -188,6 +189,15 @@ export function isLineTerminator(c: int): bool {
 /** Whether a character is a word character of `\w`: an ASCII letter, a digit or `_`. */
 export function isWordChar(c: int): bool {
     return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95
+}
+
+/**
+ * Whether a character is a word character of `\w` with the flags `u` (or
+ * `v`) and `i`: also the long s (ſ) and the Kelvin sign, whose simple case
+ * folding is an ASCII letter.
+ */
+export function isFoldedWordChar(c: int): bool {
+    return isWordChar(c) || c === 0x17f || c === 0x212a
 }
 
 /**
@@ -363,6 +373,8 @@ function intersect(a: int[], b: int[]): int[] {
 
 const digitRanges = [48, 57]
 const wordRanges = [48, 57, 65, 90, 95, 95, 97, 122]
+/** The characters of `\w` with the flags `u` (or `v`) and `i`: also ſ and the Kelvin sign. */
+const foldedWordRanges = [48, 57, 65, 90, 95, 95, 97, 122, 0x17f, 0x17f, 0x212a, 0x212a]
 const spaceRanges = [
     9, 13, 32, 32, 0xa0, 0xa0, 0x1680, 0x1680, 0x2000, 0x200a, 0x2028, 0x2029, 0x202f, 0x202f, 0x205f, 0x205f, 0x3000,
     0x3000, 0xfeff, 0xfeff,
@@ -386,12 +398,17 @@ function complement(ranges: int[]): int[] {
     return out
 }
 
-/** The ranges of a class escape letter (`d`, `D`, `w`, `W`, `s`, `S`), or null for another letter. */
-function classEscape(letter: int): int[] | null {
+/**
+ * The ranges of a class escape letter (`d`, `D`, `w`, `W`, `s`, `S`), or null
+ * for another letter; `folded` with the flags `u` (or `v`) and `i`, whose
+ * `\w` has ſ and the Kelvin sign too.
+ */
+function classEscape(letter: int, folded: bool): int[] | null {
+    const word = folded ? foldedWordRanges : wordRanges
     if (letter === 100) return digitRanges
     if (letter === 68) return complement(digitRanges)
-    if (letter === 119) return wordRanges
-    if (letter === 87) return complement(wordRanges)
+    if (letter === 119) return word
+    if (letter === 87) return complement(word)
     if (letter === 115) return spaceRanges
     if (letter === 83) return complement(spaceRanges)
     return null
@@ -616,6 +633,12 @@ class Parser {
     single = -1
     /** The flags `v` and `i`: the operands of a class are closed under case (`closeCase`). */
     caseless = false
+    /** The flags `u` (or `v`) and `i`: `\w` has ſ and the Kelvin sign too. */
+    folded = false
+    /** The strings of the last `setOperand` or `classSetBody`: those of `\q{...}` that are not one character. */
+    strings: int[][] = []
+    /** Whether the last `setOperand` or `classSetBody` may hold strings, which a negated class may not. */
+    mayStrings = false
 
     constructor(readonly text: string) {}
 
@@ -953,7 +976,7 @@ class Parser {
             this.references.push(ref)
             return ref
         }
-        const ranges = classEscape(c)
+        const ranges = classEscape(c, this.folded)
         if (ranges !== null) {
             this.pos++
             const node = new Node(K_CLASS, 0)
@@ -1197,12 +1220,20 @@ class Parser {
             this.pos++
         }
         node.ranges = this.classSetBody()
-        return node
+        if (this.error !== "") return node
+        if (node.value === 1 && this.mayStrings) return this.fail("Negated character class may contain strings")
+        if (this.strings.length === 0) return node
+        return classWithStrings(node, this.strings)
     }
 
-    /** The characters of a class of the `v` flag after its `[` or `[^`, sorted; past its `]`. */
+    /**
+     * The characters of a class of the `v` flag after its `[` or `[^`, sorted,
+     * and its strings in `strings` and `mayStrings`; past its `]`.
+     */
     classSetBody(): int[] {
         const none: int[] = []
+        this.strings = []
+        this.mayStrings = false
         if (this.peek() === 93) {
             this.pos++
             return none
@@ -1214,6 +1245,8 @@ class Parser {
         let operand = this.setOperand()
         if (this.error !== "") return none
         if (this.caseless) operand = closeCase(operand)
+        let strings = this.strings
+        let may = this.mayStrings
         const op = this.peek()
         if ((op === 45 || op === 38) && this.peekAt(1) === op) {
             // `A--B--C` or `A&&B&&C`: one operator, no ranges.
@@ -1228,12 +1261,19 @@ class Parser {
                 if (this.error !== "") return none
                 if (this.caseless) next = closeCase(next)
                 set = op === 45 ? intersect(set, complement(next)) : intersect(set, next)
+                // The strings of the first operand also in the next (`&&`) or not in it (`--`).
+                const kept: int[][] = []
+                for (const t of strings) if (hasString(this.strings, t) === (op === 38)) kept.push(t)
+                strings = kept
+                if (op === 38) may = may && this.mayStrings
                 if (this.atEnd()) {
                     this.fail("Unterminated character class")
                     return none
                 }
                 if (this.peek() === 93) {
                     this.pos++
+                    this.strings = strings
+                    this.mayStrings = may
                     return set
                 }
                 if (this.peek() !== op || this.peekAt(1) !== op) {
@@ -1242,9 +1282,11 @@ class Parser {
                 }
             }
         }
-        // A union of characters, ranges and classes.
+        // A union of characters, ranges, classes and strings.
         const ranges: int[] = []
+        const all: int[][] = []
         for (;;) {
+            for (const t of strings) if (!hasString(all, t)) all.push(t)
             if (this.single >= 0 && this.peek() === 45 && this.peekAt(1) !== 45) {
                 const first = this.single
                 this.pos++
@@ -1273,6 +1315,8 @@ class Parser {
             }
             if (this.peek() === 93) {
                 this.pos++
+                this.strings = all
+                this.mayStrings = may
                 return normalize(ranges)
             }
             if (this.peek() === 45 && this.peekAt(1) !== 45) {
@@ -1286,6 +1330,8 @@ class Parser {
             operand = this.setOperand()
             if (this.error !== "") return none
             if (this.caseless) operand = closeCase(operand)
+            strings = this.strings
+            may = may || this.mayStrings
         }
     }
 
@@ -1295,9 +1341,15 @@ class Parser {
         return c >= 0 && c === this.peekAt(1) && isSetPunctuator(c)
     }
 
-    /** An operand of a class of the `v` flag: a character (also in `single`), a class escape or a nested class, sorted. */
+    /**
+     * An operand of a class of the `v` flag: a character (also in `single`), a
+     * class escape, `\q{...}` or a nested class, sorted; its strings in
+     * `strings` and `mayStrings`.
+     */
     setOperand(): int[] {
         this.single = -1
+        this.strings = []
+        this.mayStrings = false
         const none: int[] = []
         if (this.atEnd()) {
             this.fail("Unterminated character class")
@@ -1313,7 +1365,9 @@ class Parser {
             }
             const inner = this.classSetBody()
             this.single = -1
-            return negate ? complement(inner) : inner
+            if (!negate) return inner
+            if (this.mayStrings && this.error === "") this.fail("Negated character class may contain strings")
+            return complement(inner)
         }
         if (c === 92) {
             this.pos++
@@ -1325,18 +1379,15 @@ class Parser {
             if (this.caseless && (e === 68 || e === 83 || e === 87)) {
                 // `\D`, `\S` and `\W` complement the characters of `\d`, `\s` or `\w` closed under case.
                 this.pos++
-                return complement(closeCase(classEscape(e + 32)!))
+                return complement(closeCase(classEscape(e + 32, this.folded)!))
             }
-            const escape = classEscape(e)
+            const escape = classEscape(e, this.folded)
             if (escape !== null) {
                 this.pos++
                 return escape
             }
             if (e === 112 || e === 80) return this.property()
-            if (e === 113) {
-                this.fail("Class string disjunctions are not supported")
-                return none
-            }
+            if (e === 113) return this.classStrings()
             if (isSetPunctuator(e) || isSyntaxChar(e)) {
                 this.pos++
                 this.single = e
@@ -1357,6 +1408,75 @@ class Parser {
         return [this.single, this.single]
     }
 
+    /**
+     * `\q{...}` at its `q`: its alternatives of one character as ranges, the
+     * others (empty or longer) in `strings`, folded with the flag `i`.
+     */
+    classStrings(): int[] {
+        const ranges: int[] = []
+        this.pos++
+        if (this.peek() !== 123) {
+            this.fail("Invalid escape")
+            return ranges
+        }
+        this.pos++
+        let current: int[] = []
+        for (;;) {
+            if (this.atEnd()) {
+                this.fail("Unterminated character class")
+                return ranges
+            }
+            const c = this.peek()
+            if (c === 124 || c === 125) {
+                this.pos++
+                if (current.length === 1) {
+                    ranges.push(current[0])
+                    ranges.push(current[0])
+                } else {
+                    this.mayStrings = true
+                    if (!hasString(this.strings, current)) this.strings.push(current)
+                }
+                if (c === 125) return normalize(ranges)
+                current = []
+            } else {
+                const ch = this.stringChar()
+                if (this.error !== "") return ranges
+                current.push(this.caseless ? canonicalizeUnicode(ch) : ch)
+            }
+        }
+    }
+
+    /** A character of a string of `\q{...}`: itself, or an escape of one. */
+    stringChar(): int {
+        const c = this.peek()
+        if (c !== 92) {
+            if (isSetSyntaxChar(c)) {
+                this.fail("Invalid character in character class")
+                return 0
+            }
+            if (this.doubled()) {
+                this.fail("Invalid set operation in character class")
+                return 0
+            }
+            return this.char()
+        }
+        this.pos++
+        if (this.atEnd()) {
+            this.fail("\\ at end of pattern")
+            return 0
+        }
+        const e = this.peek()
+        if (isSetPunctuator(e) || isSyntaxChar(e)) {
+            this.pos++
+            return e
+        }
+        if (classEscape(e, false) !== null || e === 112 || e === 80 || e === 113) {
+            this.fail("Invalid escape")
+            return 0
+        }
+        return this.characterEscape(true)
+    }
+
     /** A character of a class, or -1 for a class escape such as `\d`, whose ranges are added. */
     classAtom(ranges: int[]): int {
         if (this.peek() !== 92) return this.char()
@@ -1366,7 +1486,7 @@ class Parser {
             return -1
         }
         const c = this.peek()
-        const escape = classEscape(c)
+        const escape = classEscape(c, this.folded)
         if (escape !== null) {
             this.pos++
             for (const r of escape) ranges.push(r)
@@ -1382,6 +1502,45 @@ class Parser {
         }
         return this.characterEscape(true)
     }
+}
+
+/** Whether two strings of `\q{...}`, as their characters, are the same. */
+function sameString(a: int[], b: int[]): bool {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+    return true
+}
+
+/** Whether a list of strings of `\q{...}` holds a string. */
+function hasString(list: int[][], s: int[]): bool {
+    for (const t of list) if (sameString(t, s)) return true
+    return false
+}
+
+/**
+ * A class of the `v` flag with strings, as alternatives that try the longest
+ * strings first, then the class's characters, then the empty string.
+ */
+function classWithStrings(node: Node, strings: int[][]): Node {
+    const alt = new Node(K_ALT, 0)
+    let empty = false
+    let longest = 0
+    for (const t of strings) {
+        if (t.length === 0) empty = true
+        if (t.length > longest) longest = t.length
+    }
+    for (let length = longest; length >= 2; length--) {
+        for (const t of strings) {
+            if (t.length !== length) continue
+            const seq = new Node(K_SEQ, 0)
+            for (const c of t) seq.kids.push(new Node(K_CHAR, c))
+            alt.kids.push(seq)
+        }
+    }
+    if (node.ranges.length > 0) alt.kids.push(node)
+    if (empty) alt.kids.push(new Node(K_EMPTY, 0))
+    if (alt.kids.length === 1) return alt.kids[0]
+    return alt
 }
 
 // -----------------------------------------------------------------------------
