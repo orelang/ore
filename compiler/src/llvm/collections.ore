@@ -1,6 +1,6 @@
 // Arrays, maps, channels and interface tables.
 
-import { elementData } from "./gcdata"
+import { elementData, entryData } from "./gcdata"
 import { type ArrayMethod, type ChanOp, type Itab, type ItabAccessor, type MapOp, type SetOp } from "../ir/nodes"
 import {
     findField,
@@ -403,6 +403,9 @@ export function mapOp(g: Emitter, e: MapOp): V {
                 { ty: "i64", v: sizeOf(vt) },
                 { ty: "ptr", v: keys.hash },
                 { ty: "ptr", v: keys.eq },
+                elementData(g, kt),
+                elementData(g, vt),
+                entryData(g, kt, vt),
             ])
             // With entries: an array of [key, value] tuples, set in order.
             const entries = e.value
@@ -512,6 +515,9 @@ export function setOp(g: Emitter, e: SetOp): V {
                 g.i64(0),
                 { ty: "ptr", v: keys.hash },
                 { ty: "ptr", v: keys.eq },
+                elementData(g, t),
+                { ty: "ptr", v: "null" },
+                entryData(g, t, ""),
             ])
             const values = e.value
             if (values !== null) g.rt("ore_rt_map_add_keys", [s, expr(g, values)])
@@ -558,7 +564,7 @@ export function chanOp(g: Emitter, e: ChanOp): V {
     switch (e.op) {
         case "new":
             if (value === null) process.panic("new Chan without a capacity")
-            return g.rt("ore_rt_chan_new", [{ ty: "i64", v: sizeOf(t) }, expr(g, value)])
+            return g.rt("ore_rt_chan_new", [{ ty: "i64", v: sizeOf(t) }, expr(g, value), elementData(g, t)])
         case "close":
             if (chan === null) process.panic("close without a channel")
             g.rt("ore_rt_chan_close", [expr(g, chan)])

@@ -21,6 +21,7 @@ import {
     wakeIn,
 } from "ore:runtime/task"
 import { lock, newMutex, nil, isNil, unlock } from "ore:runtime/os"
+import { allocElements } from "ore:runtime/gc"
 
 /** A task waiting in a channel queue. */
 class Waiter {
@@ -50,9 +51,15 @@ class Chan {
     constructor(
         readonly size: int,
         readonly cap: int,
+        /** The `gcdata` of the values (see `allocTyped` in gc.ore), for the collector to scan buffers of them precisely. */
+        readonly gcdata: ptr,
     ) {
-        // Values are bytes or references: the buffer is scanned.
-        this.buffer = unsafe.alloc(size * (cap > 0 ? cap : 1))
+        this.buffer = this.values(cap > 0 ? cap : 1)
+    }
+
+    /** A buffer of `n` values. */
+    values(n: int): ptr {
+        return allocElements(this.size * n, this.gcdata)
     }
 
     slotAt(i: int): ptr {
@@ -152,9 +159,9 @@ function takeSender(c: Chan): Waiter | null {
 }
 
 //ore:runtime ore_rt_chan_new
-function chanNew(size: int, cap: int): ptr {
+function chanNew(size: int, cap: int, gcdata: ptr): ptr {
     if (cap < 0) process.panic("negative channel capacity")
-    return unsafe.addressOf(new Chan(size, cap))
+    return unsafe.addressOf(new Chan(size, cap, gcdata))
 }
 
 /** Whether a receive would complete now; the caller holds the channel's lock. */
@@ -295,13 +302,13 @@ function caseAt(c: ptr): SelectCase {
 //ore:runtime ore_rt_case_recv
 function caseReceiveNew(channel: ptr, handler: () => void, dispatch: ptr): ptr {
     const c = chanAt(channel)
-    return unsafe.addressOf(new SelectCase(caseReceive, c, 0, unsafe.alloc(c.size), handler, dispatch))
+    return unsafe.addressOf(new SelectCase(caseReceive, c, 0, c.values(1), handler, dispatch))
 }
 
 //ore:runtime ore_rt_case_send
 function caseSendNew(channel: ptr, value: ptr, handler: () => void): ptr {
     const c = chanAt(channel)
-    const buffer = unsafe.alloc(c.size)
+    const buffer = c.values(1)
     unsafe.copy(buffer, value, c.size)
     return unsafe.addressOf(new SelectCase(caseSend, c, 0, buffer, handler, nil()))
 }

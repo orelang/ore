@@ -223,6 +223,11 @@ before 1.0, a minor version may change the language.
   `--` and `&&`) and the `d` flag (`m.indices`, `m.groupIndices`).
 - A narrowing `return` inside a loop body no longer narrows after the loop,
   which may run zero times or skip the `return` with `continue` or `break`.
+- Maps, sets and channels are scanned precisely by the collector: the
+  compiler passes the pointer maps of their keys, values and entries, map
+  entries and channel buffers are allocated with them (never scanned when
+  they hold no pointers), and the arrays of `keys()` and `values()` carry
+  the pointer map of their elements.
 
 ## 0.1.1
 

@@ -99,10 +99,15 @@ function layoutOf(g: Emitter, ty: string, seen: Set<string>): Layout {
 export function gcdata(g: Emitter, ty: string): string | null {
     const layout = layoutOf(g, ty, new Set<string>())
     if (layout.pointers.length === 0) return null
-    const words = (layout.size + 7) >> 3
+    return pointerData(g, layout.size, layout.pointers)
+}
+
+/** The `gcdata` of units of `size` bytes with pointers at the byte offsets `pointers`. */
+function pointerData(g: Emitter, size: int, pointers: int[]): string {
+    const words = (size + 7) >> 3
     const bits: int[] = []
     for (let i = 0; i < (words + 63) >> 6; i++) bits.push(0)
-    for (const p of layout.pointers) {
+    for (const p of pointers) {
         // A pointer is at an offset that is a multiple of 8 in the layouts LLVM gives these types.
         const w = p >> 3
         bits[w >> 6] = bits[w >> 6] | (1 << (w & 63))
@@ -128,4 +133,24 @@ export function elementData(g: Emitter, ty: string): V {
 export function barrierWords(g: Emitter, ty: string): int {
     const layout = layoutOf(g, ty, new Set<string>())
     return layout.pointers.length === 0 ? 0 : (layout.size + 7) >> 3
+}
+
+/**
+ * The `gcdata` of the entries of a map from LLVM type `key` to `value` (""
+ * for a set, whose values take no bytes), laid out as runtime/core/map.ore
+ * lays them out: a header {live, hash} of numbers, then the key and the
+ * value, each rounded up to 8 bytes. With no pointer bits when neither holds
+ * a pointer, so that the entries are never scanned.
+ */
+export function entryData(g: Emitter, key: string, value: string): V {
+    const k = layoutOf(g, key, new Set<string>())
+    const pointers: int[] = []
+    for (const p of k.pointers) pointers.push(16 + p)
+    let size = 16 + ((k.size + 7) & ~7)
+    if (value !== "") {
+        const v = layoutOf(g, value, new Set<string>())
+        for (const p of v.pointers) pointers.push(size + p)
+        size += (v.size + 7) & ~7
+    }
+    return { ty: "ptr", v: pointerData(g, size, pointers) }
 }

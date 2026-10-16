@@ -1,0 +1,74 @@
+// Maps, sets and channels of objects survive many collections: their
+// entries and buffers are scanned by the pointer words of their types.
+
+class Node {
+    constructor(
+        readonly name: string,
+        readonly tags: string[],
+    ) {}
+}
+
+/** Garbage, enough to force collections. */
+function churn(n: int): int {
+    let total = 0
+    for (let i = 0; i < n; i++) {
+        const s = `junk-${i}`
+        const xs = [s, s]
+        total += xs.length
+    }
+    return total
+}
+
+const byName = new Map<string, Node>()
+const byId = new Map<int, Node>()
+const flags = new Map<bool, string>()
+const seen = new Set<Node>()
+const names = new Set<string>()
+const pairs = new Map<string, [string, int]>()
+for (let i = 0; i < 20000; i++) {
+    const node = new Node(`node-${i}`, [`a${i}`, `b${i}`])
+    byName.set(node.name, node)
+    byId.set(i, node)
+    flags.set(i % 2 === 0, `flag-${i}`)
+    if (i % 3 === 0) seen.add(node)
+    names.add(`name-${i % 5000}`)
+    pairs.set(`p${i % 1000}`, [`v${i}`, i])
+    if (i % 1000 === 0) churn(2000)
+    // Holes: deleted entries, then rebuilds.
+    if (i % 7 === 0) byName.delete(`node-${i - 1}`)
+}
+const keys = byName.keys()
+const values = [...byId.values()]
+churn(300000)
+
+let length = 0
+for (const [name, node] of byName) {
+    if (name !== node.name) console.log("bad name", name)
+    length += node.tags[0].length + node.tags[1].length
+}
+console.log(byName.size, byId.size, length)
+let ids = 0
+for (const [id, node] of byId) if (node.name === `node-${id}`) ids++
+console.log(ids, flags.get(true), flags.get(false))
+let tagged = 0
+for (const node of seen) tagged += node.tags.length
+console.log(seen.size, tagged, names.size, names.has("name-4999"))
+let pairSum = 0
+for (const [k, v] of pairs) pairSum += v[1] + v[0].length + k.length
+console.log(pairs.size, pairSum)
+let keyLength = 0
+for (const k of keys) keyLength += k.length
+let valueTags = 0
+for (const v of values) valueTags += v.tags.length
+console.log(keys.length, keyLength, values.length, valueTags)
+
+// A buffered channel holds the only references to its values.
+const chan = new Chan<Node>(5000)
+for (let i = 0; i < 5000; i++) chan.send(new Node(`sent-${i}`, [`t${i}`]))
+churn(300000)
+let received = 0
+for (let i = 0; i < 5000; i++) {
+    const node = chan.receive()
+    if (node !== null && node.name === `sent-${i}` && node.tags[0] === `t${i}`) received++
+}
+console.log(received)

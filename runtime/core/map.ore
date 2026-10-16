@@ -12,9 +12,14 @@
 // so its layout is fixed:
 //   0 keySize, 8 valueSize, 16 entrySize, 24 hash, 32 eq, 40 entries,
 //   48 count (entries, with holes), 56 cap, 64 size (live entries),
-//   72 index, 80 indexCap.
+//   72 index, 80 indexCap, 88 keyData, 96 valueData, 104 entryData.
 // `hash` and `eq` point to closures over the compiler's functions for the
-// key type, `(env, key) => u64` and `(env, a, b) => bool`.
+// key type, `(env, key) => u64` and `(env, a, b) => bool`. The `gcdata` of
+// the keys, of the values and of whole entries (see `allocTyped` in gc.ore)
+// come from the compiler too, so that the collector scans entries and the
+// arrays of keys and values precisely.
+
+import { allocElements } from "ore:runtime/gc"
 
 const keySizeAt = 0
 const valueSizeAt = 8
@@ -27,7 +32,10 @@ const capAt = 56
 const sizeAt = 64
 const indexAt = 72
 const indexCapAt = 80
-const headerSize = 88
+const keyDataAt = 88
+const valueDataAt = 96
+const entryDataAt = 104
+const headerSize = 112
 
 /** Key and value start after the {live, hash} header of an entry. */
 const entryHeader = 16
@@ -69,8 +77,11 @@ function closureOf(cell: ptr, fn: ptr): void {
 }
 
 //ore:runtime ore_rt_map_new
-function mapNew(keySize: int, valueSize: int, hash: ptr, eq: ptr): ptr {
+function mapNew(keySize: int, valueSize: int, hash: ptr, eq: ptr, keyData: ptr, valueData: ptr, entryData: ptr): ptr {
     const m = unsafe.alloc(headerSize)
+    unsafe.store<ptr>(unsafe.add(m, keyDataAt), keyData)
+    unsafe.store<ptr>(unsafe.add(m, valueDataAt), valueData)
+    unsafe.store<ptr>(unsafe.add(m, entryDataAt), entryData)
     setField(m, keySizeAt, keySize)
     setField(m, valueSizeAt, valueSize)
     setField(m, entrySizeAt, entryHeader + round8(keySize) + round8(valueSize))
@@ -120,7 +131,7 @@ function findSlot(m: ptr, key: ptr, hash: u64): int {
 /** Rebuilds the entries without holes, and the index with room for `cap` entries. */
 function rebuild(m: ptr, cap: int): void {
     const size = field(m, entrySizeAt)
-    const entries = unsafe.alloc(cap * size)
+    const entries = allocElements(cap * size, unsafe.load<ptr>(unsafe.add(m, entryDataAt)))
     let count = 0
     for (let i = 0; i < field(m, countAt); i++) {
         if (!mapLive(m, i)) continue
@@ -214,10 +225,12 @@ function mapClear(m: ptr): void {
 /** The keys (or the values) of the live entries, as an array of their elements. */
 function collect(m: ptr, values: bool): ptr {
     const size = field(m, values ? valueSizeAt : keySizeAt)
-    // An array header {data, len, cap, gcdata}, its elements scanned word by word (see array.ore).
+    const gcdata = unsafe.load<ptr>(unsafe.add(m, values ? valueDataAt : keyDataAt))
+    // An array header {data, len, cap, gcdata} (see array.ore).
     const out = unsafe.alloc(32)
     const count = field(m, sizeAt)
-    unsafe.store<ptr>(out, unsafe.alloc(size * count))
+    unsafe.store<ptr>(out, allocElements(size * count, gcdata))
+    unsafe.store<ptr>(unsafe.add(out, 24), gcdata)
     unsafe.store<int>(unsafe.add(out, 8), count)
     unsafe.store<int>(unsafe.add(out, 16), count)
     let n = 0
