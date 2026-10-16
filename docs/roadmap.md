@@ -87,6 +87,12 @@ exports, type assertions (Ore converts: `i32(x)`).
   Unicode's full case mappings and the four normalization forms (done;
   `localeCompare` compares by code point, `String.raw` needs tagged
   templates).
+- `globalThis`, as in JavaScript: the global names (`globalThis.console`,
+  `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
+  members of one value, with the type `typeof globalThis`; a module's own
+  top-level declarations are not on it, as in ES modules. Adding properties
+  at run time is not possible: declared names only, checked at compile
+  time.
 - Import attributes as in JavaScript (`import x from "./f" with { type: ... }`,
   see [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import/with)):
   `type: "json"` imports a JSON file as a typed value, checked against the
@@ -189,23 +195,25 @@ the collector does not move objects, so it does not need them.
 
 ## 6. Promises and async/await
 
-- Promises and `async`/`await` in the JavaScript order of microtasks and
-  timers, without exceptions: a promise only resolves, failures are values
-  (`Promise<T | Error>`).
-- `time.timeout`, `interval`, `immediate`, `delay` (a promise) and `sleep`
-  (blocks the task; moved from `task`); timers are cancelled with
-  `cancel()`; `task.microtask`.
-- Async functions compile to LLVM coroutines (state machines, no stack per
-  call) and run synchronously until their first `await`, on one event loop:
-  async code is single-threaded, `task.spawn` is parallel. The target is
-  Bun's speed: about 20–60 ns per await, microtask or timer.
-- The tests are ready in [`tests/async`](../tests/async), with outputs from
-  Bun. They decide: a promise resolved from a task wakes the event loop; an
-  async function called from a task runs on the event loop; waiting on a
-  channel blocks the loop; the program ends when the loop has nothing left
-  (pending timers keep it, unsettled promises do not, running tasks are
-  stopped); an unsettled top-level await with nothing pending exits with
-  status 13 as in Node; a deadlock with tasks panics.
+Done: promises, `async`/`await` (functions, methods, arrow functions, the
+top-level code), `task.microtask`, `time.timeout`, `interval`, `immediate`,
+`delay` and `sleep`, in JavaScript's order, without rejections; every test
+of [`tests/async`](../tests/async) passes (see
+[Concurrency](spec/06-concurrency.md#async-functions-and-promises)). An
+async call runs as a fiber, a task the event loop switches to, instead of
+an LLVM coroutine. Left:
+
+- Speed: measure awaits, microtasks and timers against Bun (about 20–60 ns
+  each); if fibers are far off, compile async functions to LLVM coroutines
+  (state machines, no stack per call), or keep fibers and shrink their
+  stacks.
+- `Promise`'s internal members (`resolveWith`, `react`, `fulfill`,
+  `values`) are public, as the runtime's functions use them; members
+  private to a module would hide them.
+- `Promise.withResolvers`, `await` of a union of a promise and other values.
+- `task.sleep(ms)` and `task.after(ms)` still count milliseconds: to
+  nanoseconds, as the rest of `time`.
+- Generators and iterators on the same fibers.
 
 ## Later
 
