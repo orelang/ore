@@ -123,6 +123,7 @@ import {
     noProperty,
     optional,
     inspectable,
+    stringCharacters,
     unknownObject,
 } from "./expressions"
 import {
@@ -140,7 +141,7 @@ import {
 import { type Operand, errorOperand, UntypedInt } from "./operand"
 import { filteredType, narrowingFunc } from "./predicates"
 import { capture, checkClosure, narrowConvert, narrowed, refKey, symbolMethodCall } from "./statements"
-import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
+import { type Generic, type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
 import { objectCall } from "./dicts"
 import { plainArray } from "./templates"
 
@@ -153,7 +154,29 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
     if (symbolOfCallee !== null && symbolOfCallee.k === "generic-func") {
         if (isIdentifier(callee)) c.info.definitions.set(callee, symbolOfCallee.decl)
         const generic = symbolOfCallee.generic
-        const call = genericCall(c, generic, parameters(generic.decl), typeArgs, args, node, scope, null, expected)
+        // The first argument of `Object.fromEntries` and the `groupBy`s, an iterable, as an array;
+        // an array literal is checked with the call, for the type of its elements.
+        const checked: (Operand | null)[] = []
+        const spread = args.some((a) => a.kind === "SpreadElement")
+        const literal = args.length > 0 && args[0].kind === "ArrayLiteralExpression"
+        const taker = args.length > 0 && !spread && !literal ? iterableTaker(c, generic) : ""
+        if (taker !== "") {
+            const first = iterableArgument(c, taker, args[0], scope)
+            if (first.k === "error") return first
+            checked.push(first)
+        }
+        const call = genericCall(
+            c,
+            generic,
+            parameters(generic.decl),
+            typeArgs,
+            args,
+            node,
+            scope,
+            null,
+            expected,
+            checked,
+        )
         if (call === null) return errorOperand
         const func = call.instance
         if (!(func instanceof Func)) return errorOperand
@@ -290,6 +313,54 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
         default:
             return c.fail(nameAt, `'${name}' is not a function.`)
     }
+}
+
+/**
+ * The name of a function of the runtime that takes any iterable as its
+ * first argument, as JavaScript's does, through an array of its elements:
+ * `Object.fromEntries`, `Object.groupBy` and `Map.groupBy`; else "".
+ */
+function iterableTaker(c: Checker, generic: Generic): string {
+    if (generic.decl.kind !== "FunctionDeclaration") return ""
+    const path = c.sourceOf(generic.decl).path
+    const name = nameNode(generic.decl).text
+    if (path === objectModule && (name === "fromEntries" || name === "groupBy")) return `Object.${name}`
+    return path === collectionsModule && name === "groupBy" ? "Map.groupBy" : ""
+}
+
+/**
+ * The iterable argument of `name` as an array of its elements: an array
+ * itself, the values of a set, the entries of a map, the characters of a
+ * string, or what an iterator yields; for `Object.fromEntries`, of
+ * `[string, value]` pairs.
+ */
+function iterableArgument(c: Checker, name: string, node: Node, scope: Scope): Operand {
+    const operand = checkExpr(c, node, scope)
+    if (operand.k === "error") return operand
+    const value = c.toDefault(operand, node)
+    const t = value.type
+    let items: Expr | null = null
+    if (t.kind === "map" && t.dict) return c.fail(node, `A dictionary is not iterable: use 'Object.entries(d)'.`)
+    if (t.kind === "array") items = value
+    else if (isStringLike(t)) items = stringCharacters(value)
+    else if (t.kind === "set" || t.kind === "map" || isProtocolIterable(t)) items = toArray(c, value, node)
+    else
+        return c.fail(
+            node,
+            `'${name}' takes an iterable (an array, a string, a set, a map, a generator...), got '${typeToString(t)}'.`,
+        )
+    if (items === null) return errorOperand
+    const at = items.type
+    if (name !== "Object.fromEntries" || at.kind !== "array") return typed(items)
+    const pair = at.elem
+    if (
+        pair.kind !== "struct" ||
+        !pair.tuple ||
+        pair.fields.length !== 2 ||
+        !membersOf(pair.fields[0].type).every(isStringLike)
+    )
+        return c.fail(node, `'${name}' takes [string, value] pairs, got '${typeToString(pair)}'.`)
+    return typed(items)
 }
 
 /**
@@ -2224,6 +2295,9 @@ function setOpName(name: string): SetOpName | null {
 
 /** The module of the methods of Map and Set written in Ore. */
 const collectionsModule = "ore:runtime/collections"
+
+/** The module of the functions of `Object` written in Ore. */
+const objectModule = "ore:runtime/object"
 
 /** The function of runtime/core/collections.ore that implements a Map method, or "". */
 function mapRuntimeName(name: string): string {

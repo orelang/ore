@@ -63,6 +63,9 @@ before 1.0, a minor version may change the language.
   leave out, or implement with a method or a field holding a function;
   call it with `p.start?.()` or after a check for null. Classes still
   cannot declare optional methods (ORE5014).
+- `Object.fromEntries`, `Object.groupBy` and `Map.groupBy` take any
+  iterable, as in JavaScript: a map, a set, a string, a generator,
+  `map.entries()` or a `URLSearchParams`, not only an array.
 
 ## 0.5.0
 

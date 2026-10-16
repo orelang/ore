@@ -1,0 +1,49 @@
+// Object.fromEntries, Object.groupBy and Map.groupBy take any iterable, as in
+// JavaScript: a map, a set, a string, a generator, an iterator of a map, a
+// class with an iterator and URLSearchParams. The output is node's for the
+// same program, but that node shows the dictionaries of Object.groupBy with
+// a null prototype.
+
+const prices = new Map<string, int>([
+    ["tea", 3],
+    ["coffee", 4],
+])
+console.log(Object.fromEntries(prices))
+console.log(Object.fromEntries(prices.entries()))
+
+const pairs = new Set<[string, string]>([
+    ["a", "x"],
+    ["b", "y"],
+])
+console.log(Object.fromEntries(pairs))
+
+function* squares(n: int): Generator<[string, int]> {
+    for (let i = 1; i <= n; i++) yield [`n${i}`, i * i]
+}
+console.log(Object.fromEntries(squares(3)))
+
+// A later key replaces an earlier one, whatever the iterable.
+console.log(Object.fromEntries(new URLSearchParams("a=1&b=2&a=3")))
+
+// A class, through the iteration protocol.
+class Pairs {
+    constructor(readonly names: string[]) {}
+    *[Symbol.iterator](): Generator<[string, int]> {
+        for (let i = 0; i < this.names.length; i++) yield [this.names[i], i]
+    }
+}
+console.log(Object.fromEntries(new Pairs(["p", "q"])))
+console.log(Object.fromEntries(new Pairs([])))
+console.log(Object.fromEntries<int>(new Pairs(["r"])))
+
+const words = new Set(["apple", "avocado", "banana", "cherry", "blueberry"])
+console.log(Object.groupBy(words, (w) => w.charAt(0)))
+console.log(Object.groupBy("mississippi", (ch, i) => (i % 2 === 0 ? `${ch}-even` : `${ch}-odd`)))
+console.log(Object.groupBy(prices, ([name, price]) => (price > 3 ? `dear ${name}` : "cheap")))
+console.log(Object.groupBy(squares(4), ([, sq]) => (sq % 2 === 0 ? "even" : "odd")))
+console.log(Object.groupBy(prices.keys(), (k) => `len${k.length}`))
+
+console.log(Map.groupBy(words, (w) => w.length))
+console.log(Map.groupBy(prices.values(), (p) => p % 2 === 0))
+console.log(Map.groupBy(new Pairs(["x", "y", "z"]), ([, i]) => i < 1))
+console.log(Map.groupBy("hello", (ch) => ch === "l"))

@@ -598,11 +598,15 @@ of object literals are not either.
   or the union of the types of an object's fields.
 - `Object.hasOwn(o, key)`: whether a dictionary has the entry, or an object
   a field of that name (holding a value when it is optional).
-- `Object.fromEntries(pairs)`: a dictionary of an array of `[string, V]`
-  pairs, a later key replacing an earlier one.
+- `Object.fromEntries(pairs)`: a dictionary of `[string, V]` pairs, a
+  later key replacing an earlier one. The pairs come from an array or any
+  other iterable of them: a `Map<string, V>`, a set, `map.entries()`, a
+  `URLSearchParams`, a generator.
 - `Object.groupBy(items, (element, index) => key)`: a dictionary of arrays,
   by the string key the function gives, the keys in the order they first
-  appear.
+  appear. The elements come from an array or any other iterable, as a set,
+  a map (its `[key, value]` pairs), a string (its characters) or a
+  generator.
 - `Object.assign(target, ...sources)`: copies the entries of dictionaries of
   the same values and the fields of objects into a dictionary, or the fields
   of objects into an object that has them writable; the value is `target`.
@@ -635,8 +639,9 @@ of object literals are not either.
   insertion order; entries set during the loop are visited, deleted ones
   are not, and `clear` ends it. The function may take fewer parameters.
 - `Map.groupBy(items, (element, index) => key)` groups the elements of an
-  array into a `Map<K, T[]>` by the key the function returns, the keys in
-  the order they first appear.
+  array, or of any other iterable as `Object.groupBy` takes, into a
+  `Map<K, T[]>` by the key the function returns, the keys in the order they
+  first appear.
 - `for (const [key, value] of map)` iterates entries in insertion order.
 - Keys compare like SameValueZero: numbers and strings by value (`NaN`
   equals `NaN`, `-0` equals `0`), objects, arrays, maps, sets and interface

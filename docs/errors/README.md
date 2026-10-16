@@ -341,6 +341,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE4092](ORE4092.md) | structuredClone cannot clone '…': its values could not be cloned. |
 | [ORE4093](ORE4093.md) | Method '…' has different types in the members of '…': '…' and '…'. |
 | [ORE4094](ORE4094.md) | Spread arguments are not supported in a call of '…' on a union. |
+| [ORE4095](ORE4095.md) | '…' takes an iterable (an array, a string, a set, a map, a generator...), got '…'. |
+| [ORE4096](ORE4096.md) | 'Object.fromEntries' takes [string, value] pairs, got '…'. |
+| [ORE4097](ORE4097.md) | A dictionary is not iterable: use 'Object.entries(d)'. |
 
 ## ORE5xxx: Classes and interfaces
 

@@ -1922,7 +1922,8 @@ function deferred(arg: Node, p: Node | null, names: string[]): bool {
 /**
  * Checks a call of a generic function or constructor: arguments are checked
  * first (with their parameter type when it has no type parameters), then the
- * type arguments are taken from `typeArgs` or inferred.
+ * type arguments are taken from `typeArgs` or inferred. The first arguments
+ * may come checked already, as `checked`.
  */
 export function genericCall(
     c: Checker,
@@ -1934,12 +1935,13 @@ export function genericCall(
     scope: Scope,
     receiver: Expr | null = null,
     expected: Type | null = null,
+    checked: (Operand | null)[] = [],
 ): GenericCall | null {
     const names = generic.params.map((p) => nameNode(p).text)
     // Spread tuples are taken apart first, unless the type arguments are given: then the call checks them.
     let args = given
     let expanded: Expanded | null = null
-    const held: (Operand | null)[] = []
+    const held: (Operand | null)[] = checked.slice()
     if (typeArgs.length === 0 && given.some((arg) => arg.kind === "SpreadElement")) {
         const typeAt = (i: int): Type | null => {
             const p = i < params.length ? typeNode(params[i]) : null
@@ -1960,7 +1962,9 @@ export function genericCall(
             explicit.push(type)
         }
         const instance = instantiate(c, generic, explicit, node)
-        return instance !== null ? new GenericCall(instance, []) : null
+        const first: Operand[] = []
+        for (const o of checked) if (o !== null) first.push(o)
+        return instance !== null ? new GenericCall(instance, first) : null
     }
     // Function literals for parameters such as `f: (x: T) => U` come last: the
     // other arguments bind the types of their parameters (`T`), and their

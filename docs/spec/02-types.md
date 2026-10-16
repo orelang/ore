@@ -262,7 +262,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `BigInt(x)`, `BigInt.parse(s, radix?)`, `BigInt.asIntN(bits, b)`, `BigInt.asUintN(bits, b)` | bigints from numbers and text, and modulo a power of two (see [BigInt](#bigint)) |
 | `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
 | `Array.from(items, mapFn?)`, `Array.of(...items)`, `Array.isArray(x)` | arrays from other collections and from values (see [array methods](04-functions.md#array-methods)) |
-| `Map.groupBy(items, keyFn)` | the elements of an array grouped by a key (see [maps](03-objects.md#maps)) |
+| `Map.groupBy(items, keyFn)` | the elements of an iterable grouped by a key (see [maps](03-objects.md#maps)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.appendFile(path, data)` | appends to a file, created if missing (Node's `appendFileSync`); `null`, or an `Error` |
