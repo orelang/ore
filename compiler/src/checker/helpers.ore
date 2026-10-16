@@ -187,6 +187,9 @@ export const nullOperand: Expr = new NullLit(types.null)
 /** The member name of `[Symbol.dispose]`. */
 export const disposeName = "[Symbol.dispose]"
 
+/** The member name of `[Symbol.iterator]`. */
+export const iteratorName = "[Symbol.iterator]"
+
 /** The words that strict mode reserves, which cannot name bindings in Ore. */
 export const strictReserved = [
     "implements",
@@ -204,9 +207,18 @@ export const strictReserved = [
 export const indexSignatureMessage = "Index signatures are not supported. Use a 'Map<K, V>'."
 
 export function isSymbolDispose(node: Node): bool {
-    if (node.kind !== "PropertyAccessExpression") return false
+    return wellKnownSymbol(node) === disposeName
+}
+
+/** The member name of a well-known symbol, `Symbol.dispose` or `Symbol.iterator`, or null for any other expression. */
+export function wellKnownSymbol(node: Node): string | null {
+    if (node.kind !== "PropertyAccessExpression") return null
     const object = node.child("expression")
-    return object !== null && isIdentifier(object) && object.text === "Symbol" && nameNode(node).text === "dispose"
+    if (object === null || !isIdentifier(object) || object.text !== "Symbol") return null
+    const name = nameNode(node).text
+    if (name === "dispose") return disposeName
+    if (name === "iterator") return iteratorName
+    return null
 }
 
 /** Built-in functions that moved into namespaces. */

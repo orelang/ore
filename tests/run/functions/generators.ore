@@ -1,0 +1,120 @@
+// Generator functions and methods: yield, yield*, return, next(value).
+
+function* count(n: int): Generator<int> {
+    for (let i = 0; i < n; i++) yield i
+}
+
+for (const x of count(3)) console.log("count", x)
+
+// next(value) is the value of the yield the body waits at; the first is ignored.
+function* echo(): Generator<string, int, string> {
+    let total = 0
+    while (true) {
+        const got = yield `total ${total}`
+        if (got === "stop") return total
+        total += got.length
+    }
+}
+
+const e = echo()
+console.log(e.next("ignored"))
+console.log(e.next("ab"))
+console.log(e.next("cde"))
+console.log(e.next("stop"))
+console.log(e.next("more"))
+
+// The body runs lazily, between the calls of next().
+function* traced(): Generator<string> {
+    console.log("start")
+    yield "a"
+    console.log("between")
+    yield "b"
+    console.log("end")
+}
+
+const t = traced()
+console.log("created")
+console.log(t.next().value)
+console.log(t.next().value)
+console.log(t.next().done)
+console.log(t.next().done)
+
+// return() ends a suspended generator: the rest of its body never runs.
+const r = traced()
+console.log(r.next())
+console.log(r.return())
+console.log(r.next())
+// return() of a generator that has not started.
+const fresh = count(5)
+console.log(fresh.return())
+console.log(fresh.next())
+
+// yield* delegates to another generator and gives its return value.
+function* inner(): Generator<int, string> {
+    yield 1
+    yield 2
+    return "inner done"
+}
+
+function* outer(): Generator<int> {
+    yield 0
+    const result = yield* inner()
+    console.log("got", result)
+    yield* [10, 20]
+    yield* new Set([30])
+}
+
+console.log([...outer()])
+
+// Generator methods, with `this`, and [Symbol.iterator] as a generator method.
+class Range {
+    constructor(
+        readonly start: int,
+        readonly end: int,
+    ) {}
+
+    *values(): Generator<int> {
+        for (let i = this.start; i < this.end; i++) yield i
+    }
+
+    *[Symbol.iterator](): Generator<int> {
+        yield* this.values()
+    }
+}
+
+const range = new Range(2, 5)
+for (const x of range) console.log("range", x)
+console.log([...range.values()], Array.from(range))
+
+// Infinite generators stop with break, which ends them.
+function* naturals(): Generator<int> {
+    let n = 0
+    while (true) yield n++
+}
+
+for (const n of naturals()) {
+    if (n > 3) break
+    console.log("natural", n)
+}
+
+// A generator function expression, typed by its annotation or its context.
+const letters = function* (): Generator<string> {
+    yield "x"
+    yield "y"
+}
+console.log(Array.from(letters()))
+const make: () => Iterator<int> = function* () {
+    yield 7
+}
+console.log(make().next())
+
+// Generators return iterators: typed as Iterator or IterableIterator.
+function* pairs(): IterableIterator<[string, int]> {
+    yield ["a", 1]
+    yield ["b", 2]
+}
+
+const m = new Map(pairs())
+console.log(m)
+console.log(new Set(count(4)))
+for (const [k, v] of pairs()) console.log(k, v)

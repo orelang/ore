@@ -1,0 +1,198 @@
+// The iteration protocol: `for...of`, spread, `Array.from`, `new Map`,
+// `new Set` and `yield*` over values with a `[Symbol.iterator]()` method,
+// whose iterator's `next()` returns an `IteratorResult` until it is done.
+// Arrays, strings, maps, sets and channels keep their own loops; a
+// generator is advanced by its `advance()` and `current()`, without the
+// result objects of `next()`.
+
+import {
+    type Expr,
+    type Stmt,
+    Assign,
+    Block,
+    BoolLit,
+    BreakStmt,
+    Call,
+    ExprStmt,
+    FieldGet,
+    IfStmt,
+    LetStmt,
+    type Local,
+    Func,
+    LocalLValue,
+    LocalRef,
+    LoopStmt,
+    MapOp,
+    MethodCall,
+    Not,
+    NullLit,
+    Recast,
+    SetOp,
+    UnionField,
+    UsingStmt,
+} from "../ir/nodes"
+import { type Type, arrayOf, findField, findMethod, types, typeToString } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { type Checker } from "./base"
+import { iteratorFunc, iteratorInstance } from "./generators"
+import { iteratorName, typed } from "./helpers"
+import { symbolMethodCall } from "./statements"
+
+/** A `next()` call on an iterator, of a struct or an interface type. */
+function nextCall(c: Checker, iterator: Expr): Expr | null {
+    return symbolMethodCall(c, iterator, "next")
+}
+
+/**
+ * For the result type of an iterator's `next()`, `IteratorResult<T, TReturn>`
+ * (`{ done: false; value: T } | { done: true; value: TReturn }`): the member
+ * that is not done, whose `value` has type T.
+ */
+export function notDone(type: Type): Type | null {
+    if (type.kind !== "union") return null
+    for (const m of type.members) {
+        if (m.kind !== "struct") continue
+        const done = findField(m, "done")
+        if (done !== null && typeToString(done.type) === "false" && findField(m, "value") !== null) return m
+    }
+    return null
+}
+
+/** The type of the values of an iterator, or null when it has no `next()` that returns an `IteratorResult`. */
+export function iteratorValue(c: Checker, iterator: Type): Type | null {
+    const generator = iteratorInstance(c, iterator, "Generator")
+    if (generator !== null) return generator[0]
+    let result: Type | null = null
+    if (iterator.kind === "struct") {
+        const m = findMethod(iterator, "next")
+        if (m !== null && m.func.params.length === 0) result = m.func.type.result
+    } else if (iterator.kind === "interface") {
+        for (const m of iterator.members) if (m.name === "next" && m.k === "method") result = m.type.result
+    }
+    if (result === null) return null
+    const member = notDone(result)
+    if (member === null || member.kind !== "struct") return null
+    return findField(member, "value")!.type
+}
+
+/**
+ * The iterator of an iterable value of a class or interface type: the value
+ * itself for a generator, else its `[Symbol.iterator]()`. Reports a type
+ * that is not iterable.
+ */
+export function iteratorOf(c: Checker, value: Expr, node: Node): Expr | null {
+    const type = value.type
+    if (iteratorInstance(c, type, "Generator") !== null) return value
+    let builtin: Func | null = null
+    if (type.kind === "array") builtin = iteratorFunc(c, "arrayValues", [type.elem], node)
+    else if (type.kind === "set") builtin = iteratorFunc(c, "setValues", [type.elem], node)
+    else if (type.kind === "map") builtin = iteratorFunc(c, "mapEntries", [type.key, type.value], node)
+    if (builtin !== null) return new Call(builtin.type.result, builtin, [value])
+    if (type.kind === "struct" || type.kind === "interface") {
+        const call = symbolMethodCall(c, value, iteratorName)
+        if (call !== null && iteratorValue(c, call.type) !== null) return call
+    }
+    c.error(node, `Type '${typeToString(type)}' is not iterable: it needs a '[Symbol.iterator]()' method.`)
+    return null
+}
+
+/** Whether values of `type` are iterated through the iteration protocol: classes and interfaces. */
+export function isProtocolIterable(type: Type): bool {
+    return type.kind === "struct" || type.kind === "interface"
+}
+
+/**
+ * The elements of an iterable value as an array: an array itself, the
+ * values of a set, the entries of a map, or what an iterator yields.
+ * Reports a value that is not iterable.
+ */
+export function toArray(c: Checker, value: Expr, node: Node): Expr | null {
+    const type = value.type
+    if (type.kind === "array") return value
+    if (type.kind === "set") return new SetOp("values", arrayOf(type.elem), type, value)
+    if (type.kind === "map") return new MapOp("entries", arrayOf(c.tupleOf([type.key, type.value])), type, value)
+    if (!isProtocolIterable(type)) {
+        c.error(node, `Type '${typeToString(type)}' is not iterable: it needs a '[Symbol.iterator]()' method.`)
+        return null
+    }
+    const iterator = iteratorOf(c, value, node)
+    if (iterator === null) return null
+    const elem = iteratorValue(c, iterator.type)!
+    const generator = iteratorInstance(c, iterator.type, "Generator")
+    if (generator !== null) {
+        const f = iteratorFunc(c, "generatorToArray", generator, node)
+        return f !== null ? new Call(arrayOf(elem), f, [iterator]) : null
+    }
+    const f = iteratorFunc(c, "iteratorToArray", [elem], node)
+    if (f === null) return null
+    const it = c.coerce(typed(iterator), f.type.params[0], node)
+    return new Call(arrayOf(elem), f, [it])
+}
+
+/**
+ * `for (const x of iterable)` over an iterable of a class or interface type,
+ * with the loop variable `local` (or the hidden one of a pattern) and the
+ * statements that unpack it, `prologue`, before the body: a loop over its
+ * iterator that ends when `next()` is done. When the loop is left early,
+ * `return()` ends the iterator: for a generator always, for another
+ * iterator when it has a `return()` without arguments.
+ */
+export function protocolLoop(
+    c: Checker,
+    iterator: Expr,
+    local: Local,
+    id: int,
+    labeled: bool,
+    prologue: Stmt[],
+    body: Stmt,
+    node: Node,
+): Stmt {
+    const itLocal = c.newLocal("iterator", iterator.type, false)
+    const it: Expr = new LocalRef(iterator.type, itLocal)
+    const generator = iteratorInstance(c, iterator.type, "Generator")
+    const first: Stmt[] = []
+    let dispose: Stmt | null = null
+    if (generator !== null && iterator.type.kind === "struct") {
+        const advance = findMethod(iterator.type, "advance")!.func
+        const current = findMethod(iterator.type, "current")!.func
+        const close = findMethod(iterator.type, "close")!.func
+        const none = c.coerce(typed(new NullLit(types.null)), advance.params[0].type, node)
+        first.push(new IfStmt(new Not(types.bool, new MethodCall(types.bool, advance, it, [none])), new BreakStmt()))
+        first.push(new LetStmt(local, new MethodCall(local.type, current, it, [])))
+        dispose = new ExprStmt(new MethodCall(types.void, close, it, []))
+    } else {
+        const next = nextCall(c, it)!
+        const member = notDone(next.type)!
+        const resultLocal = c.newLocal("result", next.type, false)
+        const result: Expr = new LocalRef(next.type, resultLocal)
+        const doneLocal = c.newLocal("done", types.bool, true)
+        first.push(new LetStmt(resultLocal, next))
+        const finished: Stmt[] = []
+        const returning = symbolMethodCall(c, it, "return")
+        if (returning !== null) {
+            finished.push(
+                new ExprStmt(new Assign(types.bool, new LocalLValue(doneLocal), new BoolLit(types.bool, true))),
+            )
+            dispose = new IfStmt(new Not(types.bool, new LocalRef(types.bool, doneLocal)), new ExprStmt(returning))
+        }
+        finished.push(new BreakStmt())
+        first.push(new IfStmt(new UnionField(types.bool, result, "done"), new Block(finished)))
+        first.push(new LetStmt(local, new FieldGet(local.type, new Recast(member, result), "value")))
+        if (returning !== null) {
+            const loop = loopOf(id, labeled, first, prologue, body)
+            const doneInit: Stmt = new LetStmt(doneLocal, new BoolLit(types.bool, false))
+            return new Block([doneInit, new UsingStmt(itLocal, iterator, dispose!, [loop])])
+        }
+    }
+    const loop = loopOf(id, labeled, first, prologue, body)
+    if (dispose !== null) return new UsingStmt(itLocal, iterator, dispose, [loop])
+    return new Block([new LetStmt(itLocal, iterator), loop])
+}
+
+function loopOf(id: int, labeled: bool, first: Stmt[], prologue: Stmt[], body: Stmt): Stmt {
+    const all: Stmt[] = []
+    for (const s of first) all.push(s)
+    for (const s of prologue) all.push(s)
+    all.push(body)
+    return new LoopStmt(id, labeled, false, new Block(all))
+}

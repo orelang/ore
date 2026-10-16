@@ -1,6 +1,8 @@
 // Calls: functions, methods, closures, constructors, built-ins (including
 // `unsafe` and `JSON`), array and string methods.
 
+import { isProtocolIterable, toArray } from "./iteration"
+import { iteratorFunc, iteratorInstance } from "./generators"
 import { compileRegExp } from "../../../runtime/core/regexp-syntax"
 import {
     type Expr,
@@ -112,7 +114,7 @@ import {
     arrayMethods,
     hasZeroValue,
     numericType,
-    isSymbolDispose,
+    wellKnownSymbol,
     jsonProblem,
     stringMethods,
     typed,
@@ -122,7 +124,7 @@ import {
     zeroValue,
 } from "./helpers"
 import { type Operand, errorOperand, UntypedInt } from "./operand"
-import { capture, checkClosure, disposeCall } from "./statements"
+import { capture, checkClosure, symbolMethodCall } from "./statements"
 import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
 import { plainArray } from "./templates"
 
@@ -173,15 +175,19 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
     let symbol: ValueSymbol | null = null
     let name: string
     let nameAt: Node
-    if (callee.kind === "ElementAccessExpression" && isSymbolDispose(argumentExpression(callee))) {
-        if (args.length > 0) return c.fail(node, "'[Symbol.dispose]' takes no arguments.")
+    const symbolName = callee.kind === "ElementAccessExpression" ? wellKnownSymbol(argumentExpression(callee)) : null
+    if (symbolName !== null) {
+        // `x[Symbol.dispose]()`, `x[Symbol.iterator]()`.
+        if (args.length > 0) return c.fail(node, `'${symbolName}' takes no arguments.`)
         const target = checkExpr(c, expression(callee), scope)
         if (target.k !== "typed")
-            return target.k === "error" ? target : c.fail(expression(callee), "A constant is not disposable.")
-        const call = disposeCall(c, target.expr)
+            return target.k === "error"
+                ? target
+                : c.fail(expression(callee), `A constant has no '${symbolName}' method.`)
+        const call = symbolMethodCall(c, target.expr, symbolName)
         return call !== null
             ? typed(call)
-            : c.fail(callee, `Type '${typeToString(target.expr.type)}' has no '[Symbol.dispose]' method.`)
+            : c.fail(callee, `Type '${typeToString(target.expr.type)}' has no '${symbolName}' method.`)
     }
     if (callee.kind === "PropertyAccessExpression" && symbolOfCallee !== null) {
         // `m.f(...)`: an export of a module imported as `* as m`.
@@ -666,10 +672,15 @@ function arrayStatic(c: Checker, name: string, node: Node, scope: Scope, expecte
         items = new StringMethod("split", arrayOf(types.string), str, [new StringLit(types.string, "")])
     } else if (t.kind === "set") items = new SetOp("values", arrayOf(t.elem), t, value)
     else if (t.kind === "map") items = new MapOp("entries", arrayOf(c.tupleOf([t.key, t.value])), t, value)
-    else
+    else if (isProtocolIterable(t)) {
+        // Any iterable: the values of its iterator.
+        const all = toArray(c, value, source)
+        if (all === null) return errorOperand
+        items = all
+    } else
         return c.fail(
             source,
-            `'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '${typeToString(t)}'.`,
+            `'Array.from' takes an iterable (an array, a string, a set, a map, a generator...) or '{ length: n }', got '${typeToString(t)}'.`,
         )
     if (args.length === 1) return typed(items)
     const itemsType = items.type
@@ -1458,7 +1469,13 @@ function newMapFrom(c: Checker, node: Node, entries: Node, scope: Scope, expecte
     const context = type !== null ? arrayOf(c.tupleOf([type.key, type.value])) : null
     const operand = checkExpr(c, entries, scope, context)
     if (operand.k === "error") return errorOperand
-    const value = c.toDefault(operand, entries)
+    let value = c.toDefault(operand, entries)
+    if (isProtocolIterable(value.type)) {
+        // Any iterable of pairs: the values of its iterator.
+        const all = toArray(c, value, entries)
+        if (all === null) return errorOperand
+        value = all
+    }
     const vt = value.type
     if (vt.kind === "map") {
         // A copy of another map: its entries as tuples.
@@ -1518,6 +1535,12 @@ function newSet(c: Checker, node: Node, scope: Scope, expected: Type | null): Op
         values = new SetOp("values", arrayOf(fromType.elem), fromType, from)
     } else {
         values = c.toDefault(operand, source)
+        if (isProtocolIterable(values.type)) {
+            // Any iterable: the values of its iterator.
+            const all = toArray(c, values, source)
+            if (all === null) return errorOperand
+            values = all
+        }
     }
     const valuesType = values.type
     if (valuesType.kind !== "array")
@@ -2013,6 +2036,29 @@ function regExpMethod(
     return bindAround([new BindLocal(local, str)], call)
 }
 
+/** A function of the runtime's iterator module and its type arguments. */
+class IteratorMaker {
+    constructor(
+        readonly name: string,
+        readonly args: Type[],
+    ) {}
+}
+
+/** For `keys()`, `values()` and `entries()` of an array, a map or a set: the runtime function that makes the iterator. */
+function builtinIterator(c: Checker, type: Type, name: string): IteratorMaker | null {
+    if (name !== "keys" && name !== "values" && name !== "entries") return null
+    if (type.kind === "array") {
+        const fn = name === "keys" ? "arrayKeys" : name === "values" ? "arrayValues" : "arrayEntries"
+        return new IteratorMaker(fn, [type.elem])
+    }
+    if (type.kind === "map") {
+        const fn = name === "keys" ? "mapKeys" : name === "values" ? "mapValues" : "mapEntries"
+        return new IteratorMaker(fn, [type.key, type.value])
+    }
+    if (type.kind === "set") return new IteratorMaker(name === "entries" ? "setEntries" : "setValues", [type.elem])
+    return null
+}
+
 export function checkMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Operand {
     if (expression(callee).kind === "SuperKeyword") return superMethodCall(c, node, callee, scope)
     const target = checkExpr(c, expression(callee), scope)
@@ -2252,7 +2298,9 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         )
     }
     if (type.kind === "struct") {
-        const method = findMethod(type, name)
+        // `generator.next(value)` is its `send(value)`: the interface `Iterator` has a `next()` without arguments.
+        const sends = name === "next" && args.length === 1 && iteratorInstance(c, type, "Generator") !== null
+        const method = findMethod(type, sends ? "send" : name)
         if (method !== null) {
             defineMember(c, nameId, type, name)
             if (!checkAccess(c, type, method.private, name, nameId)) return errorOperand
@@ -2329,6 +2377,12 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         const sent = op === "send" ? c.coerce(checkExpr(c, args[0], scope, type.elem), type.elem, args[0]) : null
         const result = op === "receive" ? c.unionOf([type.elem, types.null]) : types.void
         return typed(new ChanOp(op, result, type, value, sent))
+    }
+    const iterator = builtinIterator(c, type, name)
+    if (iterator !== null) {
+        if (args.length > 0) return c.fail(node, `'${name}' expects 0 argument(s), got ${args.length}.`)
+        const f = iteratorFunc(c, iterator.name, iterator.args, node)
+        return f !== null ? typed(new Call(f.type.result, f, [value])) : errorOperand
     }
     if (type.kind === "map" && mapRuntimeName(name) !== "")
         return collectionsCall(c, mapRuntimeName(name), [type.key, type.value], value, name, node, scope)

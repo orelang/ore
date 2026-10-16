@@ -69,6 +69,7 @@ import {
     types as typeNodes,
 } from "../syntax/nodes"
 import { checkAsyncBody, isAsync, promiseValue } from "./async"
+import { checkGeneratorBody, isGenerator } from "./generators"
 import { type Checker } from "./base"
 import {
     type InterfaceInfo,
@@ -285,7 +286,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                 continue
             if (flags.isReadonly) c.error(member, "Methods cannot be 'readonly'.")
             const asterisk = asteriskToken(member)
-            if (asterisk !== null) c.error(asterisk, "Generators are not supported in Ore.")
+            if (asterisk !== null && isAsync(member)) c.error(asterisk, "Async generators are not supported in Ore.")
             const question = questionToken(member)
             if (question !== null) c.error(question, "Optional methods are not supported.")
             if (flags.isAbstract) {
@@ -1107,6 +1108,8 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     c.fn = new FuncContext(func.type.result, [], 0, null, null, func.receiver, type)
     const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    else if (isGenerator(decl))
+        func.body = new Block(checkGeneratorBody(c, decl, scope, func.type.result, func.sourceName))
     else func.body = checkBlock(c, body(decl)!, scope)
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null

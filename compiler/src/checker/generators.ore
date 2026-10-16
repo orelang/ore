@@ -1,0 +1,214 @@
+// Generator functions and `yield`, compiled to the runtime's
+// "ore:runtime/iterator": the body of a generator function is a closure
+// that takes the generator, which `generator(body)` makes; `yield value` is
+// `generator.yieldValue(value)`, which hands the value to `next()` and
+// waits for the following call.
+
+import {
+    type Expr,
+    type Stmt,
+    Block,
+    Call,
+    Closure,
+    ExprStmt,
+    Func,
+    LocalRef,
+    MethodCall,
+    NullLit,
+    Recast,
+    ReturnStmt,
+} from "../ir/nodes"
+import { type StructType, type Type, FuncType, findMethod, sameType, types, typeToString } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { asteriskToken, body, expression } from "../syntax/nodes"
+import { type Checker } from "./base"
+import { FuncContext } from "./context"
+import { checkReturns, instantiate } from "./declarations"
+import { checkExpr } from "./expressions"
+import { canBeNull, typed } from "./helpers"
+import { type Operand, errorOperand } from "./operand"
+import { iteratorOf } from "./iteration"
+import { checkBlock } from "./statements"
+import { GenericFuncSymbol, Scope } from "./symbols"
+
+export const iteratorModule = "ore:runtime/iterator"
+
+/** Whether a function or method is a generator: `function*`, `*method()`. */
+export function isGenerator(node: Node): bool {
+    return asteriskToken(node) !== null
+}
+
+/** The type parameters T, TReturn and TNext of a generator, from its declared result type. */
+export class GeneratorTypes {
+    constructor(
+        readonly value: Type,
+        readonly result: Type,
+        readonly next: Type,
+    ) {}
+}
+
+/** Whether `type` is an instance of the class or interface `name` of the runtime's iterator module. */
+export function iteratorInstance(c: Checker, type: Type, name: string): Type[] | null {
+    if (type.kind !== "struct" && type.kind !== "interface") return null
+    const info = c.instanceOf.get(type)
+    if (info === null || info.generic.name !== name) return null
+    if (!c.sourceOf(info.generic.decl).path.startsWith(iteratorModule)) return null
+    return info.args
+}
+
+/**
+ * The types of a generator function whose declared result type is `result`:
+ * `Generator<T, TReturn, TNext>`, or an interface a generator converts to,
+ * `Iterator<T, TReturn>` or `IterableIterator<T, TReturn>`. Reports any other.
+ */
+export function generatorTypes(c: Checker, result: Type, node: Node): GeneratorTypes | null {
+    let args = iteratorInstance(c, result, "Generator")
+    if (args === null) args = iteratorInstance(c, result, "Iterator")
+    if (args === null) args = iteratorInstance(c, result, "IterableIterator")
+    if (args === null || args.length < 1) {
+        c.error(
+            node,
+            `The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '${typeToString(result)}'.`,
+        )
+        return null
+    }
+    const returned = args.length > 1 ? args[1] : types.void
+    const next = args.length > 2 ? args[2] : types.null
+    return new GeneratorTypes(args[0], returned, next)
+}
+
+/** The class `Generator<T, TReturn, TNext>` of the runtime. */
+export function generatorClass(c: Checker, t: GeneratorTypes, node: Node): StructType | null {
+    const symbol = c.builtins!.lookupType("Generator")
+    const generic = symbol !== null ? symbol.generic : null
+    if (generic === null) return null
+    const instance = instantiate(c, generic, [t.value, t.result, t.next], node)
+    if (instance === null || instance instanceof Func) return null
+    return instance.kind === "struct" ? instance : null
+}
+
+/** A function of the runtime's iterator module, instantiated for `typeArgs`. */
+export function iteratorFunc(c: Checker, name: string, typeArgs: Type[], node: Node): Func | null {
+    for (const [source, info] of c.modules) {
+        if (source.path !== iteratorModule) continue
+        const symbol = info.scope.ownValue(name)
+        if (!(symbol instanceof GenericFuncSymbol)) process.panic(`generators: no function ${name}`)
+        const found = instantiate(c, symbol.generic, typeArgs, node)
+        if (found instanceof Func) return found
+    }
+    return null
+}
+
+/**
+ * The body of a generator function `decl` whose declared result type is
+ * `declared`: a closure of the body, given the generator, passed to the
+ * runtime's `generator`. Returns the statements of the function's body.
+ */
+export function checkGeneratorBody(c: Checker, decl: Node, scope: Scope, declared: Type, name: string): Stmt[] {
+    const outer = c.fn!
+    const t = generatorTypes(c, declared, decl)
+    if (t === null) return []
+    const genType = generatorClass(c, t, decl)
+    if (genType === null) return []
+    const self = c.newLocal("generator", genType, false)
+    const func = new Func(
+        `ore_lambda_${c.nextLambda++}`,
+        `${name}.<generator>`,
+        c.line(decl),
+        new FuncType([genType], t.result),
+        [self],
+        new Block([]),
+        false,
+        c.sourceOf(decl).path,
+        false,
+        null,
+        null,
+        [],
+    )
+    c.module.functions.push(func)
+    const inner = new Scope(scope, func)
+    // The body sees `this` of the enclosing method, as an arrow function does.
+    const captures: Func[] = [func]
+    if (outer.thisCaptures !== null) for (const f of outer.thisCaptures) captures.push(f)
+    const savedFacts = c.facts
+    c.facts = [new Map<string, Type>()]
+    c.fn = new FuncContext(t.result, [], 0, func, captures, outer.thisLocal, outer.cls)
+    c.fn.generator = self
+    c.fn.yieldType = t.value
+    c.fn.nextType = t.next
+    func.body = checkBlock(c, body(decl)!, inner)
+    c.fn = outer
+    c.facts = savedFacts
+    checkReturns(c, func, decl)
+    const make = iteratorFunc(c, "generator", [t.value, t.result, t.next], decl)
+    if (make === null) return []
+    const closure: Expr = new Closure(func.type, func)
+    const made: Expr = new Call(genType, make, [closure])
+    return [new ReturnStmt(c.coerce(typed(made), declared, decl))]
+}
+
+/** `yield value`, `yield` and `yield* iterable` in the body of a generator. */
+export function checkYield(c: Checker, node: Node, scope: Scope): Operand {
+    const fn = c.fn
+    const self = fn !== null ? fn.generator : null
+    if (fn === null || self === null) return c.fail(node, "'yield' is only allowed in generator functions.")
+    const valueType = fn.yieldType!
+    const nextType = fn.nextType!
+    const genType = self.type
+    if (genType.kind !== "struct") return errorOperand
+    const operandNode = node.child("expression")
+    if (asteriskToken(node) !== null) return checkDelegate(c, node, expression(node), scope, self.type)
+    let value: Expr
+    if (operandNode === null) {
+        if (!canBeNull(valueType))
+            return c.fail(
+                node,
+                `'yield' without a value yields null, which type '${typeToString(valueType)}' does not include.`,
+            )
+        value = c.coerce(typed(new NullLit(types.null)), valueType, node)
+    } else {
+        const v = checkExpr(c, operandNode, scope, valueType)
+        if (v.k === "error") return errorOperand
+        value = c.coerce(v, valueType, operandNode)
+    }
+    const method = findMethod(genType, "yieldValue")!
+    const sent: Expr = new MethodCall(method.func.type.result, method.func, new LocalRef(genType, self), [value])
+    // The value of `next(value)`, null when `next()` passed none: asserted for a type without null.
+    if (canBeNull(nextType)) return typed(c.coerce(typed(sent), nextType, node))
+    return typed(new Recast(nextType, sent))
+}
+
+/** `yield* iterable`: yields each value of the iterable; the value of the expression is a generator's return value. */
+function checkDelegate(c: Checker, node: Node, operandNode: Node, scope: Scope, genType: Type): Operand {
+    const fn = c.fn!
+    const self = fn.generator!
+    const v = checkExpr(c, operandNode, scope)
+    if (v.k === "error") return errorOperand
+    const inner = c.toDefault(v, operandNode)
+    const innerArgs = iteratorInstance(c, inner.type, "Generator")
+    if (innerArgs !== null) {
+        // Another generator: values sent to this one go to it, and its return value is the result.
+        if (!sameElements(c, innerArgs, fn, operandNode)) return errorOperand
+        const f = iteratorFunc(c, "delegate", [fn.yieldType!, innerArgs[1], fn.result!, fn.nextType!], node)
+        if (f === null) return errorOperand
+        return typed(new Call(f.type.result, f, [new LocalRef(genType, self), inner]))
+    }
+    const iterator = iteratorOf(c, inner, operandNode)
+    if (iterator === null) return errorOperand
+    const f = iteratorFunc(c, "delegateIterator", [fn.yieldType!, fn.result!, fn.nextType!], node)
+    if (f === null) return errorOperand
+    const it = c.coerce(typed(iterator), f.type.params[1], operandNode)
+    return typed(new Call(types.void, f, [new LocalRef(genType, self), it]))
+}
+
+/** Whether a generator delegated to yields the values of this one and takes the values it is sent. */
+function sameElements(c: Checker, innerArgs: Type[], fn: FuncContext, node: Node): bool {
+    if (!sameType(innerArgs[0], fn.yieldType!) || !sameType(innerArgs[2], fn.nextType!)) {
+        c.error(
+            node,
+            `'yield*' takes a generator of the same value and next types: '${typeToString(fn.yieldType!)}' and '${typeToString(fn.nextType!)}'.`,
+        )
+        return false
+    }
+    return true
+}

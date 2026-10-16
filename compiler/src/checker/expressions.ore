@@ -1,6 +1,7 @@
 // Expressions: names, operators, assignments, literals, members and
 // conversions between them.
 
+import { toArray } from "./iteration"
 import {
     Alloc,
     ArrayMethod,
@@ -46,6 +47,7 @@ import {
     Recast,
     Seq,
     StringLit,
+    StringMethod,
     TypeOf,
     Unary,
     UnionField,
@@ -105,6 +107,7 @@ import {
 } from "../syntax/nodes"
 import { bigIsNeg, bigLt, bigOf, bigText, bigToI64 } from "./bigint"
 import { checkAwait } from "./async"
+import { checkYield } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import { checkCall, checkNew, checkRegExpLiteral } from "./calls"
 import {
@@ -252,6 +255,7 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         return typed(new TypeOf(types.string, c.toDefault(value, expression(node))))
     }
     if (k === "AwaitExpression") return checkAwait(c, node, scope, expected)
+    if (k === "YieldExpression") return checkYield(c, node, scope)
     if (k === "DeleteExpression") return c.fail(node, "'delete' is not supported in Ore.")
     return c.fail(node, "This expression is not supported yet.")
 }
@@ -1087,6 +1091,12 @@ export function checkConditional(c: Checker, node: Node, scope: Scope, expected:
  * context, else from the first element (an array's element type for a
  * spread); each spread must be an array of exactly that element type.
  */
+/** The characters of a string, as `Array.from(s)` and `[...s]` take them. */
+export function stringCharacters(value: Expr): Expr {
+    const str: Expr = sameType(value.type, types.string) ? value : new Recast(types.string, value)
+    return new StringMethod("split", arrayOf(types.string), str, [new StringLit(types.string, "")])
+}
+
 export function checkSpreadArray(c: Checker, node: Node, elems: Node[], scope: Scope, expected: Type | null): Operand {
     // The element type, once known: a flag rather than null, so that no
     // narrowing is involved, which stage 0 of the bootstrap does differently.
@@ -1128,18 +1138,23 @@ export function checkSpreadArray(c: Checker, node: Node, elems: Node[], scope: S
                 }
                 continue
             }
-            if (value.k !== "typed" || vt.kind !== "array")
-                return c.fail(inner, "Only an array or a tuple can be spread into an array.")
+            if (value.k !== "typed")
+                return c.fail(inner, "Only an array, a tuple or an iterable can be spread into an array.")
+            // Any other iterable: its elements as an array, the characters of a string as `Array.from` takes them.
+            const items = isStringLike(vt) ? stringCharacters(value.expr) : toArray(c, value.expr, inner)
+            if (items === null) return errorOperand
+            const at = items.type
+            if (at.kind !== "array") return errorOperand
             if (!known) {
-                elem = vt.elem
+                elem = at.elem
                 known = true
             }
-            if (!sameType(vt.elem, elem))
+            if (!sameType(at.elem, elem))
                 return c.fail(
                     inner,
-                    `An array of '${typeToString(vt.elem)}' cannot be spread into an array of '${typeToString(elem)}'.`,
+                    `An array of '${typeToString(at.elem)}' cannot be spread into an array of '${typeToString(elem)}'.`,
                 )
-            exprs.push(hold(value.expr))
+            exprs.push(hold(items))
             spread.push(true)
         } else {
             const value = checkExpr(c, e, scope, known ? elem : null)
