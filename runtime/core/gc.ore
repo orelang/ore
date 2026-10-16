@@ -106,7 +106,9 @@ const spanTypes = 96
 const spanReleased = 104
 /** For a free run: the number of the collection that freed it, so that only runs free for a while are given back. */
 const spanFreedAt = 112
-const spanRecordSize = 120
+/** For a free run: the one before it in its bin (see `freeBins`), or nil. */
+const spanPrev = 120
+const spanRecordSize = 128
 /** The most objects a span holds; a span of more would have room for more, unused. */
 const maxElems = 512
 
@@ -150,8 +152,18 @@ const wbCap = 256
 let heapBase: ptr
 let pageTable: ptr
 let nextPage: int
-/** Runs of free pages: span records whose pages are free, linked by `spanNext`. */
-let freeRuns: ptr
+/**
+ * Runs of free pages: span records whose pages are free, in bins by their
+ * number of pages (`binOf`), each a list linked by `spanNext` and
+ * `spanPrev`; a free run is merged with the free runs next to it, which
+ * `freeFirst` and `freeLast` find by the page each starts or ends at. A
+ * search for pages thus takes one look per bin rather than one per run, and
+ * free pages next to each other stay one run however they were freed.
+ */
+let freeBins: ptr
+let freeFirst: ptr
+let freeLast: ptr
+const binCount = 128
 /** Span records ready for reuse. */
 let freeRecords: ptr
 let metaNext: ptr
@@ -309,6 +321,9 @@ export function init(): void {
     unsafe.store<i64>(unsafe.add(pause, 8), 20000)
     heapBase = mapMemory(heapPages * pageSize)
     pageTable = mapMemory(heapPages * 8)
+    freeBins = mapMemory(binCount * 8)
+    freeFirst = mapMemory(heapPages * 8)
+    freeLast = mapMemory(heapPages * 8)
 
     // Size classes: every 16 bytes up to 128, then steps of a quarter, then of an eighth.
     classSizes = meta(maxClasses * 8)
@@ -465,38 +480,33 @@ function newRecord(): ptr {
 
 /** A run of `pages` pages, reused or new, with a span record for it; the caller holds `heapLock`. */
 function newSpan(pages: int): ptr {
-    let prev = nil()
-    let run = freeRuns
-    while (!isNil(run)) {
+    for (let b = binOf(pages); b < binCount; b++) {
+        let run = pointerAt(freeBins, b * 8)
+        // In the last bin, runs have any size at or above it; in the others, all have the bin's size.
+        while (!isNil(run) && field(run, spanPages) < pages) run = pointerAt(run, spanNext)
+        if (isNil(run)) continue
+        unlinkFree(run)
         const have = field(run, spanPages)
-        if (have >= pages) {
-            const next = pointerAt(run, spanNext)
-            const released = field(run, spanReleased)
-            if (released !== 0) {
-                // Its pages come back into use: those taken now, or all of them for the rest, counted once.
-                // On macOS the kernel may still discard pages given back with MADV_FREE_REUSABLE, even after
-                // they are written again, until MADV_FREE_REUSE takes them back; Linux zeroes them at once.
-                if (target.os === "darwin") adviseSystemPages(run, 8)
-                releasedBytes -= released
-                if (releasedBytes < 0) releasedBytes = 0
-                setField(run, spanReleased, 0)
-            }
-            if (have === pages) {
-                if (isNil(prev)) freeRuns = next
-                else setPointer(prev, spanNext, next)
-                return run
-            }
-            // Split: the rest stays free.
-            const span = newRecord()
-            setPointer(span, spanStart, pointerAt(run, spanStart))
-            setField(span, spanPages, pages)
-            setField(span, spanReleased, 0)
-            setPointer(run, spanStart, unsafe.add(pointerAt(run, spanStart), pages * pageSize))
-            setField(run, spanPages, have - pages)
-            return span
+        const released = field(run, spanReleased)
+        if (released !== 0) {
+            // Its pages come back into use: those taken now, or all of them for the rest, counted once.
+            // On macOS the kernel may still discard pages given back with MADV_FREE_REUSABLE, even after
+            // they are written again, until MADV_FREE_REUSE takes them back; Linux zeroes them at once.
+            if (target.os === "darwin") adviseSystemPages(run, 8)
+            releasedBytes -= released
+            if (releasedBytes < 0) releasedBytes = 0
+            setField(run, spanReleased, 0)
         }
-        prev = run
-        run = pointerAt(run, spanNext)
+        if (have === pages) return run
+        // Split: the rest stays free.
+        const span = newRecord()
+        setPointer(span, spanStart, pointerAt(run, spanStart))
+        setField(span, spanPages, pages)
+        setField(span, spanReleased, 0)
+        setPointer(run, spanStart, unsafe.add(pointerAt(run, spanStart), pages * pageSize))
+        setField(run, spanPages, have - pages)
+        linkFree(run)
+        return span
     }
     if (nextPage + pages > heapPages) outOfMemory()
     const span = newRecord()
@@ -504,6 +514,47 @@ function newSpan(pages: int): ptr {
     setField(span, spanPages, pages)
     nextPage += pages
     return span
+}
+
+/** The bin of free runs of `pages` pages: one per size, and the last one for every larger run. */
+function binOf(pages: int): int {
+    return pages < binCount ? pages - 1 : binCount - 1
+}
+
+/** The page a pointer in the heap is on. */
+function pageOf(p: ptr): int {
+    return unsafe.diff(p, heapBase) >> pageShift
+}
+
+/** Puts a free run in its bin and in the maps of its first and last pages. */
+function linkFree(run: ptr): void {
+    const at = unsafe.add(freeBins, binOf(field(run, spanPages)) * 8)
+    const head = unsafe.load<ptr>(at)
+    setPointer(run, spanPrev, nil())
+    setPointer(run, spanNext, head)
+    if (!isNil(head)) setPointer(head, spanPrev, run)
+    unsafe.store<ptr>(at, run)
+    const first = pageOf(pointerAt(run, spanStart))
+    setPointer(freeFirst, first * 8, run)
+    setPointer(freeLast, (first + field(run, spanPages) - 1) * 8, run)
+}
+
+/** Takes a free run out of its bin and of the maps of its pages. */
+function unlinkFree(run: ptr): void {
+    const prev = pointerAt(run, spanPrev)
+    const next = pointerAt(run, spanNext)
+    if (isNil(prev)) setPointer(freeBins, binOf(field(run, spanPages)) * 8, next)
+    else setPointer(prev, spanNext, next)
+    if (!isNil(next)) setPointer(next, spanPrev, prev)
+    const first = pageOf(pointerAt(run, spanStart))
+    setPointer(freeFirst, first * 8, nil())
+    setPointer(freeLast, (first + field(run, spanPages) - 1) * 8, nil())
+}
+
+/** Gives a span record back for reuse. */
+function freeRecord(r: ptr): void {
+    setPointer(r, spanNext, freeRecords)
+    freeRecords = r
 }
 
 //ore:cold
@@ -538,12 +589,29 @@ function useSpan(span: ptr, size: int, elems: int, noscan: bool, cls: int): void
 
 /** Frees the pages of a span: out of the page table, into the free runs. */
 function releaseSpan(span: ptr): void {
-    const first = unsafe.diff(pointerAt(span, spanStart), heapBase) >> pageShift
-    for (let i = 0; i < field(span, spanPages); i++) setPointer(pageTable, (first + i) * 8, nil())
-    setField(span, spanReleased, 0)
-    setField(span, spanFreedAt, collections)
-    setPointer(span, spanNext, freeRuns)
-    freeRuns = span
+    const first = pageOf(pointerAt(span, spanStart))
+    const pages = field(span, spanPages)
+    for (let i = 0; i < pages; i++) setPointer(pageTable, (first + i) * 8, nil())
+    let run = span
+    setField(run, spanReleased, 0)
+    // Merged with the free runs right before and after it, which keep what they gave back.
+    const before = first > 0 ? pointerAt(freeLast, (first - 1) * 8) : nil()
+    if (!isNil(before)) {
+        unlinkFree(before)
+        setField(before, spanPages, field(before, spanPages) + pages)
+        freeRecord(run)
+        run = before
+    }
+    const end = pageOf(pointerAt(run, spanStart)) + field(run, spanPages)
+    const after = end < heapPages ? pointerAt(freeFirst, end * 8) : nil()
+    if (!isNil(after)) {
+        unlinkFree(after)
+        setField(run, spanPages, field(run, spanPages) + field(after, spanPages))
+        setField(run, spanReleased, field(run, spanReleased) + field(after, spanReleased))
+        freeRecord(after)
+    }
+    setField(run, spanFreedAt, collections)
+    linkFree(run)
 }
 
 function bit(bits: ptr, i: int): bool {
@@ -1634,16 +1702,20 @@ const scavengeAge = 2
  */
 function scavengeLocked(): void {
     let free = 0
-    for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) free += field(run, spanPages)
+    for (let b = 0; b < binCount; b++)
+        for (let run = pointerAt(freeBins, b * 8); !isNil(run); run = pointerAt(run, spanNext))
+            free += field(run, spanPages)
     if (free * 2 < nextPage) return
     // MADV_FREE_REUSABLE on macOS, which the kernel counts out of the footprint at once, and which `newSpan`
     // undoes with MADV_FREE_REUSE before the pages are used again; MADV_DONTNEED on Linux.
     const advice: i32 = target.os === "darwin" ? 7 : 4
-    for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) {
-        if (field(run, spanReleased) !== 0 || collections - field(run, spanFreedAt) < scavengeAge) continue
-        const bytes = adviseSystemPages(run, advice)
-        releasedBytes += bytes
-        setField(run, spanReleased, bytes)
+    for (let b = 0; b < binCount; b++) {
+        for (let run = pointerAt(freeBins, b * 8); !isNil(run); run = pointerAt(run, spanNext)) {
+            if (field(run, spanReleased) !== 0 || collections - field(run, spanFreedAt) < scavengeAge) continue
+            const bytes = adviseSystemPages(run, advice)
+            releasedBytes += bytes
+            setField(run, spanReleased, bytes)
+        }
     }
 }
 
