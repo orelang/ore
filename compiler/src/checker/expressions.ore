@@ -1481,8 +1481,12 @@ function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, p
         const fields: FieldInit[] = []
         for (const p of props) {
             const field = findField(expected, p.name)
-            const type = field !== null ? field.type : types.i64
-            fields.push(new FieldInit(p.name, c.coerce(valueOf(p, type), type, p.value)))
+            // A property already reported as unknown has no type to check its value against.
+            if (field === null) {
+                valueOf(p, null)
+                continue
+            }
+            fields.push(new FieldInit(p.name, c.coerce(valueOf(p, field.type), field.type, p.value)))
         }
         // Optional fields left out are null.
         for (const f of expected.fields) {
