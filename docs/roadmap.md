@@ -164,5 +164,4 @@ the collector does not move objects, so it does not need them.
   bottleneck.
 - UDP, TLS and HTTP in the standard library.
 - Semantic tokens in the language server.
-- `unshift` on arrays.
 - Snap package; Windows.

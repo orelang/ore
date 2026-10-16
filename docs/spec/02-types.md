@@ -358,7 +358,15 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   `a[i]++`) evaluate `a` and `i` once.
 - `a.push(...values)` appends and returns the new length; arrays spread in
   (`a.push(...b)`) append all their elements. `a.pop()` removes
-  and returns the last element and panics on an empty array.
+  and returns the last element and panics on an empty array; `a.shift()`
+  does the same with the first element. `a.unshift(...values)` inserts at
+  the start and returns the new length. `a.splice(start, count?,
+  ...values)` removes `count` elements from `start` (all of them to the end
+  without `count`), inserts the values in their place and returns the
+  removed elements as a new array; a negative start counts from the end and
+  both are clamped to the array, as in JavaScript. Arrays spread in add all
+  their elements, as with `push`; every reference to the array sees the
+  change.
   `a.slice(start?, end?)` returns a copy with JavaScript offsets.
 - `let a: T[]` without an initializer is a new empty array.
 - `for (const x of a)` iterates elements; the length is re-read on every

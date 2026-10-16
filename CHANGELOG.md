@@ -17,6 +17,8 @@ before 1.0, a minor version may change the language.
   Node) and Go, built and timed by `bench/run.sh`, which checks that every
   runtime prints the same output and prints a markdown table of times;
   `fib`, `binary-trees` and `nbody` to start with.
+- Arrays have `shift()`, `unshift(...values)` and `splice(start, count?,
+  ...values)` as in JavaScript; `shift` panics on an empty array, like `pop`.
 - `ore run --watch` builds and runs the program again whenever one of its
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change
