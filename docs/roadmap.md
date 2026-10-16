@@ -90,7 +90,11 @@ exports, type assertions (Ore converts: `i32(x)`).
   JSDoc, go to definition, completion with JSDoc, signature help,
   references and rename across the workspace, formatting, the outline,
   inlay hints of inferred types, semantic tokens, quick fixes (done);
-  checking the runtime once rather than on every change.
+  checking the runtime once rather than on every change (partly done: the
+  runtime and the standard library are parsed once per session and only
+  their declarations are checked, not their bodies; reusing their checked
+  declarations needs a checker whose state for a group of modules can be
+  kept and built upon).
 - `console.log` of any value, as Node prints it: objects, class instances
   (`Point { x: 1, y: 2 }`), arrays, maps, sets, nested and with colors on a
   terminal; strings inside them quoted.

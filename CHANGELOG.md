@@ -48,6 +48,10 @@ before 1.0, a minor version may change the language.
   the outline, the inferred types of variables as inlay hints, semantic
   tokens from the checker, and quick fixes for the errors that say their fix
   (an explicit conversion, `===`, `let`, a misspelled name, an extra `!`).
+- The language server parses the runtime and the standard library once per
+  session and checks only their declarations, not the bodies of their
+  functions and classes: an analysis of a small file takes about half the
+  time.
 - A build cache in `~/.cache/ore` (`$ORE_CACHE`, `$XDG_CACHE_HOME`;
   `ORE_CACHE=off` turns it off): LLVM's object files are kept by a hash of
   their IR, the compiler and the target. Debug builds are split by source
