@@ -1,0 +1,21 @@
+// TextEncoder, TextDecoder, atob and btoa: strings and bytes, as JavaScript's
+// globals, with u8[] for Uint8Array.
+
+const enc = new TextEncoder()
+console.log(enc.encoding)
+console.log(enc.encode("héllo ✓ 😀"))
+console.log(enc.encode(""), enc.encode())
+const u: u8[] = [0, 0, 0, 0, 0]
+console.log(enc.encodeInto("aé✓", u), u)
+const dec = new TextDecoder()
+console.log(dec.encoding, dec.fatal, dec.ignoreBOM)
+console.log(dec.decode([104, 195, 169, 0xe2, 0x9c, 0x93]))
+// Invalid sequences: the longest prefix of a character is one U+FFFD; the byte order mark goes.
+console.log(JSON.stringify(dec.decode([0xef, 0xbb, 0xbf, 97, 0xe2, 0x82, 98, 0xff, 0xc0, 0x80, 0xf0, 0x9f, 0x98])))
+console.log(JSON.stringify(new TextDecoder("utf-8", { ignoreBOM: true }).decode([0xef, 0xbb, 0xbf, 97])))
+console.log(JSON.stringify(dec.decode()))
+console.log(new TextDecoder(" UTF8 ").encoding)
+console.log(dec.decode(enc.encode("round ✓ trip")))
+console.log(btoa("hello"), btoa(""), btoa("a"), btoa("ab"), btoa("éÿ"))
+console.log(atob("aGVsbG8="), atob(" aGVs\nbG8 "), atob("YQ"), JSON.stringify(atob("w6k=")))
+console.log(JSON.stringify(atob("YR==")), atob(btoa("éÿ")) === "éÿ")

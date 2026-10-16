@@ -938,7 +938,7 @@ function basicErrorOf(c: Checker): BuiltinError {
     return new BuiltinError(basic.ctor!, itab(c, basic, c.errorType!))
 }
 
-/** `JSON.stringify(value, null, space?)` and `JSON.parse<T>(text)`, whose code is generated per type. */
+/** `JSON.stringify(value, keys?, space?)` and `JSON.parse<T>(text)`, whose code is generated per type. */
 export function jsonCall(c: Checker, name: string, node: Node, scope: Scope): Operand {
     const args = argsOf(node)
     if (name === "JSON.stringify") {
@@ -949,14 +949,28 @@ export function jsonCall(c: Checker, name: string, node: Node, scope: Scope): Op
         const value = c.toDefault(operand_, args[0])
         const problem = jsonProblem(value.type)
         if (problem !== null) return c.fail(args[0], problem)
-        // As in JavaScript, the second argument is the replacer, which must be null, and the third the indentation.
-        if (args.length > 1 && args[1].kind !== "NullKeyword")
-            return c.fail(
-                args[1],
-                "The second argument of 'JSON.stringify' is a replacer, and only null is supported: write 'JSON.stringify(value, null, 2)' to indent.",
-            )
+        // As in JavaScript, the second argument is the replacer, null or an
+        // array of the keys to keep, and the third the indentation: a number
+        // of spaces or a string.
         const values: Expr[] = [value]
-        if (args.length > 2) values.push(c.coerce(checkExpr(c, args[2], scope, types.i64), types.i64, args[2]))
+        const keys = arrayOf(types.string)
+        if (args.length > 1 && args[1].kind !== "NullKeyword") {
+            const replacer = checkExpr(c, args[1], scope, keys)
+            if (replacer.k === "error") return replacer
+            if (replacer.k !== "typed" || !sameType(replacer.expr.type, keys))
+                return c.fail(
+                    args[1],
+                    "The second argument of 'JSON.stringify' is a replacer, null or an array of keys: write 'JSON.stringify(value, null, 2)' to indent.",
+                )
+            values.push(replacer.expr)
+        } else values.push(new NullLit(types.null))
+        if (args.length > 2) {
+            const space = checkExpr(c, args[2], scope, types.i64)
+            if (space.k === "error") return space
+            if (space.k === "typed" && isStringLike(space.expr.type))
+                values.push(c.coerce(space, types.string, args[2]))
+            else values.push(c.coerce(space, types.i64, args[2]))
+        }
         return typed(new BuiltinCall(types.string, name, values))
     }
     const typeArgs = typeArguments(node)

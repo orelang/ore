@@ -163,6 +163,14 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
         const func = declareFunction(c, stmt, m.scope)
         if (func !== null) bodies.push(new Body(stmt, func, m.scope))
     })
+    // The functions of the runtime that are global names, `atob` and `btoa`, now declared.
+    for (const m of modules) {
+        for (let i = 0; i < globalClasses.length; i++) {
+            if (m.source.path !== globalClassModules[i] || m.scope.ownType(globalClasses[i]) !== null) continue
+            const value = m.scope.ownValue(globalClasses[i])
+            if (value !== null) builtins.scope.declareValue(globalClasses[i], value)
+        }
+    }
     // Overload signatures without an implementation after them.
     for (const [_, decls] of c.overloadDecls)
         for (const d of decls) c.error(nameNode(d), "This overload signature has no implementation after it.")

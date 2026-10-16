@@ -44,6 +44,9 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `generator.next()` after the generator returned `v` | `{ value: undefined, done: true }` | `{ value: v, done: true }` (the value of `return()` after it) |
 | `generator.throw(e)` | throws `e` at the `yield` | does not exist (no exceptions) |
 | `s.charCodeAt(i)`, `s.slice(i)`, other string positions | UTF-16 code units | bytes of UTF-8 (`charCodeAt` is the byte at `i`) |
+| `Uint8Array` (`TextEncoder`, `TextDecoder`) | a typed array | `u8[]`, printed as an array |
+| `encoder.encodeInto(s, bytes).read` | UTF-16 code units | bytes of UTF-8 |
+| `m[i]` past the end of a `RegExpMatch` | `undefined` | panics, as for arrays |
 | `s.localeCompare(t)` | the locale's collation | code point order |
 | `new Array(3)` | three holes | three zero values of the element type |
 | `Set` methods `union`, `isSubsetOf`, … | take set-like objects | take sets |

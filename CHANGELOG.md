@@ -73,6 +73,17 @@ before 1.0, a minor version may change the language.
   `[...map.keys()]`, or passes it to `Array.from`. Async generators are
   not supported ([ORE5013](docs/errors/ORE5013.md)), and there is no
   `throw()` (Ore has no exceptions).
+- `JSON.stringify(value, replacer, space)` takes a replacer array, the
+  keys of objects to keep, in its order, at every level (maps too), and a
+  string `space`, its first 10 characters indenting each level; a number
+  `space` is at most 10, as in JavaScript.
+- `TextEncoder` and `TextDecoder` (UTF-8: `encode`, `encodeInto`, `decode`
+  with `fatal` and `ignoreBOM`) and `atob` and `btoa` (base64 of binary
+  strings), global names as in JavaScript, with `u8[]` for `Uint8Array`.
+- A `RegExpMatch` is indexed, destructured and iterated as JavaScript's
+  match arrays: `m[1]`, `const [, key, value] = s.match(re)!`,
+  `for (const c of m)`, over its captures (`string | null`). Assigning to
+  `m[i]` is an error (ORE3084).
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

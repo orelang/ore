@@ -277,7 +277,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `time.now()`, `time.unixNanos()` | nanoseconds on a monotonic clock (for durations); since the Unix epoch on the wall clock |
 | `time.nanosecond`, `time.microsecond`, `time.millisecond`, `time.second`, `time.minute`, `time.hour`, `time.day` | durations in nanoseconds, `int` |
 | `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
-| `JSON.stringify(value, null?, space?)` | the JSON text of a value, indented by `space` spaces per level; the replacer must be null |
+| `JSON.stringify(value, keys?, space?)` | the JSON text of a value; a replacer array `keys` keeps only those keys of each object, in its order; `space` indents each level by that many spaces (at most 10) or by a string (its first 10 characters); a replacer function is not supported |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
 Numbers of every numeric type have the methods of JavaScript's
@@ -509,6 +509,23 @@ type must match, and a field must be present unless its type includes
 are written in alphabetical order, fields of classes in declaration order;
 non-finite floats are written as `null`.
 
+Strings and bytes convert as with the globals of JavaScript's hosts, which
+are global names in Ore too, with `u8[]` where JavaScript has a
+`Uint8Array`. `new TextEncoder().encode(s)` is the UTF-8 bytes of `s`
+(a byte that is not valid UTF-8 as U+FFFD), and `encodeInto(s, bytes)`
+writes the whole characters that fit into `bytes` and returns
+`{ read, written }`, both in bytes. `new TextDecoder(label?, { fatal,
+ignoreBOM }?)` takes only UTF-8 (`"utf-8"`, `"utf8"`,
+`"unicode-1-1-utf-8"`; another label panics with `RangeError: The "x"
+encoding is not supported`), and `decode(bytes?)` reads them as the
+Encoding Standard does: the longest prefix of a character that is invalid
+is one U+FFFD (a panic with `fatal`) and a leading byte order mark is
+dropped unless `ignoreBOM`. `btoa(s)` is the base64 of a binary string,
+whose characters are U+0000 to U+00FF (another panics with
+`InvalidCharacterError: Invalid character`), and `atob(s)` the binary
+string of base64 text, skipping ASCII whitespace, with the padding
+optional.
+
 Numeric conversions (`i32(x)`, `f64(x)`) are type names, not namespaced
 functions.
 
@@ -648,7 +665,11 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   did not take part; negative `i` count from the end), `m.length` their
   number, `m.captures` the array of them, `m.index` and `m.input` as in
   JavaScript, and `m.groups` a `Map<string, string | null>` of the named
-  groups (empty without names).
+  groups (empty without names). As a match array, a match is indexed,
+  `m[i]` (a `string | null`, read-only; an index out of range panics, as
+  for arrays, where JavaScript gives `undefined`), destructured,
+  `const [, key, value] = m`, and iterated with `for...of`, over its
+  captures.
 - With the `d` flag, `m.indices` is a `([int, int] | null)[]`: the start
   and end of the match and of each group (null for one that did not take
   part), byte offsets as `index`; `m.groupIndices` is a

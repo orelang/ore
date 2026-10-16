@@ -878,6 +878,10 @@ export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool
             c.error(expression(node), unknownObject)
             return null
         }
+        if (matchCaptures(array) !== null) {
+            c.error(node, `Index signature in type '${typeToString(at)}' only permits reading.`)
+            return null
+        }
         if (at.kind === "struct" && at.tuple) {
             const field = tupleField(c, at, argumentExpression(node), scope)
             if (field === null) return null
@@ -2190,7 +2194,8 @@ export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
     const target = checkExpr(c, expression(node), scope)
     if (target.k === "error") return target
     const value = c.toDefault(target, expression(node))
-    const element = (v: Expr): Operand => {
+    const element = (whole: Expr): Operand => {
+        const v = matchCaptures(whole) ?? whole
         const vt = v.type
         if (vt.kind === "struct" && vt.tuple) {
             const field = tupleField(c, vt, argumentExpression(node), scope)
@@ -2216,6 +2221,18 @@ export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
         return c.fail(expression(node), `Type '${typeToString(vt)}' cannot be indexed.`)
     }
     return questionDotToken(node) !== null ? optional(c, value, node, element) : element(value)
+}
+
+/**
+ * The captures of a `RegExpMatch`, which is indexed, destructured and
+ * iterated as JavaScript's match arrays are: `m[1]`, `const [, k, v] = m`;
+ * null for any other value.
+ */
+export function matchCaptures(v: Expr): Expr | null {
+    const t = v.type
+    if (t.kind !== "struct" || !t.nominal || t.name !== "RegExpMatch") return null
+    for (const f of t.fields) if (f.name === "captures") return new FieldGet(f.type, v, f.name)
+    return null
 }
 
 /** The element of a tuple at a constant index. */

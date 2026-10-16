@@ -143,12 +143,82 @@ function jsonU64(b: ptr, v: u64): void {
     putDecimal(b, v, false)
 }
 
-/** With `indent` > 0: a line break and `indent * depth` spaces. */
+/**
+ * The options of a `JSON.stringify` call: `gap`, the indentation of each
+ * level ("" for none), and the keys the replacer array keeps, in its order
+ * without repeats, or null when there is none.
+ */
+export class JsonOptions {
+    keys: string[] | null = null
+    constructor(readonly gap: string) {}
+}
+
+/** The options of a call indented by `space` spaces, at most 10 as in JavaScript. */
+//ore:runtime ore_rt_json_spaces
+function jsonSpaces(space: int): JsonOptions {
+    return new JsonOptions(" ".repeat(space < 0 ? 0 : space > 10 ? 10 : space))
+}
+
+/** The options of a call indented by a string, its first 10 characters as in JavaScript. */
+//ore:runtime ore_rt_json_gap
+function jsonGap(space: string): JsonOptions {
+    let end = 0
+    let n = 0
+    for (const r of space) {
+        if (n === 10) break
+        end += String.fromCodePoint(i64(r)).length
+        n++
+    }
+    return new JsonOptions(space.slice(0, end))
+}
+
+/** Keeps only the `keys` of objects. */
+//ore:runtime ore_rt_json_keep
+function jsonKeep(o: JsonOptions, keys: string[]): void {
+    const kept: string[] = []
+    for (const k of keys) if (!kept.includes(k)) kept.push(k)
+    o.keys = kept
+}
+
+/** How many keys the replacer array keeps, -1 without one. */
+//ore:runtime ore_rt_json_key_count
+function jsonKeyCount(o: JsonOptions): int {
+    const keys = o.keys
+    return keys === null ? -1 : keys.length
+}
+
+//ore:runtime ore_rt_json_key_at
+function jsonKeyAt(o: JsonOptions, i: int): string {
+    return o.keys![i]
+}
+
+/** How many passes write the entries of a map: one for each key of the replacer array, else one. */
+//ore:runtime ore_rt_json_rounds
+function jsonRounds(o: JsonOptions): int {
+    const keys = o.keys
+    return keys === null ? 1 : keys.length
+}
+
+/** Whether pass `round` writes the entry of a map with a key: all without a replacer array, else the one with its key. */
+//ore:runtime ore_rt_json_kept
+function jsonKept(o: JsonOptions, round: int, key: string): bool {
+    const keys = o.keys
+    return keys === null || keys[round] === key
+}
+
+/** Whether a space follows the colon of each entry: with an indentation. */
+//ore:runtime ore_rt_json_spaced
+function jsonSpaced(o: JsonOptions): bool {
+    return o.gap.length > 0
+}
+
+/** With an indentation: a line break and the gap `depth` times. */
 //ore:runtime ore_rt_json_newline
-function jsonNewline(b: ptr, indent: int, depth: int): void {
-    if (indent <= 0) return
+function jsonNewline(b: ptr, o: JsonOptions, depth: int): void {
+    const gap = o.gap
+    if (gap.length === 0) return
     sbPutc(b, 0x0a)
-    for (let i = 0; i < indent * depth; i++) sbPutc(b, 0x20)
+    for (let i = 0; i < depth; i++) for (let j = 0; j < gap.length; j++) sbPutc(b, gap[j])
 }
 
 // ---------------------------------------------------------------------------

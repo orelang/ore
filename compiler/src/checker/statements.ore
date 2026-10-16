@@ -117,7 +117,17 @@ import {
     threadLocal,
     unsupportedTopLevel,
 } from "./declarations"
-import { assignTarget, checkExpr, compare, interfaceFor, member, narrowTo, settle, writeAccessor } from "./expressions"
+import {
+    assignTarget,
+    checkExpr,
+    compare,
+    interfaceFor,
+    matchCaptures,
+    member,
+    narrowTo,
+    settle,
+    writeAccessor,
+} from "./expressions"
 import {
     disposeName,
     canBeNull,
@@ -753,6 +763,8 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
         }
         return
     }
+    const captures = matchCaptures(whole)
+    if (captures !== null) whole = captures
     const array = whole.type
     const elems = elements(name)
     for (let i = 0; i < elems.length; i++) {
@@ -1200,7 +1212,8 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): Stmt | null {
 
     const value = checkExpr(c, expression(stmt), outer)
     if (value.k === "error") return null
-    let iterable = c.toDefault(value, expression(stmt))
+    const whole = c.toDefault(value, expression(stmt))
+    let iterable = matchCaptures(whole) ?? whole
     // `values()`, `keys()` and `entries()` of a collection loop over the collection itself, as fast.
     const direct = directIteration(c, iterable, nameNode(decl))
     if (direct !== null) iterable = direct.source
