@@ -3,7 +3,33 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
-## Unreleased
+## 0.4.5
+
+Value classes: small immutable classes without allocation.
+
+- Small immutable classes are values when nothing can tell: a class with no
+  base class or subclass and one to eight `readonly` fields of numbers,
+  booleans or other such classes, whose instances the program never
+  compares, prints, converts to an interface or `unknown`, or keeps in an
+  array, a map, a set, a channel or a union, has its instances kept in
+  registers and inside the objects that hold them instead of on the heap.
+  `bench/structs`, which moves particles with an immutable `Vec3`, no
+  longer allocates in its loop.
+
+## 0.4.4
+
+Tagged templates and String.raw.
+
+- Tagged templates: `` tag`a${x}b` `` calls the tag with a
+  `TemplateStringsArray` (the cooked strings, `null` for an invalid escape,
+  and their `raw` text) and the substitutions, checked as a call against
+  the tag's parameters. Each site passes the same strings object every
+  time. `String.raw` works as a tag and as a function of `{ raw }` and
+  strings.
+
+## 0.4.3
+
+Garbage collection pauses under 0.1 ms.
 
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
@@ -13,20 +39,26 @@ before 1.0, a minor version may change the language.
   on macOS) until the world runs again; the collector's waits spin before
   they sleep; and the second pause finishes marking on one thread when
   little is left.
-- Small immutable classes are values when nothing can tell: a class with no
-  base class or subclass and one to eight `readonly` fields of numbers,
-  booleans or other such classes, whose instances the program never
-  compares, prints, converts to an interface or `unknown`, or keeps in an
-  array, a map, a set, a channel or a union, has its instances kept in
-  registers and inside the objects that hold them instead of on the heap.
-  `bench/structs`, which moves particles with an immutable `Vec3`, no
-  longer allocates in its loop.
-- Tagged templates: `` tag`a${x}b` `` calls the tag with a
-  `TemplateStringsArray` (the cooked strings, `null` for an invalid escape,
-  and their `raw` text) and the substitutions, checked as a call against
-  the tag's parameters. Each site passes the same strings object every
-  time. `String.raw` works as a tag and as a function of `{ raw }` and
-  strings.
+
+## 0.4.2
+
+Faster string-keyed maps.
+
+- String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
+  1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
+  keeps the high bits of each key's hash beside the entry, so probing
+  compares keys only when those match; string keys and 8-byte keys
+  (integers, objects by identity) are hashed and compared by the runtime
+  itself, strings a word at a time instead of FNV-1a's byte at a time; and
+  `map.set(key, f(map.get(key)))`, where `f` only computes with locals and
+  constants (`counts.set(w, (counts.get(w) ?? 0) + 1)`), hashes and looks
+  up the key once. `indexOf` and `split` no longer call memcmp for a
+  one-byte separator.
+
+## 0.4.1
+
+JavaScript's Date as a global class, and checker fixes.
+
 - `Date` is a global class, JavaScript's, written in Ore
   (runtime/core/date.ore): the constructors (`new Date()`, `new Date(ms)`,
   `new Date("2024-10-15T12:00Z")`, `new Date(2024, 9, 15, 12)`), the
@@ -42,16 +74,6 @@ before 1.0, a minor version may change the language.
   `console.log` prints a date as Node does, and `JSON.stringify` writes it,
   as its ISO string.
   `Date.now()` is still an `int`.
-- String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
-  1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
-  keeps the high bits of each key's hash beside the entry, so probing
-  compares keys only when those match; string keys and 8-byte keys
-  (integers, objects by identity) are hashed and compared by the runtime
-  itself, strings a word at a time instead of FNV-1a's byte at a time; and
-  `map.set(key, f(map.get(key)))`, where `f` only computes with locals and
-  constants (`counts.set(w, (counts.get(w) ?? 0) + 1)`), hashes and looks
-  up the key once. `indexOf` and `split` no longer call memcmp for a
-  one-byte separator.
 - Generic classes can have static fields, `class Box<T> { static count = 0 }`:
   one for all instances, as in TypeScript, initialized where the class is
   declared, and read, assigned and updated from anywhere, its static and
