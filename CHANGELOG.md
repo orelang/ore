@@ -5,6 +5,15 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `export * from "./m"` and `export * as ns from "./m"`, as in TypeScript:
+  a module's own exports take precedence, and a name that two `export *`
+  give from different declarations is not exported and reported at the
+  later one (ORE6073, "Module '…' has already exported a member named
+  '…'"). ORE6015, which rejected `export *`, is no longer produced. `ore
+  doc` lists the names a module re-exports with `export *`.
+- Directory imports: `./lib` is `lib.ore` when it exists and the directory's
+  `lib/index.ore` otherwise, as before; `./lib/`, `.` and `..` now name a
+  directory's `index.ore` too.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with
