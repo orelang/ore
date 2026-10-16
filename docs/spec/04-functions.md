@@ -67,13 +67,46 @@
 
 ## Array methods
 
-`forEach`, `map`, `filter`, `reduce` (with an initial value), `find`
-(`T | null`), `findIndex`, `some`, `every`, `includes`, `indexOf`,
-`join(separator = ",")`, `reverse` and `sort(compare?)` work as in
-JavaScript. Callbacks receive `(element, index)` (`reduce`: accumulator
-first) and may declare fewer parameters. `sort` is stable; without a
-comparator it sorts numbers by value and strings by bytes (JavaScript sorts
-everything as strings). `includes` finds `NaN`, `indexOf` does not.
+Arrays have the methods of JavaScript's `Array.prototype`, with its
+arguments, defaults and offsets (a negative index or offset counts from the
+end, and ranges are clamped as `slice` clamps them):
+
+- Visiting the elements: `forEach`, `map`, `filter`, `find` and `findLast`
+  (`T | null`), `findIndex` and `findLastIndex` (-1 when none),
+  `some`, `every`, `flatMap`, `reduce` and `reduceRight`. Callbacks receive
+  `(element, index, array)` (`reduce` and `reduceRight`: the accumulator
+  first) and may declare fewer parameters. They visit the elements present
+  when the call starts, while those still exist. `reduce` and `reduceRight`
+  without an initial value start from the first (last) element and panic
+  with `Reduce of empty array with no initial value` on an empty array.
+  The callback of `flatMap` may return an array, whose elements are added,
+  or one value. `thisArg` is not supported.
+- Searching: `includes`, `indexOf` and `lastIndexOf(value, fromIndex?)`;
+  `includes` finds `NaN`, the others do not. `at(index)` is `T | null`.
+- New arrays: `concat(...items)` (an argument of the array's type adds its
+  elements, any other is one element), `slice(start?, end?)`,
+  `flat(depth = 1)` (the depth is an integer constant or `Infinity`, since
+  the result's type depends on it), `toReversed()`,
+  `toSorted(compare?)`, `toSpliced(start?, count?, ...items)`,
+  `with(index, value)` (an index out of range panics with `Invalid index :
+  i`), and `join(separator = ",")`. `entries()`, `keys()` and `values()`
+  return arrays (of `[int, T]` tuples, of indices, a copy) until Ore has
+  iterators.
+- In place, returning the array: `reverse()`, `sort(compare?)`,
+  `fill(value, start?, end?)` and `copyWithin(target, start?, end?)`;
+  `push`, `pop`, `shift`, `unshift` and `splice` as in
+  [Arrays](02-types.md#arrays).
+
+`sort` and `toSorted` are stable; without a comparator they sort numbers by
+value and strings by bytes (JavaScript sorts everything as strings).
+
+`Array.from(items, mapFn?)` makes an array of the elements of an array (a
+copy), the characters of a string, the values of a set or the `[key, value]`
+entries of a map, passed through `mapFn(value, index)` when it is given;
+`Array.from({ length: n }, (_, i) => ...)` makes `n` elements by the
+function, given null and the index. `Array.of(...items)` is an array of its
+arguments, typed as an array literal. `Array.isArray(x)` is known from the
+type of `x`, and tested at run time for a union.
 
 ## Resources
 

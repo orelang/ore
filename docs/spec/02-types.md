@@ -540,6 +540,16 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   and returns the last element and panics on an empty array.
   `a.slice(start?, end?)` returns a copy with JavaScript offsets.
 - `let a: T[]` without an initializer is a new empty array.
+- `new Array<T>(n)` (or `new Array(n)` with an array type as the context)
+  is an array of `n` zero values of `T`, each its own: 0, `false`, `""`, a
+  new empty array, map or set, or `null` for a type that includes it; a
+  negative `n` panics with `Invalid array length`. JavaScript leaves holes
+  there, so element types without a zero value (classes, interfaces,
+  tuples, functions) are rejected: `Array.from({ length: n }, (_, i) =>
+  ...)` makes such elements. With no arguments, several, or one that is not
+  an integer, `new Array<T>(...)` is an array of the arguments.
+- The other methods and `Array.from`, `Array.of` and `Array.isArray` are in
+  [Array methods](04-functions.md#array-methods).
 - `for (const x of a)` iterates elements; the length is re-read on every
   iteration, so elements pushed during the loop are visited.
 
