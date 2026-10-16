@@ -1,0 +1,81 @@
+// \p{...} with each property that JavaScript has, by every name: how many
+// characters of a sample (every character up to U+2FFF, then one in 17 up
+// to U+1FFFF and one in 97 after) each takes, as Node counts them (Unicode
+// 17.0).
+
+let sample = ""
+for (let c = 0; c <= 0x10ffff; c += c < 0x3000 ? 1 : c < 0x20000 ? 17 : 97) {
+    if (c < 0xd800 || c > 0xdfff) sample += String.fromCodePoint(c)
+}
+
+const names = [
+    "C Other Cc Control cntrl Cf Format Cn Unassigned Co Private_Use Cs Surrogate L Letter LC Cased_Letter Ll",
+    "Lowercase_Letter Lm Modifier_Letter Lo Other_Letter Lt Titlecase_Letter Lu Uppercase_Letter M Mark",
+    "Combining_Mark Mc Spacing_Mark Me Enclosing_Mark Mn Nonspacing_Mark N Number Nd Decimal_Number digit Nl",
+    "Letter_Number No Other_Number P Punctuation punct Pc Connector_Punctuation Pd Dash_Punctuation Pe",
+    "Close_Punctuation Pf Final_Punctuation Pi Initial_Punctuation Po Other_Punctuation Ps Open_Punctuation S",
+    "Symbol Sc Currency_Symbol Sk Modifier_Symbol Sm Math_Symbol So Other_Symbol Z Separator Zl Line_Separator Zp",
+    "Paragraph_Separator Zs Space_Separator gc=Lu General_Category=Letter gc=punct General_Category=Cn",
+    "ASCII_Hex_Digit AHex Alphabetic Alpha Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased",
+    "Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL",
+    "Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash",
+    "Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component EComp Emoji_Modifier EMod",
+    "Emoji_Modifier_Base EBase Emoji_Presentation EPres Extended_Pictographic ExtPict Extender Ext Grapheme_Base",
+    "Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue",
+    "IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math",
+    "Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical",
+    "Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph",
+    "UIdeo Uppercase Upper Variation_Selector VS White_Space WSpace space XID_Continue XIDC XID_Start XIDS Any",
+    "ASCII Assigned sc=Adlam scx=Adlam sc=Caucasian_Albanian scx=Caucasian_Albanian sc=Ahom scx=Ahom sc=Arabic",
+    "scx=Arabic sc=Imperial_Aramaic scx=Imperial_Aramaic sc=Armenian scx=Armenian sc=Avestan scx=Avestan",
+    "sc=Balinese scx=Balinese sc=Bamum scx=Bamum sc=Bassa_Vah scx=Bassa_Vah sc=Batak scx=Batak sc=Bengali",
+    "scx=Bengali sc=Beria_Erfe scx=Beria_Erfe sc=Bhaiksuki scx=Bhaiksuki sc=Bopomofo scx=Bopomofo sc=Brahmi",
+    "scx=Brahmi sc=Braille scx=Braille sc=Buginese scx=Buginese sc=Buhid scx=Buhid sc=Chakma scx=Chakma",
+    "sc=Canadian_Aboriginal scx=Canadian_Aboriginal sc=Carian scx=Carian sc=Cham scx=Cham sc=Cherokee",
+    "scx=Cherokee sc=Chorasmian scx=Chorasmian sc=Coptic scx=Coptic sc=Cypro_Minoan scx=Cypro_Minoan sc=Cypriot",
+    "scx=Cypriot sc=Cyrillic scx=Cyrillic sc=Devanagari scx=Devanagari sc=Dives_Akuru scx=Dives_Akuru sc=Dogra",
+    "scx=Dogra sc=Deseret scx=Deseret sc=Duployan scx=Duployan sc=Egyptian_Hieroglyphs scx=Egyptian_Hieroglyphs",
+    "sc=Elbasan scx=Elbasan sc=Elymaic scx=Elymaic sc=Ethiopic scx=Ethiopic sc=Garay scx=Garay sc=Georgian",
+    "scx=Georgian sc=Glagolitic scx=Glagolitic sc=Gunjala_Gondi scx=Gunjala_Gondi sc=Masaram_Gondi",
+    "scx=Masaram_Gondi sc=Gothic scx=Gothic sc=Grantha scx=Grantha sc=Greek scx=Greek sc=Gujarati scx=Gujarati",
+    "sc=Gurung_Khema scx=Gurung_Khema sc=Gurmukhi scx=Gurmukhi sc=Hangul scx=Hangul sc=Han scx=Han sc=Hanunoo",
+    "scx=Hanunoo sc=Hatran scx=Hatran sc=Hebrew scx=Hebrew sc=Hiragana scx=Hiragana sc=Anatolian_Hieroglyphs",
+    "scx=Anatolian_Hieroglyphs sc=Pahawh_Hmong scx=Pahawh_Hmong sc=Nyiakeng_Puachue_Hmong",
+    "scx=Nyiakeng_Puachue_Hmong sc=Old_Hungarian scx=Old_Hungarian sc=Old_Italic scx=Old_Italic sc=Javanese",
+    "scx=Javanese sc=Kayah_Li scx=Kayah_Li sc=Katakana scx=Katakana sc=Kawi scx=Kawi sc=Kharoshthi scx=Kharoshthi",
+    "sc=Khmer scx=Khmer sc=Khojki scx=Khojki sc=Khitan_Small_Script scx=Khitan_Small_Script sc=Kannada",
+    "scx=Kannada sc=Kirat_Rai scx=Kirat_Rai sc=Kaithi scx=Kaithi sc=Tai_Tham scx=Tai_Tham sc=Lao scx=Lao sc=Latin",
+    "scx=Latin sc=Lepcha scx=Lepcha sc=Limbu scx=Limbu sc=Linear_A scx=Linear_A sc=Linear_B scx=Linear_B sc=Lisu",
+    "scx=Lisu sc=Lycian scx=Lycian sc=Lydian scx=Lydian sc=Mahajani scx=Mahajani sc=Makasar scx=Makasar",
+    "sc=Mandaic scx=Mandaic sc=Manichaean scx=Manichaean sc=Marchen scx=Marchen sc=Medefaidrin scx=Medefaidrin",
+    "sc=Mende_Kikakui scx=Mende_Kikakui sc=Meroitic_Cursive scx=Meroitic_Cursive sc=Meroitic_Hieroglyphs",
+    "scx=Meroitic_Hieroglyphs sc=Malayalam scx=Malayalam sc=Modi scx=Modi sc=Mongolian scx=Mongolian sc=Mro",
+    "scx=Mro sc=Meetei_Mayek scx=Meetei_Mayek sc=Multani scx=Multani sc=Myanmar scx=Myanmar sc=Nag_Mundari",
+    "scx=Nag_Mundari sc=Nandinagari scx=Nandinagari sc=Old_North_Arabian scx=Old_North_Arabian sc=Nabataean",
+    "scx=Nabataean sc=Newa scx=Newa sc=Nko scx=Nko sc=Nushu scx=Nushu sc=Ogham scx=Ogham sc=Ol_Chiki scx=Ol_Chiki",
+    "sc=Ol_Onal scx=Ol_Onal sc=Old_Turkic scx=Old_Turkic sc=Oriya scx=Oriya sc=Osage scx=Osage sc=Osmanya",
+    "scx=Osmanya sc=Old_Uyghur scx=Old_Uyghur sc=Palmyrene scx=Palmyrene sc=Pau_Cin_Hau scx=Pau_Cin_Hau",
+    "sc=Old_Permic scx=Old_Permic sc=Phags_Pa scx=Phags_Pa sc=Inscriptional_Pahlavi scx=Inscriptional_Pahlavi",
+    "sc=Psalter_Pahlavi scx=Psalter_Pahlavi sc=Phoenician scx=Phoenician sc=Miao scx=Miao",
+    "sc=Inscriptional_Parthian scx=Inscriptional_Parthian sc=Rejang scx=Rejang sc=Hanifi_Rohingya",
+    "scx=Hanifi_Rohingya sc=Runic scx=Runic sc=Samaritan scx=Samaritan sc=Old_South_Arabian scx=Old_South_Arabian",
+    "sc=Saurashtra scx=Saurashtra sc=SignWriting scx=SignWriting sc=Shavian scx=Shavian sc=Sharada scx=Sharada",
+    "sc=Siddham scx=Siddham sc=Sidetic scx=Sidetic sc=Khudawadi scx=Khudawadi sc=Sinhala scx=Sinhala sc=Sogdian",
+    "scx=Sogdian sc=Old_Sogdian scx=Old_Sogdian sc=Sora_Sompeng scx=Sora_Sompeng sc=Soyombo scx=Soyombo",
+    "sc=Sundanese scx=Sundanese sc=Sunuwar scx=Sunuwar sc=Syloti_Nagri scx=Syloti_Nagri sc=Syriac scx=Syriac",
+    "sc=Tagbanwa scx=Tagbanwa sc=Takri scx=Takri sc=Tai_Le scx=Tai_Le sc=New_Tai_Lue scx=New_Tai_Lue sc=Tamil",
+    "scx=Tamil sc=Tangut scx=Tangut sc=Tai_Viet scx=Tai_Viet sc=Tai_Yo scx=Tai_Yo sc=Telugu scx=Telugu",
+    "sc=Tifinagh scx=Tifinagh sc=Tagalog scx=Tagalog sc=Thaana scx=Thaana sc=Thai scx=Thai sc=Tibetan scx=Tibetan",
+    "sc=Tirhuta scx=Tirhuta sc=Tangsa scx=Tangsa sc=Todhri scx=Todhri sc=Tolong_Siki scx=Tolong_Siki sc=Toto",
+    "scx=Toto sc=Tulu_Tigalari scx=Tulu_Tigalari sc=Ugaritic scx=Ugaritic sc=Vai scx=Vai sc=Vithkuqi scx=Vithkuqi",
+    "sc=Warang_Citi scx=Warang_Citi sc=Wancho scx=Wancho sc=Old_Persian scx=Old_Persian sc=Cuneiform",
+    "scx=Cuneiform sc=Yezidi scx=Yezidi sc=Yi scx=Yi sc=Zanabazar_Square scx=Zanabazar_Square sc=Inherited",
+    "scx=Inherited sc=Common scx=Common sc=Unknown scx=Unknown Script=Adlm Script_Extensions=Adlm Script=Aghb",
+    "Script_Extensions=Aghb Script=Arab Script_Extensions=Arab Script=Armi Script_Extensions=Armi Script=Armn",
+    "Script_Extensions=Armn Script=Avst Script_Extensions=Avst Script=Bali Script_Extensions=Bali",
+]
+
+for (const name of names.join(" ").split(" ")) {
+    const found = sample.match(new RegExp(`\\p{${name}}`, "gu"))
+    console.log(name, found === null ? 0 : found.length)
+}

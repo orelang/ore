@@ -15,12 +15,12 @@ import {
     type Program,
     canonicalize,
     canonicalizeUnicode,
+    caseNext,
     compileRegExp,
     inRanges,
     isLineTerminator,
     isWordChar,
     isFoldedWordChar,
-    lowercase,
     OP_ANY,
     OP_ANY_ALL,
     OP_BACK,
@@ -41,7 +41,6 @@ import {
     OP_SPLIT,
     OP_STAR,
     OP_WORD,
-    unicodeVariant,
 } from "ore:runtime/regexp-syntax"
 
 /** A run of a program over a string: the backtracking stack and the slots. */
@@ -163,21 +162,16 @@ class Matcher {
         return ok ? pos + this.width : -1
     }
 
-    /** Whether a class (by set) holds a character, ignoring case when asked. */
+    /** Whether a class (by set) holds a character, or ignoring case when asked one of the same canonical case. */
     inClass(set: int, c: int, ignoreCase: bool): bool {
         const ranges = this.program.sets[set]
         if (inRanges(ranges, c)) return true
         if (!ignoreCase) return false
-        const upper = this.fold(c)
-        if (upper !== c && inRanges(ranges, upper)) return true
-        const lower = lowercase(upper)
-        if (lower !== c && inRanges(ranges, lower)) return true
-        if (this.program.unicode) {
-            const other = unicodeVariant(upper)
-            if (other >= 0 && other !== c && inRanges(ranges, other)) return true
+        const unicode = this.program.unicode
+        for (let other = caseNext(c, unicode); other !== c; other = caseNext(other, unicode)) {
+            if (inRanges(ranges, other)) return true
         }
-        // Two lowercase letters with one uppercase: ς and σ, µ and μ.
-        return (upper === 0x3a3 && inRanges(ranges, 0x3c2)) || (upper === 0x39c && inRanges(ranges, 0xb5))
+        return false
     }
 
     /** Whether the text of a group is at a position; its length in `width`. */

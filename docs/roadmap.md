@@ -93,8 +93,9 @@ exports, type assertions (Ore converts: `i32(x)`).
     (done).
 - Regular expressions: literals `/re/`, `RegExp` and the string methods
   that take one, with a backtracking engine in the runtime, lookbehind and
-  the flags `d`, `u` and `v` with the string disjunctions `\q{...}` (done;
-  `\p{...}` knows only the letter and number categories and four scripts).
+  the flags `d`, `u` and `v` with the string disjunctions `\q{...}`, and
+  `\p{...}` with every property of Unicode 17.0 that JavaScript has, also
+  the properties of strings (done).
 - The methods of `String.prototype` from MDN, on byte offsets, with
   Unicode's full case mappings and the four normalization forms (done;
   `localeCompare` compares by code point).

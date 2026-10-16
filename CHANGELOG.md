@@ -158,6 +158,27 @@ before 1.0, a minor version may change the language.
   (a generator, an iterator of the runtime or a class extending
   `IteratorObject`) as it is, and wraps another one in an iterator whose
   `return()` calls its `return()`.
+- `\p{...}` and `\P{...}` in regular expressions have every property that
+  JavaScript has, from Unicode 17.0 as Node 24: all General_Category values
+  and groups by any name (`Lu`, `Uppercase_Letter`, `gc=P`, `punct`), every
+  script as `sc=`/`Script=` and `scx=`/`Script_Extensions=`, the binary
+  properties (`Alphabetic`, `Emoji`, `Extended_Pictographic`, `ID_Start`,
+  `White_Space`, `Assigned`...), and with `v` the properties of strings
+  (`RGI_Emoji`, `Basic_Emoji`, `RGI_Emoji_Flag_Sequence`...), also in the
+  class operations `[\p{RGI_Emoji}--\q{🇫🇷}]`. Other names are `Invalid
+  property name`, as in V8. The tables are made from the Unicode data files
+  by ci/regexp-properties.js (`--check` compares them with Node).
+- Ignoring case in regular expressions compares the case of every
+  character as JavaScript does: the simple case foldings of all of Unicode
+  with `u` or `v` (Armenian, Georgian, Cherokee, Deseret...), and without
+  them the one-character uppercase of the characters up to U+FFFF; it was
+  the uppercase of ASCII, Latin-1, Greek and Cyrillic letters.
+- A class of the `v` flag with many strings (a property of strings) matches
+  them through a tree of their characters, and its operations compare
+  strings by key.
+- tests/fuzz/regexp also makes patterns with the flags `u` and `v`,
+  properties, classes of strings and letters of every case, on Unicode
+  subjects.
 
 ## 0.5.0
 

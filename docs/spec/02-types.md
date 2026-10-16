@@ -715,17 +715,21 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
 - `u` has the syntax of JavaScript's `u` flag: `\u{1F600}`, `\p{...}` and
   `\P{...}` (not in the property), and the strict escapes and quantifier
   braces without Annex B (`/\a/u` is an error). Ignoring case compares
-  simple case foldings: also `ſ` with `s`, the Kelvin sign with `k`, the Ohm
-  sign with `Ω` and `ẞ` with `ß`; so `\w` and `\b` take `ſ` and the Kelvin
-  sign as word characters, and `\W` takes neither. Matching is by code point
-  with or without it. The properties of `\p{...}`, from Unicode 17.0: the
-  General_Category values of letters and numbers (`L`, `LC`, `Lu`, `Ll`,
-  `Lt`, `Lm`, `Lo`, `N`, `Nd`, `Nl`, `No`, by their short or long names,
-  alone or as `gc=`/`General_Category=`), the scripts `Latin`, `Greek`,
-  `Cyrillic` and `Han` (`sc=`/`Script=`, also `Latn`, `Grek`, `Cyrl`,
-  `Hani`), `Any` and `ASCII`. Other properties JavaScript has (`Emoji`,
-  `Script_Extensions`, other categories and scripts) are errors: `The
-  property 'Emoji' is not supported`.
+  simple case foldings (CaseFolding.txt) of all of Unicode: also `ſ` with
+  `s`, the Kelvin sign with `k`, `ẞ` with `ß`, Cherokee, Georgian and the
+  letters beyond U+FFFF; so `\w` and `\b` take `ſ` and the Kelvin sign as
+  word characters, and `\W` takes neither. Matching is by code point with
+  or without it. `\p{...}` has every property JavaScript has, from Unicode
+  17.0 as Node 24: each General_Category value and group (`L`, `LC`, `Lu`,
+  `P`, `Zs`, `Cn`...) by any of its names (`Uppercase_Letter`, `punct`,
+  `digit`), alone or as `gc=`/`General_Category=`; each script as
+  `sc=`/`Script=` and `scx=`/`Script_Extensions=` (the characters used in
+  it, such as `ー` in Hiragana and Katakana), by its long or short name
+  (`Greek`, `Grek`); and the binary properties of JavaScript's table, by
+  any of their names (`Alphabetic`, `Alpha`, `Emoji`, `ID_Start`,
+  `White_Space`, `Any`, `ASCII`, `Assigned`...). Another name, or a value
+  in another case, is an error: `Invalid property name` (`... in character
+  class` in a class).
 - `v` is `u` with JavaScript's classes of the `v` flag: nested classes
   (`[[a-z][0-9]]`), differences `[\p{L}--[a-z]]` and intersections
   `[\w&&\d]`, and the characters that must be escaped in them
@@ -733,12 +737,24 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   the operators. String disjunctions `\q{abc|d}` put strings in a class,
   which tries its longest strings first, then its characters, then the
   empty string; the operators take them too, and a negated class that may
-  hold strings is an error.
+  hold strings is an error. So do the properties of strings, emoji of
+  several characters as one: `\p{RGI_Emoji}` (all of these),
+  `Basic_Emoji`, `Emoji_Keycap_Sequence`, `RGI_Emoji_Flag_Sequence`,
+  `RGI_Emoji_Modifier_Sequence`, `RGI_Emoji_Tag_Sequence` and
+  `RGI_Emoji_ZWJ_Sequence` (`[\p{RGI_Emoji}--\q{🇫🇷}]`); `\P{RGI_Emoji}` is
+  an error, as is a property of strings with `u`. With `i`, a string of one
+  character of `\q{...}` takes every character of its case, as the
+  specification says (V8 takes only its case folding: `[\q{a}]` with `vi`
+  matches no `A` there); so does `\p{ASCII}`, which takes `ſ` and the
+  Kelvin sign with `vi` (not in V8).
 - The matcher backtracks over the UTF-8 bytes a character (a code point) at
   a time: `.` and `[^a]` match a whole character, also one beyond U+FFFF
   (JavaScript matches half of its surrogate pair). Positions — `index`,
   `lastIndex`, `search` — are byte offsets, as for strings. Ignoring case
-  compares the uppercase of ASCII, Latin-1, Greek and Cyrillic letters.
+  without `u` or `v` compares JavaScript's canonical case, the uppercase
+  when it is one character (and not ASCII for another one), of the
+  characters up to U+FFFF: `ǆ` with `Ǆ` and `ǅ`, but not `ß` with `ẞ` nor
+  `𐐀` with `𐐨`.
 - `re.exec(s)` returns a `RegExpMatch` or `null`; with `g` or `y` it starts
   at `re.lastIndex` and sets it past the match, or to 0 when there is none.
   `re.test(s)` is whether `exec` finds a match.

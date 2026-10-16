@@ -13,11 +13,13 @@ const n = /a/uv // error: Invalid regular expression: Invalid flags 'uv'.
 const o = /(?=a)*/u // error: Invalid regular expression: Invalid quantifier.
 const p = /(?<1x>a)/ // error: Invalid regular expression: Invalid capture group name.
 
-// The stricter syntax of the u and v flags, and what Ore leaves out of it.
+// The stricter syntax of the u and v flags.
 const u1 = /\a/u // error: Invalid regular expression: Invalid escape.
 const u2 = /\u{110000}/u // error: Invalid regular expression: Invalid Unicode escape.
 const u3 = /\p{Foo=Bar}/u // error: Invalid regular expression: Invalid property name.
-const u4 = /\p{Emoji}/u // error: Invalid regular expression: The property 'Emoji' is not supported.
+const u4 = /\p{RGI_Emoji}/u // error: Invalid regular expression: Invalid property name.
+const u10 = /[\p{Hiragana}]/u // error: Invalid regular expression: Invalid property name in character class.
+const u11 = /\p{Other_Alphabetic}/u // error: Invalid regular expression: Invalid property name.
 const u5 = /[\d-z]/u // error: Invalid regular expression: Invalid character class.
 const u6 = /a{/u // error: Invalid regular expression: Incomplete quantifier.
 const u7 = /}/u // error: Invalid regular expression: Lone quantifier brackets.
@@ -31,7 +33,20 @@ const v5 = /[^[\q{ab}--\q{ab}]]/v // error: Invalid regular expression: Negated 
 const v6 = /[\q{a(b}]/v // error: Invalid regular expression: Invalid character in character class.
 const v7 = /[\q{a\db}]/v // error: Invalid regular expression: Invalid escape.
 const v8 = /[\q{ab}]/u // error: Invalid regular expression: Invalid escape.
-const fine = [/(?<=a)b/, /\p{L}/u, /[\w--\d]/v, /a/dgimsvy, /[^\q{a|b}]/v, /[^\q{ab}&&a]/v]
+const v9 = /\P{RGI_Emoji}/v // error: Invalid regular expression: Invalid property name.
+const v10 = /[^\p{RGI_Emoji_Flag_Sequence}]/v // error: Invalid regular expression: Negated character class may contain strings.
+const v11 = /[\P{Basic_Emoji}]/v // error: Invalid regular expression: Invalid property name in character class.
+const fine = [
+    /(?<=a)b/,
+    /\p{L}/u,
+    /[\w--\d]/v,
+    /a/dgimsvy,
+    /[^\q{a|b}]/v,
+    /[^\q{ab}&&a]/v,
+    /\p{Emoji}\p{scx=Hira}\P{sc=Zyyy}/u,
+    /[\p{RGI_Emoji}--\q{x}]/v,
+    /[^\p{RGI_Emoji}&&\p{Lu}]/v,
+]
 
 const re = /a/g
 "abc".match(5) // error: An integer constant is not assignable to type 'string'.
