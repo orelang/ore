@@ -15,7 +15,6 @@ before 1.0, a minor version may change the language.
 - `URLSearchParams` is iterable: `for (const [k, v] of params)`, spread,
   `Array.from` and `new Map(params)` take its pairs, and `keys()`,
   `values()` and `entries()` return lazy iterators, as in JavaScript.
-
 - install.sh speaks like `ore`: the `{Ore}` wordmark and its colors (true
   color, the terminal's 256 or 16, or none, by the same rules: NO_COLOR,
   FORCE_COLOR, COLORTERM, TERM), a header with the version, platform,
