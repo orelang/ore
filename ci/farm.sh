@@ -91,7 +91,7 @@ job() {
     git archive --format=tar "$commit" | ssh "$host" "rm -rf $dir && mkdir -p $dir && tar -x -C $dir"
     local status=0
     # shellcheck disable=SC2029
-    ssh "$host" "cd $dir && export PATH=/usr/lib/llvm-22/bin:\$PATH FARM_JOBS=\$(( \$(nproc) / $slots )) && $command" >>"$log" 2>&1 || status=$?
+    ssh "$host" "set -o pipefail; cd $dir && export PATH=/usr/lib/llvm-22/bin:\$PATH FARM_JOBS=\$(( \$(nproc) / $slots )) && $command" >>"$log" 2>&1 || status=$?
     [ $status = 0 ] && ssh "$host" "rm -rf $dir" || true
     echo "== $name: exit $status" >>"$log"
     tail -4 "$log"
