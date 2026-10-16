@@ -1,7 +1,7 @@
 //ore:internal
 // Runs the cases of tests/fuzz/regexp/gen.mjs with Ore's RegExp and prints
-// them as it prints JavaScript's results; a pattern Ore rejects, which Node
-// took, prints `rejected: why` instead of panicking.
+// them as it prints JavaScript's results (indices in UTF-8 bytes); a pattern
+// Ore rejects, which Node took, prints `rejected: why` instead of panicking.
 
 import { compileRegExp } from "ore:runtime/regexp-syntax"
 type Case = { p: string; f: string; s: string }
@@ -36,7 +36,11 @@ for (const line of text.split("\n")) {
         for (let i = 0; i < m.length; i++) groups.push(m.at(i))
         out.push(`${m.index}: ${show(groups)}`)
         if (!loop) break
-        if ((m.at(0) ?? "") === "") re.lastIndex++
+        // Past a whole character, its UTF-8 bytes, as gen.mjs moves past its UTF-16 units.
+        if ((m.at(0) ?? "") === "") {
+            const point = c.s.codePointAt(re.lastIndex) ?? 0
+            re.lastIndex += point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4
+        }
     }
     re.lastIndex = 0
     out.push(`replace: ${JSON.stringify(c.s.replace(re, "<$&>"))}`)
