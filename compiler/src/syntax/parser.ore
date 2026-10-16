@@ -1089,6 +1089,7 @@ export class Parser {
     }
 
     private assignment(): Node {
+        if (this.at("YieldKeyword")) return this.yieldExpression()
         const arrow = this.arrowFunction()
         if (arrow !== null) return arrow
         const start = this.token().start
@@ -1104,6 +1105,25 @@ export class Parser {
             )
         }
         return left
+    }
+
+    /** `yield`, `yield value` or `yield* iterable`: a value follows unless the expression ends there. */
+    private yieldExpression(): Node {
+        const start = this.token().start
+        this.next()
+        const asterisk = this.at("AsteriskToken") ? this.tokenNode() : null
+        const k = this.kind()
+        const ends =
+            k === "CloseParenToken" ||
+            k === "CloseBracketToken" ||
+            k === "CloseBraceToken" ||
+            k === "CommaToken" ||
+            k === "SemicolonToken" ||
+            k === "ColonToken" ||
+            k === "EndOfFileToken" ||
+            (this.token().newline && asterisk === null)
+        const operand = ends && asterisk === null ? null : this.assignment()
+        return this.node("YieldExpression", start, [asterisk, operand], ["asteriskToken", "expression"])
     }
 
     /** The binary or assignment operator at the current token, joining `>` with what follows. */

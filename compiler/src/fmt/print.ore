@@ -551,6 +551,9 @@ function needsParens(n: ENode): bool {
             return binaryNeedsParens(n, parent, key)
         case "SequenceExpression":
             return parent.type !== "ForStatement" && parent.type !== "ExpressionStatement"
+        case "YieldExpression":
+            if (parent.type === "AwaitExpression") return true
+        // falls through: the rest as for `await`
         case "AwaitExpression":
             switch (parent.type) {
                 case "UnaryExpression":
@@ -837,6 +840,8 @@ function printNode(n: ENode, args: Args): Doc {
             return printArrow(n, args)
         case "AwaitExpression":
             return printAwait(n)
+        case "YieldExpression":
+            return printYield(n)
         case "ExportDefaultDeclaration":
         case "ExportNamedDeclaration":
         case "ExportAllDeclaration":
@@ -2190,6 +2195,14 @@ function printArrowBody(n: ENode, a: Args, bodyDoc: Doc, bodyComments: Doc[], bo
         ])
     if (sameLine) return c([space, bodyDoc, comments])
     return c([indent(c([line, bodyDoc, comments])), trailingComma, trailingSpace])
+}
+
+function printYield(n: ENode): Doc {
+    const parts: Doc[] = [t("yield")]
+    if (n.delegate) parts.push(t("*"))
+    const argument = n.get("argument")
+    if (argument !== null) parts.push(space, pr(argument))
+    return c(parts)
 }
 
 function printAwait(n: ENode): Doc {
