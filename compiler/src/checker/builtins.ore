@@ -57,6 +57,9 @@ function constant(name: string): f64 | null {
 function targetConstant(name: string): string | null {
     if (name === "target.os") return target.os
     if (name === "target.arch") return target.arch
+    // Node's names: "darwin" and "linux", "arm64" and "x64".
+    if (name === "process.platform") return target.os
+    if (name === "process.arch") return target.arch === "x86_64" ? "x64" : target.arch
     return null
 }
 
@@ -112,6 +115,8 @@ export const globalClassModules = [
     "ore:runtime/text",
     "ore:runtime/text",
     "ore:runtime/text",
+    "ore:runtime/url",
+    "ore:runtime/url",
 ]
 
 /** The runtime module whose generic type aliases are global names, as `Partial`. */
@@ -135,6 +140,8 @@ export const globalClasses = [
     "TextDecoder",
     "atob",
     "btoa",
+    "URL",
+    "URLSearchParams",
 ]
 
 export class Builtins {
@@ -181,9 +188,10 @@ export function builtinScope(): Builtins {
             if (type !== null) scope.declareType(name, new TypeSymbol(type, stmt))
         } else if (stmt.kind === "FunctionDeclaration" && optionalName(stmt) !== null) {
             const name = nameNode(stmt).text
+            // A function named by a type converts to it; others are global functions, as `structuredClone`.
             const found = scope.lookupType(name)
-            if (found === null) process.panic(`unknown builtin function ${name}`)
-            scope.declareValue(name, new ConversionSymbol(found.type, stmt))
+            if (found !== null) scope.declareValue(name, new ConversionSymbol(found.type, stmt))
+            else scope.declareValue(name, new BuiltinSymbol(name, stmt))
         } else if (isNamespace(stmt)) {
             const ns = nameNode(stmt).text
             scope.declareValue(ns, builtinNamespace(ns, stmt))

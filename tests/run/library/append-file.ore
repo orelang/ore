@@ -1,0 +1,14 @@
+// fs.appendFile, as Node's appendFileSync: creates a missing file, then appends.
+
+const dir = fs.mkdtemp("ore-append-")
+if (dir instanceof Error) process.panic(dir.message)
+const file = `${dir}/log.txt`
+console.log(fs.appendFile(file, "one\n"), fs.readFile(file))
+console.log(fs.appendFile(file, "two\n"), fs.readFile(file))
+console.log(fs.appendFile(file, ""), fs.readFile(file))
+fs.writeFile(file, "reset\n")
+fs.appendFile(file, "€ and more\n")
+console.log(fs.readFile(file))
+const missing = fs.appendFile(`${dir}/no/such/file`, "x")
+console.log(missing === null ? "ok" : missing.message.replaceAll(dir, "<dir>"))
+fs.remove(dir, true)

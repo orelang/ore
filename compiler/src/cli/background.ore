@@ -14,6 +14,14 @@ declare function kill(pid: i32, signal: i32): i32
 const sigterm: i32 = 15
 const sigkill: i32 = 9
 
+/**
+ * A millisecond in nanoseconds, the unit of `task.sleep` and `task.after`:
+ * `time.millisecond`, which stage 0 does not have. Stage 0 counts these
+ * arguments in milliseconds, so the compiler it builds waits longer; it only
+ * builds the next stage, which counts them as written.
+ */
+export const millisecond = 1000000
+
 /** A program running in the background with this process's stdin, stdout and stderr. */
 export class Background {
     /** Its exit status when it ends, as `process.run` returns it, or -1 if it could not run. */
@@ -59,9 +67,9 @@ function received(running: Background): SelectCase {
     })
 }
 
-/** Waits until the program ends, or `ms` milliseconds; returns whether it ended. */
-function waitEnded(running: Background, ms: int): bool {
-    if (!running.ended) task.select([received(running), task.after(ms, () => {})])
+/** Waits until the program ends, or `ns` nanoseconds; returns whether it ended. */
+function waitEnded(running: Background, ns: int): bool {
+    if (!running.ended) task.select([received(running), task.after(ns, () => {})])
     return running.ended
 }
 
@@ -73,14 +81,14 @@ function pidOf(running: Background): int {
             const pid = Number.parseInt(text.trim())
             if (pid !== null && pid > 0) return pid
         }
-        task.sleep(5)
+        task.sleep(5 * millisecond)
     }
     return 0
 }
 
 /**
  * Stops the program and waits until it ended: SIGTERM, then SIGKILL if it
- * still runs after `grace` milliseconds.
+ * still runs after `grace` nanoseconds.
  */
 export function stopBackground(running: Background, grace: int): void {
     const pid = pidOf(running)
@@ -88,7 +96,7 @@ export function stopBackground(running: Background, grace: int): void {
         kill(i32(pid), sigterm)
         if (!waitEnded(running, grace)) {
             kill(i32(pid), sigkill)
-            while (!waitEnded(running, 1000)) {}
+            while (!waitEnded(running, 1000 * millisecond)) {}
         }
     }
     if (fs.exists(running.pidFile)) fs.remove(running.pidFile)

@@ -1,0 +1,62 @@
+// URLSearchParams: the form encoding, the methods, and the link to a URL's
+// query in both directions.
+const p = new URLSearchParams("?a=1&b=x+y&a=%C3%A9&c&=e&&d=%zz&f=a=b")
+console.log(p.toString(), p.size)
+console.log(p.get("a"), p.get("b"), p.get("c"), p.get(""), p.get("d"), p.get("f"), p.get("missing"))
+console.log(p.getAll("a"), p.getAll("missing"))
+console.log(p.has("a"), p.has("a", "1"), p.has("a", "2"), p.has("missing"))
+p.append("a", "3")
+p.set("b", "new value")
+p.set("g", "~!*()'-._")
+console.log(p.toString())
+p.delete("a", "1")
+console.log(p.toString())
+p.delete("a")
+console.log(p.toString())
+
+// Sorting is stable, by UTF-16 code units: U+FF61 sorts after U+1F600.
+const s = new URLSearchParams("z=1&a=2&z=0&b=3&a=1&\u{1F600}=x&｡=y&A=4")
+s.sort()
+console.log(s.toString())
+
+// From pairs, and a copy.
+const q = new URLSearchParams([
+    ["x", "1"],
+    ["y", "a b&c=d"],
+    ["x", "é"],
+])
+console.log(q.toString())
+const copy = new URLSearchParams(q)
+copy.append("z", "3")
+console.log(q.size, copy.size, new URLSearchParams().toString() === "")
+q.forEach((value, key) => console.log(key, value))
+console.log(Array.from(q.keys()), Array.from(q.values()))
+console.log(JSON.stringify(Array.from(q.entries())))
+
+// Encoding: everything but alphanumerics and *-._ is percent-encoded, space as +.
+const all = new URLSearchParams()
+let chars = ""
+for (let c = 0x20; c < 0x7f; c++) chars += String.fromCharCode(c)
+all.append("k", chars)
+all.append("\u0000\n", "€ \u{1F600}")
+console.log(all.toString())
+console.log(new URLSearchParams(all.toString()).get("k") === chars)
+
+// A URL's searchParams changes its query, and its query its searchParams.
+const u = new URL("https://example.com/path?b=2&a=1#h")
+const params = u.searchParams
+params.append("c", "x y")
+console.log(u.href, u.search)
+params.sort()
+console.log(u.href)
+params.delete("a")
+params.delete("b")
+params.delete("c")
+console.log(u.href, JSON.stringify(u.search))
+u.search = "?k=v&k=w"
+console.log(params.getAll("k"), u.searchParams === params)
+u.href = "https://other.example/?n=1"
+console.log(params.get("n"), params.has("k"))
+const raw = new URL("http://h/?a=%7e&b=c%20d")
+raw.searchParams.sort()
+console.log(raw.href)

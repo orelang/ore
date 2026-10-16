@@ -9,6 +9,7 @@ import {
     blocked,
     current,
     enqueueNext,
+    nanosToMillis,
     addTimerLocked,
     park,
     parkUnlocking,
@@ -313,9 +314,10 @@ function caseSendNew(channel: ptr, value: ptr, handler: () => void): ptr {
     return unsafe.addressOf(new SelectCase(caseSend, c, 0, buffer, handler, nil()))
 }
 
+/** `task.after`: a case that proceeds `ns` nanoseconds from now, rounded up to a millisecond. */
 //ore:runtime ore_rt_case_after
-function caseAfterNew(ms: int, handler: () => void): ptr {
-    return unsafe.addressOf(new SelectCase(caseAfter, null, ms, nil(), handler, nil()))
+function caseAfterNew(ns: int, handler: () => void): ptr {
+    return unsafe.addressOf(new SelectCase(caseAfter, null, nanosToMillis(ns), nil(), handler, nil()))
 }
 
 /** The received value of a receive case, and whether there was one, for its dispatch function. */

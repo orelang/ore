@@ -243,6 +243,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.panic(message)` | aborts with the message and a stack trace (status 2) |
 | `process.exit(code)` | exits with a status code |
 | `process.args` | the command-line arguments after the program name |
+| `process.platform`, `process.arch` | the platform, with Node's names: `"darwin"` or `"linux"`, `"arm64"` or `"x64"`; constants of the target, as `target.os` and `target.arch` (which names the latter `"x86_64"`) |
 | `process.getenv(name)` | an environment variable, or `null` |
 | `process.cwd()` | the working directory, as an absolute path |
 | `process.env()` | the environment variables, as a `Map<string, string>` |
@@ -264,6 +265,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `Map.groupBy(items, keyFn)` | the elements of an array grouped by a key (see [maps](03-objects.md#maps)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
+| `fs.appendFile(path, data)` | appends to a file, created if missing (Node's `appendFileSync`); `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
 | `fs.read(fd, max)` | up to `max` bytes from a file descriptor (0 is stdin), waiting for some; `""` at the end; or an `Error` |
 | `fs.write(fd, data)` | writes all of `data` to a file descriptor, unbuffered; `null`, or an `Error` |
@@ -279,6 +281,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
 | `JSON.stringify(value, keys?, space?)` | the JSON text of a value; a replacer array `keys` keeps only those keys of each object, in its order; `space` indents each level by that many spaces (at most 10) or by a string (its first 10 characters); a replacer function is not supported |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
+| `structuredClone(value)` | a deep copy of a value, keeping shared references and cycles: a global function, as in JavaScript |
 
 Numbers of every numeric type have the methods of JavaScript's
 `Number.prototype`: `toString(radix?)` (2 to 36, fractions of floats as
@@ -308,6 +311,20 @@ A namespace can be nested in another: `process.command` is a member of
 no value). A nested namespace written in Ore has a module of its own,
 whose exports are its members: `runtime/core/process-command.ore` for
 `process.command`.
+
+### globalThis
+
+`globalThis` holds the global names as members, as in JavaScript:
+`globalThis.Math.max(1, 2)`, `globalThis.console.log(...)`,
+`new globalThis.Date(0)`, `globalThis.Promise.resolve(1)`,
+`globalThis.time.second`, and as types `globalThis.Date` or
+`globalThis.Promise<int>`. Its members are the built-in namespaces, the
+global classes and the conversions; a module's own top-level declarations
+are not on it, as in ES modules (`globalThis.limit` of a module's `const
+limit` is an error), and a local declaration of the same name does not hide
+the global one. It is resolved at compile time, as the namespaces are:
+`globalThis.name` is the global `name`, nothing can be added to it, and
+`globalThis` itself is no value (`const g = globalThis` is an error).
 
 In the names of the standard library, only a class or a type is
 capitalized, and at most one part of a path: `process.Child`,
@@ -418,7 +435,7 @@ const code = process.command.run("cc", ["-c", "main.c"], { cwd: "build", env: ne
   server.kill()
   const exited = new Chan<int | Error>(1)
   task.spawn(() => exited.send(server.wait()))
-  task.select([exited.onReceive((status) => {}), task.after(1000, () => server.kill(9))])
+  task.select([exited.onReceive((status) => {}), task.after(time.second, () => server.kill(9))])
   ```
 - A `process.CommandOptions` has `cwd` (this program's directory when left
   out or `""`), `env` (a `Map` of variables set over the inherited
@@ -525,6 +542,22 @@ whose characters are U+0000 to U+00FF (another panics with
 `InvalidCharacterError: Invalid character`), and `atob(s)` the binary
 string of base64 text, skipping ASCII whitespace, with the padding
 optional.
+
+`structuredClone(value)` is JavaScript's deep copy, a global name as there,
+whose code is generated for the type as JSON's is. Numbers, `bool`,
+strings, bigints, `null`, arrays, tuples, `Map`s, `Set`s, `Date`s, object
+types, classes with only fields and unions of these are copied; strings
+and bigints, which never change, are shared. An object reached twice is
+copied once, so shared references and cycles hold in the copy (`a.self ===
+a` gives `copy.self === copy`), and maps and sets are rebuilt by inserting
+the copied keys in order. A type holding a function is an error (ORE4090),
+where JavaScript throws a `DataCloneError` at run time. A class with
+methods is an error too (ORE4091): JavaScript would copy an instance into a
+plain object without them, which the class type cannot describe; so are
+`RegExp`, `Promise`, interfaces, `unknown`, channels and `ptr` (ORE4092).
+A class with only fields is copied as an instance of the same class (an
+instance of a subclass as one of the subclass), where JavaScript makes a
+plain object.
 
 Numeric conversions (`i32(x)`, `f64(x)`) are type names, not namespaced
 functions.
@@ -773,6 +806,73 @@ on the proleptic Gregorian calendar with days of 86 400 000 ms.
   `toTemporalInstant` are missing.
 - `Date` is a class of the runtime written in Ore (`runtime/core/date.ore`),
   a global name as in JavaScript.
+
+## URLs
+
+```ts
+const u = new URL("../x?a=1", "https://Example.com:443/b/c/d")
+console.log(u.href, u.host, u.pathname)           // https://example.com/b/x?a=1 example.com /b/x
+u.searchParams.append("q", "a b")
+console.log(u.search, u.searchParams.get("a"))    // ?a=1&q=a+b 1
+console.log(URL.canParse("nope"), URL.parse("nope"))  // false null
+```
+
+`URL` and `URLSearchParams` are JavaScript's, after the WHATWG URL
+Standard, whose parser they follow over the UTF-8 bytes of the input:
+
+- `new URL(url, base?)` parses `url`, resolved against `base` (a string or
+  a `URL`) when it is given, and panics with `TypeError: Invalid URL` if
+  either is invalid, as JavaScript throws. `URL.canParse(url, base?)` tells
+  whether it would succeed, and `URL.parse(url, base?)` returns the URL or
+  `null`.
+- Parsing: leading and trailing C0 controls and spaces and every tab and
+  newline are left out; the scheme is lowercased; the special schemes
+  `http`, `https`, `ws`, `wss`, `ftp` and `file` read `\` as `/` and drop
+  their default ports; `.` and `..` segments (also `%2e`) are resolved;
+  each component is percent-encoded with its own set; hosts are lowercased,
+  IPv4 addresses are read in their decimal, octal and hexadecimal forms
+  (`http://0x7f.1/` is `http://127.0.0.1/`), and IPv6 addresses written in
+  their compressed form (`[::ffff:c0a8:1]`); `file` URLs keep drive
+  letters; other schemes have opaque hosts and, without `/` after the
+  colon, opaque paths (`mailto:a@b`).
+- Properties, as strings: `href`, `origin` (`null` but for `http`,
+  `https`, `ws`, `wss`, `ftp` and a `blob` of one), `protocol` (with its
+  colon), `username`, `password`, `host` (with the port), `hostname`,
+  `port` (`""` for none or the default), `pathname`, `search` (with its
+  `?`, `""` for an empty query), `hash` (with its `#`), and
+  `searchParams`. All but `origin` and `searchParams` can be set: the
+  setters parse their component as the standard's state override does,
+  and leave the URL as it is when the value is invalid (`protocol` does not
+  change between a special scheme and another), but setting `href` to an
+  invalid URL panics with `TypeError: Invalid URL`. `toString()` and
+  `toJSON()` are the `href`.
+- `searchParams` is a `URLSearchParams` linked both ways to the URL:
+  changing it rewrites the query, and setting `search` or `href` changes
+  its pairs.
+- `new URLSearchParams(init?)` takes a query string (a leading `?` left
+  out), an array of `[name, value]` pairs, or another `URLSearchParams` to
+  copy. `append(name, value)`, `delete(name, value?)`, `get(name)` (`null`
+  when missing, as in JavaScript), `getAll(name)`, `has(name, value?)`,
+  `set(name, value)`, `sort()` (stable, by UTF-16 code units as JavaScript
+  compares strings), `size`, `forEach((value, name, params) => ...)`, and
+  `toString()`, which writes `application/x-www-form-urlencoded`: a space
+  is `+`, and every byte but ASCII letters, digits and `*-._` is
+  percent-encoded. Reading a query, `+` is a space and invalid UTF-8 after
+  decoding becomes U+FFFD.
+- `console.log` prints a URL as Node does, `URL { href: '...', origin:
+  '...', ... }`, and a `URLSearchParams` as `URLSearchParams { 'a' => '1'
+  }`; `JSON.stringify` writes a URL as its `href`.
+- Differences from JavaScript: domains outside ASCII are lowercased in
+  ASCII only and kept as they are, without Unicode's IDNA mapping and
+  Punycode (`http://é.com/` stays so, where JavaScript has
+  `http://xn--9ca.com/`); `keys()`, `values()` and `entries()` return
+  arrays (of `[name, value]` tuples for `entries`) until Ore has
+  iterators, and `for...of` does not iterate a `URLSearchParams`; the
+  constructor of `URLSearchParams` does not take a `Map` or a record; a URL
+  is not formatted by a template literal (`` `${u}` ``: use `u.href`);
+  `URL.createObjectURL` and `URL.revokeObjectURL` are missing.
+- `URL` and `URLSearchParams` are classes of the runtime written in Ore
+  (`runtime/core/url.ore`), global names as in JavaScript.
 
 ## Arrays
 

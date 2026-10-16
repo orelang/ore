@@ -1,0 +1,25 @@
+interface Named {
+    name: string
+}
+class Counter {
+    count = 0
+    increment() {
+        this.count++
+    }
+}
+type Handlers = { onClick: (x: int) => int }
+
+structuredClone((x: int) => x) // error: structuredClone cannot clone a function: '(i64) => i64' could not be cloned.
+const h: Handlers = { onClick: (x: int) => x }
+structuredClone(h) // error: structuredClone cannot clone a function
+structuredClone(new Counter()) // error: an instance of a class with methods would lose them
+structuredClone(/a/g) // error: structuredClone cannot clone 'RegExp'
+structuredClone(Promise.resolve(1)) // error: structuredClone cannot clone 'Promise<i64>'
+const n: Named = { name: "a" }
+structuredClone(n) // error: structuredClone cannot clone 'Named': its values could not be cloned.
+const u: unknown = 1
+structuredClone(u) // error: structuredClone cannot clone 'unknown'
+structuredClone(new Chan<int>(1)) // error: structuredClone cannot clone 'Chan<i64>'
+structuredClone(1, 2) // error: 'structuredClone' expects 1 argument(s), got 2.
+const copy: int[] = structuredClone([1, 2])
+const bad: string = structuredClone(1) // error: is not assignable to type 'string'

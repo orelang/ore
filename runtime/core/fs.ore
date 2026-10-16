@@ -65,6 +65,51 @@ function direntNameAt(): int {
 }
 
 // ---------------------------------------------------------------------------
+// Appending
+
+/** open(2) takes the mode of a file it creates as a variadic argument, which macOS on arm64 passes on the stack. */
+declare function open(path: string, flags: i32, ...mode: i64[]): i32
+declare function write(fd: i32, buffer: ptr, size: u64): i64
+declare function close(fd: i32): i32
+
+const eintr: i32 = 4
+
+/** O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC. */
+function appendFlags(): i32 {
+    if (target.os === "darwin") return 0x1 | 0x200 | 0x8 | 0x1000000
+    return 0x1 | 0x40 | 0x400 | 0x80000
+}
+
+/**
+ * Appends `data` to a file, created (with mode 0o666 less the umask) if it
+ * does not exist: Node's `fs.appendFileSync(path, data)`.
+ */
+export function appendFile(path: string, data: string): Error | null {
+    blockingEnter()
+    const message = appendAll(path, data)
+    blockingExit()
+    return message === "" ? null : new Error(message)
+}
+
+/** Appends, returning "" or what failed; blocks. */
+function appendAll(path: string, data: string): string {
+    const fd = open(path, appendFlags(), 0o666)
+    if (fd < 0) return failure("cannot open", path)
+    let done = 0
+    while (done < data.length) {
+        const n = write(fd, unsafe.add(unsafe.stringData(data), done), u64(data.length - done))
+        if (n >= 0) done += n
+        else if (errno() !== eintr) {
+            const message = failure("cannot write", path)
+            close(fd)
+            return message
+        }
+    }
+    if (close(fd) !== 0) return failure("cannot write", path)
+    return ""
+}
+
+// ---------------------------------------------------------------------------
 // Metadata
 
 /** What `fs.stat` tells about a file. */

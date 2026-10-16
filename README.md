@@ -32,7 +32,7 @@ garbage collector. Programs compile through LLVM to a single native binary.
 import { Mutex } from "ore:sync"
 
 function price(id: int): u64 | Error {
-    task.sleep(10)
+    task.sleep(10 * time.millisecond)
     return id > 0 ? u64(id) * 100 : new Error(`no item ${id}`)
 }
 
@@ -55,7 +55,7 @@ let finished = 0
 while (finished < 3) {
     task.select([
         done.onReceive(() => finished++),
-        task.after(1000, () => process.panic("too slow")),
+        task.after(time.second, () => process.panic("too slow")),
     ])
 }
 console.log(`total: ${total}`)
@@ -258,7 +258,7 @@ for (let i = 0; i < 3; i++) sum += results.receive() ?? 0   // 14
 
 task.select([
     results.onReceive((v) => console.log("got", v)),
-    task.after(100, () => console.log("timeout")),
+    task.after(100 * time.millisecond, () => console.log("timeout")),
 ])
 ```
 

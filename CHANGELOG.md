@@ -84,6 +84,39 @@ before 1.0, a minor version may change the language.
   match arrays: `m[1]`, `const [, key, value] = s.match(re)!`,
   `for (const c of m)`, over its captures (`string | null`). Assigning to
   `m[i]` is an error (ORE3084).
+- `globalThis`: the global names as members of one value, as in
+  JavaScript (`globalThis.Math.max(1, 2)`, `new globalThis.Date(0)`,
+  `globalThis.Promise<int>` as a type), resolved at compile time. A
+  module's own top-level declarations are not on it, as in ES modules;
+  nothing can be added to it, and it is no value itself (`const g =
+  globalThis` is an error, ORE3091).
+- `Promise.withResolvers<T>()`: `{ promise, resolve }`, a pending promise
+  and the function that resolves it (no `reject`: promises do not reject).
+- `fs.appendFile(path, data)`, Node's `appendFileSync`: appends to a file,
+  created if missing. `process.platform` (`"darwin"`, `"linux"`) and
+  `process.arch` (`"arm64"`, `"x64"`), Node's names for the target.
+- Breaking: `task.sleep(ns)` and `task.after(ns, handler)` count
+  nanoseconds, as everything in `time`: `task.sleep(10 * time.millisecond)`
+  (they counted milliseconds). The timers still wait whole milliseconds,
+  rounding up.
+- `structuredClone(value)`, JavaScript's deep copy, as a global function:
+  numbers, strings, bigints, arrays, tuples, `Map`s, `Set`s, `Date`s,
+  object types, classes with only fields and unions, keeping shared
+  references and cycles, by code generated for each type. Types holding
+  functions (ORE4090), classes with methods (ORE4091), interfaces,
+  `unknown` and channels (ORE4092) are compile-time errors.
+- `URL` and `URLSearchParams` are global classes, JavaScript's, written in
+  Ore (runtime/core/url.ore) after the WHATWG URL Standard's parser:
+  special schemes with their default ports dropped and `\` read as `/`,
+  dot segments resolved, the percent-encode sets of each component, IPv4
+  hosts in all their forms and IPv6 hosts compressed, `file` URLs with
+  drive letters, opaque hosts and paths of other schemes, and relative
+  references resolved against a base (`new URL("../x", base)`). Every
+  property but `origin` and `searchParams` has its setter; `searchParams`
+  is linked both ways to the query; `URL.canParse` and `URL.parse`;
+  `new URL` panics with `TypeError: Invalid URL` where JavaScript throws.
+  `console.log` and `JSON.stringify` write them as Node does. Domains
+  outside ASCII are not converted to Punycode.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

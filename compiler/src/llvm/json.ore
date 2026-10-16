@@ -41,6 +41,24 @@ export function dateClass(g: Emitter, t: StructType): StructType | null {
     return null
 }
 
+/**
+ * Whether a class is, or extends, the class of the parameter `at` of the
+ * runtime function `hook`, as `URL` for console.log and JSON.stringify,
+ * which write it through functions of runtime/core/url.ore.
+ */
+export function hookedClass(g: Emitter, t: StructType, hook: string, at: int): bool {
+    const f = g.runtime.get(hook)
+    if (f === null) return false
+    const target = f.params[at].type
+    if (target.kind !== "struct") return false
+    let c: StructType | null = t
+    while (c !== null) {
+        if (c.id === target.id) return true
+        c = c.base
+    }
+    return false
+}
+
 export function json(g: Emitter, e: BuiltinCall): V {
     g.defs.set(SB, `${SB} = type { ptr, i64, i64 }`)
     g.defs.set(JSON_VALUE, `${JSON_VALUE} = type { i32, i8, double, ${STR}, i64, ptr, ptr }`)
@@ -276,6 +294,12 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
             if (dateClass(g, type) !== null) {
                 // A date is its toJSON(): its ISO string, or null.
                 const text = g.rt("ore_rt_date_json", [v])
+                g.rt("ore_sb_put", [b, g.extract(text, 0, "ptr"), g.extract(text, 1, "i64")])
+                return
+            }
+            if (hookedClass(g, type, "ore_rt_url_json", 0)) {
+                // A URL is its toJSON(): its href.
+                const text = g.rt("ore_rt_url_json", [v])
                 g.rt("ore_sb_put", [b, g.extract(text, 0, "ptr"), g.extract(text, 1, "i64")])
                 return
             }

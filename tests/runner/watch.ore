@@ -75,7 +75,7 @@ function expect(watcher: Watcher, text: string): void {
                 return
             }
         }
-        task.sleep(20)
+        task.sleep(20 * time.millisecond)
     }
     failWith(watcher, `no ${quote(text)} after ${patience / 1000} s`)
 }
@@ -132,17 +132,17 @@ export function watchCases(settings: Settings, self: string): Case[] {
             // It writes a tick every 10 ms, for 30 s at most.
             write(
                 join(dir, "main.ore"),
-                'for (let i = 0; i < 3000; i++) {\n    fs.writeFile("ticks.txt", `${i}`)\n    task.sleep(10)\n}\n',
+                'for (let i = 0; i < 3000; i++) {\n    fs.writeFile("ticks.txt", `${i}`)\n    task.sleep(10 * time.millisecond)\n}\n',
             )
             const watcher = startWatcher(self, settings, dir)
             const deadline = Date.now() + patience
-            while (!fs.exists(ticks) && Date.now() < deadline) task.sleep(20)
+            while (!fs.exists(ticks) && Date.now() < deadline) task.sleep(20 * time.millisecond)
             if (!fs.exists(ticks)) failWith(watcher, "the program does not run")
             write(join(dir, "main.ore"), 'console.log("second")\n')
             expect(watcher, "[ore] restarting: main.ore changed\n")
             expect(watcher, "second\n")
             const first = read(ticks)
-            task.sleep(200)
+            task.sleep(200 * time.millisecond)
             if (read(ticks) !== first) failWith(watcher, "the first program still runs")
             stop(watcher)
         },

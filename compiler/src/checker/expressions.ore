@@ -311,6 +311,8 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
                 )
             return c.fail(node, `'${node.text}' is a generic function and cannot be used as a value.`)
         case "namespace": {
+            if (symbol.name === "globalThis")
+                return c.fail(node, "'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'.")
             let first = ""
             for (const [name, _] of symbol.members) {
                 first = name
@@ -937,7 +939,8 @@ export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool
     const symbol = found.symbol
     c.info.definitions.set(node, symbol.decl)
     if (symbol.k === "const") {
-        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
+        // Reported already, as `globalThis.name` that is no global.
+        if (symbol.value.k !== "error") c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
         return null
     }
     if (symbol.k !== "local") {

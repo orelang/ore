@@ -99,12 +99,16 @@ exports, type assertions (Ore converts: `i32(x)`).
 - `Date` from MDN, with the local time zone from TZif files (done;
   `toLocale*String` know only `en-US`, and time zone names in `toString`
   only the common abbreviations).
+- `URL` and `URLSearchParams` from MDN, with the WHATWG URL Standard's
+  parser (done; no IDNA or Punycode for domains outside ASCII, and
+  `URLSearchParams` is not iterable until Ore has iterators).
 - `globalThis`, as in JavaScript: the global names (`globalThis.console`,
   `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
   members of one value, with the type `typeof globalThis`; a module's own
   top-level declarations are not on it, as in ES modules. Adding properties
   at run time is not possible: declared names only, checked at compile
-  time.
+  time (done: resolved at compile time as the namespaces are, so
+  `globalThis` itself is no value).
 - Import attributes as in JavaScript (`import x from "./f" with { type: ... }`,
   see [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import/with)):
   `type: "json"` imports a JSON file as a typed value, checked against the
@@ -220,9 +224,8 @@ an LLVM coroutine. Left:
 - `Promise`'s internal members (`resolveWith`, `react`, `fulfill`,
   `values`) are public, as the runtime's functions use them; members
   private to a module would hide them.
-- `Promise.withResolvers`, `await` of a union of a promise and other values.
-- `task.sleep(ms)` and `task.after(ms)` still count milliseconds: to
-  nanoseconds, as the rest of `time`.
+- `await` of a union of a promise and other values (`Promise.withResolvers`
+  is done).
 - Generators and iterators on the same fibers (done). A generator step is
   two task switches through the scheduler (about 1.4 µs on a loaded
   machine for `for...of` over a generator); a direct switch between the

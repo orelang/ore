@@ -230,6 +230,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3088](ORE3088.md) | Type '…' is indexed by the name of a member, a string literal or a 'keyof' type. |
 | [ORE3089](ORE3089.md) | Only a member named by a string literal can be assigned to: 'object["name"] = value'. |
 | [ORE3090](ORE3090.md) | An entry of a dictionary is assigned with '=' or '??=': it is '…' when read. |
+| [ORE3091](ORE3091.md) | 'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'. |
 
 ## ORE4xxx: Calls and built-in functions
 
@@ -324,6 +325,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE4087](ORE4087.md) | '…' cannot copy '…' into '…': give it …. |
 | [ORE4088](ORE4088.md) | '…' cannot copy the field '…' into '…': it has no writable field '…'. |
 | [ORE4089](ORE4089.md) | A dictionary is not iterable: use 'new Map(Object.entries(d))'. |
+| [ORE4090](ORE4090.md) | structuredClone cannot clone a function: '…' could not be cloned. |
+| [ORE4091](ORE4091.md) | structuredClone cannot clone '…': an instance of a class with methods would lose them, as JavaScript copies it into a plain object. |
+| [ORE4092](ORE4092.md) | structuredClone cannot clone '…': its values could not be cloned. |
 
 ## ORE5xxx: Classes and interfaces
 

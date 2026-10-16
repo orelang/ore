@@ -12,13 +12,13 @@ The standard library.
   `process.command` and `time`
   (`namespaceModule` in `compiler/src/checker/builtins.ore`), classes and
   types included; builtin.d.ore declares them too, for documentation.
-  - `fs`: `readFile`, `writeFile`, `exists`, and in Ore `readDir` (sorted
-    names), `mkdir(path, recursive?)`, `remove(path, recursive?)`,
-    `rename`, `stat` and `lstat` (an `fs.FileInfo`: `isFile`, `isDir`,
+  - `fs`: `readFile`, `writeFile`, `exists`, and in Ore `appendFile`,
+    `readDir` (sorted names), `mkdir(path, recursive?)`,
+    `remove(path, recursive?)`, `rename`, `stat` and `lstat` (an `fs.FileInfo`: `isFile`, `isDir`,
     `isSymlink`, `size`, `mtime`, `mode`), `isFile`, `isDir`, `realpath`,
     `tempDir`, `mkdtemp(prefix?, dir?)`.
-  - `process`: `args`, `getenv`, `panic`, `exit`, and in Ore `env()` (a
-    `Map`), `cpus()`, `run(program, args?)` (inherited stdio; the exit
+  - `process`: `args`, `platform`, `arch`, `getenv`, `panic`, `exit`, and
+    in Ore `env()` (a `Map`), `cpus()`, `run(program, args?)` (inherited stdio; the exit
     status), `output(program, args?)` (a `process.Output`: `stdout`,
     `stderr`, `code`, `signal`, `ok`), `spawn(program, args?)` (a
     `process.Child`: `pid`, `wait()`, `kill(signal?)`), and the same with

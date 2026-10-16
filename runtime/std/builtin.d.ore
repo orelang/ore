@@ -313,6 +313,8 @@ declare namespace fs {
     function readFile(path: string): string | Error
     /** Writes a file, created or truncated. */
     function writeFile(path: string, data: string): Error | null
+    /** Appends to a file, created if it does not exist. */
+    function appendFile(path: string, data: string): Error | null
     function exists(path: string): bool
     /**
      * Reads up to `max` bytes from a file descriptor, such as 0 for standard
@@ -418,8 +420,8 @@ declare namespace time {
 declare namespace task {
     /** Starts a task. The program ends when the top-level code ends, even if tasks still run. */
     function spawn(body: () => void): void
-    /** Suspends the current task for `ms` milliseconds. */
-    function sleep(ms: int): void
+    /** Suspends the current task for `ns` nanoseconds (`10 * time.millisecond`), rounded up to a millisecond: `time.sleep`. */
+    function sleep(ns: int): void
     /** Lets other tasks run before the current one continues. */
     function yield(): void
     /**
@@ -428,8 +430,8 @@ declare namespace task {
      * instead of waiting if no case can proceed now.
      */
     function select(cases: SelectCase[], otherwise?: () => void): void
-    /** A select case that proceeds after `ms` milliseconds. */
-    function after(ms: int, handler: () => void): SelectCase
+    /** A select case that proceeds after `ns` nanoseconds (`time.second`), rounded up to a millisecond. */
+    function after(ns: int, handler: () => void): SelectCase
     /**
      * Queues `job` on the event loop after the current code and the microtasks
      * before it, ahead of any timer: `queueMicrotask`.
@@ -560,6 +562,10 @@ declare namespace internal {
 declare namespace process {
     /** The command-line arguments after the program name. */
     const args: string[]
+    /** The operating system, as in Node: "darwin" (macOS) or "linux"; `target.os`, known at compile time. */
+    const platform: string
+    /** The processor, as in Node: "arm64" or "x64"; `target.arch` names the latter "x86_64". */
+    const arch: string
 
     /** The value of an environment variable, or null. */
     function getenv(name: string): string | null
@@ -638,6 +644,16 @@ declare namespace process {
 }
 
 /**
+ * The global names as members of one value, as in JavaScript:
+ * `globalThis.Math.max(1, 2)`, `new globalThis.Date(0)`, `globalThis.console`.
+ * Its members are the namespaces and classes declared here and the global
+ * classes of the runtime; a module's own top-level declarations are not on
+ * it, as in ES modules. It is resolved at compile time: no member can be
+ * added, and it is no value itself.
+ */
+declare namespace globalThis {}
+
+/**
  * Making arrays, as in JavaScript; the compiler checks the calls, and these
  * declarations document them.
  */
@@ -675,6 +691,16 @@ declare namespace JSON {
      */
     function parse<T>(text: string): T | Error
 }
+
+/**
+ * A deep copy of a value, as JavaScript's `structuredClone`: numbers,
+ * booleans, strings, bigints, null, arrays, tuples, `Map`s, `Set`s, `Date`s,
+ * object types, classes without methods and unions of these. An object
+ * reached twice is copied once, so shared references and cycles are kept.
+ * Functions, interfaces, `unknown`, channels and classes with methods cannot
+ * be cloned, a compile-time error.
+ */
+declare function structuredClone<T>(value: T): T
 
 /**
  * A resource released at the end of the block that declares it with
