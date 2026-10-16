@@ -1,6 +1,6 @@
 #!/bin/sh
 # Node as the oracle: every program of tests/run and tests/async that Node
-# can run as TypeScript (with --experimental-strip-types) must print what its
+# can run as TypeScript (with --experimental-transform-types) must print what its
 # .out file says, which Ore prints. A program Node cannot run (Ore's own
 # names, such as task.spawn or i32(...), or a header `// reference: none`) is
 # counted as not portable; one that runs and prints something else is a
@@ -42,7 +42,7 @@ for out in $(find tests/run tests/async -name '*.out' | sort); do
     ts="$work/$(echo "$source" | tr '/' '_' | sed 's/\.ore$/.ts/')"
     cp "$source" "$ts"
     # shellcheck disable=SC2086
-    if ! env $vars perl -e 'alarm 60; exec @ARGV' "$node" --experimental-strip-types --no-warnings "$ts" >"$work/out" 2>"$work/err"; then
+    if ! env $vars perl -e 'alarm 60; exec @ARGV' "$node" --experimental-transform-types --no-warnings "$ts" >"$work/out" 2>"$work/err"; then
         foreign=$((foreign + 1))
         continue
     fi
