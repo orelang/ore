@@ -10,7 +10,7 @@ before 1.0, a minor version may change the language.
   `globalThis.Promise<int>` as a type), resolved at compile time. A
   module's own top-level declarations are not on it, as in ES modules;
   nothing can be added to it, and it is no value itself (`const g =
-  globalThis` is an error, ORE3083).
+  globalThis` is an error, ORE3091).
 - `Promise.withResolvers<T>()`: `{ promise, resolve }`, a pending promise
   and the function that resolves it (no `reject`: promises do not reject).
 - `fs.appendFile(path, data)`, Node's `appendFileSync`: appends to a file,
@@ -24,8 +24,8 @@ before 1.0, a minor version may change the language.
   numbers, strings, bigints, arrays, tuples, `Map`s, `Set`s, `Date`s,
   object types, classes with only fields and unions, keeping shared
   references and cycles, by code generated for each type. Types holding
-  functions (ORE4085), classes with methods (ORE4086), interfaces,
-  `unknown` and channels (ORE4087) are compile-time errors.
+  functions (ORE4090), classes with methods (ORE4091), interfaces,
+  `unknown` and channels (ORE4092) are compile-time errors.
 - `URL` and `URLSearchParams` are global classes, JavaScript's, written in
   Ore (runtime/core/url.ore) after the WHATWG URL Standard's parser:
   special schemes with their default ports dropped and `\` read as `/`,

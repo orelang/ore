@@ -499,11 +499,11 @@ types, classes with only fields and unions of these are copied; strings
 and bigints, which never change, are shared. An object reached twice is
 copied once, so shared references and cycles hold in the copy (`a.self ===
 a` gives `copy.self === copy`), and maps and sets are rebuilt by inserting
-the copied keys in order. A type holding a function is an error (ORE4085),
+the copied keys in order. A type holding a function is an error (ORE4090),
 where JavaScript throws a `DataCloneError` at run time. A class with
-methods is an error too (ORE4086): JavaScript would copy an instance into a
+methods is an error too (ORE4091): JavaScript would copy an instance into a
 plain object without them, which the class type cannot describe; so are
-`RegExp`, `Promise`, interfaces, `unknown`, channels and `ptr` (ORE4087).
+`RegExp`, `Promise`, interfaces, `unknown`, channels and `ptr` (ORE4092).
 A class with only fields is copied as an instance of the same class (an
 instance of a subclass as one of the subclass), where JavaScript makes a
 plain object.
