@@ -85,7 +85,8 @@ export function compileToIr(entry: string, debug: bool, options: BuildOptions | 
     if (native instanceof Error) return native
     for (const source of native.sources) if (!files.includes(source)) files.push(source)
     started = Date.now()
-    const ir = emitModule(module, new EmitOptions(debug))
+    // ORE_COVERAGE=1 counts the runs of every statement; a release build counts them too, without inlining.
+    const ir = emitModule(module, new EmitOptions(debug, process.getenv("ORE_COVERAGE") === "1"))
     report(timed, "emit", Date.now() - started)
     return new CompileResult(ir, diagnostics, native, files)
 }

@@ -9,7 +9,7 @@ import { valueClasses } from "../opt/values"
 import { Emitter } from "./base"
 import { classTable, itab } from "./collections"
 import { ARRAY, EmitOptions, FN, FRAME, IFACE, MAP, STR, TYPE, UNKNOWN } from "./context"
-import { declareExtern, emitFunction } from "./functions"
+import { coverageEntry, declareExtern, emitFunction } from "./functions"
 import { findGlobals } from "./helpers"
 import { functionNames } from "./inspect"
 import { cString, FRAME_POINTER, globalName, sizeOf } from "./ll"
@@ -87,9 +87,13 @@ export function emit(g: Emitter): string {
         const marker = opts.debug && file !== null ? `${FILE_MARKER}${file}` : ""
         if (marker !== "") g.out.push(marker)
         g.out.push(emitFunction(g, func, false))
+        const counted = coverageEntry(g, func)
+        if (counted !== "") g.out.push(counted)
         if (g.plan.ctorsAt.has(func)) {
             if (marker !== "") g.out.push(marker)
             g.out.push(emitFunction(g, func, true))
+            const countedAt = coverageEntry(g, func)
+            if (countedAt !== "") g.out.push(countedAt)
         }
     }
     // The tables after the functions, so that the runtime names its types first (see llvm/names.ore).
@@ -107,6 +111,13 @@ export function emit(g: Emitter): string {
     g.out.push(`@ore.globals = internal constant [${roots.length} x { ptr, i64 }] [${roots.join(", ")}]`)
     g.out.push(`${data}define ptr @ore_globals_table() #0 {\n  ret ptr @ore.globals\n}`)
     g.out.push(`${data}define i64 @ore_globals_count() #0 {\n  ret i64 ${roots.length}\n}`)
+    // The coverage table, empty unless ORE_COVERAGE=1: {counters, lines, count, file} per function.
+    const entries = g.covEntries
+    g.out.push(`@ore.cov = internal constant [${entries.length} x { ptr, ptr, i64, ptr }] [${entries.join(", ")}]`)
+    g.out.push(`${data}define ptr @ore_cov_table() #0 {\n  ret ptr @ore.cov\n}`)
+    g.out.push(`${data}define i64 @ore_cov_count() #0 {\n  ret i64 ${entries.length}\n}`)
+    g.decls.delete("@ore_cov_table")
+    g.decls.delete("@ore_cov_count")
     if (g.usesEntryFile) {
         const bytes = `${m.file}\u0000`
         g.out.push(`@ore.file = internal unnamed_addr constant [${bytes.length} x i8] ${cString(bytes)}`)

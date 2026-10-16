@@ -73,6 +73,7 @@ export function signature(g: Emitter, func: Func, at: bool): string {
 export function emitFunction(g: Emitter, func: Func, at: bool): string {
     g.b = new FnBuilder()
     g.func = func
+    if (g.options.coverage) g.covName = `@ore.cov.${func.name}${at ? ".at" : ""}`
     g.at = at
     g.storage = new Map()
     g.breakables = []
@@ -169,6 +170,39 @@ export function line(g: Emitter, s: Stmt) {
     const frame = g.frame
     const n = s.line
     if (frame !== null && n !== null && g.b.isOpen()) g.b.emit(`store i32 ${n}, ptr ${g.field(frame, FRAME, 3)}`)
+    if (g.options.coverage && n !== null && g.b.isOpen() && g.covName !== "") coverage(g, n)
+}
+
+/**
+ * Counts a run of a statement on line `n`: one counter per statement, in an
+ * array of the function's own (so that a split part's text depends only on
+ * its functions), with the lines in a constant beside it; `coverageEntry`
+ * adds both to the table the runtime writes at exit (writeCoverage in
+ * runtime/core/io.ore). Counting is not atomic: threads may lose counts,
+ * never a statement's having run.
+ */
+function coverage(g: Emitter, n: int) {
+    const index = g.covLines.length
+    g.covLines.push(n)
+    const at = g.b.value("ptr", `getelementptr i64, ptr ${g.covName}, i64 ${index}`)
+    const old = g.b.value("i64", `load i64, ptr ${at.v}`)
+    const next = g.b.value("i64", `add i64 ${old.v}, 1`)
+    g.b.emit(`store i64 ${next.v}, ptr ${at.v}`)
+}
+
+/** The counters and lines of the function just emitted, as globals, and its entry in the coverage table; "" without any. */
+export function coverageEntry(g: Emitter, func: Func): string {
+    const lines = g.covLines
+    const name = g.covName
+    g.covLines = []
+    g.covName = ""
+    if (lines.length === 0) return ""
+    const file = func.file
+    const fileName = file !== null ? g.cstr(file).v : g.entryFile()
+    const linesName = `${name}.lines`
+    g.covEntries.push(`{ ptr, ptr, i64, ptr } { ptr ${name}, ptr ${linesName}, i64 ${lines.length}, ptr ${fileName} }`)
+    const values = lines.map((l) => `i32 ${l}`).join(", ")
+    return `${name} = internal global [${lines.length} x i64] zeroinitializer\n${linesName} = internal constant [${lines.length} x i32] [${values}]`
 }
 
 /** Runs `run` with a breakable open: `within` of the TypeScript, which returns the value of `body`. */
