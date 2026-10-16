@@ -136,6 +136,13 @@ before 1.0, a minor version may change the language.
   conditional types (`T extends [infer H, ...infer R] ? ...`). A rest
   element of array type in the type of a value is reported (ORE2072), as
   tuples have a fixed length.
+- The type `this` in the non-static members of a class: a method
+  `add(s: string): this` called on a subclass returns the subclass, so
+  fluent APIs keep it, and parameters and fields can be of the type `this`
+  (`equals(other: this): bool`, `next: this | null`). A method returning
+  `this` must return the receiver (ORE5061); `this` in a static member or
+  outside a class is an error as in TypeScript (ORE5059), and in an
+  interface not supported yet (ORE5060).
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

@@ -491,6 +491,21 @@ export class Checker {
             }
             return symbol.type
         }
+        if (node.kind === "ThisType") {
+            // The class or interface whose non-static member this is: its scope declares `this`.
+            const symbol = scope.lookupType("this")
+            if (symbol === null) {
+                this.error(node, "A 'this' type is available only in a non-static member of a class or interface.")
+                return null
+            }
+            // An interface's `this` is the type of each class that implements it, whose methods would then not
+            // have the interface's types: not supported yet.
+            if (symbol.type.kind === "interface") {
+                this.error(node, "A 'this' type in an interface is not supported yet.")
+                return null
+            }
+            return symbol.type
+        }
         if (node.kind === "ParenthesizedType") return this.resolveType(typeNode(node)!, scope)
         if (node.kind === "IntersectionType") return intersection(this, node, scope)
         if (node.kind === "TypeOperator") return typeOperator(this, node, scope)

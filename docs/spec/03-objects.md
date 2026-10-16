@@ -153,6 +153,23 @@
   abstract methods without a body, `abstract area(): f64`, which a class
   that is not abstract must override (directly or through a base class).
   `super.m(...)` cannot call an abstract method.
+- The type `this`, in the field, parameter, result and local types of the
+  non-static members of a class, is the type of the receiver: inside the
+  class it is the class (for a method that overrides another, the class
+  that first declared the method, so that the types stay the same), and at
+  a call through a receiver of static type `S`, a subclass, a result or
+  parameter of the type `this` has the type `S`. Fluent methods keep the
+  subclass: with `add(s: string): this` in `Builder` and `class Html extends
+  Builder`, `new Html().add("a")` is an `Html`, without a conversion, the
+  value being the receiver. A method whose result is `this` must therefore
+  return the receiver: each `return` gives `this`, a call on it (or on
+  `super`) of a method whose result is `this`, or a conditional of these;
+  TypeScript also allows other values of the type `this`, such as a
+  parameter of that type, which Ore rejects. Fields read through a subclass
+  keep the class's type. `this` in a static member or outside a class is an
+  error, as in TypeScript; in an interface it is not supported yet, since
+  the methods of a class implementing it would not have the interface's
+  types.
 - `x instanceof B` checks the class of the instance at run time when `x` has
   type `A`, a union with a member related to `B`, or an interface type; it
   narrows `x` to `B`. On a union, `instanceof A` is also true for members

@@ -1,0 +1,34 @@
+// A result or parameter of the type `this` is of the receiver's type at each call.
+class Counter {
+    count = 0
+    add(): this {
+        this.count++
+        return this
+    }
+    // A method returning `this` returns the receiver, not just any instance of the class.
+    copy(): this {
+        return new Counter() // error: A method returning 'this' must return 'this' or what a method returning 'this' returns on it.
+    }
+    // Stricter than TypeScript: only the receiver, never a parameter of the type `this`.
+    either(other: this, first: bool): this {
+        return first ? this.add() : other // error: A method returning 'this' must return 'this' or what a method returning 'this' returns on it.
+    }
+}
+
+class Timer extends Counter {
+    stop() {}
+}
+
+new Timer().add().stop()
+const t: Timer = new Timer().add()
+new Counter().add().stop() // error: Method 'stop' does not exist on type 'Counter'.
+
+class Pair {
+    same(other: this): bool {
+        return this === other
+    }
+}
+class Triple extends Pair {
+    third = 3
+}
+new Triple().same(new Pair()) // error: Type 'Pair' is not assignable to type 'Triple'.
