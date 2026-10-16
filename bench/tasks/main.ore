@@ -1,0 +1,27 @@
+// Tasks: spawns n tasks that each compute a little, waits for all of them and
+// adds up their results.
+
+import { WaitGroup } from "ore:sync"
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 100000) : 100000
+
+function work(i: int): int {
+    let x = i
+    for (let k = 0; k < 100; k++) x = (x * 31 + k) % 1000003
+    return x
+}
+
+const results: int[] = []
+for (let i = 0; i < n; i++) results.push(0)
+const group = new WaitGroup()
+for (let i = 0; i < n; i++) {
+    group.add(1)
+    task.spawn(() => {
+        results[i] = work(i)
+        group.done()
+    })
+}
+group.wait()
+let sum = 0
+for (const r of results) sum += r
+console.log(n, sum)
