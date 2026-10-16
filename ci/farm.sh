@@ -74,7 +74,10 @@ job() {
     local commit host slots slot
     commit=$(git rev-parse --verify "$ref^{commit}")
     read -r host slots slot < <(acquire "$name" "$weight")
-    trap 'release "$host" "$slot"' EXIT
+    # The slot is freed however the job ends; the trap runs after this
+    # function's locals are gone, so it is given their values.
+    # shellcheck disable=SC2064
+    trap "release '$host' '$slot'" EXIT
     local log="$home/logs/$name.log"
     echo "== $name: $(git log -1 --format='%h %s' "$commit") on $host (slot $slot)" | tee "$log"
     local dir="farm/$name"
@@ -145,7 +148,13 @@ serve)
             while IFS= read -r line; do args+=("$line"); done <"$file"
             rm -f "$file"
             case ${args[0]:-} in
-            test | probe) ("$0" "${args[0]}" "$name" "${args[@]:1}" >/dev/null 2>&1; echo $? >"$home/done/$name.status") & ;;
+            test | probe)
+                (
+                    status=0
+                    "$0" "${args[0]}" "$name" "${args[@]:1}" >/dev/null 2>&1 || status=$?
+                    echo $status >"$home/done/$name.status"
+                ) &
+                ;;
             *) echo "unknown kind: ${args[0]:-}" >"$home/logs/$name.log"; echo 2 >"$home/done/$name.status" ;;
             esac
             sleep 1
