@@ -365,9 +365,11 @@ they are. Lines are broken by the width without the colors. As in Node,
 `FORCE_COLOR` turns colors on when it is empty, `1`, `2`, `3` or `true`
 (off for other values) even when the output is not a terminal; otherwise
 `NO_COLOR` or `NODE_DISABLE_COLORS` set, or `TERM=dumb`, turns them off,
-and they are on when the stream is a terminal: standard output for
-`console.log`, standard error for `console.error`. Piped output has no
-colors.
+and they are on when the stream is a terminal (standard output for
+`console.log`, standard error for `console.error`) that Node gives
+colors: by `TERM` (`xterm*`, `screen*`, `*color*`, `linux`, ...),
+`COLORTERM`, `TERM_PROGRAM`, tmux or a known CI service. No `TERM`, or
+an unknown one, has no colors; nor has piped output.
 
 JSON is typed, as in Go: the code that writes and reads a type is generated
 for it. Numbers, `bool`, strings, string literal types, `null`, arrays,

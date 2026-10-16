@@ -37,6 +37,9 @@ before 1.0, a minor version may change the language.
   with interface members) call them. Fields of names that no accessor
   implements are read and written through interfaces as before; the others
   test the table entry first.
+- `console.log` colors follow Node's rules for the terminal too: with no
+  `TERM`, or one Node does not know, a terminal shows no colors, unless
+  `COLORTERM`, `TERM_PROGRAM`, tmux or a known CI service says it does.
 - The checker parses `builtin.d.ore` once per process instead of on every
   check, which the language server runs on every change.
 - The language server tries a GitHub repository whose download failed

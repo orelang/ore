@@ -125,14 +125,103 @@ let stderrColors: int
  * Whether a stream shows colors, as Node decides for console.log: FORCE_COLOR
  * set turns them on when it is empty, 1, 2, 3 or true, and off otherwise;
  * NO_COLOR or NODE_DISABLE_COLORS set, or TERM=dumb, turns them off; else
- * the stream shows them when it is a terminal.
+ * the stream shows them when it is a terminal that `colorTerminal` knows.
  */
 function showsColors(fd: int): bool {
     const force = process.getenv("FORCE_COLOR")
     if (force !== null) return force === "" || force === "1" || force === "2" || force === "3" || force === "true"
     if (process.getenv("NO_COLOR") !== null || process.getenv("NODE_DISABLE_COLORS") !== null) return false
     if (process.getenv("TERM") === "dumb") return false
-    return process.isatty(fd)
+    return process.isatty(fd) && colorTerminal()
+}
+
+/** Whether an environment variable is set and not empty. */
+function hasEnv(name: string): bool {
+    const value = process.getenv(name)
+    return value !== null && value !== ""
+}
+
+/**
+ * Whether the terminal shows colors, by the environment, as Node's
+ * `getColorDepth` finds more than two: tmux, a CI service Node knows,
+ * TeamCity 9.1 or later, a few `TERM_PROGRAM`s, `COLORTERM`, or a `TERM`
+ * Node knows. No `TERM`, or an unknown one, shows none.
+ */
+function colorTerminal(): bool {
+    if (hasEnv("TMUX")) return true
+    if (hasEnv("CI")) {
+        for (const sign of ["APPVEYOR", "BUILDKITE", "CIRCLECI", "DRONE", "GITHUB_ACTIONS", "GITLAB_CI", "TRAVIS"])
+            if (process.getenv(sign) !== null) return true
+        return process.getenv("CI_NAME") === "codeship"
+    }
+    const teamcity = process.getenv("TEAMCITY_VERSION")
+    if (teamcity !== null) return teamcityColors(teamcity)
+    const program = process.getenv("TERM_PROGRAM") ?? ""
+    if (program === "iTerm.app" || program === "HyperTerm" || program === "MacTerm" || program === "Apple_Terminal")
+        return true
+    const colorterm = process.getenv("COLORTERM") ?? ""
+    if (colorterm === "truecolor" || colorterm === "24bit") return true
+    const term = process.getenv("TERM") ?? ""
+    if (term !== "" && knownTerm(term)) return true
+    return colorterm !== ""
+}
+
+/** The `TERM`s that Node gives colors by name, in lowercase. */
+const colorTerms = [
+    "eterm",
+    "cons25",
+    "console",
+    "cygwin",
+    "dtterm",
+    "gnome",
+    "hurd",
+    "jfbterm",
+    "konsole",
+    "kterm",
+    "mlterm",
+    "mosh",
+    "putty",
+    "st",
+    "rxvt-unicode-24bit",
+    "terminator",
+    "xterm-kitty",
+]
+
+/** Whether Node gives a `TERM` colors: by the names and patterns of its table, ignoring case. */
+function knownTerm(term: string): bool {
+    if (term.includes("truecolor") || term.startsWith("xterm-256")) return true
+    const t = term.toLowerCase()
+    for (const name of colorTerms) if (t === name) return true
+    for (const part of ["ansi", "color", "linux", "direct"]) if (t.includes(part)) return true
+    for (const start of ["rxvt", "screen", "xterm", "vt100", "vt220"]) if (t.startsWith(start)) return true
+    // `con<columns>x<rows>`, as `con80x25`.
+    if (!t.startsWith("con")) return false
+    const i = digitsFrom(t, 3)
+    return i + 1 < t.length && t[i] === 120 && isDigitByte(int(t[i + 1]))
+}
+
+/** Whether TeamCity shows colors: from version 9.1, as Node tests `/^(9\.(0*[1-9]\d*)\.|\d{2,}\.)/`. */
+function teamcityColors(version: string): bool {
+    const major = digitsFrom(version, 0)
+    if (major >= version.length || version[major] !== 46) return false
+    if (major >= 2) return true
+    if (major !== 1 || version[0] !== 57) return false
+    // 9.x. where x is not 0.
+    const minor = digitsFrom(version, 2)
+    if (minor === 2 || minor >= version.length || version[minor] !== 46) return false
+    for (let i = 2; i < minor; i++) if (version[i] !== 48) return true
+    return false
+}
+
+/** The position after the decimal digits of a text from a position. */
+function digitsFrom(text: string, start: int): int {
+    let i = start
+    while (i < text.length && isDigitByte(int(text[i]))) i++
+    return i
+}
+
+function isDigitByte(b: int): bool {
+    return b >= 48 && b <= 57
 }
 
 /** Whether what this thread prints shows colors; found once per stream. */
