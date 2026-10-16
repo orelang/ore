@@ -2638,8 +2638,22 @@ export function checkCoalesce(c: Checker, node: Node, scope: Scope): Operand {
     if (!canBeNull(value.type))
         return c.fail(left(node), `Type '${typeToString(value.type)}' cannot be null; '??' is not needed.`)
     const type = c.withoutNull(value.type)
-    const fallback = c.coerce(checkExpr(c, right(node), scope, type), type, right(node))
-    return typed(new Coalesce(type, value, fallback))
+    const other = checkExpr(c, right(node), scope, type)
+    if (other.k === "error") return other
+    // A fallback that fits the left side's type keeps it.
+    const before = c.diagnostics.length
+    const fallback = c.coerce(other, type, right(node))
+    if (c.diagnostics.length === before) return typed(new Coalesce(type, value, fallback))
+    c.truncateDiagnostics(before)
+    // Any other is a member of the result, as in TypeScript: `NonNullable<A> | B`.
+    const given = c.toDefault(other, right(node))
+    const union = c.unionOf([type, given.type])
+    const held = c.newLocal("coalesced", value.type, false)
+    const ref: Expr = new LocalRef(value.type, held)
+    const present = c.coerce(typed(new Recast(type, ref)), union, left(node))
+    const absent = c.coerce(typed(given), union, right(node))
+    const choice: Expr = new Conditional(union, new IsNull(types.bool, ref), absent, present)
+    return typed(new Bind(union, [new BindLocal(held, value)], choice))
 }
 
 export function checkElement(c: Checker, node: Node, scope: Scope): Operand {

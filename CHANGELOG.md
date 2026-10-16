@@ -122,6 +122,9 @@ before 1.0, a minor version may change the language.
 - An object literal for a union is never of a class with private or
   protected fields, as in TypeScript: `{ a: 1 }` for `Secret | { [key:
   string]: int }` is the dictionary.
+- `a ?? b` has the type `NonNullable<A> | B`, as in TypeScript: a fallback
+  of another type, or one that may be null, widens the result instead of
+  being refused (`xs.find(f) ?? null`, `n ?? "none"`).
 
 ## 0.5.0
 
