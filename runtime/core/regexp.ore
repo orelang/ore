@@ -310,6 +310,18 @@ class Matcher {
                 // Each character taken leaves the choice of the exit before it, as `SPLIT` would.
                 const exit = code[pc + 1]
                 const choices = code[pc + 2] === 0
+                if (code[pc + 3] === OP_CLASS) {
+                    // ASCII characters of a class, by its table, until another character.
+                    const ascii = program.ascii
+                    const base = 128 * code[pc + 4]
+                    const negate = code[pc + 5] === 1
+                    while (pos < n) {
+                        const b = int(s[pos])
+                        if (b >= 128 || (ascii[base + b] === 1) === negate) break
+                        if (choices) this.push(exit, pos)
+                        pos++
+                    }
+                }
                 for (;;) {
                     const next = this.step(pc + 3, pos)
                     if (next < 0) break
