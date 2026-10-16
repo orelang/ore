@@ -8,17 +8,25 @@ import { Field, FuncType, type Type, arrayOf, membersOf, typeToString, types } f
 import { type Node } from "../syntax/ast"
 import {
     constraint,
+    declarationKind,
     declarationList,
     declarations,
     dotDotDotToken,
+    elements,
+    expression,
+    initializer,
     isIdentifier,
     nameNode,
+    operand,
     parameters,
+    properties,
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
 import { type Checker } from "./base"
 import { satisfiesConstraint } from "./declarations"
+import { checkExpr } from "./expressions"
+import { typeOf } from "./helpers"
 import { Scope, TypeSymbol } from "./symbols"
 
 /** The names of the members of a type that `keyof` lists: public fields and methods, or interface members. */
@@ -177,10 +185,52 @@ function annotatedTopLevel(c: Checker, scope: Scope, name: string, at: Node): Ty
             const n = nameNode(d)
             if (!isIdentifier(n) || n.text !== name) continue
             const annotation = typeNode(d)
-            return annotation !== null ? c.resolveValueType(annotation, scope) : null
+            if (annotation !== null) return c.resolveValueType(annotation, scope)
+            const init = initializer(d)
+            const isConst = declarationKind(declarationList(stmt), source.text) === "const"
+            return isConst && init !== null && isData(init) ? dataType(c, init, scope) : null
         }
     }
     return null
+}
+
+/**
+ * Whether an expression is made of literals only, such as `{ a: 1, b: ["s"] }`:
+ * its type is known before the code around it is checked.
+ */
+function isData(node: Node): bool {
+    const k = node.kind
+    if (k === "ParenthesizedExpression") return isData(expression(node))
+    if (k === "ArrayLiteralExpression") return elements(node).every(isData)
+    if (k === "ObjectLiteralExpression") {
+        return properties(node).every((p) => {
+            const value = p.kind === "PropertyAssignment" ? initializer(p) : null
+            return value !== null && isData(value)
+        })
+    }
+    if (k === "PrefixUnaryExpression") return isData(operand(node))
+    return (
+        k === "NumericLiteral" ||
+        k === "BigIntLiteral" ||
+        k === "StringLiteral" ||
+        k === "NoSubstitutionTemplateLiteral" ||
+        k === "TrueKeyword" ||
+        k === "FalseKeyword"
+    )
+}
+
+/**
+ * The type of a literal initializer of a top-level constant (see `isData`),
+ * as its declaration gives it when it is checked later; null when it has
+ * errors, which that check reports.
+ */
+function dataType(c: Checker, init: Node, scope: Scope): Type | null {
+    const errors = c.diagnostics.length
+    const value = checkExpr(c, init, scope)
+    const type = value.k === "error" ? null : typeOf(c.toDefault(value, init))
+    const failed = c.diagnostics.length > errors
+    while (c.diagnostics.length > errors) c.diagnostics.pop()
+    return failed ? null : type
 }
 
 /** `typeof x` or `typeof x.y`: the type of a variable, a function, or a field of one. */

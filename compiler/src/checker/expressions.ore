@@ -454,6 +454,12 @@ function isEquatable(type: Type): bool {
     )
 }
 
+/** Whether a type is a string literal type or a union of them: `"x" | "y"`. */
+function isStringLiterals(type: Type): bool {
+    if (type.kind === "literal") return true
+    return type.kind === "union" && type.members.every((m) => m.kind === "literal")
+}
+
 export function compare(
     c: Checker,
     op: CompareOp,
@@ -499,8 +505,17 @@ export function compare(
     if ((op === "===" || op === "!==") && le.k === "string" && re.k === "string") {
         return typed(new BoolLit(types.bool, (le.value === re.value) === (op === "===")))
     }
+    // String literal types compare with a string: a constant takes their type, which reports one
+    // that cannot be equal (`u === "z"` for `"x" | "y"`); any other string compares as a string.
+    if (re.type.kind === "string" && isStringLiterals(le.type)) {
+        if (re.k === "string") re = c.coerce(typed(re), le.type, rightNode)
+        else le = new Recast(types.string, le)
+    } else if (le.type.kind === "string" && isStringLiterals(re.type)) {
+        if (le.k === "string") le = c.coerce(typed(le), re.type, leftNode)
+        else re = new Recast(types.string, re)
+    }
     // Any value compares with an `unknown`, boxed: equal when it has the same type and value.
-    if (!sameType(le.type, re.type) && re.type.kind === "unknown") le = c.coerce(typed(le), re.type, leftNode)
+    else if (!sameType(le.type, re.type) && re.type.kind === "unknown") le = c.coerce(typed(le), re.type, leftNode)
     else if (!sameType(le.type, re.type) && le.type.kind === "unknown") re = c.coerce(typed(re), le.type, rightNode)
     // A member compares with a union containing it.
     else if (!sameType(le.type, re.type) && re.type.kind === "union") le = c.coerce(typed(le), re.type, leftNode)
