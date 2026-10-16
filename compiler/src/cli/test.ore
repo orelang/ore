@@ -15,6 +15,7 @@ import { toolError } from "./commands"
 import { oreFiles } from "./files"
 import { executablePath } from "../driver/self"
 import { loadProgram, programFiles } from "../project/load"
+import { stdout } from "./style"
 import { baselineOf, describe, stamps, waitForChange, watched } from "./watch"
 
 /** What building and running a test file printed, and whether it passed. */
@@ -94,7 +95,7 @@ function runTests(paths: string[]): i32 {
             const result = results[printed]
             if (result === null) break
             console.log(files[printed])
-            console.write(result.stdout)
+            console.write(styledMarks(result.stdout))
             if (result.stderr !== "") console.error(result.stderr.trimEnd())
             if (!result.passed) failed++
         }
@@ -102,10 +103,22 @@ function runTests(paths: string[]): i32 {
     fs.remove(dir, true)
     console.log(
         failed === 0
-            ? `\nAll ${files.length} test file(s) passed.`
-            : `\n${failed} of ${files.length} test file(s) failed.`,
+            ? `\n${stdout.success(`All ${files.length} test file(s) passed.`)}`
+            : `\n${stdout.error(`${failed} of ${files.length} test file(s) failed.`)}`,
     )
     return failed === 0 ? 0 : 1
+}
+
+/** A test program's output with its marks in color, `✓` in the success color and `✗` in the error color, when stdout shows colors. */
+function styledMarks(output: string): string {
+    if (!stdout.enabled) return output
+    const lines: string[] = []
+    for (const line of output.split("\n")) {
+        if (line.startsWith("  ✓ ")) lines.push(`  ${stdout.success("✓")}${line.slice("  ✓".length)}`)
+        else if (line.startsWith("  ✗ ")) lines.push(`  ${stdout.error("✗")}${line.slice("  ✗".length)}`)
+        else lines.push(line)
+    }
+    return lines.join("\n")
 }
 
 /** Builds a test file into `output` with `ore build`, and runs it. */

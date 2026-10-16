@@ -4,6 +4,7 @@ import { serve } from "../lsp/server"
 import { cacheCommand } from "./cache"
 import { buildCommand, checkCommand, initCommand, runCommand } from "./commands"
 import { fmtCommand } from "./fmt"
+import { stderr, stdout, Style } from "./style"
 import { testCommand } from "./test"
 import { updateCommand } from "./update"
 import packageText from "../../package.json" with { type: "text" }
@@ -46,6 +47,21 @@ Without a file, the program is the 'main' of the nearest package.json.
   ore help                       Print this help
 `
 
+/** The usage with its headings in bold and the commands in the accent color, when the stream shows colors. */
+function styledUsage(style: Style): string {
+    if (!style.enabled) return usage
+    const lines: string[] = []
+    for (const line of usage.split("\n")) {
+        if (line.startsWith("  ore ")) {
+            const space = line.indexOf(" ", 6)
+            const end = space < 0 ? line.length : space
+            lines.push(`  ${style.accent(line.slice(2, end))}${line.slice(end)}`)
+        } else if (line.startsWith("Ore ") || line.endsWith(":")) lines.push(style.bold(line))
+        else lines.push(line)
+    }
+    return lines.join("\n")
+}
+
 /** Runs the command of the command line; returns the exit status. */
 export function main(args: string[]): i32 {
     const command = args.length > 0 ? args[0] : ""
@@ -77,9 +93,9 @@ export function main(args: string[]): i32 {
         case "help":
         case "--help":
         case "-h":
-            console.write(usage)
+            console.write(styledUsage(stdout))
             return 0
     }
-    console.error(`ore: unknown command '${command}'\n\n${usage.trimEnd()}`)
+    console.error(`ore: unknown command '${command}'\n\n${styledUsage(stderr).trimEnd()}`)
     return 2
 }

@@ -315,6 +315,12 @@ ore test                 # run the tests in *.test.ore files
 ore fmt                  # format .ore files: 4 spaces, no semicolons
 ```
 
+On a terminal, `ore` prints in color: error labels, the carets under an
+error, the commands of `ore help`, the marks of `ore test`. `NO_COLOR=1`
+turns colors off, `FORCE_COLOR=1` (or 2 for 256 colors, 3 for 24-bit) turns
+them on even when the output is not a terminal; otherwise they follow
+`COLORTERM` and `TERM`. Piped output has no colors.
+
 A single file works too: `ore run hello.ore`. A debug build of a small
 program takes about 0.3 s (LLVM through its C API on every CPU, linked with
 lld), a release build about 1.4 s. LLVM's object files are kept in a build

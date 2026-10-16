@@ -1,0 +1,160 @@
+// Colors of the command line, by role: `stdout` and `stderr` style text for
+// their stream, in Ore's colors (docs/assets/banner.html) when the stream
+// is a terminal that shows them, and leave it as it is otherwise, so that
+// piped output is the same as without colors.
+//
+// The support is found as most command-line tools do: NO_COLOR (not empty)
+// turns colors off; FORCE_COLOR (not empty, not "0") turns them on even when
+// the stream is not a terminal, at its level when it is 1, 2 or 3;
+// otherwise a stream that is not a terminal, or TERM=dumb, has none.
+// COLORTERM=truecolor or 24bit gives 24-bit colors, a TERM that contains
+// "256color" the nearest of xterm's 256, and any other terminal the 16 basic
+// colors that keep the roles: accent yellow, secondary bright black, error
+// red, warning yellow, success green, code cyan.
+
+import { type Diagnostic, paintDiagnostic } from "../syntax/diagnostic"
+
+// TODO: process.isatty once stage 0 has it; until then libc's, declared here.
+declare function isatty(fd: i32): i32
+
+/** How many colors a stream shows: none, the 16 basic ones, xterm's 256, or any (24-bit). */
+const none = 0
+const basic = 1
+const palette = 2
+const truecolor = 3
+
+/** A color of the palette, with the basic ANSI color (its SGR foreground code) that takes its role. */
+class Color {
+    constructor(
+        readonly r: int,
+        readonly g: int,
+        readonly b: int,
+        readonly ansi: int,
+    ) {}
+}
+
+// Oxide; Slate; the code accent; and, for the roles the palette has no
+// color for, a red, an amber and a green of the same muted tone.
+const oxide = new Color(0xc9, 0xa1, 0x8b, 33)
+const slate = new Color(0x7e, 0x8f, 0x95, 90)
+const copper = new Color(0xa9, 0x77, 0x5d, 36)
+const red = new Color(0xd9, 0x66, 0x5b, 31)
+const amber = new Color(0xdd, 0xb6, 0x6b, 33)
+const green = new Color(0x8f, 0xae, 0x8b, 32)
+
+/** Styles text for one output stream; every function returns the text unchanged when the stream shows no colors. */
+export class Style {
+    constructor(readonly level: int) {}
+
+    /** Whether this stream shows colors. */
+    get enabled(): bool {
+        return this.level > none
+    }
+
+    /** Names to notice: commands, the caret under an error. */
+    accent(text: string): string {
+        return this.paint(oxide, text)
+    }
+
+    /** What matters less: links, hints. */
+    dim(text: string): string {
+        return this.paint(slate, text)
+    }
+
+    /** Headings. */
+    bold(text: string): string {
+        return this.enabled ? `\u001b[1m${text}\u001b[22m` : text
+    }
+
+    error(text: string): string {
+        return this.paint(red, text)
+    }
+
+    warning(text: string): string {
+        return this.paint(amber, text)
+    }
+
+    success(text: string): string {
+        return this.paint(green, text)
+    }
+
+    /** Code and paths quoted in text. */
+    code(text: string): string {
+        return this.paint(copper, text)
+    }
+
+    private paint(color: Color, text: string): string {
+        if (this.level === none || text === "") return text
+        return `\u001b[${foreground(color, this.level)}m${text}\u001b[39m`
+    }
+}
+
+/** The SGR parameters that set a color as the foreground, at a level of support. */
+function foreground(color: Color, level: int): string {
+    if (level === truecolor) return `38;2;${color.r};${color.g};${color.b}`
+    if (level === palette) return `38;5;${nearest256(color)}`
+    return `${color.ansi}`
+}
+
+/** The steps of each channel in xterm's 6×6×6 color cube (colors 16 to 231). */
+const cube = [0, 95, 135, 175, 215, 255]
+
+/** The index of the cube step nearest to a channel's value. */
+function cubeIndex(value: int): int {
+    let best = 0
+    for (let i = 1; i < cube.length; i++) if (Math.abs(cube[i] - value) < Math.abs(cube[best] - value)) best = i
+    return best
+}
+
+function distance(color: Color, r: int, g: int, b: int): int {
+    return (color.r - r) * (color.r - r) + (color.g - g) * (color.g - g) + (color.b - b) * (color.b - b)
+}
+
+/** The xterm-256 color nearest to a color: from the color cube or the gray ramp (232 to 255). */
+function nearest256(color: Color): int {
+    const r = cubeIndex(color.r)
+    const g = cubeIndex(color.g)
+    const b = cubeIndex(color.b)
+    const fromCube = distance(color, cube[r], cube[g], cube[b])
+    const average = (color.r + color.g + color.b) / 3
+    const step = Math.max(0, Math.min(23, (average - 8 + 5) / 10))
+    const gray = 8 + step * 10
+    if (distance(color, gray, gray, gray) < fromCube) return 232 + step
+    return 16 + 36 * r + 6 * g + b
+}
+
+/** The colors a file descriptor shows, from the environment (see the top of this file). */
+export function colorLevel(fd: int): int {
+    const noColor = process.getenv("NO_COLOR")
+    if (noColor !== null && noColor !== "") return none
+    const force = process.getenv("FORCE_COLOR")
+    const forced = force !== null && force !== "" && force !== "0" && force !== "false"
+    if (!forced && isatty(i32(fd)) !== 1) return none
+    if (forced && force === "1") return basic
+    if (forced && force === "2") return palette
+    if (forced && force === "3") return truecolor
+    const term = process.getenv("TERM") ?? ""
+    if (term === "dumb" && !forced) return none
+    const colorterm = process.getenv("COLORTERM") ?? ""
+    if (colorterm === "truecolor" || colorterm === "24bit") return truecolor
+    if (term.includes("256color")) return palette
+    return basic
+}
+
+/** Styles for standard output and standard error. */
+export const stdout = new Style(colorLevel(1))
+export const stderr = new Style(colorLevel(2))
+
+/** Styles a part of a diagnostic printed to standard error (see `Paint` in syntax/diagnostic.ore). */
+export function diagnosticPart(part: string, text: string): string {
+    if (part === "error") return stderr.error(text)
+    if (part === "warning") return stderr.warning(text)
+    if (part === "caret") return stderr.accent(text)
+    if (part === "link") return stderr.dim(text)
+    return text
+}
+
+/** A diagnostic as `formatDiagnostic` formats it, in colors on a terminal. */
+export function styledDiagnostic(d: Diagnostic): string {
+    return paintDiagnostic(d, diagnosticPart)
+}

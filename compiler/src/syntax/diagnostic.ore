@@ -27,21 +27,39 @@ export function diagnosticAt(source: Source, node: Node, message: string, severi
 }
 
 /**
+ * Styles a part of a formatted diagnostic: "error" or "warning" for the
+ * label (`error[ORE2033]`), "caret" for the carets under the span, "link"
+ * for the line with the address of the code's page.
+ */
+export type Paint = (part: string, text: string) => string
+
+/** Leaves every part as it is. */
+function plain(part: string, text: string): string {
+    return text
+}
+
+/**
  * Formats a diagnostic as `path:line:col: severity[code]: message` followed by
  * the source line, a caret, and the address of the code's page. Columns and
  * widths count UTF-16 code units, as the TypeScript compiler does.
  */
 export function formatDiagnostic(d: Diagnostic): string {
+    return paintDiagnostic(d, plain)
+}
+
+/** `formatDiagnostic` with its parts styled by `paint`, as for a terminal (cli/style.ore). */
+export function paintDiagnostic(d: Diagnostic, paint: Paint): string {
     const { line, column } = d.source.position(d.start)
     const text = d.source.line(line)
     const length = utf16Length(d.source.text, d.start, d.start + d.length)
     const textLength = utf16Length(text, 0, text.length)
     const width = Math.max(1, Math.min(length, textLength - column))
+    const label = paint(d.severity, `${d.severity}${d.code === "" ? "" : `[${d.code}]`}`)
     const lines = [
-        `${d.source.path}:${line + 1}:${column + 1}: ${d.severity}${d.code === "" ? "" : `[${d.code}]`}: ${d.message}`,
+        `${d.source.path}:${line + 1}:${column + 1}: ${label}: ${d.message}`,
         `  ${text}`,
-        `  ${" ".repeat(column)}${"^".repeat(width)}`,
+        `  ${" ".repeat(column)}${paint("caret", "^".repeat(width))}`,
     ]
-    if (d.code !== "") lines.push(`  see ${docsUrl(d.code)}`)
+    if (d.code !== "") lines.push(`  ${paint("link", `see ${docsUrl(d.code)}`)}`)
     return lines.join("\n")
 }

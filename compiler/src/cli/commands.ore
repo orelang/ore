@@ -10,6 +10,7 @@ import { loadProgram } from "../project/load"
 import { findPackageRoot, readPackageJson } from "../project/resolve"
 import { type Diagnostic, formatDiagnostic } from "../syntax/diagnostic"
 import { oreFiles } from "./files"
+import { styledDiagnostic } from "./style"
 import { watch } from "./watch"
 
 /** The program to build: its entry file, the name of its executable, and the arguments for it. */
@@ -50,7 +51,7 @@ export function entry(positionals: string[]): Entry | null {
 
 /** Prints diagnostics to stderr. */
 export function report(diagnostics: Diagnostic[]): void {
-    for (const d of diagnostics) console.error(formatDiagnostic(d))
+    for (const d of diagnostics) console.error(styledDiagnostic(d))
 }
 
 /** A wrong command line: the message on stderr, status 2. */
@@ -172,7 +173,7 @@ function checkPaths(paths: string[]): i32 {
             const text = formatDiagnostic(d)
             if (reported.has(text)) continue
             reported.add(text)
-            console.error(text)
+            console.error(styledDiagnostic(d))
             if (d.severity === "error") errors = true
         }
     }

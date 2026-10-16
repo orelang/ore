@@ -44,6 +44,12 @@ before 1.0, a minor version may change the language.
   `BigInt.asIntN` and `BigInt.asUintN`. Bigints and numbers do not mix:
   `1n + 1` is a compile error (`ORE2065`). `console.log` prints `10n`, as
   Node does.
+- The command line prints in Ore's colors on a terminal: the labels,
+  carets and links of diagnostics, the commands and headings of `ore help`,
+  the ✓ and ✗ of `ore test`. `NO_COLOR` turns them off, `FORCE_COLOR` on;
+  24-bit with `COLORTERM=truecolor`, the nearest of 256 with a `256color`
+  TERM, the 16 basic colors otherwise. Piped output is unchanged.
+- `process.isatty(fd)`: whether a file descriptor is a terminal.
 - `ore run --watch` builds and runs the program again whenever one of its
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change
