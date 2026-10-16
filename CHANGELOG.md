@@ -5,6 +5,14 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Small immutable classes are values when nothing can tell: a class with no
+  base class or subclass and one to eight `readonly` fields of numbers,
+  booleans or other such classes, whose instances the program never
+  compares, prints, converts to an interface or `unknown`, or keeps in an
+  array, a map, a set, a channel or a union, has its instances kept in
+  registers and inside the objects that hold them instead of on the heap.
+  `bench/structs`, which moves particles with an immutable `Vec3`, no
+  longer allocates in its loop.
 - Generic classes can have static methods, generic ones too (`Box.of<U>(v)`),
   which do not see the class's type parameters, as in TypeScript; a generic
   class name works with `instanceof` and narrows a union to its instance

@@ -93,6 +93,7 @@ object files come from the build cache when it has them (see below).
 | `ir/read.ore` | `readModule(text)`: the module of a dump, so that `dump(readModule(dump(m)))` is `dump(m)` |
 | `opt/inline.ore` | `inlineCalls(module)`: calls of small functions replaced by their bodies (`compiler/opt/src/inline.ts`) |
 | `opt/escape.ore` | `planStack(module)`: escape analysis, the allocations placed on the stack (`compiler/opt/src/escape.ts`) |
+| `opt/values.ore` | `valueClasses(module)`: the small immutable classes whose instances are LLVM structs passed by value, since nothing observes their identity |
 | `llvm/*.ore` | The LLVM backend: `emitModule(module, options)` of `llvm/emit.ore`, the LLVM IR text of a module, ported file by file from `compiler/codegen/src` (`ll`, `context`, `helpers`, `base`, `functions`, `expressions`, `calls`, `collections`, `json`, `emit`) |
 | `llvm/bindings.ore` | The LLVM C API the compiler calls (contexts, the IR parser, the verifier, target machines, the new pass manager), and the registration of the host's target by `target.arch` |
 | `llvm/names.ore` | Names in the IR that do not depend on the checker's numbering: types after what they are, strings after their bytes, closures after their file, globals after their names, class ids from a hash of the class's name |
