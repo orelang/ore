@@ -106,6 +106,7 @@ import { dispatch, initStatics } from "./classes"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
 import {
     declareGenericClosure,
+    declareTypeAliases,
     directives,
     exportVariable,
     paramScope,
@@ -148,6 +149,10 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
     // start of the block, can call each other, and see every variable of the
     // block. Their signatures are declared first and their bodies checked last.
     const all = statements(block)
+    // Type aliases are scoped to the block, and declared before the rest, as
+    // in TypeScript: the block's functions and statements can name them.
+    const aliases = all.filter((s) => s.kind === "TypeAliasDeclaration")
+    if (aliases.length > 0) declareTypeAliases(c, aliases, inner)
     const nested = all.filter((s) => s.kind === "FunctionDeclaration")
     const locals: (Local | null)[] = nested.map((decl) => declareNestedFunction(c, decl, inner))
     const stmts: Stmt[] = []
@@ -451,6 +456,8 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
         }
     } else if (k === "ReturnStatement") {
         out.push(checkReturn(c, stmt, scope))
+    } else if (k === "TypeAliasDeclaration") {
+        // Declared at the start of its block (see `checkBlock`).
     } else if (k === "EmptyStatement") {
         // nothing
     } else if (k === "FunctionDeclaration") {

@@ -217,6 +217,13 @@ data. Division is Knuth's algorithm D, multiplication schoolbook.
   A rest element comes last, has no default value, and in an object
   pattern is a name rather than a pattern.
 
+
+Type aliases can be declared inside functions and blocks too, generic or
+not: `type Pair<T> = { first: T; second: T }`. Such an alias is scoped to
+its block, as a `let` is, but declared before the block's statements, as
+in TypeScript, so that it can be named above its declaration and in the
+block's nested functions; it hides an alias of the same name outside.
+
 ## Built-in namespaces
 
 Built-in functions live in namespaces, as in TypeScript and Node:

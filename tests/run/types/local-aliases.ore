@@ -1,0 +1,37 @@
+// Type aliases inside functions and blocks are scoped to their block, and
+// can be generic; they are declared before the block's statements run.
+type Point = { x: int; y: int }
+
+function area(w: int, h: int): int {
+    const size: Size = { w, h }
+    type Size = { w: int; h: int }
+    return size.w * size.h
+}
+
+function pairs(): string {
+    type Pair<T> = { first: T; second: T }
+    type Mode = "on" | "off"
+    function swap(p: Pair<int>): Pair<int> {
+        return { first: p.second, second: p.first }
+    }
+    const p: Pair<string> = { first: "a", second: "b" }
+    const q = swap({ first: 1, second: 2 })
+    const m: Mode = "on"
+    return `${p.first}${p.second} ${q.first}${q.second} ${m}`
+}
+
+function shadow(): string {
+    // A local alias hides a global one of the same name.
+    type Point = { label: string }
+    const p: Point = { label: "local" }
+    let inner = ""
+    {
+        type Point = int
+        const n: Point = 3
+        inner = `${n}`
+    }
+    return `${p.label} ${inner}`
+}
+
+const global: Point = { x: 1, y: 2 }
+console.log(area(3, 4), pairs(), shadow(), global.x + global.y)

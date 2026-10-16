@@ -5,6 +5,8 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Type aliases inside functions and blocks, generic ones too, scoped to
+  their block (they used to be ORE7016).
 - Indexed access and `keyof` on a union of object types, as in
   TypeScript: `U["x"]` is the union of the members' field types, and
   `keyof U` their common names, so `Omit<U, "z">` gives one object type of
