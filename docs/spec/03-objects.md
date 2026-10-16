@@ -280,6 +280,32 @@ on that slot reads the class table.
   type `(() => T) | null`. Unlike TypeScript, it cannot be assigned through
   the interface, as a method of a class cannot be replaced; classes cannot
   declare optional methods ([ORE5014](../errors/ORE5014.md)).
+- A method of an interface or object type can be generic,
+  `map<U>(f: (x: T) => U): U[]`, and a call through the interface picks
+  its type arguments as a generic function's are (written, or inferred
+  from the arguments). A class conforms with a generic method of the same
+  name and number of type parameters (its own names for them), an object
+  literal with a generic method of its own. Generics stay
+  monomorphized: the program is checked whole, so the type arguments of
+  every call through the interface are known, also of calls in instances
+  of other generics. Each class or object literal converted to the
+  interface gets an instance of its method for each of them, which may
+  make more calls and conversions, until no more are needed; each
+  instance must have the type of the interface's for the same type
+  arguments ([ORE5049](../errors/ORE5049.md)), as it is checked only for
+  the instances it gets. The interface table's entry of the method points
+  to a table of these instances, and a call loads the one for its type
+  arguments. Interfaces that convert to each other share these tables'
+  layout, and the instances of one are checked against the other's. Calls
+  whose instances call the method through the interface with ever larger
+  type arguments (`wrap<T[]>` in `wrap<T>`) have no end of instances
+  ([ORE5055](../errors/ORE5055.md)). A generic method cannot be optional
+  ([ORE5067](../errors/ORE5067.md)) or used as a value, and two parts of
+  an intersection can have one of the same name only when it is the same
+  method ([ORE5068](../errors/ORE5068.md)). An object literal's generic
+  method is a closure per instance, created with the object, in a hidden
+  field that printing and `Object.keys` leave out; it is called directly
+  too (`o.shift("a")`), but cannot be spread into another object.
 - Object types (`type P = { ... }`) and interfaces differ on purpose: an
   object type is an exact record, an interface accepts any record or class
   with the members.
@@ -435,8 +461,9 @@ must panic or exit on the other paths ([ORE6078](../errors/ORE6078.md)).
   never instantiated is only parsed.
 - Class methods can have their own type parameters
   (`map<U>(f: (x: T) => U): Box<U>`), instantiated per call like generic
-  functions; they cannot be used as values, and interface methods cannot be
-  generic. Their type parameters may have defaults, as those of functions.
+  functions; they cannot be used as values. Methods of interfaces and
+  object literals can be generic too (see [Interfaces](#interfaces)).
+  Their type parameters may have defaults, as those of functions.
   Since a generic method is checked only for the calls it has, a method
   with a parameter that nothing binds, such as `size<U = T>(): int`, can use
   what only some instances of its class have (`this.value.length`); a call

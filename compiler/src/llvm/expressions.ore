@@ -271,7 +271,13 @@ export function expr(g: Emitter, e: Expr): V {
             for (const a of e.args) args.push(expr(g, a))
             const itab = g.extract(value, 1, "ptr")
             const entry = g.b.value("ptr", `getelementptr ptr, ptr ${itab.v}, i64 ${e.index + 1}`)
-            const fn = g.b.value("ptr", `load ptr, ptr ${entry.v}`)
+            let fn = g.b.value("ptr", `load ptr, ptr ${entry.v}`)
+            // A generic method's entry is the table of its instances.
+            if (e.slot >= 0)
+                fn = g.b.value(
+                    "ptr",
+                    `load ptr, ptr ${g.b.value("ptr", `getelementptr ptr, ptr ${fn.v}, i64 ${e.slot}`).v}`,
+                )
             const all: V[] = [g.extract(value, 0, "ptr")]
             for (const a of args) all.push(a)
             return callIndirect(g, fn.v, g.lt(e.method.result), all)

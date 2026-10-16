@@ -52,6 +52,7 @@ import {
 } from "./declarations"
 import { globalObject, resolveGlobalThis } from "./globals"
 import { isDeclaration } from "./helpers"
+import { instantiateSlots } from "./slots"
 import { checkStatements } from "./statements"
 import { addTemplateSites } from "./templates"
 import { Generic, type Instance, Scope, TypeSymbol } from "./symbols"
@@ -235,6 +236,8 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
     for (const info of c.classes) if (!skipped.has(c.sourceOf(info.decl))) checkClassBodies(c, info, info.scope)
     // In order, including the checks that these add.
     for (let i = 0; i < c.pending.length; i++) c.pending[i]()
+    // The instances of generic methods called through interfaces, and what their bodies add.
+    instantiateSlots(c)
     finishClasses(c)
     addTemplateSites(c)
     localizeGlobals(c)

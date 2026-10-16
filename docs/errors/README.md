@@ -405,7 +405,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5052](ORE5052.md) | Interface '…' extends itself. |
 | [ORE5053](ORE5053.md) | An interface can only extend interfaces and classes. |
 | [ORE5054](ORE5054.md) | Call and construct signatures are not supported. |
-| [ORE5055](ORE5055.md) | Generic methods are not supported in interfaces: calls through an interface cannot pick an instance. |
+| [ORE5055](ORE5055.md) | Generic method '…' of '…' is called through the interface with type arguments that grow without end: '…'. |
 | [ORE5056](ORE5056.md) | This interface member is not supported. |
 | [ORE5057](ORE5057.md) | '…' is protected and only accessible inside class '…' and its subclasses. |
 | [ORE5058](ORE5058.md) | '…' is private and only accessible inside class '…'. |
@@ -417,6 +417,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE5064](ORE5064.md) | Overload signatures must all be public, private or protected, as the implementation. |
 | [ORE5065](ORE5065.md) | Method '…' must have the signatures of the method it overrides in '…': …. |
 | [ORE5066](ORE5066.md) | Overload signatures are not supported in interfaces yet. |
+| [ORE5067](ORE5067.md) | An optional method of an interface cannot be generic. |
+| [ORE5068](ORE5068.md) | Member '…' is a different generic method in each part of the intersection. |
 
 ## ORE6xxx: Declarations, functions, generics, modules and C
 

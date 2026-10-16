@@ -1,0 +1,440 @@
+// Generic methods of interfaces, `map<U>(f: (x: T) => U): U[]`, by
+// monomorphization: the program is checked whole, so every call through an
+// interface, with its type arguments, is known. Each call adds its type
+// arguments to the slots of the method (`GenericSlots`); once every body
+// is checked, each class converted to the interface gets an instance of its
+// generic method for each, which may call more through interfaces and
+// convert more classes, until nothing is added. The entry of the method in
+// an interface table points to a table of those instances, in the order of
+// the slots, and a call loads the one at its slot.
+//
+// Interfaces that convert to each other share the layout of these tables:
+// a conversion merges the slots of the source's method into the target's,
+// and checks each instance of one against the other's. A program whose
+// calls instantiate a method with ever larger type arguments, as
+// `wrap<U[]>` calling itself through the interface, has no end of
+// instances: that is an error.
+
+import {
+    type Expr,
+    type Itab,
+    type Local,
+    type Stmt,
+    Block,
+    CallValue,
+    Closure,
+    ExprStmt,
+    FieldGet,
+    FieldInit,
+    Func,
+    IfaceCall,
+    ItabGeneric,
+    LocalRef,
+    ReturnStmt,
+} from "../ir/nodes"
+import {
+    type GenericSlots,
+    type InterfaceType,
+    type StructType,
+    type Type,
+    Field,
+    FuncType,
+    sameType,
+    slotsOf,
+    slotsRoot,
+    typeKey,
+    typeToString,
+} from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { parameters } from "../syntax/nodes"
+import { type Checker } from "./base"
+import { genericMethod } from "./classes"
+import { type LiteralGeneric, SlotCall, SlotImpl, SlotLink } from "./context"
+import { genericCall, instantiate } from "./declarations"
+import { checkExpr } from "./expressions"
+import { inferGenerator } from "./generators"
+import { typed } from "./helpers"
+import { type Operand, errorOperand } from "./operand"
+import { type Scope } from "./symbols"
+
+/** How deep the type arguments of a generic method of an interface may be, before they are taken to grow without end. */
+const deepest = 12
+
+/** Whether a type is an interface with a generic method `name`. */
+export function hasSlots(type: Type, name: string): bool {
+    if (type.kind !== "interface") return false
+    for (const m of type.members) if (m.name === name && slotsOf(m) !== null) return true
+    return false
+}
+
+/** Why a method of an interface does not convert to one with the same name, as to generics; "" when it does. */
+export function slotsReason(source: GenericSlots | null, target: GenericSlots | null): string {
+    if (source === null && target === null) return ""
+    if (source === null) return "is not generic"
+    if (target === null) return "is generic"
+    if (source.count !== target.count) return `has ${source.count} type parameter(s) instead of ${target.count}`
+    return ""
+}
+
+/** A call of the generic method at `index` of an interface: its instance is picked by its type arguments. */
+export function slotCall(
+    c: Checker,
+    value: Expr,
+    type: InterfaceType,
+    index: int,
+    slots: GenericSlots,
+    node: Node,
+    scope: Scope,
+    typeArgs: Node[],
+    args: Node[],
+): Operand {
+    const generic = c.slotGenerics.get(slots)
+    if (generic === null) return errorOperand
+    const call = genericCall(c, generic, parameters(generic.decl), typeArgs, args, node, scope, value)
+    if (call === null) return errorOperand
+    const instance = call.instance
+    if (instance instanceof Func) return errorOperand
+    if (instance.kind !== "func") return errorOperand
+    const typeArgsOf = c.slotArgs.get(instance)
+    if (typeArgsOf === null) return errorOperand
+    const given = call.args(args)
+    const params = instance.params
+    if (given.length !== params.length)
+        return c.fail(
+            node,
+            `Method '${type.name}.${slots.name}' expects ${params.length} argument(s), got ${given.length}.`,
+        )
+    const values: Expr[] = []
+    for (let i = 0; i < given.length; i++) {
+        const o = i < call.operands.length ? call.operands[i] : null
+        values.push(c.coerce(o ?? checkExpr(c, given[i], scope, params[i]), params[i], given[i]))
+    }
+    const key = addSlot(c, slots, typeArgsOf, node, type)
+    if (key === null) return errorOperand
+    const ifaceCall = new IfaceCall(instance.result, call.self(value), index, instance, values)
+    c.slotCalls.push(new SlotCall(ifaceCall, slots, key))
+    return call.bind(typed(ifaceCall))
+}
+
+/** Adds an instance to generic slots: the key of its type arguments, or null when they grow without end. */
+function addSlot(c: Checker, slots: GenericSlots, args: Type[], node: Node, type: InterfaceType): string | null {
+    const key = args.map(typeKey).join(",")
+    const root = slotsRoot(slots)
+    if (root.keys.includes(key)) return key
+    for (const t of args) {
+        if (depth(c, t) <= deepest) continue
+        c.error(
+            node,
+            `Generic method '${slots.name}' of '${type.name}' is called through the interface with type arguments that grow without end: '${args.map(typeToString).join(", ")}'.`,
+        )
+        return null
+    }
+    root.keys.push(key)
+    root.args.push(args)
+    return key
+}
+
+/** How deeply types nest in a type: in arrays, tuples, functions and the type arguments of instances. */
+function depth(c: Checker, t: Type): int {
+    let inner: Type[] = []
+    switch (t.kind) {
+        case "array":
+            inner = [t.elem]
+            break
+        case "set":
+            inner = [t.elem]
+            break
+        case "chan":
+            inner = [t.elem]
+            break
+        case "map":
+            inner = [t.key, t.value]
+            break
+        case "union":
+            // A union is as deep as its deepest member.
+            return deepestOf(c, t.members) - 1
+        case "func":
+            inner = t.params.slice()
+            inner.push(t.result)
+            break
+        case "struct": {
+            if (t.tuple) {
+                for (const f of t.fields) inner.push(f.type)
+                break
+            }
+            const info = c.instanceOf.get(t)
+            if (info === null) return 0
+            inner = info.args
+            break
+        }
+        case "interface": {
+            const info = c.instanceOf.get(t)
+            if (info === null) return 0
+            inner = info.args
+            break
+        }
+        default:
+            return 0
+    }
+    return deepestOf(c, inner)
+}
+
+/** One more than the deepest of types. */
+function deepestOf(c: Checker, list: Type[]): int {
+    let most = 0
+    for (const t of list) {
+        const d = depth(c, t)
+        if (d > most) most = d
+    }
+    return most + 1
+}
+
+/** A conversion between interfaces: their generic methods share slots, and their instances are checked against each other. */
+export function linkSlots(c: Checker, from: InterfaceType, to: InterfaceType, indices: int[], node: Node) {
+    for (let i = 0; i < to.members.length && i < indices.length; i++) {
+        const target = slotsOf(to.members[i])
+        const source = slotsOf(from.members[indices[i]])
+        if (target === null || source === null || source === target) continue
+        merge(source, target)
+        c.slotLinks.push(new SlotLink(from, to, source, target, node))
+    }
+}
+
+/** Merges the instances of one generic method's slots into another's. */
+function merge(source: GenericSlots, target: GenericSlots) {
+    const from = slotsRoot(source)
+    const to = slotsRoot(target)
+    if (from === to) return
+    from.parent = to
+    for (let k = 0; k < from.keys.length; k++) {
+        if (to.keys.includes(from.keys[k])) continue
+        to.keys.push(from.keys[k])
+        to.args.push(from.args[k])
+    }
+}
+
+/** The instance of a generic method of an interface for type arguments: its type. */
+function slotType(c: Checker, slots: GenericSlots, args: Type[], node: Node): Type | null {
+    const generic = c.slotGenerics.get(slots)
+    if (generic === null) return null
+    const instance = instantiate(c, generic, args, node)
+    if (instance === null || instance instanceof Func) return null
+    return instance
+}
+
+/** `name<A, B>` of an instance, for messages. */
+function slotLabel(slots: GenericSlots, args: Type[]): string {
+    return `${slots.name}<${args.map(typeToString).join(", ")}>`
+}
+
+/**
+ * Once every body is checked: the instances of classes' generic methods for
+ * the calls through interfaces, until no more are needed, then the slots of
+ * the calls and the tables of the interface tables.
+ */
+export function instantiateSlots(c: Checker) {
+    let ran = c.pending.length
+    for (;;) {
+        const before = ran
+        let added = false
+        for (let t = 0; t < c.module.itabs.length; t++) {
+            const table = c.module.itabs[t]
+            const members = table.iface.members
+            for (let i = 0; i < members.length; i++) {
+                const slots = slotsOf(members[i])
+                if (slots === null) continue
+                const root = slotsRoot(slots)
+                for (let k = 0; k < root.keys.length; k++) {
+                    const mark = `${table.id}:${i}:${root.keys[k]}`
+                    if (c.slotsDone.has(mark)) continue
+                    c.slotsDone.add(mark)
+                    added = true
+                    implementSlot(c, table, slots, root.args[k], mark)
+                }
+            }
+        }
+        for (let l = 0; l < c.slotLinks.length; l++) {
+            const link = c.slotLinks[l]
+            const root = slotsRoot(link.target)
+            for (let k = 0; k < root.keys.length; k++) {
+                const mark = `link ${l}:${root.keys[k]}`
+                if (c.slotsDone.has(mark)) continue
+                c.slotsDone.add(mark)
+                added = true
+                checkLink(c, link, root.args[k])
+            }
+        }
+        // The bodies of the instances, which may call more through interfaces.
+        while (ran < c.pending.length) {
+            c.pending[ran]()
+            ran++
+        }
+        if (!added && ran === before) break
+    }
+    // One error for each class and interface, at the first instance that differs.
+    const reported = new Set<int>()
+    for (const impl of c.slotImpls) {
+        const decl = c.funcDecls.get(impl.func)
+        if (decl !== null) inferGenerator(c, impl.func, decl)
+        if (sameType(impl.func.type, impl.type) || reported.has(impl.table.id)) continue
+        reported.add(impl.table.id)
+        const struct = impl.table.struct
+        const iface = impl.table.iface.name
+        const reason = `method '${impl.label}' has type '${typeToString(impl.func.type)}' instead of '${typeToString(impl.type)}'`
+        c.error(
+            impl.node,
+            struct.nominal
+                ? `Class '${typeToString(struct)}' does not implement '${iface}': ${reason}.`
+                : `Type '${typeToString(struct)}' is not assignable to type '${iface}': ${reason}.`,
+        )
+    }
+    for (const call of c.slotCalls) call.call.slot = slotsRoot(call.slots).keys.indexOf(call.key)
+    fillLiterals(c)
+    for (const table of c.module.itabs) {
+        const members = table.iface.members
+        for (let i = 0; i < members.length; i++) {
+            const slots = slotsOf(members[i])
+            if (slots === null) continue
+            const funcs: Func[] = []
+            for (const key of slotsRoot(slots).keys) {
+                const func = c.slotFuncs.get(`${table.id}:${i}:${key}`)
+                if (func !== null) funcs.push(func)
+            }
+            table.generics.push(new ItabGeneric(i, funcs))
+        }
+    }
+}
+
+/** The instance of a class's generic method for an instance of an interface's that it implements. */
+function implementSlot(c: Checker, table: Itab, slots: GenericSlots, args: Type[], mark: string) {
+    const generic = c.slotGenerics.get(slots)
+    let node: Node | null = c.itabSites.get(table.id)
+    if (node === null && generic !== null) node = generic.decl
+    if (node === null) return
+    // A class's method, or an object literal's closure, which the table calls through a thunk.
+    const method = genericMethod(c, table.struct, slots.name)
+    const literal = method === null ? literalGeneric(c, table.struct, slots.name) : null
+    const instance =
+        method !== null
+            ? instantiate(c, method.generic, args, node)
+            : literal !== null
+              ? instantiate(c, literal.generic, args, node)
+              : null
+    if (!(instance instanceof Func)) return
+    c.slotFuncs.set(
+        mark,
+        literal !== null ? literalThunk(c, table.struct, literal, literalIndex(literal, instance)) : instance,
+    )
+    const type = slotType(c, slots, args, node)
+    if (type === null || type.kind !== "func") return
+    c.slotImpls.push(new SlotImpl(table, instance, type, slotLabel(slots, args), node))
+}
+
+/** The generic method `name` of an object literal's type, or null. */
+export function literalGeneric(c: Checker, s: StructType, name: string): LiteralGeneric | null {
+    const methods = c.literalGenerics.get(s)
+    return methods === null ? null : methods.get(name)
+}
+
+/** The index of an instance of an object literal's generic method in its tuple of closures, added if new. */
+function literalIndex(literal: LiteralGeneric, func: Func): int {
+    const known = literal.funcs.indexOf(func)
+    if (known >= 0) return known
+    let key = ""
+    for (const [k, instance] of literal.generic.instances) if (instance === func) key = k
+    literal.keys.push(key)
+    literal.funcs.push(func)
+    return literal.funcs.length - 1
+}
+
+/** The closure of instance `k` of an object literal's generic method, in the hidden field of `object`. */
+function literalClosure(literal: LiteralGeneric, object: Expr, k: int): Expr {
+    const func = literal.funcs[k]
+    return new FieldGet(func.type, new FieldGet(literal.table.type, object, literal.field), `${k}`)
+}
+
+/** A call of a generic method of an object literal: the closure of its instance. */
+export function literalCall(
+    c: Checker,
+    value: Expr,
+    literal: LiteralGeneric,
+    node: Node,
+    scope: Scope,
+    typeArgs: Node[],
+    args: Node[],
+): Operand {
+    const generic = literal.generic
+    const call = genericCall(c, generic, parameters(generic.decl), typeArgs, args, node, scope, value)
+    if (call === null) return errorOperand
+    const instance = call.instance
+    if (!(instance instanceof Func)) return errorOperand
+    const k = literalIndex(literal, instance)
+    const params = instance.type.params
+    const given = call.args(args)
+    if (given.length !== params.length)
+        return c.fail(node, `'${generic.name}' expects ${params.length} argument(s), got ${given.length}.`)
+    const values: Expr[] = []
+    for (let i = 0; i < given.length; i++) {
+        const o = i < call.operands.length ? call.operands[i] : null
+        values.push(c.coerce(o ?? checkExpr(c, given[i], scope, params[i]), params[i], given[i]))
+    }
+    const callee = literalClosure(literal, call.self(value), k)
+    return call.bind(typed(new CallValue(instance.type.result, callee, values)))
+}
+
+/** The method of an interface table that calls instance `k` of an object literal's generic method. */
+function literalThunk(c: Checker, struct: StructType, literal: LiteralGeneric, k: int): Func {
+    const func = literal.funcs[k]
+    const self = c.newLocal("this", struct, false)
+    const params: Local[] = []
+    const args: Expr[] = []
+    for (let i = 0; i < func.type.params.length; i++) {
+        const p = c.newLocal(`a${i}`, func.type.params[i], false)
+        params.push(p)
+        args.push(new LocalRef(p.type, p))
+    }
+    const result = func.type.result
+    const call = new CallValue(result, literalClosure(literal, new LocalRef(struct, self), k), args)
+    const body: Stmt = result.kind === "void" ? new ExprStmt(call) : new ReturnStmt(call)
+    const thunk = new Func(
+        `ore_lambda_${c.nextLambda++}`,
+        literal.generic.name,
+        func.line,
+        new FuncType(func.type.params, result),
+        params,
+        new Block([body]),
+        false,
+        null,
+        false,
+        null,
+        self,
+    )
+    c.module.functions.push(thunk)
+    return thunk
+}
+
+/** Once every instance is known: the tuples of closures that object literals with generic methods create. */
+function fillLiterals(c: Checker) {
+    for (const [_, methods] of c.literalGenerics)
+        for (const [__, literal] of methods) {
+            const fields: Field[] = []
+            for (let k = 0; k < literal.funcs.length; k++) {
+                const func = literal.funcs[k]
+                fields.push(new Field(`${k}`, func.type, true))
+                literal.table.fields.push(new FieldInit(`${k}`, new Closure(func.type, func)))
+            }
+            literal.table.type.fields = fields
+        }
+}
+
+/** Checks an instance of a generic method converted from one interface to another against the other's. */
+function checkLink(c: Checker, link: SlotLink, args: Type[]) {
+    const from = slotType(c, link.source, args, link.node)
+    const to = slotType(c, link.target, args, link.node)
+    if (from === null || to === null || sameType(from, to) || link.reported) return
+    link.reported = true
+    c.error(
+        link.node,
+        `Type '${link.from.name}' is not assignable to type '${link.to.name}': method '${slotLabel(link.target, args)}' has type '${typeToString(from)}' instead of '${typeToString(to)}'.`,
+    )
+}

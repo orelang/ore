@@ -923,14 +923,17 @@ class Inliner {
                 return new ToIface(e.type, this.clone(e.value, values), e.itab, e.indices)
             case "iface-field":
                 return new IfaceField(e.type, this.clone(e.value, values), e.index)
-            case "iface-call":
-                return new IfaceCall(
+            case "iface-call": {
+                const call = new IfaceCall(
                     e.type,
                     this.clone(e.value, values),
                     e.index,
                     e.method,
                     this.clones(e.args, values),
                 )
+                call.slot = e.slot
+                return call
+            }
             case "recast":
                 return new Recast(e.type, this.clone(e.value, values))
             case "is-null":

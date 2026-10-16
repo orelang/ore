@@ -30,6 +30,7 @@ import {
     ToIface,
 } from "../ir/nodes"
 import {
+    type GenericSlots,
     type InterfaceType,
     type Type,
     ArrayType,
@@ -100,9 +101,13 @@ import {
     type InstanceInfo,
     type InterfaceInfo,
     type JsonImport,
+    type LiteralGeneric,
     type ModuleInfo,
     type Predicate,
     type Signature,
+    type SlotCall,
+    type SlotImpl,
+    type SlotLink,
     CheckInfo,
 } from "./context"
 import { instantiate } from "./declarations"
@@ -120,6 +125,7 @@ import {
 import { type Operand, errorOperand, Typed } from "./operand"
 import { type Generic, type NamespaceSymbol, type TypeSymbol, type ValueSymbol, Scope } from "./symbols"
 import { dictOfLiteral } from "./dicts"
+import { linkSlots } from "./slots"
 import { templateAsRaw } from "./templates"
 
 /** Two operands brought to a common type, or nulls when that failed: `[ir.Expr | undefined, ir.Expr | undefined]`. */
@@ -272,6 +278,26 @@ export class Checker {
 
     /** Generic methods of classes by name, instantiated per call like generic functions. */
     readonly genericMethods = new Map<StructType, Map<string, GenericMethod>>()
+
+    // Generic methods of interfaces (see `slots.ore`).
+    /** The generic of each generic method of an interface, whose instances are its types, by its own slots. */
+    readonly slotGenerics = new Map<GenericSlots, Generic>()
+    /** The type arguments of each instance type of a generic method of an interface. */
+    readonly slotArgs = new Map<FuncType, Type[]>()
+    /** Calls through interfaces of generic methods, whose slots are set at the end. */
+    readonly slotCalls: SlotCall[] = []
+    /** Conversions between interfaces with generic methods. */
+    readonly slotLinks: SlotLink[] = []
+    /** The instances that implement slots, checked against them at the end. */
+    readonly slotImpls: SlotImpl[] = []
+    /** What has been instantiated for slots: `itab:member:key` and `link:key`. */
+    readonly slotsDone = new Set<string>()
+    /** The instance implementing each slot of an interface table, by `itab:member:key`. */
+    readonly slotFuncs = new Map<string, Func>()
+    /** Where each interface table was first needed, by its id. */
+    readonly itabSites = new Map<int, Node>()
+    /** The generic methods of object literals, by the literal's type and the method's name. */
+    readonly literalGenerics = new Map<StructType, Map<string, LiteralGeneric>>()
 
     /** Optional and rest parameters of functions, by their parameter list. */
     readonly signatures = new Map<Local[], Signature>()
@@ -1267,8 +1293,13 @@ export class Checker {
                     if (source !== null) {
                         const result = conformance(this, source, target)
                         if (result.reason === null) {
-                            if (source.kind === "interface") return new ToIface(target, expr, null, result.indices)
-                            return new ToIface(target, expr, itab(this, source, target))
+                            if (source.kind === "interface") {
+                                linkSlots(this, source, target, result.indices ?? [], node)
+                                return new ToIface(target, expr, null, result.indices)
+                            }
+                            const table = itab(this, source, target)
+                            if (!this.itabSites.has(table.id)) this.itabSites.set(table.id, node)
+                            return new ToIface(target, expr, table)
                         }
                         this.error(
                             node,

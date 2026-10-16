@@ -32,6 +32,7 @@ import {
     Field,
     FuncType,
     InterfaceField,
+    GenericSlots,
     InterfaceMethod,
     InterfaceType as InterfaceTypeClass,
     Method,
@@ -46,6 +47,7 @@ import {
     sourceMethodName,
     overridden,
     sameType,
+    slotsOf,
     types,
     typeToString,
     membersOf,
@@ -94,6 +96,7 @@ import {
 } from "./context"
 import {
     applyFuncDirectives,
+    checkDefaults,
     checkFunctionBody,
     declareGeneric,
     inferredGenerator,
@@ -110,6 +113,7 @@ import {
 import { checkExpr, settle } from "./expressions"
 import { cIdent, findThis, hasZeroValue, indexSignatureMessage, terminates, zeroNeedsInit, zeroValue } from "./helpers"
 import { assertionReturn, declarePredicate, enterPredicate } from "./predicates"
+import { literalGeneric, slotsReason } from "./slots"
 import { checkBlock } from "./statements"
 import { type Generic, type Instance, ClassSymbol, Generic as GenericClass, Scope, TypeSymbol } from "./symbols"
 
@@ -1510,7 +1514,17 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
     const readonly: bool[] = []
     const methods: bool[] = []
     const optional: bool[] = []
-    const add = (name: string, type: Type, isReadonly: bool, method: bool, isOptional: bool, at: Node): bool => {
+    // A generic method's slots: one generic method in two parts must be the same.
+    const generics: (GenericSlots | null)[] = []
+    const add = (
+        name: string,
+        type: Type,
+        isReadonly: bool,
+        method: bool,
+        isOptional: bool,
+        at: Node,
+        slots: GenericSlots | null,
+    ): bool => {
         const i = names.indexOf(name)
         if (i < 0) {
             names.push(name)
@@ -1518,7 +1532,12 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
             readonly.push(isReadonly)
             methods.push(method)
             optional.push(isOptional)
+            generics.push(slots)
             return true
+        }
+        if (generics[i] !== slots) {
+            c.error(at, `Member '${name}' is a different generic method in each part of the intersection.`)
+            return false
         }
         // A member in two parts has the types common to both: `{ a?: int } & { a: int }` has `a: int`.
         const common = sameType(memberTypes[i], type)
@@ -1541,7 +1560,7 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
     for (const part of parts) {
         if (part.kind === "struct") {
             for (const f of displayFields(part))
-                if (!add(f.name, f.type, f.readonly, false, f.optional, node)) return null
+                if (!add(f.name, f.type, f.readonly, false, f.optional, node, null)) return null
         } else if (part.kind === "interface") {
             anyInterface = true
             // Type aliases are resolved before interfaces are filled: this one is needed now.
@@ -1556,6 +1575,7 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
                         m.k === "method",
                         m.k === "field" && m.optional,
                         node,
+                        slotsOf(m),
                     )
                 )
                     return null
@@ -1573,8 +1593,11 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
     const members: InterfaceMember[] = []
     for (let i = 0; i < names.length; i++) {
         const t = memberTypes[i]
-        if (methods[i] && t.kind === "func") members.push(new InterfaceMethod(names[i], t))
-        else {
+        if (methods[i] && t.kind === "func") {
+            const method = new InterfaceMethod(names[i], t)
+            method.slots = generics[i]
+            members.push(method)
+        } else {
             const field = new InterfaceField(names[i], t, readonly[i])
             field.optional = optional[i]
             members.push(field)
@@ -1814,11 +1837,20 @@ function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Ma
             }
             ownMethods.set(name, true)
             const typeParams = typeParameters(member)
-            if (typeParams.length > 0)
-                c.error(
-                    typeParams[0],
-                    "Generic methods are not supported in interfaces: calls through an interface cannot pick an instance.",
-                )
+            if (typeParams.length > 0) {
+                // `map<U>(f: (x: T) => U): U[]`: its instances are typed per call (see `slots.ore`).
+                if (question !== null) {
+                    c.error(typeParams[0], "An optional method of an interface cannot be generic.")
+                    continue
+                }
+                checkDefaults(c, typeParams)
+                const method = new InterfaceMethod(name, new FuncType([], types.void))
+                const slots = new GenericSlots(name, typeParams.length)
+                method.slots = slots
+                c.slotGenerics.set(slots, new GenericClass(name, member, typeParams, memberScope, new Map()))
+                addMember(c, found, decls, method, memberName, member)
+                continue
+            }
             const params = resolveParams(c, parameters(member), memberScope)
             const annotation = typeNode(member)
             const result = annotation !== null ? (c.resolveType(annotation, memberScope) ?? types.void) : types.void
@@ -1864,6 +1896,9 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
             const source = index === -1 ? null : from.members[index]
             if (source === null || source.k !== member.k)
                 return new Conformance(`${what} is missing`, null, member.name)
+            // A generic method: each instance converted is checked against the other's (see `slots.ore`).
+            const reason = slotsReason(slotsOf(source), slotsOf(member))
+            if (reason !== "") return new Conformance(`${what} ${reason}`, null, member.name)
             if (!sameType(source.type, member.type))
                 return new Conformance(
                     `${what} has type '${typeToString(source.type)}' instead of '${typeToString(member.type)}'`,
@@ -1911,6 +1946,24 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
                     member.name,
                 )
             if (field.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null, member.name)
+        } else if (slotsOf(member) !== null) {
+            // A generic method: each instance called through the interface is checked against the interface's.
+            // Of a class, or of an object literal.
+            const generic = genericMethod(c, from, member.name)
+            const literal = generic === null ? literalGeneric(c, from, member.name) : null
+            let count = -1
+            if (generic !== null && !generic.private) count = generic.generic.params.length
+            if (literal !== null) count = literal.generic.params.length
+            if (count < 0) {
+                const plain = findMethod(from, member.name)
+                const field = findField(from, member.name)
+                if ((plain !== null && !plain.private) || (field !== null && !field.private))
+                    return new Conformance(`${what} is not generic`, null, member.name)
+                return new Conformance(`${what} is missing`, null, member.name)
+            }
+            const wanted = slotsOf(member)!.count
+            if (count !== wanted)
+                return new Conformance(`${what} has ${count} type parameter(s) instead of ${wanted}`, null, member.name)
         } else {
             // Of a method with overload signatures, the signature of the member's type.
             const method = implementingMethod(from, member.name, member.type)

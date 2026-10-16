@@ -56,6 +56,8 @@ export class Module {
 export class Itab {
     /** The interface's fields that the struct implements with accessors. */
     accessors: ItabAccessor[] = []
+    /** The tables of the interface's generic methods. */
+    generics: ItabGeneric[] = []
     constructor(
         public id: int,
         public struct: StructType,
@@ -73,6 +75,18 @@ export class ItabAccessor {
         public index: int,
         public get: Func | null,
         public set: Func | null,
+    ) {}
+}
+
+/**
+ * A generic method of an interface: its entry in the table points to a table
+ * of the struct's instances of the method, one per instance called through
+ * the interface (see `GenericSlots`).
+ */
+export class ItabGeneric {
+    constructor(
+        public index: int,
+        public funcs: Func[],
     ) {}
 }
 
@@ -770,9 +784,13 @@ export class IfaceField {
     ) {}
 }
 
-/** Calls the method at `index` of an interface's members. */
+/**
+ * Calls the method at `index` of an interface's members; of a generic
+ * method, the instance at `slot` of the table that its entry points to.
+ */
 export class IfaceCall {
     readonly k: "iface-call" = "iface-call"
+    public slot: int = -1
     constructor(
         public type: Type,
         public value: Expr,

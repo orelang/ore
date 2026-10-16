@@ -50,7 +50,6 @@ before 1.0, a minor version may change the language.
   where it was iterated on a generator, a fiber, of its own. The type of
   its values is found as `for...of` finds an iterator, also for a class
   that only has `[Symbol.iterator]()` or `next()`.
-
 - The timers of the web and Node are global names: `setTimeout(f, ms?,
   ...args)`, `setInterval`, `setImmediate`, `clearTimeout`,
   `clearInterval`, `clearImmediate` and `queueMicrotask`, over the queues
@@ -252,6 +251,22 @@ before 1.0, a minor version may change the language.
   entries, a file as `[object File]`. `console.log` prints it as Node does
   and `JSON.stringify` writes `{}`. The `multipart/form-data` encoding
   waits for the bodies of `fetch`.
+- Methods of interfaces and object types can be generic,
+  `map<U>(f: (x: T) => U): U[]`, also in generic interfaces
+  (`interface Box<T> { map<U>(f: (t: T) => U): Box<U> }`), and called
+  through the interface with written or inferred type arguments. Generics
+  stay monomorphized: the type arguments of every call through an
+  interface, in the whole program and in the instances of other generics,
+  are collected, and each class or object literal converted to the
+  interface gets an instance of its generic method for each, until no
+  more are needed; the interface table points to a table of them. A class
+  conforms with a generic method of the same number of type parameters,
+  whose instances are checked against the interface's; interfaces with
+  generic methods convert to each other, and object literals can have
+  generic methods (closures per instance, called through an interface or
+  directly). ORE5055 now reports calls whose instances need ever larger
+  type arguments; ORE5067 an optional generic method, ORE5068 two generic
+  methods of one name in an intersection.
 
 ## 0.5.0
 

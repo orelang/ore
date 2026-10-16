@@ -1259,7 +1259,7 @@ export function makeFunc(
 }
 
 /** Reports a type parameter without a default after one with a default. */
-function checkDefaults(c: Checker, params: Node[]) {
+export function checkDefaults(c: Checker, params: Node[]) {
     let defaults = false
     for (const p of params) {
         const d = defaultTypeNode(p)
@@ -1423,6 +1423,19 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
         if (type !== null) generic.instances.set(key, type)
         return type
     }
+    if (decl.kind === "MethodSignature") {
+        // A generic method of an interface: the type of an instance called through it (see `slots.ore`).
+        const params = resolveParams(c, parameters(decl), scope)
+        const annotation = typeNode(decl)
+        const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
+        const type = new FuncType(
+            params.map((p) => p.type),
+            result,
+        )
+        generic.instances.set(key, type)
+        c.slotArgs.set(type, args)
+        return type
+    }
     if (decl.kind === "FunctionDeclaration") {
         const func = makeFunc(c, decl, scope, label, cname, false)
         generic.instances.set(key, func)
@@ -1514,7 +1527,7 @@ function instantiateClosure(
     c.context = label
     site.checking.add(key)
     site.scopes.set(key, scope)
-    const closure = checkClosure(c, generic.decl, scope, null, false, null, label, (func) => {
+    const closure = checkClosure(c, generic.decl, scope, null, false, site.self, label, (func) => {
         generic.instances.set(key, func)
     })
     site.checking.delete(key)

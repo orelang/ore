@@ -197,7 +197,15 @@ export class StructType {
 /** The fields of a struct in the order its values show them (see `StructType.order`). */
 export function displayFields(t: StructType): Field[] {
     const order = t.order
-    return order !== null ? order : t.fields
+    const all = order !== null ? order : t.fields
+    // The hidden field of an object literal's generic method holds its instances, and is not shown.
+    if (t.nominal || !all.some(isGenericField)) return all
+    return all.filter((f) => !isGenericField(f))
+}
+
+/** Whether a field is the hidden one of a generic method of an object literal, `#map 12`. */
+export function isGenericField(f: Field): bool {
+    return f.private && f.name.startsWith("#")
 }
 
 /** The orders of the fields of an object type that its values show, by index: `displayFields` first, then `orders`. */
@@ -392,8 +400,48 @@ export class InterfaceMethod {
     readonly k: "method" = "method"
     constructor(
         readonly name: string,
+        /** For a generic method, `() => void`: each instance has its own type. */
         readonly type: FuncType,
     ) {}
+
+    /** For a generic method, `map<U>(f: (x: T) => U): U[]`: the instances called through the interface. */
+    public slots: GenericSlots | null = null
+}
+
+/**
+ * The instances of a generic method of an interface that the program calls
+ * through it, by their type arguments. Its entry in an interface table
+ * points to a table of the implementing methods, one per instance in this
+ * order. Generic methods of interfaces that convert to each other share one
+ * layout: one is merged into the other (`parent`), whose instances are then
+ * those of both.
+ */
+export class GenericSlots {
+    public parent: GenericSlots | null = null
+    /** The keys of the type arguments of the instances, in table order. */
+    readonly keys: string[] = []
+    /** The type arguments of the instances, in table order. */
+    readonly args: Type[][] = []
+    constructor(
+        readonly name: string,
+        /** The number of type parameters. */
+        readonly count: int,
+    ) {}
+}
+
+/** The slots that generic slots have been merged into, or themselves. */
+export function slotsRoot(slots: GenericSlots): GenericSlots {
+    let root = slots
+    for (;;) {
+        const parent = root.parent
+        if (parent === null) return root
+        root = parent
+    }
+}
+
+/** The slots of a generic method of an interface; null for other members. */
+export function slotsOf(m: InterfaceMember): GenericSlots | null {
+    return m.k === "method" ? m.slots : null
 }
 
 export type InterfaceMember = InterfaceField | InterfaceMethod
@@ -743,7 +791,12 @@ function sameInterface(a: InterfaceType, b: InterfaceType, given: Assumed | null
     for (let i = 0; i < a.members.length && same; i++) {
         const m = a.members[i]
         const n = b.members[i]
-        same = m.k === n.k && m.name === n.name && sameIn(m.type, n.type, assumed) && optionalOf(m) === optionalOf(n)
+        same =
+            m.k === n.k &&
+            m.name === n.name &&
+            sameIn(m.type, n.type, assumed) &&
+            optionalOf(m) === optionalOf(n) &&
+            slotsOf(m) === slotsOf(n)
     }
     assumed.a.pop()
     assumed.b.pop()
@@ -832,6 +885,11 @@ export function typeToString(t: Type): string {
             if (t.tuple) return tupleToString(t)
             const fields: string[] = []
             for (const f of t.fields) {
+                // The hidden field of a generic method, `#map 12`.
+                if (isGenericField(f)) {
+                    fields.push(`${f.name.slice(1, f.name.lastIndexOf(" "))}<...>(...)`)
+                    continue
+                }
                 // The hidden fields of an object literal's accessors: `get x(): T` and `set x(value: T)`.
                 const ft = f.type
                 if (f.private && ft.kind === "func" && f.name.startsWith("get ")) {

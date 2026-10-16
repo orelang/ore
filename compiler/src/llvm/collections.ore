@@ -8,6 +8,7 @@ import {
     type Expr,
     type Itab,
     type ItabAccessor,
+    type ItabGeneric,
     type Local,
     type MapOp,
     type SetOp,
@@ -1044,6 +1045,22 @@ function accessorEntry(g: Emitter, t: Itab, index: int, a: ItabAccessor): string
     return `ptr getelementptr (i8, ptr ${pair}, i64 -9223372036854775808)`
 }
 
+/**
+ * The entry of an interface table for a generic method: the address of the
+ * table of the struct's instances of it, in the order of its `GenericSlots`.
+ */
+function genericEntry(g: Emitter, t: Itab, generic: ItabGeneric): string {
+    if (generic.funcs.length === 0) return "ptr null"
+    const m = t.iface.members[generic.index]
+    const table = globalName(`gtab.${g.names.key(t.struct)}.${g.names.iface(t.iface)}.${m.name}`)
+    if (!g.helpers.has(table)) {
+        const funcs: string[] = []
+        for (const f of generic.funcs) funcs.push(`ptr ${globalName(f.name)}`)
+        g.helpers.set(table, `${table} = internal constant [${funcs.length} x ptr] [${funcs.join(", ")}]`)
+    }
+    return `ptr ${table}`
+}
+
 export function itab(g: Emitter, t: Itab): string {
     const s = g.structType(t.struct)
     const all: string[] = [`ptr getelementptr (i8, ptr null, i64 ${g.names.typeId(t.struct)})`]
@@ -1053,6 +1070,12 @@ export function itab(g: Emitter, t: Itab): string {
         for (const a of t.accessors) if (a.index === i) accessor = a
         if (accessor !== null) {
             all.push(accessorEntry(g, t, i, accessor))
+            continue
+        }
+        let generic: ItabGeneric | null = null
+        for (const x of t.generics) if (x.index === i) generic = x
+        if (generic !== null) {
+            all.push(genericEntry(g, t, generic))
             continue
         }
         if (m.k === "field") {

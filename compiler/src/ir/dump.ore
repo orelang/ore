@@ -90,6 +90,8 @@ class Dumper {
                 const set = a.set
                 text += ` accessor ${a.index} ${get !== null ? this.ref(get) : "-"} ${set !== null ? this.ref(set) : "-"}`
             }
+            for (const g of t.generics)
+                text += ` generic ${g.index} ${g.funcs.length === 0 ? "-" : g.funcs.map((f) => this.ref(f)).join(",")}`
             this.line(0, text)
         }
         for (const f of m.functions) this.func("func", f)
@@ -486,7 +488,12 @@ class Dumper {
                 this.expr(e.value, d, "value")
                 return
             case "iface-call":
-                this.exprHead(e, depth, role, `iface-call ${e.index} method=${this.type(e.method)}`)
+                this.exprHead(
+                    e,
+                    depth,
+                    role,
+                    `iface-call ${e.index}${e.slot >= 0 ? ` slot=${e.slot}` : ""} method=${this.type(e.method)}`,
+                )
                 this.expr(e.value, d, "value")
                 this.all(e.args, d, "arg")
                 return

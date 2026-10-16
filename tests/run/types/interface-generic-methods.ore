@@ -1,0 +1,174 @@
+// Generic methods of interfaces: each call through an interface picks the
+// instance of the class's method for its type arguments.
+
+interface Mappable {
+    map<U>(f: (x: int) => U): U[]
+}
+
+class Numbers implements Mappable {
+    constructor(readonly items: int[]) {}
+
+    map<U>(f: (x: int) => U): U[] {
+        const out: U[] = []
+        for (const x of this.items) out.push(f(x))
+        return out
+    }
+}
+
+// A class conforms without `implements`, with its own names for the type parameters.
+class Single {
+    constructor(readonly value: int) {}
+
+    map<V>(f: (x: int) => V): V[] {
+        return [f(this.value)]
+    }
+}
+
+function show(m: Mappable) {
+    console.log(m.map((x) => x * 2))
+    console.log(m.map<string>((x) => `#${x}`))
+    console.log(m.map((x) => x > 1))
+}
+
+show(new Numbers([1, 2, 3]))
+show(new Single(5))
+
+// Reached only through an instance of a generic function.
+function twice<T>(m: Mappable, f: (x: int) => T): T[][] {
+    return [m.map(f), m.map(f)]
+}
+console.log(twice(new Single(7), (x) => [x, x]))
+
+// A generic interface whose generic method returns another instance of it.
+interface Box<T> {
+    get(): T
+    map<U>(f: (t: T) => U): Box<U>
+}
+
+class Cell<T> implements Box<T> {
+    constructor(readonly value: T) {}
+
+    get(): T {
+        return this.value
+    }
+
+    map<U>(f: (t: T) => U): Box<U> {
+        return new Cell(f(this.value))
+    }
+}
+
+class Logged<T> implements Box<T> {
+    constructor(readonly value: T) {}
+
+    get(): T {
+        return this.value
+    }
+
+    map<U>(f: (t: T) => U): Box<U> {
+        console.log(`mapping ${this.value}`)
+        return new Logged(f(this.value))
+    }
+}
+
+const boxes: Box<int>[] = [new Cell(20), new Logged(21)]
+for (const b of boxes) {
+    const s = b.map((n) => n * 2).map((n) => `n=${n}`)
+    console.log(s.get(), s.map((t) => t.length).get())
+}
+
+// Interfaces that convert to each other: an interface extending another, and an object type.
+interface Sized extends Mappable {
+    size(): int
+}
+
+type MapperLike = {
+    map<W>(f: (x: int) => W): W[]
+}
+
+class Range implements Sized {
+    constructor(readonly n: int) {}
+
+    size(): int {
+        return this.n
+    }
+
+    map<U>(f: (x: int) => U): U[] {
+        const out: U[] = []
+        for (let i = 0; i < this.n; i++) out.push(f(i))
+        return out
+    }
+}
+
+const sized: Sized = new Range(3)
+const mappable: Mappable = sized
+const like: MapperLike = mappable
+console.log(
+    sized.size(),
+    sized.map((x) => x + 10),
+)
+console.log(mappable.map((x) => `${x}!`))
+console.log(
+    like.map((x) => x * x),
+    like.map((x) => [x]),
+)
+
+// Inherited from a base class, and with two type parameters, one with a default.
+interface Pairs {
+    pair<A, B = string>(a: A, b: B): string
+}
+
+class Base {
+    pair<A, B = string>(a: A, b: B): string {
+        return `(${a}, ${b})`
+    }
+}
+
+class Derived extends Base {}
+
+const pairs: Pairs[] = [new Base(), new Derived()]
+for (const p of pairs) console.log(p.pair(1, true), p.pair<string>("x", "y"))
+
+// An instance that calls through another interface with its own type argument.
+interface Wrapper {
+    wrap<T>(x: T): T[]
+}
+
+class Twice implements Wrapper {
+    wrap<T>(x: T): T[] {
+        return [x, x]
+    }
+}
+
+class Outer implements Mappable {
+    constructor(readonly inner: Wrapper) {}
+
+    map<U>(f: (x: int) => U): U[] {
+        return this.inner.wrap(f(3))
+    }
+}
+
+const outer: Mappable = new Outer(new Twice())
+console.log(outer.map((x) => ({ x })))
+
+// Object literals with generic methods: closures, which capture what they use.
+function counter(): Mappable {
+    let calls = 0
+    return {
+        map<U>(f: (x: int) => U): U[] {
+            calls++
+            return [f(calls), f(calls * 10)]
+        },
+    }
+}
+
+const counted = counter()
+console.log(counted.map((x) => x + 1))
+console.log(counted.map((x) => `${x}`))
+
+const direct = {
+    base: 100,
+    shift<T>(x: T): [T, int] {
+        return [x, this.base]
+    },
+}
+console.log(direct.shift("a"), direct.shift(true))

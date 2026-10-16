@@ -57,6 +57,7 @@ import {
     IsNull,
     Itab,
     ItabAccessor,
+    ItabGeneric,
     Len,
     LetStmt,
     Local,
@@ -1221,10 +1222,13 @@ class Reader {
             case "iface-call": {
                 c.expect(" ")
                 const index = c.int()
+                const slot = c.eat(" slot=") ? c.int() : -1
                 c.expect(" method=")
                 const method = this.funcType(this.type(c))
                 const type = this.exprType(c)
-                return new IfaceCall(type, this.expr(d, "value"), index, method, this.exprs(d, "arg"))
+                const call = new IfaceCall(type, this.expr(d, "value"), index, method, this.exprs(d, "arg"))
+                call.slot = slot
+                return call
             }
             case "null": {
                 const t = this.exprType(c)
@@ -1607,6 +1611,14 @@ class Reader {
                                 set === "-" ? null : this.func(set, c),
                             ),
                         )
+                    }
+                    while (c.eat(" generic ")) {
+                        const index = c.int()
+                        c.expect(" ")
+                        const names = c.word()
+                        const funcs: Func[] = []
+                        if (names !== "-") for (const name of names.split(",")) funcs.push(this.func(name, c))
+                        table.generics.push(new ItabGeneric(index, funcs))
                     }
                     this.next(c)
                     this.itabs.push(table)

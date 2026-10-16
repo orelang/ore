@@ -1,0 +1,97 @@
+interface Mappable {
+    map<U>(f: (x: int) => U): U[]
+}
+
+class NotGeneric {
+    map(f: (x: int) => int): int[] {
+        return [f(1)]
+    }
+}
+
+class TwoParams {
+    map<U, V>(f: (x: int) => U): U[] {
+        return [f(1)]
+    }
+}
+
+class WrongResult {
+    map<U>(f: (x: int) => U): U {
+        return f(1)
+    }
+}
+
+const a: Mappable = new NotGeneric() // error: Type 'NotGeneric' is not assignable to type 'Mappable': method 'map' is not generic.
+const b: Mappable = new TwoParams() // error: Type 'TwoParams' is not assignable to type 'Mappable': method 'map' has 2 type parameter(s) instead of 1.
+const c: Mappable = new WrongResult() // error: Class 'WrongResult' does not implement 'Mappable': method 'map<i64>' has type '(((i64) => i64)) => i64' instead of '(((i64) => i64)) => i64[]'.
+c.map((x) => x)
+const f = c.map // error: 'map' is a generic method and cannot be used as a value; call it.
+c.map<int, int>((x) => x) // error: 'map' expects 1 type argument(s), got 2.
+c.map<string>((x) => x) // error: Type 'i64' is not assignable to type 'string'.
+
+interface Strict {
+    map<U>(f: (x: int) => U): U[]
+}
+
+interface Loose {
+    map<U>(f: (x: int) => U): U
+}
+
+function loosen(s: Strict): Loose {
+    return s // error: Type 'Strict' is not assignable to type 'Loose': method 'map<i64>' has type '(((i64) => i64)) => i64[]' instead of '(((i64) => i64)) => i64'.
+}
+
+function use(l: Loose): int {
+    return l.map((x) => x)
+}
+
+interface Plain {
+    map(f: (x: int) => int): int[]
+}
+
+function plain(m: Mappable): Plain {
+    return m // error: Type 'Mappable' is not assignable to type 'Plain': method 'map' is generic.
+}
+
+interface Optional {
+    read?<T>(key: string): T // error: An optional method of an interface cannot be generic.
+}
+
+interface A {
+    get<T>(key: string): T[]
+}
+
+interface B {
+    get<T>(key: string): T[]
+}
+
+type Both = A & B // error: Member 'get' is a different generic method in each part of the intersection.
+
+interface Nest {
+    wrap<T>(x: T): int
+}
+
+class Deeper implements Nest {
+    wrap<T>(x: T): int {
+        const next: Nest = this
+        return next.wrap([x]) // error: Generic method 'wrap' of 'Nest' is called through the interface with type arguments that grow without end: 'i64[][][][][][][][][][][][][]'.
+    }
+}
+
+const n: Nest = new Deeper()
+n.wrap(1)
+
+const lit: Mappable = {
+    // error: Type '{ map<...>(...) }' is not assignable to type 'Mappable': method 'map<i64>' has type '(((i64) => i64)) => i64' instead of '(((i64) => i64)) => i64[]'.
+    map<U>(f: (x: int) => U): U {
+        return f(1)
+    },
+}
+lit.map((x) => x)
+
+const o = {
+    id<T>(x: T): T {
+        return x
+    },
+}
+const g = o.id // error: 'id' is a generic method and cannot be used as a value; call it.
+o.id<string>(1) // error: is not assignable to type 'string'.

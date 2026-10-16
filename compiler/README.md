@@ -82,6 +82,7 @@ object files come from the build cache when it has them (see below).
 | `checker/base.ore` | `Checker`: the state of a check, type resolution, unions and shapes, `coerce`, diagnostics |
 | `checker/declarations.ore` | Modules, imports and exports, directives, functions, generics and their instances, parameters |
 | `checker/classes.ore` | Classes, accessors, interfaces, conformance, itabs |
+| `checker/slots.ore` | Generic methods of interfaces: the instances the program calls through them, made for every class and object literal converted, to a fixed point |
 | `checker/statements.ore` | Statements, destructuring, closures, narrowing |
 | `checker/expressions.ore` | Expressions: names, operators, assignments, literals, members |
 | `checker/calls.ore` | Calls of functions, methods, values, constructors and built-ins (`unsafe`, `JSON`), array, map, channel and string methods |

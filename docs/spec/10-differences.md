@@ -28,6 +28,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `class B extends A` | inheritance through prototypes | single inheritance of fields and virtual methods; no overriding of fields or accessors |
 | class compatibility | structural | nominal: a class converts to its base classes and to interfaces, not to other classes with the same members |
 | `A \| B` where `B extends A` | kept as written | normalized to `A` |
+| generic methods of interfaces | one function for any type arguments | an instance per type arguments that the program calls through the interface; checked against the interface's per instance; an object literal's is not a property (not printed, listed or spread) |
 | `JSON.stringify(a)` of an `A` holding a `B` | the fields of `B` | the fields of `A` (the static type) |
 | `===` on strings | value | value |
 | integer literal `5` | `number` | `int` |

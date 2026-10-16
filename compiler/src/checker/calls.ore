@@ -75,6 +75,7 @@ import {
     membersOf,
     paramsToString,
     sameType,
+    slotsOf,
     types,
     typeToString,
 } from "../ir/types"
@@ -146,6 +147,7 @@ import { filteredType, narrowingFunc } from "./predicates"
 import { capture, checkClosure, narrowConvert, narrowed, refKey, symbolMethodCall } from "./statements"
 import { type Generic, type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
 import { objectCall } from "./dicts"
+import { hasSlots, literalCall, literalGeneric, slotCall } from "./slots"
 import { plainArray } from "./templates"
 
 export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
@@ -2651,7 +2653,10 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
     // `iterator.reduce(f)` without an initial value is its `reduceFirst(f)`, whose accumulator has the values' type.
     const methodName = name === "reduce" && args.length === 1 && isIteratorObject(c, type) ? "reduceFirst" : name
     const generic = type.kind === "struct" ? genericMethod(c, type, methodName) : null
-    if (typeArgs.length > 0 && generic === null)
+    // A generic method of an object literal: its instance is a closure in a hidden field.
+    const literal = type.kind === "struct" && generic === null ? literalGeneric(c, type, methodName) : null
+    if (literal !== null) return literalCall(c, value, literal, node, scope, typeArgs, args)
+    if (typeArgs.length > 0 && generic === null && !hasSlots(type, name))
         return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
     if (type.kind === "struct" && generic !== null) {
         defineMember(c, nameId, type, name)
@@ -2722,6 +2727,11 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
             if (m.name !== name) continue
+            const slots = slotsOf(m)
+            if (slots !== null) {
+                defineMember(c, nameId, type, name)
+                return slotCall(c, value, type, index, slots, node, scope, typeArgs, args)
+            }
             if (m.k === "method") {
                 defineMember(c, nameId, type, name)
                 const params = m.type.params

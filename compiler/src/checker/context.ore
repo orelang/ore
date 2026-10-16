@@ -5,12 +5,23 @@ import {
     type BoundMethod,
     type Expr,
     type Func,
+    type IfaceCall,
+    type Itab,
     type Local,
     type LValue,
     type MethodCall,
     type Module,
+    type ObjectLit,
 } from "../ir/nodes"
-import { type Field, type InterfaceType, type MapType, type StructType, type Type } from "../ir/types"
+import {
+    type Field,
+    type FuncType,
+    type GenericSlots,
+    type InterfaceType,
+    type MapType,
+    type StructType,
+    type Type,
+} from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Diagnostic } from "../syntax/diagnostic"
 import { type Source } from "../syntax/source"
@@ -438,6 +449,64 @@ export class GenericMethod {
     ) {
         this.private = isPrivate
     }
+}
+
+/** A call of a generic method through an interface: its slot is known once every instance is (see `slots.ore`). */
+export class SlotCall {
+    constructor(
+        readonly call: IfaceCall,
+        readonly slots: GenericSlots,
+        /** The key of the type arguments. */
+        readonly key: string,
+    ) {}
+}
+
+/**
+ * A conversion between interfaces with a generic method, whose slots it
+ * merged: each instance of one must have the type of the other's.
+ */
+export class SlotLink {
+    constructor(
+        readonly from: InterfaceType,
+        readonly to: InterfaceType,
+        readonly source: GenericSlots,
+        readonly target: GenericSlots,
+        readonly node: Node,
+    ) {}
+
+    /** Whether an instance that differs has been reported. */
+    public reported = false
+}
+
+/** An instance of a class's generic method in an interface table, checked against the interface's once bodies are. */
+export class SlotImpl {
+    constructor(
+        readonly table: Itab,
+        readonly func: Func,
+        /** The instance of the interface's method. */
+        readonly type: FuncType,
+        readonly label: string,
+        readonly node: Node,
+    ) {}
+}
+
+/**
+ * A generic method of an object literal, which converts to an interface
+ * with the method: its instances are closures, created with the object
+ * into the hidden field `field`, a tuple of them in the order of `keys`,
+ * which the interface tables call through (see `slots.ore`).
+ */
+export class LiteralGeneric {
+    constructor(
+        readonly generic: Generic,
+        readonly field: string,
+        /** The tuple that the object literal creates, whose fields are filled once every instance is known. */
+        readonly table: ObjectLit,
+    ) {}
+
+    /** The keys of the type arguments of the instances, in the tuple's order. */
+    readonly keys: string[] = []
+    readonly funcs: Func[] = []
 }
 
 /** The generic and type arguments of an instance type. */

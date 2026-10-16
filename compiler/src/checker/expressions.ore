@@ -70,6 +70,7 @@ import {
     type UnionType,
     Field,
     OrderPart,
+    StructType as StructTypeClass,
     FuncType,
     arrayOf,
     dictMember,
@@ -138,7 +139,14 @@ import {
     genericStaticField,
     staticMember,
 } from "./classes"
-import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact, KeyedTarget } from "./context"
+import {
+    type AssignTarget,
+    AccessorTarget,
+    AssignTarget as AssignTargetClass,
+    Fact,
+    KeyedTarget,
+    LiteralGeneric,
+} from "./context"
 import {
     checkDelete,
     checkIn,
@@ -192,6 +200,7 @@ import {
 import {
     type Instance,
     type ValueSymbol,
+    ClosureSite,
     ConstSymbol,
     FuncSymbol,
     Generic,
@@ -199,6 +208,7 @@ import {
     LocalSymbol,
     Scope,
 } from "./symbols"
+import { literalGeneric } from "./slots"
 import { checkTaggedTemplate, templateRawOf } from "./templates"
 
 /**
@@ -1797,6 +1807,7 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
     const fields: Field[] = []
     const spread: bool[] = []
     let accessors = false
+    const generics: LiteralGeneric[] = []
     // A later property replaces one from a spread; two written ones are a
     // duplicate. A getter and a setter of a property go together.
     const put = (name: string, property: string, at: Node, value: Expr | null, type: Type, fromSpread: bool): bool => {
@@ -1867,6 +1878,19 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
             accessors = true
             continue
         }
+        if (k === "MethodDeclaration" && typeParameters(prop).length > 0) {
+            // A generic method, for an interface with it: a tuple of closures in a hidden field (see `slots.ore`).
+            const tuple = new StructTypeClass(c.nextStructId++, null, false, [], [])
+            tuple.tuple = true
+            c.module.structs.push(tuple)
+            const generic = new Generic(name, prop, typeParameters(prop), scope, new Map<string, Instance>())
+            generic.closure = new ClosureSite(c.fn)
+            const site = new LiteralGeneric(generic, `#${name} ${tuple.id}`, new ObjectLit(tuple, []))
+            generics.push(site)
+            if (!put(site.field, name, prop, site.table, tuple, false)) return errorOperand
+            accessors = true
+            continue
+        }
         if (k === "MethodDeclaration") {
             const hint = hints !== null ? memberHint(hints, name) : null
             if (typeNode(prop) === null && isGenerator(prop) && (hint === null || hint.kind !== "func")) {
@@ -1904,6 +1928,12 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
     const struct = fits && expected !== null && expected.kind === "struct" ? expected : c.shape(fields)
     const self = c.newLocal("this", struct, false)
     const selfRef: Expr = new LocalRef(struct, self)
+    for (const site of generics) {
+        const closureSite = site.generic.closure
+        if (closureSite !== null) closureSite.self = self
+        if (!c.literalGenerics.has(struct)) c.literalGenerics.set(struct, new Map<string, LiteralGeneric>())
+        c.literalGenerics.get(struct)!.set(site.generic.name, site)
+    }
     const assigns: Expr[] = []
     for (let i = 0; i < names.length; i++) {
         const field = findField(struct, names[i])
@@ -2268,7 +2298,7 @@ function stringified(c: Checker, expr: Expr): Expr {
     if (type.kind !== "interface") return expr
     for (let i = 0; i < type.members.length; i++) {
         const m = type.members[i]
-        if (m.k === "method" && m.name === "toString") {
+        if (m.k === "method" && m.slots === null && m.name === "toString") {
             if (m.type.params.length === 0 && m.type.result.kind === "string")
                 return new IfaceCall(types.string, expr, i, m.type, [])
         }
@@ -2482,7 +2512,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
             dispatch(c, bound, name)
             return typed(bound)
         }
-        if (genericMethod(c, type, name) !== null)
+        if (genericMethod(c, type, name) !== null || literalGeneric(c, type, name) !== null)
             return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
         if (findOverloads(type, name).length > 0)
             return c.fail(
@@ -2496,6 +2526,8 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
             const m = type.members[index]
             if (m.name !== name) continue
             if (m.k === "field") return typed(new IfaceField(m.type, value, index))
+            if (m.slots !== null)
+                return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
             return typed(new BoundMethod(m.type, value, null, index))
         }
     }

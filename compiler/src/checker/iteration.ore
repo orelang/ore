@@ -78,7 +78,8 @@ export function iteratorValue(c: Checker, iterator: Type): Type | null {
         const m = findMethod(iterator, "next")
         if (m !== null && m.func.params.length === 0) result = m.func.type.result
     } else if (iterator.kind === "interface") {
-        for (const m of iterator.members) if (m.name === "next" && m.k === "method") result = m.type.result
+        for (const m of iterator.members)
+            if (m.name === "next" && m.k === "method" && m.slots === null) result = m.type.result
     }
     if (result === null) return null
     const member = notDone(result)
@@ -201,7 +202,8 @@ function boundReturn(c: Checker, iterator: Expr): BoundMethod | null {
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
             if (m.name !== "return") continue
-            if (m.k === "method" && m.type.params.length === 0) return new BoundMethod(m.type, iterator, null, index)
+            if (m.k === "method" && m.slots === null && m.type.params.length === 0)
+                return new BoundMethod(m.type, iterator, null, index)
             return null
         }
     }
