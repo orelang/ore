@@ -459,3 +459,6 @@ The codes are grouped by the part of the language they concern:
 | [ORE7039](ORE7039.md) | This function takes … parameter(s), but … are expected. |
 | [ORE7040](ORE7040.md) | Parameter '…' needs a type annotation here. |
 | [ORE7041](ORE7041.md) | Parameter type '…' does not match the expected '…'. |
+| [ORE7042](ORE7042.md) | A rest element must be last in a destructuring pattern. |
+| [ORE7043](ORE7043.md) | A rest element cannot have a default value. |
+| [ORE7044](ORE7044.md) | The rest of an object pattern must be a name, not a pattern. |

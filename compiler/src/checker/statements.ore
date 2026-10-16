@@ -611,8 +611,11 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
             if (dotDotDotToken(e) === null && isIdentifier(key)) taken.push(key.text)
             else if (dotDotDotToken(e) === null && key.kind === "StringLiteral") taken.push(stringText(key))
         }
-        for (const e of elements(name)) {
+        const props = elements(name)
+        for (let i = 0; i < props.length; i++) {
+            const e = props[i]
             if (dotDotDotToken(e) !== null) {
+                if (badRest(c, e, i === props.length - 1, initializer(e), nameNode(e), true)) continue
                 const rest = restOf(c, whole, taken, e)
                 if (rest !== null) bindPattern(c, nameNode(e), rest, mutable, scope, out)
                 continue
@@ -631,6 +634,11 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
     }
     const array = whole.type
     const elems = elements(name)
+    for (let i = 0; i < elems.length; i++) {
+        const e = elems[i]
+        if (e.kind === "BindingElement" && dotDotDotToken(e) !== null)
+            badRest(c, e, i === elems.length - 1, initializer(e), nameNode(e), false)
+    }
     if (array.kind === "struct" && array.tuple) {
         const parts = tupleParts(c, name, array, whole, elems, (e) => dotDotDotToken(e) !== null)
         for (let i = 0; i < parts.length; i++) {
@@ -657,6 +665,31 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
         const value = withDefault(c, new Index(array.elem, whole, index), initializer(e), scope, whole)
         if (value !== null) bindPattern(c, nameNode(e), value, mutable, scope, out)
     }
+}
+
+/**
+ * Reports a rest element `at` that is not the `last` of its pattern, has a
+ * default value `init`, or in an object pattern, has a pattern as its
+ * `target`. Whether the element is to be skipped.
+ */
+function badRest(c: Checker, at: Node, last: bool, init: Node | null, target: Node, inObject: bool): bool {
+    let skip = false
+    if (!last) c.error(at, "A rest element must be last in a destructuring pattern.")
+    if (init !== null) {
+        c.error(init, "A rest element cannot have a default value.")
+        skip = true
+    }
+    if (
+        inObject &&
+        (target.kind === "ObjectBindingPattern" ||
+            target.kind === "ArrayBindingPattern" ||
+            target.kind === "ObjectLiteralExpression" ||
+            target.kind === "ArrayLiteralExpression")
+    ) {
+        c.error(target, "The rest of an object pattern must be a name, not a pattern.")
+        skip = true
+    }
+    return skip
 }
 
 /**
@@ -851,6 +884,17 @@ function destructure(c: Checker, state: Destructuring, target: Node, part: Expr,
     if (target.kind === "ArrayLiteralExpression") {
         const whole = state.hold(c, part)
         const array = whole.type
+        const all = elements(target)
+        let skip = false
+        for (let i = 0; i < all.length; i++) {
+            const e = all[i]
+            if (
+                e.kind === "SpreadElement" &&
+                badRest(c, e, i === all.length - 1, defaultOf(expression(e)), expression(e), false)
+            )
+                skip = true
+        }
+        if (skip) return
         if (array.kind === "struct" && array.tuple) {
             const elems = elements(target)
             const parts = tupleParts(c, target, array, whole, elems, (e) => e.kind === "SpreadElement")
@@ -885,9 +929,13 @@ function destructure(c: Checker, state: Destructuring, target: Node, part: Expr,
             if (pname !== null && isIdentifier(pname)) taken.push(pname.text)
             else if (pname !== null && pname.kind === "StringLiteral") taken.push(stringText(pname))
         }
-        for (const p of properties(target)) {
+        const props = properties(target)
+        for (let i = 0; i < props.length; i++) {
+            const p = props[i]
             const pname = p.child("name")
             if (p.kind === "SpreadAssignment") {
+                const restTarget = expression(p)
+                if (badRest(c, p, i === props.length - 1, defaultOf(restTarget), restTarget, true)) continue
                 const rest = restOf(c, whole, taken, p)
                 if (rest !== null) destructure(c, state, expression(p), rest, scope)
                 continue

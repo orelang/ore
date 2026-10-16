@@ -164,7 +164,10 @@ data. Division is Knuth's algorithm D, multiplication schoolbook.
   a tuple: `const [n, s] = [1, "one"]`. `...rest` in an object pattern is a
   new object of the other public fields. A default value (`{ size = 1 }`,
   `[x = 0]`) replaces null, and an element past the end of an array; it is
-  computed only then, and can use the names bound before it.
+  computed only then, and can use the names bound before it. A nested
+  pattern can have one too: `const { inner: { c = 2 } = { c: 5 } } = o`.
+  A rest element comes last, has no default value, and in an object
+  pattern is a name rather than a pattern.
 
 ## Built-in namespaces
 

@@ -128,6 +128,9 @@ before 1.0, a minor version may change the language.
   `JSON.stringify(value, 2)` is now an error.
 - Optional properties of object types and interfaces (`name?: T`), default values in
   destructuring (`{ size = 1 }`, `[x = 0]`) and `...rest` in object patterns.
+- Errors for a rest element in a destructuring pattern that is not last
+  (ORE7042), has a default value (ORE7043), or in an object pattern is a
+  pattern itself (ORE7044); they were accepted before.
 - `??=`, `||=` and `&&=`; an assigned `?:` narrows to its branches' types.
 - `Number.NaN`, the infinities and the other constants of `Number`, and
   `Number.isNaN`, `isFinite`, `isInteger`, `isSafeInteger`.
