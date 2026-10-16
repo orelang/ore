@@ -464,7 +464,7 @@ in the shortest form that round-trips, like JavaScript: `0.1`, `1`, `1e+21`,
 | `null` | `null` |
 | bigint | `10n` |
 | array, tuple | `[ 1, 2, 3 ]`, `[]` |
-| object type | `{ x: 1, y: 'a' }`, `{}`; a property that is not an identifier quoted, `{ 'a-b': 1 }` |
+| object type | `{ x: 1, y: 'a' }`, `{}`, its properties in the order the object was made in (see [The namespace Object](03-objects.md#the-namespace-object)); a property that is not an identifier quoted, `{ 'a-b': 1 }` |
 | class instance | `Point { x: 1, y: 2 }`, by the class of the instance (a subclass, or the class behind an interface) |
 | `Map`, `Set` | `Map(2) { 'a' => 1, 'b' => 2 }`, `Set(1) { 1 }` |
 | function | `[Function: name]`, `[Function (anonymous)]` for an arrow function |
@@ -523,8 +523,9 @@ checks the shape: an integer must be whole and in range, a string literal
 type must match, and a field must be present unless its type includes
 `null`; unknown fields are ignored. Its errors name the place, e.g.
 `JSON: expected a string, got a number at .tags[1]`. Fields are written in
-the order of the object's keys (see
-[The namespace Object](03-objects.md#the-namespace-object)); non-finite floats are written as `null`.
+the order of the object's keys, the order it was made in, as in JavaScript
+(see [The namespace Object](03-objects.md#the-namespace-object)); non-finite
+floats are written as `null`.
 
 A replacer function of `JSON.stringify` has the type `(key: string, value:
 unknown) => unknown`, and works as in JavaScript but for `this`, which it

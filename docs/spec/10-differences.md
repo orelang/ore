@@ -18,7 +18,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 
 | Construct | TypeScript | Ore |
 |---|---|---|
-| order of an object's properties (printing, JSON, `Object.keys`) | the order they were added to each object | the order of the object type's declaration, or of the literal that made the type first; every value of a type shows the same order |
+| order of an object's properties (printing, JSON, `Object.keys`) | the order they were added to each object | the same for literals, spreads and rests; an optional property assigned after the object was made has the place it had as null, not the last; a spread of an interface value adds its fields by name, and one in a literal with methods or accessors in the order of the spread object's type; `JSON.parse<T>` takes the text's order only when the program makes objects of `T` in it, otherwise the type's |
 | `"abc".length` | UTF-16 code units | bytes |
 | `for (const c of s)` | code points as strings | runes (`i32`) |
 | `7 / 2` | `3.5` | `3` (integer division) |
@@ -39,7 +39,6 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | a replacer function of `JSON.stringify` leaving a value out | returns `undefined` | returns `JSON.omit` (`null` writes `null`, as in JavaScript); the call returns `string \| null`, where TypeScript declares `string` |
 | `d[k]` of `{ [k: string]: V }` | `V` (`V \| undefined` with `noUncheckedIndexedAccess`) | `V \| null` |
 | `d[k] += 1` on a dictionary | `NaN` when missing | compile error: `d[k] = (d[k] ?? 0) + 1` |
-| `Object.keys`, printing and JSON of an object type | the order each object's properties were added | the order the shape was first written, the same for every object of it |
 | `Object.groupBy(...)` | an object with a null prototype | a dictionary, printed as an object |
 | `Object.freeze(o)` of an object or class instance | freezes it | returns it unchanged; `readonly` fields are the frozen ones |
 | `a.pop()`, `a.shift()` of an empty array | `undefined` | panics, as reading null would (check `a.length` first) |

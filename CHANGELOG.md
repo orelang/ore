@@ -5,6 +5,15 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Each object shows its properties in the order it was made in, as in
+  JavaScript: printing, `JSON.stringify`, `Object.keys`, `values`,
+  `entries` and `console.table` follow the literal that made it, the object
+  a spread copied (then the properties after it), or the text `JSON.parse`
+  read, also when the same object type is written in another order
+  elsewhere, as the runtime's iterator results are (`{ value, done }`). An
+  object of a type made in several orders keeps the index of its order in a
+  hidden word; a type made in one order is as before. A property written
+  again in a literal with spreads keeps its first place.
 - `JSON.stringify(value, replacer, space)` takes a replacer function, `(key:
   string, value: unknown) => unknown`, called as in JavaScript (the whole
   value under `""`, then each property and element depth-first, the parts

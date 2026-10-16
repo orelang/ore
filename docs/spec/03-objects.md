@@ -49,8 +49,9 @@
   and objects implement them alike.
 - `...object` in an object literal copies the fields of an object: the
   public fields of a class instance (not its methods), the fields of an
-  object type or an interface. A later property replaces an earlier one
-  (`{ ...p, y: 0 }`); the values are evaluated once, in order.
+  object type or an interface. A later property replaces the value of an
+  earlier one and keeps its place (`{ ...p, x: 0 }`); the values are
+  evaluated once, in order.
 - `p["x"]` is `p.x`, on objects, interfaces and class instances, read and
   assigned. `p[k]` with `k` of a `keyof` type (string literal types) reads
   the field that `k` names, of the union of their types (`P[K]`). It is
@@ -586,12 +587,25 @@ to the checker only.
 
 The functions of `Object` take dictionaries, objects and class instances.
 The keys of an object are the names of its fields: of a class instance in
-declaration order (base class first), of an object type in the order its type
-was first written, by its declaration or the first literal of that shape
-(`{ b: 1, a: 2 }` has the keys `b`, `a`), which is the order JavaScript
-gives when every object of the shape is built the same way; an optional
-field that is null is left out, as an absent property. Methods are not keys; accessors
-of object literals are not either.
+declaration order (base class first); of an object, in the order it was made
+in, as JavaScript keeps the order properties were added to each object. A
+literal makes an object in the order its properties are written (`{ b: 1, a:
+2 }` has the keys `b`, `a`, also when its type declares `a` first), a spread
+adds the fields of the object spread in that object's order, then the later
+properties (`{ ...p, z: 0 }`), a property written again keeps its first
+place, and the rest of a destructuring keeps the order of the object. An
+object the program makes otherwise, as `JSON.parse<T>` does, is in the order
+of the type's declaration or of the first literal of its shape; `JSON.parse`
+takes the order of the text when the program makes objects of the type in
+that order too. An optional field that is null is left out, as an absent
+property, and one left out of a literal comes after the others. Methods are
+not keys; accessors of object literals are not either.
+
+An object type made in a single order costs nothing for it. One made in
+several (the same shape written in two orders anywhere in the program, the
+runtime included) gives each object a hidden word with the index of its
+order, which printing, JSON, `Object.keys` and the others read; the fields
+and their layout are the same.
 
 - `Object.keys(o)`, `Object.values(o)` and `Object.entries(o)`: `string[]`,
   `V[]` and `[string, V][]`, where `V` is the type of a dictionary's values
