@@ -69,8 +69,8 @@ total: 1000
 
 ## How it works
 
-- **Compiler.** Ore files are parsed by the TypeScript parser; Ore's own
-  checker resolves names and types and lowers the program to a typed IR, with
+- **Compiler.** Ore's own parser reads TypeScript syntax into a tree with
+  the node kinds of the TypeScript parser; the checker resolves names and types and lowers the program to a typed IR, with
   generics instantiated per type, closures with explicit captures, tagged
   unions and interface tables. Escape analysis keeps objects that never leave
   their function on the stack, and release builds inline small functions.
