@@ -1,0 +1,61 @@
+// The namespace `Object` on dictionaries, objects and class instances. The
+// output is node's for the same program; the keys of a class instance are its
+// fields in declaration order, those of an object type in name order (the
+// order Ore keeps for object types).
+
+const ages: Record<string, int> = { ada: 36, alan: 41 }
+console.log(Object.keys(ages), Object.values(ages), Object.entries(ages))
+console.log(Object.hasOwn(ages, "ada"), Object.hasOwn(ages, "bob"))
+
+class Point {
+    constructor(
+        public y: int,
+        public x: int,
+    ) {}
+    norm(): int {
+        return this.x * this.x + this.y * this.y
+    }
+}
+const p = new Point(2, 1)
+console.log(Object.keys(p), Object.values(p), Object.entries(p))
+console.log(Object.hasOwn(p, "x"), Object.hasOwn(p, "norm"), Object.hasOwn(p, "z"))
+
+type Item = { label: string; count: int; note?: string }
+const a: Item = { label: "a", count: 1 }
+const b: Item = { label: "b", count: 2, note: "n" }
+console.log(Object.keys(a), Object.keys(b))
+console.log(Object.values(b), Object.entries(a))
+console.log(Object.hasOwn(a, "note"), Object.hasOwn(b, "note"))
+
+// fromEntries and entries round-trip; a later key replaces an earlier one.
+const doubled = Object.fromEntries(Object.entries(ages).map(([k, v]): [string, int] => [k, v * 2]))
+console.log(doubled)
+console.log(
+    Object.fromEntries<string>([
+        ["x", "1"],
+        ["y", "2"],
+        ["x", "3"],
+    ]),
+)
+
+// assign: dictionaries into a dictionary, objects into a dictionary or an object.
+const target: Record<string, int> = { ada: 0 }
+const carl: Record<string, int> = { carl: 7 }
+const result = Object.assign(target, ages, carl, { x: 1, y: 2 })
+console.log(result, result === target)
+const q = new Point(0, 0)
+Object.assign(q, { x: 5 }, { y: 6 })
+console.log(q, q.norm())
+
+// groupBy: a dictionary of arrays, the keys in the order they first appear.
+const words = ["apple", "bob", "avocado", "cat", "banana"]
+const byLetter = Object.groupBy(words, (w) => w.slice(0, 1))
+console.log(JSON.stringify(byLetter))
+console.log(JSON.stringify(Object.groupBy([1, 2, 3, 4, 5], (n, i) => (n % 2 === 0 ? "even" : `odd${i}`))))
+
+// freeze: a frozen dictionary is readonly, and frozen at run time too.
+const config: Record<string, string> = { mode: "fast" }
+console.log(Object.isFrozen(config))
+const frozen = Object.freeze(config)
+console.log(Object.isFrozen(config), Object.isFrozen(frozen), frozen.mode)
+console.log(Object.isFrozen(1), Object.isFrozen("s"))

@@ -268,6 +268,25 @@ export class MapType {
         readonly key: Type,
         readonly value: Type,
     ) {}
+
+    /**
+     * A dictionary, `{ [key: string]: V }` or `Record<string, V>`: a map of
+     * string keys used with the syntax of objects (`d.a`, `d[k]`, `delete
+     * d[k]`, `k in d`), printed and converted to JSON as an object. It is a
+     * type of its own, which a `Map` does not convert to.
+     */
+    public dict = false
+
+    /** A dictionary whose entries cannot be assigned or deleted: `{ readonly [key: string]: V }`. */
+    public readonly = false
+}
+
+/** `{ [key: string]: V }`, readonly with `isReadonly`. */
+export function dictOf(value: Type, isReadonly: bool): MapType {
+    const t = new MapType(types.string, value)
+    t.dict = true
+    t.readonly = isReadonly
+    return t
 }
 
 /** `Set<T>`: a reference to a hash set that keeps insertion order: a map without values. */
@@ -455,7 +474,13 @@ function sameIn(a: Type, b: Type, assumed: Assumed | null): bool {
     if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
     if (a.kind === "number-literal" && b.kind === "number-literal") return a.value === b.value
     if (a.kind === "array" && b.kind === "array") return a.template === b.template && sameIn(a.elem, b.elem, assumed)
-    if (a.kind === "map" && b.kind === "map") return sameIn(a.key, b.key, assumed) && sameIn(a.value, b.value, assumed)
+    if (a.kind === "map" && b.kind === "map")
+        return (
+            a.dict === b.dict &&
+            a.readonly === b.readonly &&
+            sameIn(a.key, b.key, assumed) &&
+            sameIn(a.value, b.value, assumed)
+        )
     if (a.kind === "set" && b.kind === "set") return sameIn(a.elem, b.elem, assumed)
     if (a.kind === "chan" && b.kind === "chan") return sameIn(a.elem, b.elem, assumed)
     if (a.kind === "interface" && b.kind === "interface") return sameInterface(a, b, assumed)
@@ -517,6 +542,7 @@ export function typeToString(t: Type): string {
         case "number-literal":
             return t.value
         case "map":
+            if (t.dict) return `{ ${t.readonly ? "readonly " : ""}[key: string]: ${typeToString(t.value)} }`
             return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
         case "set":
             return `Set<${typeToString(t.elem)}>`
@@ -566,6 +592,7 @@ export function typeKey(type: Type): string {
         case "number-literal":
             return `#n${type.value}`
         case "map":
+            if (type.dict) return `Dict${type.readonly ? "!" : ""}<${typeKey(type.value)}>`
             return `Map<${typeKey(type.key)},${typeKey(type.value)}>`
         case "set":
             return `Set<${typeKey(type.elem)}>`

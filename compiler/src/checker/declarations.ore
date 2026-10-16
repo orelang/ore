@@ -1765,6 +1765,21 @@ export function inferFrom(
         }
         return
     }
+    // `{ [key: string]: V }` and `{ [K in string]: V }` (`Record<string, V>`): V from the values of a
+    // dictionary, or from the fields of an object literal, which converts to one.
+    const list: Node[] = n.kind === "TypeLiteral" ? members(n) : []
+    let valueNode: Node | null = null
+    if (list.length === 1 && list[0].kind === "IndexSignature") valueNode = typeNode(list[0])
+    if (n.kind === "MappedType") valueNode = typeNode(n)
+    if (valueNode !== null) {
+        if (type.kind === "map" && type.dict) inferFrom(c, valueNode, type.value, names, bindings, scope)
+        else if (type.kind === "struct" && !type.tuple && type.name === null && type.fields.length > 0) {
+            const values: Type[] = []
+            for (const f of type.fields) values.push(f.type)
+            inferFrom(c, valueNode, c.unionOf(values), names, bindings, scope)
+        }
+        return
+    }
     if (n.kind === "TypeLiteral") {
         for (const member of members(n)) {
             const annotation = typeNode(member)

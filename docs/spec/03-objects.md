@@ -47,6 +47,12 @@
   public fields of a class instance (not its methods), the fields of an
   object type or an interface. A later property replaces an earlier one
   (`{ ...p, y: 0 }`); the values are evaluated once, in order.
+- `p["x"]` is `p.x`, on objects, interfaces and class instances, read and
+  assigned. `p[k]` with `k` of a `keyof` type (string literal types) reads
+  the field that `k` names, of the union of their types (`P[K]`); it is
+  not assigned to ([ORE3089](../errors/ORE3089.md)). Any other string does
+  not index an object ([ORE3088](../errors/ORE3088.md)): use a
+  [dictionary](#dictionaries).
 
 ## Classes
 
@@ -91,8 +97,9 @@
   cannot be reserved words, nor the words strict mode reserves (`implements`,
   `interface`, `let`, `package`, `private`, `protected`, `public`, `static`,
   `yield`): Ore modules are always in strict mode.
-- Index signatures (`[key: string]: T`) are not supported in interfaces,
-  object types and classes; use a `Map<K, V>`.
+- An index signature (`[key: string]: T`) is a [dictionary](#dictionaries)
+  type alone, not a member of a class, an interface or an object type with
+  other members ([ORE2046](../errors/ORE2046.md)).
 - `private` members are accessible only inside the class that declares them,
   `protected` members inside that class and its subclasses. Neither counts
   for interfaces. `readonly` fields can be assigned only by the constructor
@@ -351,8 +358,8 @@ names them is:
   intersection has the types common to both, and is optional only when it
   is optional in both.
 - The utility types of TypeScript are global names: `Partial`, `Required`,
-  `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys; a Map for any
-  string), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and
+  `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys an object
+  type, of `string` a [dictionary](#dictionaries)), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and
   `Parameters`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
   `PartialWithExclusion`, `DeepPartial`, `DeepRequired`, `DeepReadonly`,
   `DeepMutable`, `PickByValueType`, `OmitByValueType`, `KeysOfType`,
@@ -361,6 +368,68 @@ names them is:
   `NullableByKeys`, `NonNullableByKeys`, `OptionalNullable`, `RequiredKeys`,
   `OptionalKeys`, `Exact`, `Paths`, `Join`, `PathValue` and `Prev`
   (declared in runtime/core/types.ore).
+
+## Dictionaries
+
+- `{ [key: string]: V }` and `Record<string, V>` are the dictionary of
+  values `V`: a reference to a hash table of string keys that keeps
+  insertion order (the one of `Map`), used with the syntax of objects. It is
+  a type of its own: a `Map<string, V>` does not convert to it, nor it to a
+  map. `{ readonly [key: string]: V }` (as `Readonly<...>` and
+  `Object.freeze` give) is read-only; a dictionary converts to the
+  read-only one of the same values.
+- An object literal for a dictionary type creates one: `{ a: 1, "b c": 2,
+  [key]: 3, ...other }`, with the entries in order; a spread copies the
+  entries of a dictionary of the same values or the fields of an object
+  (each converted to `V`). A dictionary field without an initializer starts
+  empty.
+- `d.name` and `d[key]` (any string) read an entry: `V | null`, null when
+  it is missing, as TypeScript's `noUncheckedIndexedAccess` makes it
+  `V | undefined`. `d.name = v` and `d[key] = v` add or replace an entry;
+  `d[key] ??= v` sets a missing one and gives the entry's value. `+=`,
+  `++` and the other compound assignments are errors on entries
+  ([ORE3090](../errors/ORE3090.md)): write `d.n = (d.n ?? 0) + 1`.
+- `delete d[key]` and `delete d.name` remove an entry and are `true`, as in
+  JavaScript; `key in d` tests one. `delete` and `in` apply to dictionaries
+  only ([ORE3007](../errors/ORE3007.md), [ORE3019](../errors/ORE3019.md)).
+- A dictionary has no methods (`d.get` is the entry `get`) and is not
+  iterable, as an object is not: `Object.keys(d)`, `Object.values(d)` and
+  `Object.entries(d)` list it, in insertion order. `keyof` of a dictionary
+  is `string`, and indexing its type by any string gives `V`.
+- `console.log` prints a dictionary as Node prints an object (`{ a: 1,
+  'b c': 2 }`), and `JSON.stringify` and `JSON.parse` convert it to and
+  from a JSON object.
+- Keys are strings only: `{ [i: number]: V }` is an error
+  ([ORE2069](../errors/ORE2069.md)); use a `Map` for other keys.
+
+## The namespace Object
+
+The functions of `Object` take dictionaries, objects and class instances.
+The keys of an object are the names of its fields: of a class instance in
+declaration order (base class first), of an object type in name order, the
+order in which Ore keeps the fields of object types; an optional field that
+is null is left out, as an absent property. Methods are not keys; accessors
+of object literals are not either.
+
+- `Object.keys(o)`, `Object.values(o)` and `Object.entries(o)`: `string[]`,
+  `V[]` and `[string, V][]`, where `V` is the type of a dictionary's values
+  or the union of the types of an object's fields.
+- `Object.hasOwn(o, key)`: whether a dictionary has the entry, or an object
+  a field of that name (holding a value when it is optional).
+- `Object.fromEntries(pairs)`: a dictionary of an array of `[string, V]`
+  pairs, a later key replacing an earlier one.
+- `Object.groupBy(items, (element, index) => key)`: a dictionary of arrays,
+  by the string key the function gives, the keys in the order they first
+  appear.
+- `Object.assign(target, ...sources)`: copies the entries of dictionaries of
+  the same values and the fields of objects into a dictionary, or the fields
+  of objects into an object that has them writable; the value is `target`.
+- `Object.freeze(d)` freezes a dictionary: setting or deleting an entry
+  then panics with JavaScript's message (`Cannot add property c, object is
+  not extensible`), and the result is read-only. `Object.isFrozen(d)` tells
+  whether it is. Of an object, `freeze` returns it as it is, and
+  `isFrozen` is whether all its fields are `readonly`; a primitive is
+  always frozen, an array, a map or a set never.
 
 ## Maps
 

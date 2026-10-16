@@ -1,0 +1,73 @@
+// Dictionaries: `{ [key: string]: V }` and `Record<string, V>`, hash maps of
+// string keys used with the syntax of objects. The output is node's for the
+// same program, but reads of missing entries, which are null and not undefined.
+
+type Scores = { [name: string]: int }
+
+const scores: Scores = { ada: 3, "grace hopper": 5 }
+console.log(scores)
+console.log(scores.ada, scores["grace hopper"], scores.missing)
+
+// Assignment adds or replaces an entry; insertion order is kept.
+scores.linus = 1
+scores["ada"] = 4
+const who = "ken"
+scores[who] = 2
+console.log(scores)
+
+// `in` and `delete`.
+console.log("ada" in scores, "nobody" in scores)
+console.log(delete scores.linus, delete scores["nobody"])
+console.log("linus" in scores, scores)
+
+// A read is the value or null: narrow it, or give a default.
+const ada = scores.ada
+if (ada !== null) console.log(ada + 1)
+console.log((scores.nobody ?? 0) + 1)
+
+// `??=` sets a missing entry, and gives the entry's value.
+const groups: Record<string, string[]> = {}
+for (const word of ["apple", "avocado", "banana"]) {
+    const first = word.slice(0, 1)
+    ;(groups[first] ??= []).push(word)
+}
+console.log(groups)
+
+// Computed keys, spreads of dictionaries and of objects.
+const key = "dynamic"
+const merged: Scores = { ...scores, [key]: 9, ada: 0 }
+console.log(merged)
+const point = { x: 1, y: 2 }
+const fromObject: Record<string, int> = { ...point, z: 3 }
+console.log(fromObject)
+console.log(scores)
+
+// Keys that are not identifiers are quoted, as node does.
+const odd: { [k: string]: string } = { "a-b": "1", "it's": "2", _ok: "3", "": "4", "1x": "5" }
+console.log(odd)
+
+// Nested dictionaries and dictionaries in objects.
+const nested: Record<string, Record<string, bool>> = { outer: { inner: true } }
+console.log(nested)
+const tags: Record<string, int> = { a: 1 }
+const holder = { name: "h", tags }
+console.log(holder)
+const empty: Record<string, int> = {}
+console.log(empty)
+
+// JSON.
+console.log(JSON.stringify(scores))
+const parsed = JSON.parse<Record<string, int[]>>('{"a":[1,2],"b":[]}')
+if (!(parsed instanceof Error)) console.log(parsed, parsed.a)
+
+// A function generic in the values infers them from a dictionary.
+function firstValue<V>(d: { [key: string]: V }, k: string): V | null {
+    return d[k]
+}
+console.log(firstValue(scores, "ken"))
+// An object literal converts to a dictionary of its properties.
+console.log(firstValue({ x: 7, y: 8 }, "y"))
+
+// Partial and Readonly of a dictionary are dictionaries.
+const view: Readonly<Record<string, int>> = scores
+console.log(view.ada)

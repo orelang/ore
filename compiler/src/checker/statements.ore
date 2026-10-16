@@ -1141,6 +1141,10 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
     const iterable = c.toDefault(value, expression(stmt))
     const type = iterable.type
     const mutable = kind === "let"
+    if (type.kind === "map" && type.dict) {
+        c.error(expression(stmt), "A dictionary is not iterable: loop over 'Object.keys(d)' or 'Object.entries(d)'.")
+        return null
+    }
     // Names and types of the loop variables: one, or `[key, value]` for a map.
     const names: Node[] = []
     const elemTypes: Type[] = []

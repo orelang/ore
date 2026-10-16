@@ -124,6 +124,7 @@ import {
 import { type Operand, errorOperand, UntypedInt } from "./operand"
 import { capture, checkClosure, disposeCall } from "./statements"
 import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
+import { objectCall } from "./dicts"
 import { plainArray } from "./templates"
 
 export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
@@ -665,7 +666,7 @@ function arrayStatic(c: Checker, name: string, node: Node, scope: Scope, expecte
         const str: Expr = sameType(t, types.string) ? value : new Recast(types.string, value)
         items = new StringMethod("split", arrayOf(types.string), str, [new StringLit(types.string, "")])
     } else if (t.kind === "set") items = new SetOp("values", arrayOf(t.elem), t, value)
-    else if (t.kind === "map") items = new MapOp("entries", arrayOf(c.tupleOf([t.key, t.value])), t, value)
+    else if (t.kind === "map" && !t.dict) items = new MapOp("entries", arrayOf(c.tupleOf([t.key, t.value])), t, value)
     else
         return c.fail(
             source,
@@ -855,6 +856,7 @@ export function builtinCall(
     if (name === "internal.inspect") return inspectCall(c, name, node, scope)
     if (name === "Array.from" || name === "Array.of" || name === "Array.isArray")
         return arrayStatic(c, name, node, scope, expected)
+    if (name.startsWith("Object.")) return objectCall(c, name, node, scope)
     const generic = typeParameters(decl).length > 0
     if (name.startsWith("unsafe.") && generic) return unsafeCall(c, name, node, scope)
     const args = argsOf(node)
@@ -1409,7 +1411,7 @@ function newMap(c: Checker, node: Node, scope: Scope, expected: Type | null): Op
     if (typeArgs.length > 0) {
         const resolved = builtinGeneric(c, "Map", typeArgs, node, scope)
         if (resolved !== null && resolved.kind === "map") type = resolved
-    } else if (expected !== null && expected.kind === "map") {
+    } else if (expected !== null && expected.kind === "map" && !expected.dict) {
         type = expected
     } else if (pairs.length > 0) {
         const kv = elements(pairs[0])
@@ -1460,6 +1462,8 @@ function newMapFrom(c: Checker, node: Node, entries: Node, scope: Scope, expecte
     if (operand.k === "error") return errorOperand
     const value = c.toDefault(operand, entries)
     const vt = value.type
+    if (vt.kind === "map" && vt.dict)
+        return c.fail(entries, `A dictionary is not iterable: use 'new Map(Object.entries(d))'.`)
     if (vt.kind === "map") {
         // A copy of another map: its entries as tuples.
         const mapType = type !== null ? type : vt
@@ -2226,6 +2230,11 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
     const value = plainArray(receiver)
     const type = value.type
     if (type.kind === "unknown") return c.fail(nameId, unknownObject)
+    if (type.kind === "map" && type.dict)
+        return c.fail(
+            nameId,
+            `A dictionary has no methods: '${name}' is an entry, of type '${typeToString(c.unionOf([type.value, types.null]))}'.`,
+        )
 
     const generic = type.kind === "struct" ? genericMethod(c, type, name) : null
     if (typeArgs.length > 0 && generic === null)

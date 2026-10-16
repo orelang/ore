@@ -1,0 +1,53 @@
+//ore:internal
+// The namespace `Object` on dictionaries, `{ [key: string]: V }`: a
+// dictionary is a map of string keys, used here through `asMap` as one.
+// The checker calls the functions that are not exported with the
+// dictionary first; `keys`, `values`, `entries` and `hasOwn` are map
+// operations, and objects of other types are known field by field.
+//
+// The exports of this module are members of the namespace `Object`.
+
+import { groupBy as mapGroupBy } from "ore:runtime/collections"
+import { mapFreeze, mapFrozen } from "ore:runtime/map"
+
+/** A dictionary as the map that holds its entries. */
+function asMap<V>(dict: { [key: string]: V }): Map<string, V> {
+    return unsafe.fromAddress<Map<string, V>>(unsafe.addressOf(dict))
+}
+
+/** A map of string keys as a dictionary of its entries. */
+function asDict<V>(map: Map<string, V>): { [key: string]: V } {
+    return unsafe.fromAddress<{ [key: string]: V }>(unsafe.addressOf(map))
+}
+
+/** Object.fromEntries: a dictionary of `[key, value]` pairs, a later key replacing an earlier one. */
+export function fromEntries<V>(entries: [string, V][]): { [key: string]: V } {
+    const map = new Map<string, V>()
+    for (const [key, value] of entries) map.set(key, value)
+    return asDict(map)
+}
+
+/**
+ * Object.groupBy: the elements of `items` grouped by the key `keyFn`
+ * returns, the keys in the order they first appear.
+ */
+export function groupBy<T>(items: T[], keyFn: (element: T, index: int) => string): { [key: string]: T[] } {
+    return asDict(mapGroupBy(items, keyFn))
+}
+
+/** Object.assign of a dictionary to a dictionary: sets the entries of `source` in `target`, in order. */
+function objectAssign<V>(target: { [key: string]: V }, source: { [key: string]: V }): void {
+    const into = asMap(target)
+    for (const [key, value] of asMap(source)) into.set(key, value)
+}
+
+/** Object.freeze of a dictionary: setting or deleting its entries panics from then on. */
+function objectFreeze<V>(dict: { [key: string]: V }): { readonly [key: string]: V } {
+    mapFreeze(unsafe.addressOf(dict))
+    return unsafe.fromAddress<{ readonly [key: string]: V }>(unsafe.addressOf(dict))
+}
+
+/** Object.isFrozen of a dictionary. */
+function objectIsFrozen<V>(dict: { readonly [key: string]: V }): bool {
+    return mapFrozen(unsafe.addressOf(dict))
+}
