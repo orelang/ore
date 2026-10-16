@@ -14,7 +14,7 @@ import {
     types,
     unionRepr,
 } from "../ir/types"
-import { counted } from "./json"
+import { counted, dateClass } from "./json"
 import { ARRAY, MAP, STR } from "./context"
 import { Emitter } from "./base"
 import { fieldPtr, payload, slotTest } from "./expressions"
@@ -82,6 +82,7 @@ function unknownTop(g: Emitter): string {
 const yellow = 33
 const green = 32
 const cyan = 36
+const magenta = 35
 const defaultColor = 39
 const bold = 1
 const normal = 22
@@ -378,6 +379,18 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
     // A match of a regular expression, as Node prints a match array.
     if (t.nominal && t.name === "RegExpMatch" && t.fields.some((f) => f.name === "captures"))
         return g.rt("ore_rt_inspect_match", [s, v, depth])
+    const date = dateClass(g, t)
+    if (date !== null) {
+        // A date as Node prints it, its ISO string; a subclass with its name before.
+        let text = g.rt("ore_rt_date_inspect", [v])
+        if (date.id !== t.id && t.name !== null) {
+            text = concat(g, [
+                { v: g.str(`${t.name} `), t: types.string },
+                { v: text, t: types.string },
+            ])
+        }
+        return paint(g, s, text, magenta, defaultColor)
+    }
     const ctor = t.ctor
     if (ctor !== null && ctor.name === "ore_new_BasicError") {
         const message = g.load(fieldPtr(g, v.v, t, "message"), t.fields[0].type)

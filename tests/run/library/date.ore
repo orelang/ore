@@ -1,0 +1,139 @@
+// env: TZ=America/New_York
+// Date, as in JavaScript; the output is Node's with the same TZ.
+
+// Constructors.
+const d = new Date(2024, 9, 15, 12, 5, 9, 7)
+console.log(d.getTime(), d.valueOf(), new Date(d).getTime())
+console.log(new Date(0).toISOString(), new Date(-1).toISOString(), new Date(1.9).getTime())
+console.log(new Date("2024-10-15").getTime(), new Date("2024-10-15T12:00").getTime())
+console.log(new Date(2024, 0).toString(), new Date(2024, 0, 31, 24).toString())
+console.log(new Date(99, 11, 31).getFullYear(), new Date(100, 0).getFullYear(), new Date(-5, 0).getFullYear())
+console.log(
+    new Date(2024, 13, 1).toDateString(),
+    new Date(2024, 0, 0).toDateString(),
+    new Date(2024, -1).toDateString(),
+)
+console.log(new Date(2024, 1, 29, 0, 0, 0, -1).toISOString(), new Date(2024, 0, 1, 0, 90).toTimeString())
+console.log(new Date(8.64e15).toISOString(), new Date(-8.64e15).toISOString(), new Date(8.64e15 + 1).getTime())
+console.log(new Date(Number.NaN).getTime(), new Date("nope").getTime(), new Date(2024, Number.NaN).getTime())
+console.log(new Date(Number.POSITIVE_INFINITY).getTime(), new Date(-0).getTime())
+const now = new Date()
+console.log(now.getTime() > 1.7e12, typeof Date.now(), Date.now() > 1700000000000)
+
+// Statics.
+console.log(Date.UTC(2024), Date.UTC(2024, 1), Date.UTC(2024, 1, 29, 23, 59, 59, 999), Date.UTC(70, 0))
+console.log(Date.UTC(2024, 12, 1), Date.UTC(2024, 0, 1, -1), Date.UTC(Number.NaN), Date.UTC(275760, 8, 13, 0, 0, 0, 1))
+const parsed = [
+    "2024-10-15T12:05:09.007Z",
+    "2024-10-15T12:05:09.007",
+    "2024-10-15T12:05:09+05:30",
+    "2024-10-15T12:05:09-04:00",
+    "2024-10-15T12:05",
+    "2024-10-15T24:00",
+    "2024-10-15T24:00:01",
+    "2024-10-15T12",
+    "2024-10-15T12:00:00.123456Z",
+    "2024-10-15t12:00z",
+    "2024-10-15",
+    "2024-10",
+    "2024",
+    "+002024-10-15",
+    "-000001-01-01T00:00:00Z",
+    "-000000-01-01T00:00:00Z",
+    "2024-13-01",
+    "2024-02-30T00:00Z",
+    "Tue Oct 15 2024 12:05:09 GMT-0400 (Eastern Daylight Time)",
+    "Tue, 15 Oct 2024 16:05:09 GMT",
+    "Thu, 01 Jan 1970 00:00:00 GMT-0500",
+    "Oct 15 2024",
+    "15 Oct 2024 10:00 GMT+0200",
+    "October 15, 2024 10:00:00",
+    "10/15/2024",
+    "2024/10/15",
+    "12/31/99",
+    "1/2/49",
+    "Jan 1 2000 1:00 PM",
+    "Jan 1 2000 12:30 am EST",
+    "Oct 2024",
+    "",
+    "garbage",
+]
+for (const s of parsed) console.log(JSON.stringify(s), Date.parse(s))
+
+// Getters, in local time and in UTC.
+function show(x: Date) {
+    console.log(
+        [x.getFullYear(), x.getMonth(), x.getDate(), x.getDay(), x.getHours(), x.getMinutes(), x.getSeconds()],
+        x.getMilliseconds(),
+        [x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate(), x.getUTCDay(), x.getUTCHours(), x.getUTCMinutes()],
+        x.getUTCSeconds(),
+        x.getUTCMilliseconds(),
+        x.getTimezoneOffset(),
+        x.getYear(),
+    )
+}
+show(d)
+show(new Date(0))
+show(new Date(-1))
+show(new Date(Date.UTC(2024, 2, 10, 6, 59, 59, 999)))
+show(new Date(Date.UTC(2024, 2, 10, 7)))
+show(new Date(Date.UTC(2024, 10, 3, 5, 59)))
+show(new Date(Date.UTC(2024, 10, 3, 6)))
+show(new Date(Date.UTC(2100, 6, 4, 12)))
+show(new Date(Date.UTC(2100, 11, 25, 12)))
+show(new Date(Date.UTC(1800, 0, 1)))
+show(new Date(Date.UTC(-1, 0, 1)))
+show(new Date(Number.NaN))
+
+// Local times that happen twice or never.
+console.log(new Date(2024, 2, 10, 2, 30).toString(), new Date(2024, 10, 3, 1, 30).toString())
+console.log(new Date(2024, 10, 3, 2, 0).toString(), new Date(2100, 2, 14, 2, 30).toString())
+
+// Setters, with fields out of range carrying over.
+const s = new Date(2024, 0, 31, 10, 20, 30, 400)
+console.log(s.setMonth(1), s.toString())
+console.log(s.setDate(0), s.toString())
+console.log(s.setDate(32), s.toString())
+console.log(s.setHours(25, 61, 61, 1001), s.toString())
+console.log(s.setMinutes(-1), s.toString())
+console.log(s.setSeconds(3600, 5), s.getMilliseconds())
+console.log(s.setMilliseconds(-1), s.toISOString())
+console.log(s.setMonth(13, 5), s.toString())
+console.log(s.setFullYear(2023, 1, 29), s.toString())
+console.log(s.setYear(99), s.getFullYear(), s.setYear(2001), s.getFullYear())
+console.log(s.setUTCHours(0), s.toISOString())
+console.log(s.setUTCMinutes(90, 30, 5), s.toISOString())
+console.log(s.setUTCSeconds(-1), s.setUTCMilliseconds(1500), s.toISOString())
+console.log(s.setUTCDate(1), s.setUTCMonth(0, 31), s.toISOString())
+console.log(s.setUTCFullYear(2020, 1, 30), s.toISOString())
+console.log(s.setTime(86400000), s.toISOString(), s.setTime(Number.NaN), s.getTime())
+console.log(s.setHours(1), s.setUTCDate(1), s.getTime())
+console.log(s.setFullYear(2020), s.toString())
+console.log(s.setTime(Number.NaN), s.setUTCFullYear(2020), s.toISOString())
+console.log(s.setMonth(Number.NaN), s.getTime(), s.setFullYear(2000), s.getTime())
+console.log(new Date(2024, 9, 15).setHours(2, 30), new Date(2024, 2, 10).setHours(2, 30))
+
+// Conversions.
+console.log(d.toString())
+console.log(d.toDateString())
+console.log(d.toTimeString())
+console.log(d.toUTCString(), "|", d.toGMTString())
+console.log(d.toISOString(), d.toJSON())
+console.log(d.toLocaleString(), "|", d.toLocaleDateString(), "|", d.toLocaleTimeString())
+const midnight = new Date(2024, 0, 1)
+console.log(midnight.toLocaleString(), "|", new Date(2024, 0, 1, 12).toLocaleTimeString())
+const ancient = new Date(Date.UTC(-1, 0, 1))
+console.log(ancient.toISOString(), ancient.toUTCString(), ancient.toLocaleDateString())
+const far = new Date(Date.UTC(12345, 0, 1))
+console.log(far.toISOString(), far.toUTCString(), far.toDateString())
+const invalid = new Date("nope")
+console.log(invalid.toString(), invalid.toDateString(), invalid.toTimeString(), invalid.toUTCString())
+console.log(invalid.toLocaleString(), invalid.toLocaleDateString(), invalid.toLocaleTimeString(), invalid.toJSON())
+
+// Printing.
+console.log(d)
+console.log(invalid)
+console.log([d, invalid], { when: new Date(0) })
+class Stamp extends Date {}
+console.log(new Stamp(0))
+console.log(JSON.stringify({ d: d, bad: invalid, list: [new Date(0), new Stamp(1)] }))

@@ -2,7 +2,7 @@
 
 import { elementData, entryData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
-import { intRange, typeToString, unionRepr, type Type, type UnionType } from "../ir/types"
+import { intRange, typeToString, unionRepr, type StructType, type Type, type UnionType } from "../ir/types"
 import { error, helper } from "./calls"
 import { keyFunctions } from "./collections"
 import {
@@ -22,6 +22,24 @@ import {
 import { Emitter } from "./base"
 import { choose, expr, fieldPtr, inject, payload, recast, slotTest, unionOf } from "./expressions"
 import { globalName, sizeOf, type V } from "./ll"
+
+/**
+ * The runtime's class `Date` if a class is it or extends it, or null:
+ * console.log and JSON.stringify write a date as its ISO string, through
+ * functions of runtime/core/date.ore that take one.
+ */
+export function dateClass(g: Emitter, t: StructType): StructType | null {
+    const hook = g.runtime.get("ore_rt_date_inspect")
+    if (hook === null) return null
+    const date = hook.params[0].type
+    if (date.kind !== "struct") return null
+    let c: StructType | null = t
+    while (c !== null) {
+        if (c.id === date.id) return date
+        c = c.base
+    }
+    return null
+}
 
 export function json(g: Emitter, e: BuiltinCall): V {
     g.defs.set(SB, `${SB} = type { ptr, i64, i64 }`)
@@ -245,6 +263,12 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
             return
         }
         case "struct": {
+            if (dateClass(g, type) !== null) {
+                // A date is its toJSON(): its ISO string, or null.
+                const text = g.rt("ore_rt_date_json", [v])
+                g.rt("ore_sb_put", [b, g.extract(text, 0, "ptr"), g.extract(text, 1, "i64")])
+                return
+            }
             if (type.tuple) {
                 // A tuple is an array.
                 putc(g, b, "[")

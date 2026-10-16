@@ -1,0 +1,1225 @@
+// Dates, as in JavaScript: the global class `Date`, a time value in
+// milliseconds since the Unix epoch, NaN for an invalid date, with the
+// calendar of ECMAScript (the proleptic Gregorian calendar, days of exactly
+// 86 400 000 ms, times within 8.64e15 ms of the epoch).
+//
+// Local time is the time zone of the TZ environment variable (a zone name
+// such as `America/New_York`, a path to a TZif file, or a POSIX rule such as
+// `EST5EDT,M3.2.0,M11.1.0`), else of /etc/localtime, else UTC. Zones are
+// read from the TZif files of /usr/share/zoneinfo: their transitions, then
+// the POSIX rule of their footer for later times.
+
+import { wallClockMs } from "ore:runtime/task"
+
+/** Milliseconds in a day. */
+const msPerDay = 86400000
+
+/** The largest time value, in milliseconds either side of the epoch. */
+const maxTime = 8.64e15
+
+const weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+/** `a / b` rounded toward -Infinity. */
+function floorDiv(a: int, b: int): int {
+    const q = a / b
+    return a % b !== 0 && a < 0 !== b < 0 ? q - 1 : q
+}
+
+/** `a mod b`, with the sign of `b`. */
+function floorMod(a: int, b: int): int {
+    return a - floorDiv(a, b) * b
+}
+
+function finite(x: number): bool {
+    return x - x === 0
+}
+
+function isLeap(year: int): bool {
+    return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+}
+
+function daysInMonth(year: int, month: int): int {
+    if (month === 2) return isLeap(year) ? 29 : 28
+    return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31
+}
+
+/** The days since the epoch of a date, its month from 1 (Howard Hinnant's `days_from_civil`). */
+function daysFromCivil(year: int, month: int, day: int): int {
+    const y = month <= 2 ? year - 1 : year
+    const era = floorDiv(y, 400)
+    const yoe = y - era * 400
+    const mp = (month + 9) % 12
+    const doy = (153 * mp + 2) / 5 + day - 1
+    const doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+/** The fields of a time value, in UTC or in local time. */
+class Parts {
+    year = 0
+    /** From 0, as in JavaScript. */
+    month = 0
+    /** The day of the month, from 1. */
+    date = 0
+    hours = 0
+    minutes = 0
+    seconds = 0
+    ms = 0
+    /** The day of the week, 0 for Sunday. */
+    weekday = 0
+}
+
+/** The fields of a time value (Hinnant's `civil_from_days` for the date). */
+function partsOf(t: int): Parts {
+    const p = new Parts()
+    const days = floorDiv(t, msPerDay)
+    let rest = t - days * msPerDay
+    p.ms = rest % 1000
+    rest = rest / 1000
+    p.seconds = rest % 60
+    rest = rest / 60
+    p.minutes = rest % 60
+    p.hours = rest / 60
+    p.weekday = floorMod(days + 4, 7)
+    const z = days + 719468
+    const era = floorDiv(z, 146097)
+    const doe = z - era * 146097
+    const yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    const doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    const mp = (5 * doy + 2) / 153
+    p.date = doy - (153 * mp + 2) / 5 + 1
+    const month = mp < 10 ? mp + 3 : mp - 9
+    p.month = month - 1
+    p.year = yoe + era * 400 + (month <= 2 ? 1 : 0)
+    return p
+}
+
+/** ECMAScript's MakeDay: the day number of a year, a month from 0 (any integer) and a day of the month. */
+function makeDay(year: number, month: number, date: number): number {
+    if (!finite(year) || !finite(month) || !finite(date)) return Number.NaN
+    const y = Math.trunc(year)
+    const m = Math.trunc(month)
+    const ym = y + Math.floor(m / 12)
+    // Far beyond the time values: the result would be clipped anyway.
+    if (Math.abs(ym) > 400000) return Number.NaN
+    const mn = m - Math.floor(m / 12) * 12
+    return f64(daysFromCivil(int(ym), int(mn) + 1, 1)) + Math.trunc(date) - 1
+}
+
+/** ECMAScript's MakeTime: milliseconds from hours, minutes, seconds and milliseconds. */
+function makeTime(hours: number, minutes: number, seconds: number, ms: number): number {
+    if (!finite(hours) || !finite(minutes) || !finite(seconds) || !finite(ms)) return Number.NaN
+    return Math.trunc(hours) * 3600000 + Math.trunc(minutes) * 60000 + Math.trunc(seconds) * 1000 + Math.trunc(ms)
+}
+
+/** ECMAScript's MakeDate. */
+function makeDate(day: number, time: number): number {
+    if (!finite(day) || !finite(time)) return Number.NaN
+    return day * msPerDay + time
+}
+
+/** ECMAScript's TimeClip: NaN past 8.64e15 ms, an integer otherwise. */
+function timeClip(t: number): number {
+    if (!finite(t) || Math.abs(t) > maxTime) return Number.NaN
+    const r = Math.trunc(t)
+    return r === 0 ? 0 : r
+}
+
+/** The years 0 to 99 of the constructor and `Date.UTC` are 1900 to 1999. */
+function fullYear(year: number): number {
+    if (!finite(year)) return year
+    const y = Math.trunc(year)
+    return y >= 0 && y <= 99 ? 1900 + y : year
+}
+
+// ---------------------------------------------------------------------------
+// Time zones
+
+/** A kind of local time: its offset from UTC in seconds (east positive), whether it is daylight saving time, its abbreviation. */
+class LocalType {
+    constructor(
+        readonly offset: int,
+        readonly dst: bool,
+        readonly abbr: string,
+    ) {}
+}
+
+/** A day of a POSIX rule: `Jn` (kind 0), `n` (kind 1) or `Mm.w.d` (kind 2), and the local time of the change in seconds. */
+class RuleDay {
+    kind = 2
+    n = 0
+    month = 0
+    week = 0
+    weekday = 0
+    time = 7200
+}
+
+/** A POSIX TZ rule, as `EST5EDT,M3.2.0,M11.1.0`. */
+class Rule {
+    std = new LocalType(0, false, "UTC")
+    dst: LocalType | null = null
+    start = new RuleDay()
+    end = new RuleDay()
+}
+
+/** A time zone: its transitions (in seconds since the epoch) and the type of local time from each, then its rule. */
+class Zone {
+    transitions: int[] = []
+    indices: int[] = []
+    types: LocalType[] = []
+    rule: Rule | null = null
+
+    /** The local time at `t` seconds since the epoch. */
+    at(t: int): LocalType {
+        const n = this.transitions.length
+        if (n === 0 || t >= this.transitions[n - 1]) {
+            const rule = this.rule
+            if (rule !== null) return ruleAt(rule, t)
+            if (n === 0) return this.types.length > 0 ? this.types[0] : new LocalType(0, false, "UTC")
+            return this.types[this.indices[n - 1]]
+        }
+        if (t < this.transitions[0]) return this.types[0]
+        // The last transition at or before t.
+        let lo = 0
+        let hi = n - 1
+        while (lo < hi) {
+            const mid = (lo + hi + 1) / 2
+            if (this.transitions[mid] <= t) lo = mid
+            else hi = mid - 1
+        }
+        return this.types[this.indices[lo]]
+    }
+
+    /** The standard time the zone keeps first after its local mean time, which names that time. */
+    standard(): LocalType | null {
+        for (const i of this.indices) {
+            const type = this.types[i]
+            if (!type.dst && type.abbr !== "LMT") return type
+        }
+        const rule = this.rule
+        return rule !== null ? rule.std : null
+    }
+}
+
+/** The day number of a POSIX rule day in a year. */
+function ruleDay(d: RuleDay, year: int): int {
+    const jan1 = daysFromCivil(year, 1, 1)
+    if (d.kind === 0) return jan1 + d.n - 1 + (isLeap(year) && d.n >= 60 ? 1 : 0)
+    if (d.kind === 1) return jan1 + d.n
+    const first = daysFromCivil(year, d.month, 1)
+    let day = first + floorMod(d.weekday - floorMod(first + 4, 7), 7) + (d.week - 1) * 7
+    const last = first + daysInMonth(year, d.month) - 1
+    while (day > last) day -= 7
+    return day
+}
+
+/** The local time of a rule at `t` seconds since the epoch. */
+function ruleAt(rule: Rule, t: int): LocalType {
+    const dst = rule.dst
+    if (dst === null) return rule.std
+    const year = partsOf((t + rule.std.offset) * 1000).year
+    const start = ruleDay(rule.start, year) * 86400 + rule.start.time - rule.std.offset
+    const end = ruleDay(rule.end, year) * 86400 + rule.end.time - dst.offset
+    const inDst = start < end ? t >= start && t < end : !(t >= end && t < start)
+    return inDst ? dst : rule.std
+}
+
+/** Reads a POSIX TZ string, such as `EST5EDT,M3.2.0,M11.1.0`. */
+class RuleReader {
+    pos = 0
+    ok = true
+
+    constructor(readonly s: string) {}
+
+    more(): bool {
+        return this.pos < this.s.length
+    }
+
+    peek(): int {
+        return this.more() ? int(this.s[this.pos]) : -1
+    }
+
+    name(): string {
+        const start = this.pos
+        if (this.peek() === 0x3c) {
+            // `<+03>`: a quoted name.
+            while (this.more() && this.peek() !== 0x3e) this.pos++
+            if (!this.more()) {
+                this.ok = false
+                return ""
+            }
+            this.pos++
+            return this.s.slice(start + 1, this.pos - 1)
+        }
+        while (this.more() && isLetter(this.peek())) this.pos++
+        if (this.pos - start < 3) this.ok = false
+        return this.s.slice(start, this.pos)
+    }
+
+    number(): int {
+        const start = this.pos
+        let n = 0
+        while (this.more() && isDigit(this.peek())) {
+            n = n * 10 + this.peek() - 0x30
+            this.pos++
+        }
+        if (this.pos === start) this.ok = false
+        return n
+    }
+
+    /** `[+-]hh[:mm[:ss]]` in seconds. */
+    time(): int {
+        let sign = 1
+        if (this.peek() === 0x2d || this.peek() === 0x2b) {
+            if (this.peek() === 0x2d) sign = -1
+            this.pos++
+        }
+        let seconds = this.number() * 3600
+        if (this.peek() === 0x3a) {
+            this.pos++
+            seconds += this.number() * 60
+            if (this.peek() === 0x3a) {
+                this.pos++
+                seconds += this.number()
+            }
+        }
+        return sign * seconds
+    }
+
+    day(): RuleDay {
+        const d = new RuleDay()
+        if (this.peek() === 0x4d) {
+            this.pos++
+            d.kind = 2
+            d.month = this.number()
+            if (this.peek() !== 0x2e) this.ok = false
+            this.pos++
+            d.week = this.number()
+            if (this.peek() !== 0x2e) this.ok = false
+            this.pos++
+            d.weekday = this.number()
+            if (d.month < 1 || d.month > 12 || d.week < 1 || d.week > 5 || d.weekday > 6) this.ok = false
+        } else if (this.peek() === 0x4a) {
+            this.pos++
+            d.kind = 0
+            d.n = this.number()
+            if (d.n < 1 || d.n > 365) this.ok = false
+        } else {
+            d.kind = 1
+            d.n = this.number()
+            if (d.n > 365) this.ok = false
+        }
+        if (this.peek() === 0x2f) {
+            this.pos++
+            d.time = this.time()
+        }
+        return d
+    }
+}
+
+function isLetter(c: int): bool {
+    return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a)
+}
+
+function isDigit(c: int): bool {
+    return c >= 0x30 && c <= 0x39
+}
+
+/** A POSIX TZ rule, or null if `s` is not one. */
+function parseRule(s: string): Rule | null {
+    const r = new RuleReader(s)
+    const rule = new Rule()
+    const stdName = r.name()
+    if (!r.ok || !r.more()) return null
+    const stdOffset = -r.time()
+    rule.std = new LocalType(stdOffset, false, stdName)
+    if (r.more()) {
+        const dstName = r.name()
+        let dstOffset = stdOffset + 3600
+        if (r.more() && r.peek() !== 0x2c) dstOffset = -r.time()
+        rule.dst = new LocalType(dstOffset, true, dstName)
+        if (r.peek() === 0x2c) {
+            r.pos++
+            rule.start = r.day()
+            if (r.peek() !== 0x2c) return null
+            r.pos++
+            rule.end = r.day()
+        } else {
+            // The rules of the United States, which POSIX leaves to the system.
+            rule.start = parseRuleDay("M3.2.0")
+            rule.end = parseRuleDay("M11.1.0")
+        }
+    }
+    return r.ok && !r.more() ? rule : null
+}
+
+function parseRuleDay(s: string): RuleDay {
+    return new RuleReader(s).day()
+}
+
+/** Reads a big-endian signed integer of `size` bytes at `pos`. */
+function bigEndian(data: string, pos: int, size: int): int {
+    let n = 0
+    for (let i = 0; i < size; i++) n = (n << 8) | int(data[pos + i])
+    if (size < 8 && ((n >> (size * 8 - 1)) & 1) === 1) n -= 1 << (size * 8)
+    return n
+}
+
+/** A zone from the contents of a TZif file (RFC 8536), or null if they are not one. */
+function parseTzif(data: string): Zone | null {
+    if (data.length < 44 || !data.startsWith("TZif")) return null
+    let pos = 0
+    let timeSize = 4
+    // A file of version 2 or later repeats its data with 64-bit times, then has a footer.
+    const version = int(data[4])
+    for (let pass = 0; pass < 2; pass++) {
+        if (data.length < pos + 44) return null
+        const isutcnt = bigEndian(data, pos + 20, 4)
+        const isstdcnt = bigEndian(data, pos + 24, 4)
+        const leapcnt = bigEndian(data, pos + 28, 4)
+        const timecnt = bigEndian(data, pos + 32, 4)
+        const typecnt = bigEndian(data, pos + 36, 4)
+        const charcnt = bigEndian(data, pos + 40, 4)
+        pos += 44
+        const size =
+            timecnt * timeSize + timecnt + typecnt * 6 + charcnt + leapcnt * (timeSize + 4) + isstdcnt + isutcnt
+        if (data.length < pos + size) return null
+        if (pass === 0 && version >= 0x32) {
+            pos += size
+            timeSize = 8
+            continue
+        }
+        const zone = new Zone()
+        for (let i = 0; i < timecnt; i++) zone.transitions.push(bigEndian(data, pos + i * timeSize, timeSize))
+        pos += timecnt * timeSize
+        for (let i = 0; i < timecnt; i++) zone.indices.push(int(data[pos + i]))
+        pos += timecnt
+        const chars = pos + typecnt * 6
+        for (let i = 0; i < typecnt; i++) {
+            const at = pos + i * 6
+            const index = chars + int(data[at + 5])
+            let end = index
+            while (end < chars + charcnt && data[end] !== 0) end++
+            zone.types.push(new LocalType(bigEndian(data, at, 4), data[at + 4] !== 0, data.slice(index, end)))
+        }
+        for (const i of zone.indices) if (i >= typecnt) return null
+        if (typecnt === 0) return null
+        pos += size - timecnt * timeSize - timecnt
+        if (timeSize === 8 && pos < data.length && data[pos] === 0x0a) {
+            const end = data.indexOf("\n", pos + 1)
+            if (end > pos + 1) zone.rule = parseRule(data.slice(pos + 1, end))
+        }
+        return zone
+    }
+    return null
+}
+
+function zoneFile(path: string): Zone | null {
+    const data = fs.readFile(path)
+    if (data instanceof Error) return null
+    return parseTzif(data)
+}
+
+function utcZone(): Zone {
+    const zone = new Zone()
+    zone.types.push(new LocalType(0, false, "UTC"))
+    return zone
+}
+
+/** The local time zone: from TZ, else /etc/localtime, else UTC. */
+function loadZone(): Zone {
+    const tz = process.getenv("TZ")
+    if (tz === null) return zoneFile("/etc/localtime") ?? utcZone()
+    const name = tz.startsWith(":") ? tz.slice(1) : tz
+    if (name === "") return utcZone()
+    if (!name.includes("..")) {
+        const zone = zoneFile(name.startsWith("/") ? name : `/usr/share/zoneinfo/${name}`)
+        if (zone !== null) return zone
+    }
+    const rule = parseRule(name)
+    if (rule !== null) {
+        const zone = new Zone()
+        zone.types.push(rule.std)
+        zone.rule = rule
+        return zone
+    }
+    return utcZone()
+}
+
+/** The local time zone, read once. */
+let localZone: Zone | null = null
+
+function zone(): Zone {
+    const z = localZone
+    if (z !== null) return z
+    const loaded = loadZone()
+    localZone = loaded
+    return loaded
+}
+
+/** The local time at a time value. */
+function localAt(t: int): LocalType {
+    return zone().at(floorDiv(t, 1000))
+}
+
+/** ECMAScript's LocalTime: a time value in local time. */
+function localTime(t: int): int {
+    return t + localAt(t).offset * 1000
+}
+
+/**
+ * ECMAScript's UTC: the time value of a local time. A local time that
+ * happens twice (when clocks go back) is the earlier one; one skipped
+ * (when they go forward) is read with the offset before the change.
+ */
+function utcOf(local: number): number {
+    if (!finite(local) || Math.abs(local) > maxTime + 2 * msPerDay) return local
+    const t = int(local)
+    const before = localAt(t - msPerDay).offset * 1000
+    const after = localAt(t + msPerDay).offset * 1000
+    const a = t - before
+    const b = t - after
+    const aFits = localAt(a).offset * 1000 === before
+    const bFits = localAt(b).offset * 1000 === after
+    if (aFits && bFits) return f64(Math.min(a, b))
+    if (bFits) return f64(b)
+    return f64(a)
+}
+
+/** Long names of the abbreviations of time zones, as ICU names them for English. */
+const zoneNames = new Map<string, string>([
+    ["UTC", "Coordinated Universal Time"],
+    ["GMT", "Greenwich Mean Time"],
+    ["BST", "British Summer Time"],
+    ["EST", "Eastern Standard Time"],
+    ["EDT", "Eastern Daylight Time"],
+    ["CST", "Central Standard Time"],
+    ["CDT", "Central Daylight Time"],
+    ["MST", "Mountain Standard Time"],
+    ["MDT", "Mountain Daylight Time"],
+    ["PST", "Pacific Standard Time"],
+    ["PDT", "Pacific Daylight Time"],
+    ["AKST", "Alaska Standard Time"],
+    ["AKDT", "Alaska Daylight Time"],
+    ["HST", "Hawaii-Aleutian Standard Time"],
+    ["WET", "Western European Standard Time"],
+    ["WEST", "Western European Summer Time"],
+    ["CET", "Central European Standard Time"],
+    ["CEST", "Central European Summer Time"],
+    ["EET", "Eastern European Standard Time"],
+    ["EEST", "Eastern European Summer Time"],
+    ["MSK", "Moscow Standard Time"],
+    ["JST", "Japan Standard Time"],
+    ["KST", "Korean Standard Time"],
+    ["HKT", "Hong Kong Standard Time"],
+    ["AEST", "Australian Eastern Standard Time"],
+    ["AEDT", "Australian Eastern Daylight Time"],
+    ["ACST", "Australian Central Standard Time"],
+    ["ACDT", "Australian Central Daylight Time"],
+    ["AWST", "Australian Western Standard Time"],
+    ["NZST", "New Zealand Standard Time"],
+    ["NZDT", "New Zealand Daylight Time"],
+    ["SAST", "South Africa Standard Time"],
+])
+
+/** `+0430`: an offset in seconds as hours and minutes. */
+function offsetText(offset: int, colon: bool): string {
+    const sign = offset < 0 ? "-" : "+"
+    const abs = Math.abs(offset)
+    return `${sign}${pad(abs / 3600, 2)}${colon ? ":" : ""}${pad((abs % 3600) / 60, 2)}`
+}
+
+/** The name of a local time in `toString`: `Eastern Daylight Time`, or `GMT+04:00` for a zone without one. */
+function zoneName(type: LocalType): string {
+    let abbr = type.abbr
+    if (abbr === "LMT") {
+        const standard = zone().standard()
+        if (standard !== null) abbr = standard.abbr
+    }
+    return zoneNames.get(abbr) ?? `GMT${offsetText(type.offset, true)}`
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+
+function pad(n: int, width: int): string {
+    return `${n}`.padStart(width, "0")
+}
+
+/** A year in `toString` and `toUTCString`: at least 4 digits, `-0001` before year 0. */
+function yearText(year: int): string {
+    return year < 0 ? `-${pad(-year, 4)}` : pad(year, 4)
+}
+
+function dateText(p: Parts): string {
+    return `${weekdayNames[p.weekday]} ${monthNames[p.month]} ${pad(p.date, 2)} ${yearText(p.year)}`
+}
+
+function clockText(p: Parts): string {
+    return `${pad(p.hours, 2)}:${pad(p.minutes, 2)}:${pad(p.seconds, 2)}`
+}
+
+function timeText(p: Parts, type: LocalType): string {
+    return `${clockText(p)} GMT${offsetText(type.offset, false)} (${zoneName(type)})`
+}
+
+/** `en-US`'s date: `10/15/2024`, years before 1 counted back (1 BC is 1). */
+function localeDate(p: Parts): string {
+    return `${p.month + 1}/${p.date}/${p.year <= 0 ? 1 - p.year : p.year}`
+}
+
+/** `en-US`'s time: `12:05:09 PM`. */
+function localeTime(p: Parts): string {
+    const h = p.hours % 12
+    return `${h === 0 ? 12 : h}:${pad(p.minutes, 2)}:${pad(p.seconds, 2)} ${p.hours < 12 ? "AM" : "PM"}`
+}
+
+function isoText(p: Parts): string {
+    const year = p.year >= 0 && p.year <= 9999 ? pad(p.year, 4) : `${p.year < 0 ? "-" : "+"}${pad(Math.abs(p.year), 6)}`
+    return `${year}-${pad(p.month + 1, 2)}-${pad(p.date, 2)}T${clockText(p)}.${pad(p.ms, 3)}Z`
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+
+/** Reads the date time string format of ECMAScript, as `2024-10-15T12:00:00.000Z`; NaN if `s` is not in it. */
+function parseIso(s: string): number {
+    let pos = 0
+    function digits(count: int): int {
+        if (pos + count > s.length) return -1
+        let n = 0
+        for (let i = 0; i < count; i++) {
+            const c = int(s[pos + i])
+            if (!isDigit(c)) return -1
+            n = n * 10 + c - 0x30
+        }
+        pos += count
+        return n
+    }
+    function at(c: int): bool {
+        if (pos < s.length && int(s[pos]) === c) {
+            pos++
+            return true
+        }
+        return false
+    }
+    let year = 0
+    if (pos < s.length && (s[pos] === 0x2b || s[pos] === 0x2d)) {
+        const negative = s[pos] === 0x2d
+        pos++
+        year = digits(6)
+        if (year < 0 || (negative && year === 0)) return Number.NaN
+        if (negative) year = -year
+    } else {
+        year = digits(4)
+        if (year < 0) return Number.NaN
+    }
+    let month = 1
+    let day = 1
+    if (at(0x2d)) {
+        month = digits(2)
+        if (month < 1 || month > 12) return Number.NaN
+        if (at(0x2d)) {
+            day = digits(2)
+            if (day < 1 || day > daysInMonth(year, month)) return Number.NaN
+        }
+    }
+    let hours = 0
+    let minutes = 0
+    let seconds = 0
+    let ms = 0
+    let local = false
+    if (at(0x54) || at(0x74)) {
+        hours = digits(2)
+        if (hours < 0 || !at(0x3a)) return Number.NaN
+        minutes = digits(2)
+        if (minutes < 0 || minutes > 59) return Number.NaN
+        if (at(0x3a)) {
+            seconds = digits(2)
+            if (seconds < 0 || seconds > 59) return Number.NaN
+            if (at(0x2e)) {
+                // Any number of digits; the milliseconds are the first three.
+                const start = pos
+                let scale = 100
+                while (pos < s.length && isDigit(int(s[pos]))) {
+                    ms += (int(s[pos]) - 0x30) * scale
+                    scale /= 10
+                    pos++
+                }
+                if (pos === start) return Number.NaN
+            }
+        }
+        if (hours > 24 || (hours === 24 && (minutes !== 0 || seconds !== 0 || ms !== 0))) return Number.NaN
+        local = true
+    }
+    let offset = 0
+    if (at(0x5a) || at(0x7a)) {
+        local = false
+    } else if (local && pos < s.length && (s[pos] === 0x2b || s[pos] === 0x2d)) {
+        const sign = s[pos] === 0x2d ? -1 : 1
+        pos++
+        const oh = digits(2)
+        if (oh < 0 || oh > 23 || !at(0x3a)) return Number.NaN
+        const om = digits(2)
+        if (om < 0 || om > 59) return Number.NaN
+        offset = sign * (oh * 60 + om) * 60000
+        local = false
+    }
+    if (pos !== s.length) return Number.NaN
+    const t = makeDate(
+        makeDay(f64(year), f64(month - 1), f64(day)),
+        makeTime(f64(hours), f64(minutes), f64(seconds), f64(ms)),
+    )
+    return timeClip(local ? utcOf(t) : t - f64(offset))
+}
+
+/**
+ * Reads the other forms V8 accepts: what `toString` and `toUTCString`
+ * print, and dates such as `Oct 15 2024 10:00 GMT+0200`, `15 Oct 2024`,
+ * `10/15/2024` and `2024/10/15`, with times `hh:mm[:ss[.mmm]]` and `AM` or
+ * `PM`. Words other than months, `AM`, `PM`, `UT`, `UTC`, `GMT`, `Z` and
+ * the abbreviations of the zones of the United States are skipped, as are
+ * comments in parentheses. Without a zone the time is local.
+ */
+function parseLegacy(s: string): number {
+    const numbers: int[] = []
+    /** The digits of each number, to tell a year of 3 digits or more. */
+    const widths: int[] = []
+    let month = -1
+    let hours = -1
+    let minutes = 0
+    let seconds = 0
+    let ms = 0
+    let pm = -1
+    let hasZone = false
+    let offset = 0
+    let pos = 0
+    const n = s.length
+    function number(): int {
+        let v = 0
+        while (pos < n && isDigit(int(s[pos]))) {
+            v = v * 10 + int(s[pos]) - 0x30
+            pos++
+        }
+        return v
+    }
+    while (pos < n) {
+        const c = int(s[pos])
+        if (c === 0x28) {
+            // A comment, as `(Eastern Daylight Time)`.
+            let depth = 0
+            while (pos < n) {
+                if (s[pos] === 0x28) depth++
+                else if (s[pos] === 0x29) depth--
+                pos++
+                if (depth === 0) break
+            }
+        } else if (isLetter(c)) {
+            const start = pos
+            while (pos < n && (isLetter(int(s[pos])) || s[pos] === 0x2e)) pos++
+            const word = s.slice(start, pos).toLowerCase()
+            if (word === "am" || word === "pm") {
+                pm = word === "pm" ? 1 : 0
+            } else if (word === "ut" || word === "utc" || word === "gmt" || word === "z") {
+                hasZone = true
+            } else if (zoneOffsets.has(word)) {
+                hasZone = true
+                offset = zoneOffsets.get(word) ?? 0
+            } else if (word.length >= 3) {
+                const index = monthNames.findIndex((m) => word.startsWith(m.toLowerCase()))
+                if (index >= 0) month = index
+            }
+        } else if ((c === 0x2b || c === 0x2d) && hasZone && pos + 1 < n && isDigit(int(s[pos + 1]))) {
+            // An offset after the zone: `+0200`, `-04:00`, `+2`.
+            pos++
+            const start = pos
+            let v = number()
+            if (pos < n && s[pos] === 0x3a) {
+                pos++
+                v = v * 100 + number()
+            } else if (pos - start <= 2) {
+                v *= 100
+            }
+            const sign = c === 0x2d ? -1 : 1
+            offset = sign * ((v / 100) * 60 + (v % 100))
+        } else if ((c === 0x2b || c === 0x2d) && pos + 1 < n && isDigit(int(s[pos + 1]))) {
+            // A signed number (`-000000-01-01`, `Oct 15 -2024`), unless a dash between numbers.
+            if (c === 0x2b || pos === 0 || !isDigit(int(s[pos - 1]))) return Number.NaN
+            pos++
+        } else if (isDigit(c)) {
+            const start = pos
+            const v = number()
+            if (pos < n && s[pos] === 0x3a && hours < 0) {
+                // A time: hh:mm[:ss[.mmm]].
+                hours = v
+                pos++
+                minutes = number()
+                if (pos < n && s[pos] === 0x3a) {
+                    pos++
+                    seconds = number()
+                    if (pos < n && s[pos] === 0x2e) {
+                        pos++
+                        let scale = 100
+                        while (pos < n && isDigit(int(s[pos]))) {
+                            ms += (int(s[pos]) - 0x30) * scale
+                            scale /= 10
+                            pos++
+                        }
+                    }
+                }
+            } else {
+                numbers.push(v)
+                widths.push(pos - start)
+            }
+        } else if (c === 0x20 || c === 0x2c || c === 0x2f || c === 0x2d || c === 0x09 || c === 0x2e) {
+            pos++
+        } else {
+            return Number.NaN
+        }
+    }
+    // The day, the month and the year among the numbers.
+    let year = -1
+    let day = 1
+    if (month >= 0) {
+        if (numbers.length === 1) {
+            year = numbers[0]
+        } else if (numbers.length === 2) {
+            if (widths[0] >= 3 || numbers[0] > 31) {
+                year = numbers[0]
+                day = numbers[1]
+            } else {
+                day = numbers[0]
+                year = numbers[1]
+            }
+        } else {
+            return Number.NaN
+        }
+    } else if (numbers.length === 3) {
+        if (widths[0] >= 3) {
+            year = numbers[0]
+            month = numbers[1] - 1
+            day = numbers[2]
+        } else {
+            month = numbers[0] - 1
+            day = numbers[1]
+            year = numbers[2]
+        }
+    } else if (numbers.length === 2) {
+        if (widths[0] >= 3) {
+            year = numbers[0]
+            month = numbers[1] - 1
+        } else {
+            month = numbers[0] - 1
+            year = numbers[1]
+        }
+    } else if (numbers.length === 1 && widths[0] >= 3) {
+        year = numbers[0]
+        month = 0
+    } else {
+        return Number.NaN
+    }
+    if (year < 0 || month < 0 || month > 11 || day < 1 || day > 31) return Number.NaN
+    if (widths.length > 0 && year < 100 && numbers.indexOf(year) >= 0) {
+        const at = numbers.indexOf(year)
+        if (widths[at] <= 2) year += year < 50 ? 2000 : 1900
+    }
+    if (hours < 0) hours = 0
+    if (pm >= 0) {
+        if (hours > 12 || hours === 0) return Number.NaN
+        hours = (hours % 12) + (pm === 1 ? 12 : 0)
+    }
+    if (hours > 24 || minutes > 59 || seconds > 59) return Number.NaN
+    if (hours === 24 && (minutes !== 0 || seconds !== 0 || ms !== 0)) return Number.NaN
+    const t = makeDate(
+        makeDay(f64(year), f64(month), f64(day)),
+        makeTime(f64(hours), f64(minutes), f64(seconds), f64(ms)),
+    )
+    return timeClip(hasZone ? t - f64(offset) * 60000 : utcOf(t))
+}
+
+/** The offsets in minutes of the zone abbreviations the legacy format knows. */
+const zoneOffsets = new Map<string, int>([
+    ["est", -300],
+    ["edt", -240],
+    ["cst", -360],
+    ["cdt", -300],
+    ["mst", -420],
+    ["mdt", -360],
+    ["pst", -480],
+    ["pdt", -420],
+])
+
+/** `Date.parse`: the date time string format, else the other forms V8 accepts. */
+function parseDate(s: string): number {
+    const iso = parseIso(s)
+    if (iso === iso) return iso
+    return parseLegacy(s)
+}
+
+// ---------------------------------------------------------------------------
+// The class
+
+/**
+ * A moment in time, as JavaScript's `Date`: milliseconds since the Unix
+ * epoch, or an invalid date, whose time value is NaN.
+ */
+export class Date {
+    /** The time value: milliseconds since the epoch, NaN for an invalid date. */
+    private t: number
+
+    /**
+     * `new Date()` is now; `new Date(ms)` a time value; `new Date(string)`
+     * what `Date.parse` reads; `new Date(date)` a copy; `new Date(year,
+     * monthIndex, day?, hours?, minutes?, seconds?, ms?)` a local time
+     * (years 0 to 99 are 1900 to 1999, and fields out of range carry over).
+     */
+    constructor(
+        value?: number | string | Date | null,
+        monthIndex?: number | null,
+        day?: number | null,
+        hours?: number | null,
+        minutes?: number | null,
+        seconds?: number | null,
+        ms?: number | null,
+    ) {
+        if (monthIndex !== null) {
+            if (typeof value !== "number") {
+                process.panic("TypeError: new Date(year, monthIndex, ...) takes a number as the year")
+            }
+            const year = typeof value === "number" ? value : 0
+            const t = makeDate(
+                makeDay(fullYear(year), monthIndex, day ?? 1),
+                makeTime(hours ?? 0, minutes ?? 0, seconds ?? 0, ms ?? 0),
+            )
+            this.t = timeClip(utcOf(t))
+        } else if (value === null) {
+            this.t = f64(Date.now())
+        } else if (typeof value === "number") {
+            this.t = timeClip(value)
+        } else if (typeof value === "string") {
+            this.t = parseDate(value)
+        } else {
+            this.t = value.t
+        }
+    }
+
+    /** Milliseconds since the Unix epoch. */
+    static now(): int {
+        return wallClockMs()
+    }
+
+    /** The time value of a date string: the date time string format of ECMAScript, or what `toString` and `toUTCString` print; NaN if it is neither. */
+    static parse(s: string): number {
+        return parseDate(s)
+    }
+
+    /** The time value of a date and time in UTC; years 0 to 99 are 1900 to 1999. */
+    static UTC(
+        year: number,
+        monthIndex: number = 0,
+        day: number = 1,
+        hours: number = 0,
+        minutes: number = 0,
+        seconds: number = 0,
+        ms: number = 0,
+    ): number {
+        return timeClip(makeDate(makeDay(fullYear(year), monthIndex, day), makeTime(hours, minutes, seconds, ms)))
+    }
+
+    /** The fields of the time value, in local time or in UTC; null for an invalid date. */
+    private parts(utc: bool): Parts | null {
+        const t = this.t
+        if (t !== t) return null
+        return partsOf(utc ? int(t) : localTime(int(t)))
+    }
+
+    private field(utc: bool, which: int): number {
+        const p = this.parts(utc)
+        if (p === null) return Number.NaN
+        switch (which) {
+            case 0:
+                return f64(p.year)
+            case 1:
+                return f64(p.month)
+            case 2:
+                return f64(p.date)
+            case 3:
+                return f64(p.hours)
+            case 4:
+                return f64(p.minutes)
+            case 5:
+                return f64(p.seconds)
+            case 6:
+                return f64(p.ms)
+            default:
+                return f64(p.weekday)
+        }
+    }
+
+    /**
+     * Sets fields in local time or in UTC, the others kept; null keeps one.
+     * An invalid date stays invalid, unless `fromZero` (`setFullYear`),
+     * which starts from the epoch.
+     */
+    private setFields(
+        utc: bool,
+        fromZero: bool,
+        year: number | null,
+        month: number | null,
+        date: number | null,
+        hours: number | null,
+        minutes: number | null,
+        seconds: number | null,
+        ms: number | null,
+    ): number {
+        const t = this.t
+        if (t !== t && !fromZero) return t
+        // An invalid date starts from +0 as a time already local, as in ECMAScript.
+        const p = partsOf(t !== t ? 0 : utc ? int(t) : localTime(int(t)))
+        const local = makeDate(
+            makeDay(year ?? f64(p.year), month ?? f64(p.month), date ?? f64(p.date)),
+            makeTime(hours ?? f64(p.hours), minutes ?? f64(p.minutes), seconds ?? f64(p.seconds), ms ?? f64(p.ms)),
+        )
+        this.t = timeClip(utc ? local : utcOf(local))
+        return this.t
+    }
+
+    /** The time value: milliseconds since the epoch, NaN for an invalid date. */
+    getTime(): number {
+        return this.t
+    }
+
+    /** The time value, as `getTime`. */
+    valueOf(): number {
+        return this.t
+    }
+
+    getFullYear(): number {
+        return this.field(false, 0)
+    }
+
+    /** The month, from 0 for January. */
+    getMonth(): number {
+        return this.field(false, 1)
+    }
+
+    /** The day of the month, from 1. */
+    getDate(): number {
+        return this.field(false, 2)
+    }
+
+    /** The day of the week, from 0 for Sunday. */
+    getDay(): number {
+        return this.field(false, 7)
+    }
+
+    getHours(): number {
+        return this.field(false, 3)
+    }
+
+    getMinutes(): number {
+        return this.field(false, 4)
+    }
+
+    getSeconds(): number {
+        return this.field(false, 5)
+    }
+
+    getMilliseconds(): number {
+        return this.field(false, 6)
+    }
+
+    /** The year minus 1900 (deprecated in JavaScript). */
+    getYear(): number {
+        return this.field(false, 0) - 1900
+    }
+
+    getUTCFullYear(): number {
+        return this.field(true, 0)
+    }
+
+    getUTCMonth(): number {
+        return this.field(true, 1)
+    }
+
+    getUTCDate(): number {
+        return this.field(true, 2)
+    }
+
+    getUTCDay(): number {
+        return this.field(true, 7)
+    }
+
+    getUTCHours(): number {
+        return this.field(true, 3)
+    }
+
+    getUTCMinutes(): number {
+        return this.field(true, 4)
+    }
+
+    getUTCSeconds(): number {
+        return this.field(true, 5)
+    }
+
+    getUTCMilliseconds(): number {
+        return this.field(true, 6)
+    }
+
+    /** The minutes UTC is ahead of local time: 240 in New York in the summer, -60 in Paris in the winter. */
+    getTimezoneOffset(): number {
+        const t = this.t
+        if (t !== t) return t
+        // In whole minutes, as V8: local mean times have seconds.
+        const offset = f64(-localAt(int(t)).offset / 60)
+        return offset === 0 ? 0 : offset
+    }
+
+    /** Sets the time value; returns it. */
+    setTime(time: number): number {
+        this.t = timeClip(time)
+        return this.t
+    }
+
+    setMilliseconds(ms: number): number {
+        return this.setFields(false, false, null, null, null, null, null, null, ms)
+    }
+
+    setSeconds(seconds: number, ms?: number | null): number {
+        return this.setFields(false, false, null, null, null, null, null, seconds, ms)
+    }
+
+    setMinutes(minutes: number, seconds?: number | null, ms?: number | null): number {
+        return this.setFields(false, false, null, null, null, null, minutes, seconds, ms)
+    }
+
+    setHours(hours: number, minutes?: number | null, seconds?: number | null, ms?: number | null): number {
+        return this.setFields(false, false, null, null, null, hours, minutes, seconds, ms)
+    }
+
+    setDate(date: number): number {
+        return this.setFields(false, false, null, null, date, null, null, null, null)
+    }
+
+    setMonth(month: number, date?: number | null): number {
+        return this.setFields(false, false, null, month, date, null, null, null, null)
+    }
+
+    /** Sets the year, and the month and the day if given; an invalid date starts from the epoch. */
+    setFullYear(year: number, month?: number | null, date?: number | null): number {
+        return this.setFields(false, true, year, month, date, null, null, null, null)
+    }
+
+    /** Sets the year, 0 to 99 for 1900 to 1999 (deprecated in JavaScript). */
+    setYear(year: number): number {
+        return this.setFields(false, true, fullYear(year), null, null, null, null, null, null)
+    }
+
+    setUTCMilliseconds(ms: number): number {
+        return this.setFields(true, false, null, null, null, null, null, null, ms)
+    }
+
+    setUTCSeconds(seconds: number, ms?: number | null): number {
+        return this.setFields(true, false, null, null, null, null, null, seconds, ms)
+    }
+
+    setUTCMinutes(minutes: number, seconds?: number | null, ms?: number | null): number {
+        return this.setFields(true, false, null, null, null, null, minutes, seconds, ms)
+    }
+
+    setUTCHours(hours: number, minutes?: number | null, seconds?: number | null, ms?: number | null): number {
+        return this.setFields(true, false, null, null, null, hours, minutes, seconds, ms)
+    }
+
+    setUTCDate(date: number): number {
+        return this.setFields(true, false, null, null, date, null, null, null, null)
+    }
+
+    setUTCMonth(month: number, date?: number | null): number {
+        return this.setFields(true, false, null, month, date, null, null, null, null)
+    }
+
+    setUTCFullYear(year: number, month?: number | null, date?: number | null): number {
+        return this.setFields(true, true, year, month, date, null, null, null, null)
+    }
+
+    /** `2024-10-15T16:05:09.000Z`; panics for an invalid date, as JavaScript throws a `RangeError`. */
+    toISOString(): string {
+        const p = this.parts(true)
+        if (p === null) process.panic("RangeError: Invalid time value")
+        return isoText(p)
+    }
+
+    /** `toISOString`, or null for an invalid date. The key is ignored, as `JSON.stringify` passes one. */
+    toJSON(key?: string | null): string | null {
+        const p = this.parts(true)
+        return p === null ? null : isoText(p)
+    }
+
+    /** `Tue Oct 15 2024 12:05:09 GMT-0400 (Eastern Daylight Time)`, in local time. */
+    toString(): string {
+        const t = this.t
+        if (t !== t) return "Invalid Date"
+        const type = localAt(int(t))
+        const p = partsOf(int(t) + type.offset * 1000)
+        return `${dateText(p)} ${timeText(p, type)}`
+    }
+
+    /** `Tue Oct 15 2024`, in local time. */
+    toDateString(): string {
+        const p = this.parts(false)
+        return p === null ? "Invalid Date" : dateText(p)
+    }
+
+    /** `12:05:09 GMT-0400 (Eastern Daylight Time)`, in local time. */
+    toTimeString(): string {
+        const t = this.t
+        if (t !== t) return "Invalid Date"
+        const type = localAt(int(t))
+        return timeText(partsOf(int(t) + type.offset * 1000), type)
+    }
+
+    /** `Tue, 15 Oct 2024 16:05:09 GMT`. */
+    toUTCString(): string {
+        const p = this.parts(true)
+        if (p === null) return "Invalid Date"
+        return `${weekdayNames[p.weekday]}, ${pad(p.date, 2)} ${monthNames[p.month]} ${yearText(p.year)} ${clockText(p)} GMT`
+    }
+
+    /** `toUTCString` (deprecated in JavaScript). */
+    toGMTString(): string {
+        return this.toUTCString()
+    }
+
+    /** `10/15/2024, 12:05:09 PM`: the format of `en-US`, the only locale, in local time. */
+    toLocaleString(): string {
+        const p = this.parts(false)
+        return p === null ? "Invalid Date" : `${localeDate(p)}, ${localeTime(p)}`
+    }
+
+    /** `10/15/2024`: the format of `en-US`, in local time. */
+    toLocaleDateString(): string {
+        const p = this.parts(false)
+        return p === null ? "Invalid Date" : localeDate(p)
+    }
+
+    /** `12:05:09 PM`: the format of `en-US`, in local time. */
+    toLocaleTimeString(): string {
+        const p = this.parts(false)
+        return p === null ? "Invalid Date" : localeTime(p)
+    }
+}
+
+/** How console.log prints a date, as Node: its ISO string, or `Invalid Date`. */
+//ore:runtime ore_rt_date_inspect
+function inspectDate(d: Date): string {
+    return d.toJSON() ?? "Invalid Date"
+}
+
+/** How JSON.stringify writes a date, as its `toJSON()`: the ISO string in quotes, or `null`. */
+//ore:runtime ore_rt_date_json
+function jsonDate(d: Date): string {
+    const iso = d.toJSON()
+    return iso === null ? "null" : `"${iso}"`
+}
