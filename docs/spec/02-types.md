@@ -534,3 +534,30 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   functions, methods and conversions too (`m.set(...entry)`), and into
   array literals. JSON encodes a tuple as an array and decodes an array of
   exactly its length.
+
+## unknown
+
+- `unknown` is the type of any value: every value converts to it
+  implicitly, `null` too, and a union with it is `unknown`. A variable of
+  type `unknown` without an initializer starts as `null`.
+- The value is boxed with the type it has at run time: a string literal as
+  a `string`, a union as the member it holds, an interface value as the
+  instance it refers to, and an instance of a class as one of the class it
+  was made by. `console.log` prints it as that type (a string at the top as
+  it is).
+- Nothing else can be done with an `unknown` until it is narrowed: no
+  properties, methods, elements, calls or operators (`Object is of type
+  'unknown'.`). It can be compared with `===` and `!==` (true for the same
+  type and value, or for numbers of any types with the same value, and for
+  two nulls), tested with `x === null`, given a fallback with `??`, passed
+  where an `unknown` is expected, and printed.
+- Checks narrow it: `typeof x === "string"` to `string`, `"number"` to
+  `number` (`f64`, which a number of any type converts to), `"boolean"` to
+  `bool`, `"bigint"` to `bigint`, and `x instanceof C` to the class `C` or
+  a subclass. A narrowed read unboxes the value. `typeof x` is also
+  `"function"` or `"object"`, which tell no type: such a value stays
+  `unknown`.
+- `typeof x === "object"` is true for `null`, arrays, maps, sets and
+  objects, as in JavaScript.
+- An `unknown` cannot be formatted in a template literal, converted to or
+  from JSON, or be a `Map` key or a `Set` element.

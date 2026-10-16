@@ -8,7 +8,7 @@
 `Map`), `namespace` (use modules), `throw` / `try`.
 
 Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
-`await` and `Promise`, `unknown`, `keyof` and the other computed types.
+`await` and `Promise`.
 
 ## Changed semantics
 
@@ -27,6 +27,9 @@ Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
 | `===` on strings | value | value |
 | integer literal `5` | `number` | `int` |
 | missing value | `undefined` | `null` |
+| `let x: unknown` | `undefined` | `null` |
+| `typeof x === "number"` on an `unknown` | narrows to `number` | narrows to `f64`; an integer converts |
+| `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it |
 | `map.get(missing)` | `undefined` | `null` |
 | `map.keys()` | iterator | array |
 | `[10, 9, 1].sort()` | `[1, 10, 9]` (as strings) | `[1, 9, 10]` |

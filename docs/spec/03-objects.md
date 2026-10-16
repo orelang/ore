@@ -214,7 +214,9 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
 - `typeof x === "string" | "number" | "boolean" | "object"`;
 - `x instanceof C` for a class `C` (also on interface values, which then
   narrow to the class, and on instances of a base class of `C`) and
-  `x instanceof I` for an interface member of a union.
+  `x instanceof I` for an interface member of a union;
+- the same checks of an `unknown`, which unbox it (see
+  [unknown](02-types.md#unknown)).
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
 of `&&`, `||` and `?:` (where `a || b` narrows a reference to the union of

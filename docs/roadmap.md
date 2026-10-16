@@ -64,7 +64,8 @@ exports, type assertions (Ore converts: `i32(x)`).
     (`<T = X>`, done); type aliases in any order and recursive object types
     (done).
 - Types:
-  - `unknown`;
+  - `unknown` (done: boxed with its type, narrowed by `typeof` and
+    `instanceof`);
   - intersections `A & B` (done, of object types and interfaces);
   - methods in object types (`{ f(): void }`, done), optional members of
     interfaces (done; not methods), generic methods in interfaces;

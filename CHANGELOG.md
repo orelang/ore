@@ -12,6 +12,11 @@ before 1.0, a minor version may change the language.
   signatures of a call. The command line prints each as a `note:` with its
   position and source line under the error; the language server sends them
   as `relatedInformation`.
+- `unknown` as the type of values: any value converts to it, boxed with
+  its type, and `console.log` prints it as that type. It can be compared
+  with `===`, tested for `null` and narrowed with `typeof` (to `string`,
+  `f64`, `bool` or `bigint`) and `instanceof` (to a class), which unbox it;
+  anything else is an error, `Object is of type 'unknown'.` (ORE3078).
 - Numeric literal types in computations on types (`Prev[D]`,
   `D extends number = 10`, `[D] extends [never]`); `infer` in template
   literal types; `unknown`, `object`, `Function` and `readonly unknown[]`

@@ -6,7 +6,7 @@ described here is either unsupported or follows TypeScript syntax rules.
 | Chapter | Contents |
 |---|---|
 | [Programs](01-programs.md) | Source files, top-level code, module variables |
-| [Types and values](02-types.md) | Primitive types, literals, conversions, arithmetic, variables, built-in namespaces, strings, arrays |
+| [Types and values](02-types.md) | Primitive types, literals, conversions, arithmetic, variables, built-in namespaces, strings, arrays, tuples, `unknown` |
 | [Objects, classes, interfaces and generics](03-objects.md) | Object types, classes, interfaces, unions and null, narrowing, generics, maps |
 | [Functions and statements](04-functions.md) | Functions and closures, array methods, resources (`using`), evaluation order, statements, panics |
 | [Errors](05-errors.md) | Errors as values |
