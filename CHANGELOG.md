@@ -12,6 +12,13 @@ before 1.0, a minor version may change the language.
   the stacks are listed for the collector without its lock. A `WaitGroup`
   of "ore:sync" counts atomically and locks only when its count drops to
   zero. An idle worker is signalled only when there is one.
+- `JSON.parse<T>` reads the text straight into a `T`, with no tree of
+  values in between: keys are compared in place with the field names and
+  strings without escapes share the bytes of the text. Only when that
+  fails is the text parsed into values, to report the same error as
+  before. `JSON.stringify` writes integers into its buffer without a
+  string for each. bench/json runs about 3x faster in a quarter of the
+  memory.
 - The collector marks alongside the program: two short stops (scanning
   the roots, then finishing) instead of one for the whole collection, with
   a write barrier the compiler emits before stores of pointers into the

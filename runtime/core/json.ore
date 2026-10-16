@@ -8,8 +8,6 @@
 //   context  {failed: u8 @0, message: string @8, path: string @24}
 // Messages and field names come from generated code as NUL-terminated bytes.
 
-import { strFromI64, strFromU64 } from "ore:runtime/format"
-
 /** Reads decimal text exactly, rounding to the nearest f64; from libc. */
 declare function strtod(text: ptr, end: ptr): f64
 
@@ -116,14 +114,33 @@ function jsonStr(b: ptr, s: string): void {
     sbPutc(b, 0x22)
 }
 
+/** Writes the decimal digits of `value` straight into the builder, after a minus sign if `negative`. */
+function putDecimal(b: ptr, value: u64, negative: bool): void {
+    let digits = 1
+    for (let rest = value / 10; rest !== 0; rest /= 10) digits++
+    const n = negative ? digits + 1 : digits
+    reserve(b, n)
+    const len = unsafe.load<int>(unsafe.add(b, 8))
+    const data = unsafe.add(unsafe.load<ptr>(b), len)
+    if (negative) unsafe.store<u8>(data, 0x2d)
+    let rest = value
+    for (let at = n - 1; at >= n - digits; at--) {
+        unsafe.store<u8>(unsafe.add(data, at), u8(rest % 10) + 0x30)
+        rest /= 10
+    }
+    unsafe.store<int>(unsafe.add(b, 8), len + n)
+}
+
 //ore:runtime ore_rt_json_i64
 function jsonI64(b: ptr, v: i64): void {
-    sbPutString(b, strFromI64(v))
+    // The magnitude as u64, which also holds that of the smallest i64.
+    if (v < 0) putDecimal(b, u64(0) - u64(v), true)
+    else putDecimal(b, u64(v), false)
 }
 
 //ore:runtime ore_rt_json_u64
 function jsonU64(b: ptr, v: u64): void {
-    sbPutString(b, strFromU64(v))
+    putDecimal(b, v, false)
 }
 
 /** With `indent` > 0: a line break and `indent * depth` spaces. */
@@ -157,6 +174,11 @@ class Parser {
     /** The first error, or "". */
     error = ""
     depth = 0
+    /** A buffer for the text of a number, NUL-terminated for strtod. */
+    scratch: ptr = unsafe.fromInt(0)
+    scratchSize = 0
+    /** Where `jsonReadKey` puts the key it read, a string. */
+    key: ptr = unsafe.alloc(16)
 
     constructor(
         public text: ptr,
@@ -178,11 +200,15 @@ class Parser {
     }
 
     space(): void {
-        while (this.more()) {
-            const c = this.peek()
-            if (c !== 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) return
-            this.at++
+        // Locals rather than the methods above: this runs before every token.
+        const text = this.text
+        let at = this.at
+        while (at < this.end) {
+            const c = unsafe.load<u8>(unsafe.add(text, at))
+            if (c !== 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) break
+            at++
         }
+        this.at = at
     }
 
     literal(word: string): bool {
@@ -230,14 +256,33 @@ function putUtf8(b: ptr, cp: int): void {
     }
 }
 
-/** A string at the opening quote, as a string value, or null with an error. */
-function parseString(ps: Parser): ptr {
-    ps.at++
+/**
+ * A string at the opening quote, written to `out`, or false with an error. A
+ * string without escapes shares the bytes of the text.
+ */
+function scanString(ps: Parser, out: ptr): bool {
+    const first = ps.at + 1
+    const text = ps.text
+    let at = first
+    while (at < ps.end) {
+        const c = unsafe.load<u8>(unsafe.add(text, at))
+        if (c === 0x22) {
+            unsafe.store<string>(out, unsafe.makeString(unsafe.add(text, first), at - first))
+            ps.at = at + 1
+            return true
+        }
+        if (c < 0x20 || c === 0x5c) break
+        at++
+    }
+    ps.at = at
     const b = builder()
-    let run = ps.at
+    let run = first
     while (ps.more() && ps.peek() !== 0x22) {
         const c = ps.peek()
-        if (c < 0x20) return ps.fail("control character in string")
+        if (c < 0x20) {
+            ps.fail("control character in string")
+            return false
+        }
         if (c !== 0x5c) {
             ps.at++
             continue
@@ -255,7 +300,10 @@ function parseString(ps: Parser): ptr {
         else if (e === 0x74) sbPutc(b, 0x09)
         else if (e === 0x75) {
             let cp = hex4(ps)
-            if (cp < 0) return ps.fail("invalid \\u escape")
+            if (cp < 0) {
+                ps.fail("invalid \\u escape")
+                return false
+            }
             // A surrogate pair encodes a code point above U+FFFF.
             if (
                 cp >= 0xd800 &&
@@ -273,42 +321,89 @@ function parseString(ps: Parser): ptr {
             if (cp >= 0xd800 && cp < 0xe000) cp = 0xfffd
             putUtf8(b, cp)
         } else {
-            return ps.fail("invalid escape in string")
+            ps.fail("invalid escape in string")
+            return false
         }
         run = ps.at
     }
-    if (!ps.more()) return ps.fail("unterminated string")
+    if (!ps.more()) {
+        ps.fail("unterminated string")
+        return false
+    }
     sbPut(b, unsafe.add(ps.text, run), ps.at - run)
     ps.at++
+    unsafe.store<string>(out, sbString(b))
+    return true
+}
+
+/** A string at the opening quote, as a string value, or null with an error. */
+function parseString(ps: Parser): ptr {
     const v = newValue(kindString)
-    unsafe.store<string>(unsafe.add(v, 16), sbString(b))
-    return v
+    return scanString(ps, unsafe.add(v, 16)) ? v : nil()
+}
+
+/** The byte at `at`, or 0 at the end. */
+function byteAt(ps: Parser, at: int): u8 {
+    return at < ps.end ? unsafe.load<u8>(unsafe.add(ps.text, at)) : 0
+}
+
+/** Where the digits from `at` end. */
+function digitsEnd(ps: Parser, at: int): int {
+    let i = at
+    while (i < ps.end) {
+        const c = unsafe.load<u8>(unsafe.add(ps.text, i))
+        if (c < 0x30 || c > 0x39) break
+        i++
+    }
+    return i
+}
+
+/** Skips a number, or fails with false where it went wrong. */
+function scanNumber(ps: Parser): bool {
+    let at = ps.at
+    if (byteAt(ps, at) === 0x2d) at++
+    let c = byteAt(ps, at)
+    let ok = c >= 0x30 && c <= 0x39
+    if (ok) {
+        at = c === 0x30 ? at + 1 : digitsEnd(ps, at)
+        if (byteAt(ps, at) === 0x2e) {
+            at++
+            const end = digitsEnd(ps, at)
+            ok = end > at
+            at = end
+        }
+    }
+    c = byteAt(ps, at)
+    if (ok && (c === 0x65 || c === 0x45)) {
+        at++
+        c = byteAt(ps, at)
+        if (c === 0x2b || c === 0x2d) at++
+        const end = digitsEnd(ps, at)
+        ok = end > at
+        at = end
+    }
+    ps.at = at
+    return ok
+}
+
+/** The number in the text from `start` to the current place, read by strtod from a NUL-terminated copy. */
+function numberAt(ps: Parser, start: int): f64 {
+    const n = ps.at - start
+    if (n + 1 > ps.scratchSize) {
+        ps.scratchSize = n + 1 < 64 ? 64 : n + 1
+        ps.scratch = unsafe.allocBytes(ps.scratchSize)
+    }
+    unsafe.copy(ps.scratch, unsafe.add(ps.text, start), n)
+    unsafe.store<u8>(unsafe.add(ps.scratch, n), 0)
+    return strtod(ps.scratch, nil())
 }
 
 function parseNumber(ps: Parser): ptr {
     const start = ps.at
-    if (ps.more() && ps.peek() === 0x2d) ps.at++
-    if (!ps.isDigit()) return ps.fail("invalid number")
-    if (ps.peek() === 0x30) ps.at++
-    else while (ps.isDigit()) ps.at++
-    if (ps.more() && ps.peek() === 0x2e) {
-        ps.at++
-        if (!ps.isDigit()) return ps.fail("invalid number")
-        while (ps.isDigit()) ps.at++
-    }
-    if (ps.more() && (ps.peek() === 0x65 || ps.peek() === 0x45)) {
-        ps.at++
-        if (ps.more() && (ps.peek() === 0x2b || ps.peek() === 0x2d)) ps.at++
-        if (!ps.isDigit()) return ps.fail("invalid number")
-        while (ps.isDigit()) ps.at++
-    }
-    // The text, with a NUL after it for strtod, which must not read past it.
-    const n = ps.at - start
-    const copy = unsafe.allocBytes(n + 1)
-    unsafe.copy(copy, unsafe.add(ps.text, start), n)
+    if (!scanNumber(ps)) return ps.fail("invalid number")
     const v = newValue(kindNumber)
-    unsafe.store<string>(unsafe.add(v, 16), unsafe.makeString(copy, n))
-    unsafe.store<f64>(unsafe.add(v, 8), strtod(copy, nil()))
+    unsafe.store<string>(unsafe.add(v, 16), unsafe.makeString(unsafe.add(ps.text, start), ps.at - start))
+    unsafe.store<f64>(unsafe.add(v, 8), numberAt(ps, start))
     return v
 }
 
@@ -447,6 +542,167 @@ function jsonField(object: ptr, key: ptr, len: int): ptr {
             return unsafe.load<ptr>(unsafe.add(items, i * 8))
     }
     return nil()
+}
+
+// ---------------------------------------------------------------------------
+// Reading JSON straight into types: the readers that the compiler generates
+// per type call these on a parser, with no tree of values in between. They
+// only report whether they succeeded; on any failure the text is parsed again
+// into values and decoded from them, which finds the error to report.
+
+/** A parser of a text, for generated readers. */
+//ore:runtime ore_rt_json_reader
+function jsonReader(text: string): Parser {
+    return new Parser(unsafe.stringData(text), 0, text.length)
+}
+
+/** Whether only white space is left. */
+//ore:runtime ore_rt_json_read_done
+function jsonReadDone(ps: Parser): bool {
+    ps.space()
+    return !ps.more()
+}
+
+/** Skips white space before a scalar; false at the end or nested too deeply. */
+function scalar(ps: Parser): bool {
+    ps.space()
+    return ps.more() && ps.depth < 512
+}
+
+/** Reads the `open` bracket of an array or an object, a level deeper. */
+//ore:runtime ore_rt_json_read_open
+function jsonReadOpen(ps: Parser, open: u8): bool {
+    if (!scalar(ps) || ps.peek() !== open) return false
+    ps.at++
+    ps.depth++
+    return true
+}
+
+/** Reads the `close` bracket of an empty array or object, if it is next. */
+//ore:runtime ore_rt_json_read_empty
+function jsonReadEmpty(ps: Parser, close: u8): bool {
+    ps.space()
+    if (!ps.more() || ps.peek() !== close) return false
+    ps.at++
+    ps.depth--
+    return true
+}
+
+/** After an item: 1 for a comma, 0 for the `close` bracket, -1 for anything else. */
+//ore:runtime ore_rt_json_read_next
+function jsonReadNext(ps: Parser, close: u8): int {
+    ps.space()
+    if (!ps.more()) return -1
+    const c = ps.peek()
+    ps.at++
+    if (c === 0x2c) return 1
+    if (c === close) {
+        ps.depth--
+        return 0
+    }
+    return -1
+}
+
+/** Reads a key and the colon after it, putting the key in `ps.key`. */
+//ore:runtime ore_rt_json_read_key
+function jsonReadKey(ps: Parser): bool {
+    ps.space()
+    if (!ps.more() || ps.peek() !== 0x22) return false
+    if (!scanString(ps, ps.key)) return false
+    ps.space()
+    if (!ps.more() || ps.peek() !== 0x3a) return false
+    ps.at++
+    return true
+}
+
+/** Whether the last key read is the `len` bytes at `name`. */
+//ore:runtime ore_rt_json_key_is
+function jsonKeyIs(ps: Parser, name: ptr, len: int): bool {
+    const key = unsafe.load<string>(ps.key)
+    return key.length === len && unsafe.compare(unsafe.stringData(key), name, len) === 0
+}
+
+/** Reads any value as a tree, or null. */
+//ore:runtime ore_rt_json_read_value
+function jsonReadValue(ps: Parser): ptr {
+    return parseValue(ps)
+}
+
+/** Reads `null`, if it is next. */
+//ore:runtime ore_rt_json_read_null
+function jsonReadNull(ps: Parser): bool {
+    return scalar(ps) && ps.peek() === 0x6e && ps.literal("null")
+}
+
+//ore:runtime ore_rt_json_read_bool
+function jsonReadBool(ps: Parser, out: ptr): bool {
+    if (!scalar(ps)) return false
+    if (ps.peek() === 0x74 && ps.literal("true")) {
+        unsafe.store<u8>(out, 1)
+        return true
+    }
+    if (ps.peek() === 0x66 && ps.literal("false")) {
+        unsafe.store<u8>(out, 0)
+        return true
+    }
+    return false
+}
+
+//ore:runtime ore_rt_json_read_string
+function jsonReadString(ps: Parser, out: ptr): bool {
+    return scalar(ps) && ps.peek() === 0x22 && scanString(ps, out)
+}
+
+//ore:runtime ore_rt_json_read_float
+function jsonReadFloat(ps: Parser, out: ptr): bool {
+    if (!scalar(ps)) return false
+    const start = ps.at
+    if (!scanNumber(ps)) return false
+    unsafe.store<f64>(out, numberAt(ps, start))
+    return true
+}
+
+/**
+ * Reads an integer written without a fraction or an exponent, whose
+ * magnitude goes to `out`; returns 1 if it is negative, 0 if not, and -1 for
+ * anything else, which the decoders of values handle.
+ */
+function readInteger(ps: Parser, out: ptr): int {
+    if (!scalar(ps)) return -1
+    const start = ps.at
+    if (!scanNumber(ps)) return -1
+    let i = start
+    const negative = unsafe.load<u8>(unsafe.add(ps.text, i)) === 0x2d
+    if (negative) i++
+    let value: u64 = 0
+    for (; i < ps.at; i++) {
+        const c = unsafe.load<u8>(unsafe.add(ps.text, i))
+        if (c < 0x30 || c > 0x39) return -1
+        const d = u64(c - 0x30)
+        if (value > (18446744073709551615 - d) / 10) return -1
+        value = value * 10 + d
+    }
+    unsafe.store<u64>(out, value)
+    return negative ? 1 : 0
+}
+
+/** Reads an integer in [min, max]. */
+//ore:runtime ore_rt_json_read_int
+function jsonReadInt(ps: Parser, min: i64, max: i64, out: ptr): bool {
+    const sign = readInteger(ps, out)
+    if (sign < 0) return false
+    const m = unsafe.load<u64>(out)
+    if (sign === 1 ? m > 9223372036854775808 : m > 9223372036854775807) return false
+    const n = sign === 1 ? i64(u64(0) - m) : i64(m)
+    if (n < min || n > max) return false
+    unsafe.store<i64>(out, n)
+    return true
+}
+
+//ore:runtime ore_rt_json_read_uint
+function jsonReadUint(ps: Parser, max: u64, out: ptr): bool {
+    const sign = readInteger(ps, out)
+    return sign === 0 && unsafe.load<u64>(out) <= max
 }
 
 // ---------------------------------------------------------------------------

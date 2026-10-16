@@ -1,0 +1,53 @@
+// JSON.parse reads text straight into the type it is given, and falls back to
+// values for what that reading does not cover; both give the same results.
+
+type Point = {
+    x: int
+    y: f64
+}
+
+type Item = {
+    id: u8
+    name: string
+    ok: bool
+    note: string | null
+    at?: Point
+    tags: string[]
+}
+
+function show(text: string) {
+    const r = JSON.parse<Item>(text)
+    if (r instanceof Error) console.log(r.message)
+    else console.log(JSON.stringify(r))
+}
+
+show(`{"id":1,"name":"a","ok":true,"note":null,"tags":[]}`)
+show(` { "tags" : [ "x" , "y" ] , "ok" : false , "name" : "b\\n\\u00e9\\"" , "id" : 2 , "note" : "n" } `)
+show(`{"id":3,"name":"c","ok":true,"note":null,"tags":[],"extra":{"deep":[1,2,{"a":null}]},"at":{"x":-4,"y":2.5}}`)
+show(`{"id":4,"n\\u0061me":"escaped key","ok":true,"note":null,"tags":[]}`)
+// Repeated keys: the last one counts, even when an earlier one has the wrong type.
+show(`{"id":"five","id":5,"name":"d","ok":true,"note":null,"tags":[]}`)
+// Integers written with a fraction or an exponent.
+show(`{"id":6.0,"name":"e","ok":true,"note":null,"tags":[],"at":{"x":1e2,"y":3}}`)
+// Errors, as decoding values reports them.
+show(`{"id":256,"name":"f","ok":true,"note":null,"tags":[]}`)
+show(`{"id":7,"name":"g","ok":true,"tags":[]}`)
+show(`{"id":8,"name":"h","ok":true,"note":null}`)
+show(`{"id":9,"name":"i","ok":true,"note":null,"tags":[1]}`)
+show(`{"id":10,"name":"j","ok":true,"note":null,"tags":[]} x`)
+show(`{"id":11,"name":"k","ok":true,"note":null,"tags":[],}`)
+show(`{"id":12,"name":"l\u0001","ok":true,"note":null,"tags":[]}`)
+show(`{"id":-1,"name":"m","ok":true,"note":null,"tags":[]}`)
+show(`{"id":01,"name":"n","ok":true,"note":null,"tags":[]}`)
+show(`[]`)
+
+const ints = JSON.parse<i64[]>(`[9223372036854775807, -9223372036854775808, 0, -0]`)
+console.log(ints instanceof Error ? ints.message : ints.join(" "))
+const big = JSON.parse<i64[]>(`[9223372036854775808]`)
+console.log(big instanceof Error ? big.message : big.join(" "))
+const floats = JSON.parse<f64[]>(`[0.1, 1e308, -2.5e-3, 5, 1e999]`)
+console.log(floats instanceof Error ? floats.message : floats.join(" "))
+const deep = JSON.parse<int[]>(`${"[".repeat(600)}${"]".repeat(600)}`)
+console.log(deep instanceof Error ? deep.message : deep.length)
+const nested = JSON.parse<int[][]>(`[[1, 2], [], [3]]`)
+console.log(nested instanceof Error ? nested.message : JSON.stringify(nested))
