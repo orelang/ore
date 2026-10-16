@@ -37,6 +37,7 @@ import {
     OP_RESET,
     OP_SAVE,
     OP_SPLIT,
+    OP_STAR,
     OP_WORD,
     unicodeVariant,
 } from "ore:runtime/regexp-syntax"
@@ -133,6 +134,31 @@ class Matcher {
     wordAt(pos: int, before: bool): bool {
         if (!this.program.unicode || !this.program.ignoreCase) return isWordChar(int(this.s[before ? pos - 1 : pos]))
         return isFoldedWordChar(before ? this.decodeBefore(pos) : this.decode(pos))
+    }
+
+    /**
+     * The position after the character that the instruction at `pc` (`CHAR`,
+     * `CHAR_I`, `ANY`, `ANY_ALL`, `CLASS` or `CLASS_I`, forwards) reads at
+     * `pos`, or -1 when it does not match there.
+     */
+    step(pc: int, pos: int): int {
+        const s = this.s
+        if (pos >= s.length) return -1
+        const code = this.program.code
+        const op = code[pc]
+        const b = int(s[pos])
+        if (op === OP_CLASS && b < 128) {
+            return (this.program.ascii[128 * code[pc + 1] + b] === 1) !== (code[pc + 2] === 1) ? pos + 1 : -1
+        }
+        if (op === OP_CHAR && b < 128) return b === code[pc + 1] ? pos + 1 : -1
+        const c = this.decode(pos)
+        let ok = true
+        if (op === OP_CHAR) ok = c === code[pc + 1]
+        else if (op === OP_CHAR_I) ok = this.fold(c) === code[pc + 1]
+        else if (op === OP_ANY) ok = !isLineTerminator(c)
+        else if (op === OP_CLASS || op === OP_CLASS_I)
+            ok = this.inClass(code[pc + 1], c, op === OP_CLASS_I) !== (code[pc + 2] === 1)
+        return ok ? pos + this.width : -1
     }
 
     /** Whether a class (by set) holds a character, ignoring case when asked. */
@@ -276,9 +302,20 @@ class Matcher {
                 pos += this.width
                 pc++
             } else if (op === OP_CLASS || op === OP_CLASS_I) {
-                ok = pos < n && this.inClass(code[pc + 1], this.decode(pos), op === OP_CLASS_I) !== (code[pc + 2] === 1)
-                pos += this.width
+                const next = this.step(pc, pos)
+                ok = next >= 0
+                pos = next
                 pc += 3
+            } else if (op === OP_STAR) {
+                // Each character taken leaves the choice of the exit before it, as `SPLIT` would.
+                const exit = code[pc + 1]
+                for (;;) {
+                    const next = this.step(pc + 2, pos)
+                    if (next < 0) break
+                    this.push(exit, pos)
+                    pos = next
+                }
+                pc = exit
             } else if (op === OP_SPLIT) {
                 this.push(code[pc + 2], pos)
                 pc = code[pc + 1]
@@ -375,6 +412,12 @@ class Matcher {
                 const next = this.s.indexOf(program.prefix, at)
                 if (next < 0) return false
                 at = next
+            } else if (program.first.length > 0 && !sticky) {
+                // Only ASCII bytes are skipped, so `at` stays at the start of a character.
+                const s = this.s
+                const first = program.first
+                while (at < n && first[int(s[at])] === 0) at++
+                if (at >= n) return false
             }
             for (let i = 0; i < this.slots.length; i++) this.slots[i] = -1
             this.sp = 0

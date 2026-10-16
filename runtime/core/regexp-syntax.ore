@@ -46,6 +46,12 @@ export const OP_PROGRESS = 17
 /** The end of the pattern: a match. */
 export const OP_MATCH = 18
 /**
+ * `STAR exit`, then one instruction that reads a character: a greedy loop
+ * of that character, as `SPLIT`s around it would run it, but without going
+ * through the loop's instructions at each character; continues at `exit`.
+ */
+export const OP_STAR = 19
+/**
  * Added to the opcode of an instruction that reads a character (`CHAR`,
  * `CHAR_I`, `ANY`, `ANY_ALL`, `CLASS`, `CLASS_I`, `BACKREF`): it reads the
  * one before the position and moves back, inside a lookbehind.
@@ -110,6 +116,13 @@ export class Program {
     prefix = ""
     /** Whether matches can only start at the start of the input (`^` first, without the `m` flag). */
     anchored = false
+    /**
+     * For each byte, 1 when a match can start with it, to skip the others
+     * fast; empty when any byte could start one or a match can be empty.
+     */
+    first: int[] = []
+    /** For each class, 128 entries: 1 for each ASCII character it holds, before negation. */
+    ascii: int[] = []
     global = false
     ignoreCase = false
     multiline = false
@@ -153,7 +166,64 @@ export function compileRegExp(pattern: string, flags: string): Program {
         return program
     }
     compiler.start(root)
+    for (const ranges of program.sets) for (let c = 0; c < 128; c++) program.ascii.push(inRanges(ranges, c) ? 1 : 0)
+    program.first = firstBytes(program)
     return program
+}
+
+/**
+ * The bytes that a match can start with (see `Program.first`), from the
+ * instructions that can read the first character; empty when unknown. Any
+ * non-ASCII character counts as all the bytes from 0x80 on.
+ */
+function firstBytes(program: Program): int[] {
+    const code = program.code
+    const none: int[] = []
+    const first: int[] = []
+    for (let b = 0; b < 256; b++) first.push(b < 128 ? 0 : 1)
+    const seen: bool[] = []
+    for (let i = 0; i < code.length; i++) seen.push(false)
+    const work: int[] = [0]
+    while (work.length > 0) {
+        const pc = work[work.length - 1]
+        work.pop()
+        if (seen[pc]) continue
+        seen[pc] = true
+        const op = code[pc]
+        if (op === OP_CHAR) {
+            if (code[pc + 1] < 128) first[code[pc + 1]] = 1
+        } else if (op === OP_CHAR_I) {
+            const c = code[pc + 1]
+            if (c < 128) {
+                first[c] = 1
+                first[lowercase(c)] = 1
+            }
+        } else if (op === OP_CLASS) {
+            const negate = code[pc + 2] === 1
+            for (let c = 0; c < 128; c++) if ((program.ascii[128 * code[pc + 1] + c] === 1) !== negate) first[c] = 1
+        } else if (op === OP_STAR) {
+            work.push(pc + 2)
+            work.push(code[pc + 1])
+        } else if (op === OP_SPLIT) {
+            work.push(code[pc + 1])
+            work.push(code[pc + 2])
+        } else if (op === OP_JUMP) {
+            work.push(code[pc + 1])
+        } else if (op === OP_SAVE || op === OP_WORD || op === OP_PROGRESS) {
+            work.push(pc + 2)
+        } else if (op === OP_RESET) {
+            work.push(pc + 3)
+        } else if (op === OP_BOL || op === OP_EOL) {
+            work.push(pc + 1)
+        } else if (op === OP_LOOK) {
+            // A lookaround reads nothing: what follows it reads the first character.
+            work.push(code[pc + 2])
+        } else {
+            // A match that can be empty, a backreference, `.`, or a class ignoring case.
+            return none
+        }
+    }
+    return first
 }
 
 /** Sets the flags of a program; an error message for an invalid or unsupported flag, or "". */
@@ -1708,6 +1778,14 @@ class Compiler {
         groupSpan(atom, span)
         const empty = canBeEmpty(atom)
         for (let i = 0; i < node.min && this.program.code.length <= maxCode; i++) this.iteration(atom, span, -1)
+        const single = atom.kind === K_CHAR || atom.kind === K_CLASS || atom.kind === K_ANY
+        if (node.max === unbounded && node.greedy && !this.back && single) {
+            this.op(OP_STAR)
+            const exit = this.hole()
+            this.emit(atom)
+            this.patch(exit)
+            return
+        }
         if (node.max === unbounded) {
             const loop = this.here()
             const exit = this.split(node.greedy)
