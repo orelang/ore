@@ -1934,9 +1934,10 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             return c.fail(nameId, `Field '${name}' is not a method.`)
         }
     }
-    // Built-in methods take spread tuples apart; `push` keeps spread arrays, already checked.
+    // Built-in methods take spread tuples apart; `push`, `unshift` and `splice` keep spread arrays, already checked.
     if (args.some((arg) => arg.kind === "SpreadElement" && expression(arg).kind !== "SpreadPart")) {
-        const array = type.kind === "array" && name === "push" ? type : null
+        const rest = name === "push" || name === "unshift" || name === "splice"
+        const array = type.kind === "array" && rest ? type : null
         const spread = spreadBuiltin(c, node, scope, value, array)
         if (spread === null) return errorOperand
         return bindAround(spread.locals, methodCall(c, spread.receiver!, spread.node, callee, scope))
