@@ -42,7 +42,8 @@ annotations can be in any of its modules.
 
 Header comments of a run test: `// exit: N`, `// stderr: <substring>`
 (repeatable), `// threads: N` (OS threads for tasks; 1 by default, for a
-stable order). In a diag test, an annotation alone on its line belongs to the
+stable order), `// env: NAME=value` (repeatable; a program runs with
+`FORCE_COLOR=0` unless one sets it). In a diag test, an annotation alone on its line belongs to the
 nearest line above with code or an `//ore:` directive, as `ore fmt` moves
 comments after `{` into the block; every diagnostic must match an
 annotation of its line, and every annotation a diagnostic.

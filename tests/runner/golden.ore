@@ -12,7 +12,7 @@ import { build, BuildOptions, buildIr, BuildResult, compileToIr } from "../../co
 import { NativeCode } from "../../compiler/src/driver/native"
 import { loadProgram } from "../../compiler/src/project/load"
 import { formatDiagnostic } from "../../compiler/src/syntax/diagnostic"
-import { Case, difference, entries, expectRun, filesBelow, header, quote, read, runProgram } from "./cases"
+import { Case, difference, entries, expectRun, filesBelow, header, headers, quote, read, runProgram } from "./cases"
 
 /** Whether Ore implements async yet; until then the async programs are skipped. */
 const asyncImplemented = false
@@ -61,6 +61,13 @@ function runCase(settings: Settings, group: string, dir: string, file: string): 
     buildProgram(settings, path, output)
     const env = new Map<string, string>()
     env.set("ORE_THREADS", header(source, "threads", "1"))
+    // No colors, even when the runner has FORCE_COLOR, unless a header asks for them.
+    env.set("FORCE_COLOR", "0")
+    for (const variable of headers(source, "env")) {
+        const at = variable.indexOf("=")
+        if (at <= 0) fail(`${path}: a header \`// env: ${variable}\` must be NAME=value`)
+        env.set(variable.slice(0, at), variable.slice(at + 1))
+    }
     const run = runProgram(output, env)
     const out = `${path.slice(0, path.length - 4)}.out`
     if (settings.bless) {
