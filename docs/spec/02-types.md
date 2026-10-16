@@ -1094,6 +1094,83 @@ Time and User Timing APIs, whose times are milliseconds as `number`
 - They are written in Ore, in `runtime/core/crypto.ore` and
   `runtime/core/performance.ore`, whose exports are members of the
   namespaces.
+## Events and cancellation
+
+```ts
+class Counter extends EventTarget {
+  count = 0
+  increment(): void {
+    this.count++
+    this.dispatchEvent(new CustomEvent("change", { detail: this.count }))
+  }
+}
+const counter = new Counter()
+counter.addEventListener("change", (event) => {
+  if (event instanceof CustomEvent<int>) console.log(event.detail)
+})
+
+const controller = new AbortController()
+const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)])
+signal.addEventListener("abort", () => console.log("stopped"), { once: true })
+controller.abort()                                  // stopped
+```
+
+`Event`, `CustomEvent`, `EventTarget`, `AbortController` and `AbortSignal`
+are JavaScript's, after the DOM Standard. A target has no parent, so an
+event is only ever at its target:
+
+- `new Event(type, { bubbles, cancelable, composed }?)` has those fields,
+  `timeStamp` (milliseconds from the start of the program to its creation,
+  an `f64`), `isTrusted` (true only for the `abort` events of signals), and
+  `target`, `currentTarget` and `eventPhase`: `Event.AT_TARGET` (2) and the
+  target during a dispatch, `Event.NONE` (0) and a null `currentTarget`
+  after, when `target` stays. `preventDefault()` cancels a `cancelable`
+  event, but not from a passive listener, and `defaultPrevented` tells
+  whether it was; `stopImmediatePropagation()` keeps the listeners after
+  the current one from running; `stopPropagation()` has no other effect;
+  `composedPath()` is `[target]` during a dispatch and `[]` otherwise.
+- `new CustomEvent<T>(type, { detail, ...options })` is an `Event` with a
+  `detail` of type `T`, which a listener reads after `event instanceof
+  CustomEvent<T>`.
+- `addEventListener(type, listener, options?)` adds `listener`, a `(event:
+  Event) => void` or null (which does nothing), unless the same `type`,
+  `listener` and `capture` were added already; `options` is a boolean
+  `capture` or `{ capture, once, passive, signal }`: `once` removes the
+  listener before its first call, and an abort of `signal` removes it (an
+  aborted one adds nothing). `removeEventListener(type, listener,
+  options?)` removes the one with the same `type`, `listener` and
+  `capture`. `dispatchEvent(event)` calls the listeners of `event.type` in
+  the order they were added, `capture` or not, and returns whether no
+  listener canceled it; a listener removed during the dispatch is not
+  called, nor is one added during it, and dispatching an event that is
+  being dispatched panics with `InvalidStateError: The event "type" is
+  already being dispatched`, as JavaScript throws. Classes extend
+  `EventTarget`: `class Emitter extends EventTarget`.
+- `new AbortController()` makes a `signal`, an `AbortSignal`, and
+  `abort(reason?)` aborts it, once: `aborted` becomes true, `reason` is
+  `reason` (any value, an `unknown`; `null` before) or, without one, an
+  `Error` named `"AbortError"` with the message `"This operation was
+  aborted"`; the listeners that a signal removes are removed, then the
+  signal dispatches an `abort` event, which `onabort` also receives (as a
+  listener added where it was first set; setting it to `null` removes it).
+  `throwIfAborted()` panics with the reason of an aborted signal, an
+  `Error` as `Name: message`, as JavaScript throws it; to stop with the
+  reason as a value, test `aborted` and return `reason`.
+- `AbortSignal.abort(reason?)` is a signal aborted already;
+  `AbortSignal.timeout(ms)` one that aborts after `ms` milliseconds (an
+  `int`; a negative one panics with `RangeError`) with an `Error` named
+  `"TimeoutError"`, from the event loop, whose timer does not keep the
+  program running, as in Node; `AbortSignal.any(signals)` one that aborts
+  with the first of `signals` to abort, with its reason, after the
+  listeners of that signal (aborted already if one of them is).
+  `new AbortSignal()` is an error: its constructor is private.
+- Differences from JavaScript: listeners are functions, not objects with
+  `handleEvent`, and get no `this`; `CustomEvent`'s `detail` is required
+  (`new Event(type)` makes an event without one); the reasons are `Error`s,
+  where JavaScript has `DOMException`s; `console.log` prints an event or a
+  signal as an instance of its class. The classes are of the runtime
+  written in Ore (`runtime/core/events.ore`), global names as in
+  JavaScript.
 
 ## Arrays
 

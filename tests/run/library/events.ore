@@ -1,0 +1,96 @@
+// Event, CustomEvent and EventTarget, as JavaScript's globals: listeners in
+// the order they were added, once per callback and capture, options, and
+// canceling.
+
+const target = new EventTarget()
+const first = (event: Event) => console.log("first", event.type, event.eventPhase, event.target === target)
+target.addEventListener("ping", first)
+target.addEventListener("ping", first)
+target.addEventListener("ping", first, true)
+target.addEventListener("ping", (event) => console.log("second", event.currentTarget === target))
+target.addEventListener("pong", () => console.log("pong"))
+console.log(target.dispatchEvent(new Event("ping")))
+target.removeEventListener("ping", first)
+target.dispatchEvent(new Event("ping"))
+target.removeEventListener("ping", first, { capture: true })
+target.dispatchEvent(new Event("ping"))
+target.addEventListener("none", null)
+console.log(target.dispatchEvent(new Event("none")))
+
+// An event before, during and after its dispatch.
+const e = new Event("look", { cancelable: true })
+console.log(e.type, e.bubbles, e.cancelable, e.composed, e.isTrusted, e.defaultPrevented)
+console.log(e.eventPhase, e.target === null, e.currentTarget === null, e.composedPath().length, e.timeStamp >= 0)
+console.log(Event.NONE, Event.CAPTURING_PHASE, Event.AT_TARGET, Event.BUBBLING_PHASE)
+target.addEventListener("look", (event) => {
+    console.log("during", event.eventPhase, event.composedPath().length, event.composedPath()[0] === target)
+})
+target.dispatchEvent(e)
+console.log("after", e.eventPhase, e.target === target, e.currentTarget === null)
+
+// preventDefault cancels a cancelable event, unless the listener is passive.
+const cancel = (event: Event) => event.preventDefault()
+target.addEventListener("cancel", cancel)
+const plain = new Event("cancel")
+console.log(target.dispatchEvent(plain), plain.defaultPrevented)
+const cancelable = new Event("cancel", { cancelable: true })
+console.log(target.dispatchEvent(cancelable), cancelable.defaultPrevented)
+target.removeEventListener("cancel", cancel)
+target.addEventListener("cancel", cancel, { passive: true })
+const passive = new Event("cancel", { cancelable: true })
+console.log(target.dispatchEvent(passive), passive.defaultPrevented)
+
+// once: removed before its call, so that a dispatch from inside does not call it again.
+let calls = 0
+target.addEventListener(
+    "once",
+    () => {
+        calls++
+        target.dispatchEvent(new Event("once"))
+    },
+    { once: true },
+)
+target.dispatchEvent(new Event("once"))
+target.dispatchEvent(new Event("once"))
+console.log("once", calls)
+
+// A listener removed during a dispatch is not called; stopImmediatePropagation stops the others.
+const later = (event: Event) => console.log("never", event.type)
+target.addEventListener("remove", () => {
+    console.log("removing")
+    target.removeEventListener("remove", later)
+})
+target.addEventListener("remove", later)
+target.dispatchEvent(new Event("remove"))
+target.addEventListener("stop", (event) => {
+    console.log("stop 1")
+    event.stopImmediatePropagation()
+})
+target.addEventListener("stop", () => console.log("stop 2"))
+target.dispatchEvent(new Event("stop"))
+
+// CustomEvent carries a detail, which a listener reads after narrowing the event.
+target.addEventListener("tick", (event) => {
+    if (event instanceof CustomEvent<int>) console.log("tick", event.detail + 1)
+    else console.log("not a tick")
+})
+target.dispatchEvent(new CustomEvent("tick", { detail: 41 }))
+target.dispatchEvent(new Event("tick"))
+const named = new CustomEvent<string[]>("names", { detail: ["a", "b"], cancelable: true })
+console.log(named.type, named.detail.join(","), named.cancelable, named.bubbles)
+
+// Classes extend EventTarget.
+class Counter extends EventTarget {
+    count = 0
+
+    increment(): void {
+        this.count++
+        this.dispatchEvent(new CustomEvent("change", { detail: this.count }))
+    }
+}
+const counter = new Counter()
+counter.addEventListener("change", (event) => {
+    if (event instanceof CustomEvent<int>) console.log("count", event.detail, event.target === counter)
+})
+counter.increment()
+counter.increment()

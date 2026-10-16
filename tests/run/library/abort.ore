@@ -1,0 +1,80 @@
+// AbortController and AbortSignal, as JavaScript's globals: the reason, the
+// abort event and onabort, listeners removed by a signal, AbortSignal.abort
+// and AbortSignal.any.
+
+function describe(reason: unknown): string {
+    if (reason instanceof Error) return `${reason.name}: ${reason.message}`
+    if (typeof reason === "string") return `string ${reason}`
+    return reason === null ? "null" : "other"
+}
+
+const controller = new AbortController()
+const signal = controller.signal
+console.log(signal.aborted, signal.onabort === null)
+signal.addEventListener("abort", (event) => {
+    console.log("abort event", event.type, event.isTrusted, event.cancelable, event.target === signal, signal.aborted)
+})
+signal.onabort = (event) => console.log("onabort", event.eventPhase)
+signal.addEventListener("abort", () => console.log("after onabort"))
+signal.throwIfAborted()
+controller.abort()
+console.log(signal.aborted, describe(signal.reason), signal.reason instanceof Error)
+// Again does nothing.
+controller.abort("later")
+console.log(describe(signal.reason))
+
+// A reason of any type, null too.
+const withString = new AbortController()
+withString.abort("stopped")
+console.log(describe(withString.signal.reason))
+const withNull = new AbortController()
+withNull.abort(null)
+console.log(withNull.signal.aborted, describe(withNull.signal.reason))
+const withError = new AbortController()
+withError.abort(new Error("custom"))
+console.log(describe(withError.signal.reason))
+
+// onabort keeps the place where it was first set; null removes it.
+const ordered = new AbortController()
+ordered.signal.addEventListener("abort", () => console.log("listener 1"))
+ordered.signal.onabort = () => console.log("handler a")
+ordered.signal.addEventListener("abort", () => console.log("listener 2"))
+ordered.signal.onabort = () => console.log("handler b")
+ordered.abort()
+const unset = new AbortController()
+unset.signal.onabort = () => console.log("never")
+unset.signal.onabort = null
+unset.abort()
+console.log("unset", unset.signal.onabort === null)
+
+// A listener added with a signal is removed when it aborts, before the abort event.
+const target = new EventTarget()
+const removal = new AbortController()
+target.addEventListener("x", () => console.log("x while not aborted"), { signal: removal.signal })
+removal.signal.addEventListener("abort", () => console.log("own listener"), { signal: removal.signal })
+removal.signal.addEventListener("abort", () => target.dispatchEvent(new Event("x")))
+target.dispatchEvent(new Event("x"))
+removal.abort()
+target.addEventListener("x", () => console.log("never added"), { signal: removal.signal })
+target.dispatchEvent(new Event("x"))
+
+// AbortSignal.abort: aborted already.
+const done = AbortSignal.abort()
+console.log(done.aborted, describe(done.reason))
+console.log(describe(AbortSignal.abort("why").reason))
+
+// AbortSignal.any: aborts with the first of its signals, after their own listeners.
+const a = new AbortController()
+const b = new AbortController()
+const either = AbortSignal.any([a.signal, b.signal])
+const nested = AbortSignal.any([either])
+either.addEventListener("abort", () => console.log("either", a.signal.aborted, nested.aborted))
+nested.addEventListener("abort", () => console.log("nested"))
+a.signal.addEventListener("abort", () => console.log("a", either.aborted, nested.aborted))
+console.log(either.aborted, nested.aborted)
+a.abort("from a")
+b.abort("from b")
+console.log(describe(either.reason), describe(nested.reason))
+const early = AbortSignal.any([new AbortController().signal, AbortSignal.abort("first"), AbortSignal.abort("second")])
+console.log(early.aborted, describe(early.reason))
+console.log(AbortSignal.any([]).aborted)

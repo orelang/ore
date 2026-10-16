@@ -1884,9 +1884,12 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             const r = right(node)
             const found = isIdentifier(r) ? scope.lookupType(r.text) : null
             let target = found !== null ? found.type : null
+            // A class that the check resolved otherwise: `Box<int>`, or `Error` on an `unknown`.
+            const recorded = c.instanceTargets.get(r)
+            if (recorded !== null) target = recorded
             // A generic class without type arguments: its instance among the value's types.
             const generic = found !== null ? found.generic : null
-            if (generic !== null && type !== null) {
+            if (recorded === null && generic !== null && type !== null) {
                 target = null
                 for (const m of membersOf(type)) {
                     const info = m.kind === "struct" ? c.instanceOf.get(m) : null

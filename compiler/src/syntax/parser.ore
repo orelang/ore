@@ -1231,7 +1231,8 @@ export class Parser {
                 continue
             }
             const node = this.operatorNode(operator)
-            const right = this.binary(level)
+            let right = this.binary(level)
+            if (operator.kind === "InstanceOfKeyword" && this.at("LessThanToken")) right = this.instantiation(right)
             left = this.make("BinaryExpression", start).add(left, "left").add(node, "operatorToken").add(right, "right")
         }
         return left
@@ -1380,6 +1381,23 @@ export class Parser {
         }
         this.expect("CloseParenToken")
         return list
+    }
+
+    /**
+     * A class with type arguments on the right of `instanceof`, `x instanceof
+     * Box<int>`, as TypeScript's instantiation expressions; `expression`
+     * itself when `<` is a comparison or starts a call.
+     */
+    private instantiation(expression: Node): Node {
+        if (expression.kind !== "Identifier" && expression.kind !== "PropertyAccessExpression") return expression
+        const node = this.speculate(() => {
+            const types = this.typeArguments()
+            if (this.at("OpenParenToken") || this.at("NoSubstitutionTemplateLiteral") || this.at("TemplateHead"))
+                return null
+            const node = new Node("ExpressionWithTypeArguments", expression.start, expression.start)
+            return this.finish(node.add(expression, "expression").addAll(types, "typeArguments"), expression.start)
+        })
+        return node ?? expression
     }
 
     /** `<T, U>` before `(` in a call; null, consuming nothing, when `<` is a comparison. */

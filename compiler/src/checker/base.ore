@@ -44,6 +44,7 @@ import {
     StructType,
     UnionType,
     addOrder,
+    displayFields,
     arrayOf,
     intRange,
     isNumberLiterals,
@@ -168,6 +169,12 @@ export class Checker {
     errorType: InterfaceType | null = null
 
     basicError: StructType | null = null
+    /**
+     * The class that the right side of an `instanceof` names when it is not
+     * a plain name of the class: `x instanceof Box<int>`, and `Error` for an
+     * `unknown`, which is the Error class. Narrowing reads it.
+     */
+    readonly instanceTargets = new Map<Node, StructType>()
 
     /** Checks of generic instances, run after the other bodies. */
     readonly pending: (() => void)[] = []
@@ -1072,6 +1079,30 @@ export class Checker {
         return new Bind(target, [new BindLocal(local, expr)], new ObjectLit(target, fields))
     }
 
+    /**
+     * An object literal of the object type `from` as a literal of the object
+     * type `target`, which has its fields, of types their values convert to,
+     * and optional ones besides, which are null; null when it does not
+     * convert so.
+     */
+    private objectRetyped(literal: ObjectLit, from: StructType, target: StructType, node: Node): Expr | null {
+        if (from.tuple || target.tuple || from.nominal || target.nominal) return null
+        if (literal.rule !== null || literal.sources.length > 0) return null
+        for (const f of literal.fields) if (target.fields.every((t) => t.name !== f.name)) return null
+        for (const t of target.fields) if (!t.optional && literal.fields.every((f) => f.name !== t.name)) return null
+        const fields: FieldInit[] = []
+        for (const f of literal.fields)
+            for (const t of target.fields)
+                if (t.name === f.name) fields.push(new FieldInit(f.name, this.coerce(new Typed(f.value), t.type, node)))
+        // Optional fields left out are null, after the others in the order the type shows them, as in a literal.
+        for (const t of displayFields(target)) {
+            const ft = t.type
+            if (t.optional && ft.kind === "union" && literal.fields.every((f) => f.name !== t.name))
+                fields.push(new FieldInit(t.name, new NullLit(ft)))
+        }
+        return new ObjectLit(target, fields)
+    }
+
     /** Converts an operand to `target`, reporting an error if it is not assignable. */
     coerce(value: Operand, target: Type, node: Node): Expr {
         switch (value.k) {
@@ -1150,6 +1181,12 @@ export class Checker {
                 if (from.kind === "struct" && target.kind === "struct") {
                     const copy = this.tupleCopy(expr, from, target, node)
                     if (copy !== null) return copy
+                }
+                // An object literal checked before its type was known, as the argument of a generic call
+                // (`new CustomEvent("x", { detail: 1 })`), is a literal of the object type it converts to.
+                if (expr.k === "object" && from.kind === "struct" && target.kind === "struct") {
+                    const literal = this.objectRetyped(expr, from, target, node)
+                    if (literal !== null) return literal
                 }
                 const targetMembers = membersOf(target)
                 // A string literal expression has the literal type its context asks for.

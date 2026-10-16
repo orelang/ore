@@ -123,10 +123,11 @@ import { bigIsNeg, bigLt, bigOf, bigText, bigToI64 } from "./bigint"
 import { checkAwait } from "./async"
 import { checkYield, inferGenerator, isGenerator } from "./generators"
 import { type Checker, structOrInterface } from "./base"
-import { checkCall, checkNew, checkRegExpLiteral } from "./calls"
+import { basicErrorClass, checkCall, checkNew, checkRegExpLiteral } from "./calls"
 import {
     accessor,
     accessorField,
+    baseClass,
     callGetter,
     callSetter,
     checkAccess,
@@ -2595,6 +2596,12 @@ export function instanceOfTarget(
     scope: Scope,
     valueType: Type,
 ): StructType | InterfaceType | null {
+    // `x instanceof Box<int>`: the instance of a generic class that the type arguments name.
+    if (node.kind === "ExpressionWithTypeArguments") {
+        const instance = baseClass(c, node, scope, "The right side of 'instanceof' must be a class or an interface.")
+        if (instance !== null) c.instanceTargets.set(node, instance)
+        return instance
+    }
     const symbol = isIdentifier(node) ? scope.lookupType(node.text) : null
     if (symbol !== null) c.info.definitions.set(node, symbol.decl)
     // A generic class without type arguments, as in TypeScript: the instance of it among the value's types.
@@ -2616,6 +2623,12 @@ export function instanceOfTarget(
     }
     const type = symbol !== null ? symbol.type : null
     if (type !== null && type.kind === "struct" && type.nominal) return type
+    // `Error` on an `unknown` is the class of `new Error(...)` and its subclasses, as in JavaScript.
+    if (type !== null && type.kind === "interface" && type === c.errorType && valueType.kind === "unknown") {
+        const basic = basicErrorClass(c)
+        c.instanceTargets.set(node, basic)
+        return basic
+    }
     if (type !== null && type.kind === "interface") return type
     c.error(node, "The right side of 'instanceof' must be a class or an interface.")
     return null

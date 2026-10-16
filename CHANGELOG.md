@@ -179,6 +179,24 @@ before 1.0, a minor version may change the language.
 - tests/fuzz/regexp also makes patterns with the flags `u` and `v`,
   properties, classes of strings and letters of every case, on Unicode
   subjects.
+- `Event`, `CustomEvent<T>`, `EventTarget`, `AbortController` and
+  `AbortSignal` are global classes, as in JavaScript: listeners with
+  `once`, `passive`, `capture` and `signal`, `dispatchEvent`,
+  `preventDefault`, `stopImmediatePropagation`, `abort(reason)`,
+  `onabort`, `throwIfAborted` (a panic), `AbortSignal.abort`,
+  `AbortSignal.timeout(ms)` (whose timer does not keep the program
+  running, as in Node) and `AbortSignal.any`; classes extend
+  `EventTarget`.
+- `x instanceof Box<int>` names an instance of a generic class, as
+  TypeScript's instantiation expressions, and narrows a value of a base
+  class to it; `x instanceof Error` on an `unknown` narrows to the class of
+  `new Error(...)`.
+- Private members are accessible anywhere inside the declaration of their
+  class, as in TypeScript: on other instances in static methods and static
+  blocks too.
+- An object literal argument of a generic call converts to the object type
+  of its parameter once the type arguments are inferred, optional fields
+  left out: `new CustomEvent("x", { detail: 1 })`.
 
 ## 0.5.0
 

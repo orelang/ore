@@ -174,8 +174,17 @@ export function resolveBase(c: Checker, info: ClassInfo) {
     info.baseState = "done"
 }
 
-/** The class named by an `extends` clause: a class, or an instance of a generic class. */
-function baseClass(c: Checker, ref: Node, scope: Scope): StructType | null {
+/**
+ * The class named by an `extends` clause, or by the right side of `x
+ * instanceof Box<int>`: a class, or an instance of a generic class; `message`
+ * reports another type.
+ */
+export function baseClass(
+    c: Checker,
+    ref: Node,
+    scope: Scope,
+    message: string = "A class can only extend a class.",
+): StructType | null {
     const target = expression(ref)
     const symbol = c.typeSymbol(target, scope)
     if (symbol === null) return null
@@ -211,7 +220,7 @@ function baseClass(c: Checker, ref: Node, scope: Scope): StructType | null {
         c.classInfos.has(basic.id)
     )
         return basic
-    if (type !== null) c.error(target, "A class can only extend a class.")
+    if (type !== null) c.error(target, message)
     return null
 }
 

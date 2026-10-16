@@ -1,0 +1,48 @@
+// Private members of a class are accessible anywhere inside its declaration,
+// as in TypeScript: on other instances, in static methods and in static
+// blocks, whose functions can hand them to the rest of the module.
+
+let peek: ((account: Account) => int) | null = null
+
+class Account {
+    private balance = 0
+
+    static {
+        peek = (account) => account.balance
+    }
+
+    static opened(amount: int): Account {
+        const account = new Account()
+        account.balance = amount
+        return account
+    }
+
+    transfer(to: Account, amount: int): void {
+        this.balance -= amount
+        to.balance += amount
+    }
+}
+
+const a = Account.opened(100)
+const b = Account.opened(5)
+a.transfer(b, 30)
+console.log(balanceOf(a), balanceOf(b))
+
+function balanceOf(account: Account): int {
+    return peek!(account)
+}
+
+// An object literal argument of a generic call takes the object type of its parameter, optional fields too.
+type Options<T> = { label?: string; value: T; count?: int }
+
+function describe<T>(options: Options<T>): string {
+    return `${options.label ?? "none"} ${options.value} ${options.count ?? 0}`
+}
+
+class Box<T> {
+    constructor(readonly options: Options<T>) {}
+}
+
+console.log(describe({ value: 1 }))
+console.log(describe({ value: "x", label: "named" }))
+console.log(new Box({ value: true, count: 2 }).options)

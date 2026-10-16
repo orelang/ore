@@ -1,0 +1,451 @@
+// Events and cancellation, as the globals of JavaScript's hosts after the DOM
+// Standard: the classes `Event`, `CustomEvent`, `EventTarget`,
+// `AbortController` and `AbortSignal`. A target has no parent, so an event
+// is only ever at its target: dispatching runs the target's listeners for
+// its type, in the order they were added.
+//
+// What dispatching changes in an event, what aborting changes in a signal,
+// and making a signal are private to their classes; the static blocks of
+// the classes hand them to the others through the functions below, as
+// friends.
+
+import { weakTimeout } from "ore:runtime/loop"
+import { now } from "ore:runtime/time"
+
+/** The options of `new Event(type, options)`. */
+export type EventInit = { bubbles?: bool; cancelable?: bool; composed?: bool }
+
+/** The options of `new CustomEvent(type, options)`: those of an event, and its `detail`. */
+export type CustomEventInit<T> = { bubbles?: bool; cancelable?: bool; composed?: bool; detail: T }
+
+/** The options of `removeEventListener`, or its `capture` alone. */
+export type EventListenerOptions = { capture?: bool }
+
+/**
+ * The options of `addEventListener`, or its `capture` alone: `once` removes
+ * the listener before its first call, `passive` makes it unable to cancel
+ * the event, and the listener is removed when `signal` aborts.
+ */
+export type AddEventListenerOptions = { capture?: bool; once?: bool; passive?: bool; signal?: AbortSignal }
+
+/** When the program started, in nanoseconds of the monotonic clock: the origin of `timeStamp`. */
+const origin = now()
+
+/** What dispatching changes in an event. */
+class EventState {
+    target: EventTarget | null = null
+    currentTarget: EventTarget | null = null
+    phase = 0
+    /** Whether `preventDefault` canceled it. */
+    canceled = false
+    dispatching = false
+    stopped = false
+    stoppedImmediately = false
+    /** Whether a passive listener runs, whose `preventDefault` does nothing. */
+    passive = false
+    trusted = false
+}
+
+/** What aborting changes in a signal. */
+class AbortState {
+    aborted = false
+    reason: unknown = null
+    /** What runs when it aborts, before the `abort` event: removing listeners added with it. */
+    algorithms: (() => void)[] = []
+    /** Whether it was made by `AbortSignal.any`, following `sources`. */
+    dependent = false
+    sources: AbortSignal[] = []
+    /** The signals of `AbortSignal.any` that follow it. */
+    dependents: AbortSignal[] = []
+    /** The handler of `onabort`, and the listener that calls it while there is one. */
+    handler: ((event: Event) => void) | null = null
+    handlerListener: ((event: Event) => void) | null = null
+}
+
+// The friends, set by the static blocks of the classes.
+let eventStateOf: ((event: Event) => EventState) | null = null
+let listenersOf: ((target: EventTarget) => Listener[]) | null = null
+let abortStateOf: ((signal: AbortSignal) => AbortState) | null = null
+let makeSignal: (() => AbortSignal) | null = null
+
+/**
+ * An event, as JavaScript's `Event`: `new Event("change")`, or `new
+ * Event("submit", { cancelable: true })` for one that listeners can cancel
+ * with `preventDefault()`.
+ */
+export class Event {
+    static readonly NONE = 0
+    static readonly CAPTURING_PHASE = 1
+    static readonly AT_TARGET = 2
+    static readonly BUBBLING_PHASE = 3
+
+    readonly type: string
+    readonly bubbles: bool
+    readonly cancelable: bool
+    readonly composed: bool
+    /** Milliseconds from the start of the program to the event's creation. */
+    readonly timeStamp: f64
+    private readonly eventState = new EventState()
+
+    static {
+        eventStateOf = (event) => event.eventState
+    }
+
+    constructor(type: string, options: EventInit | null = null) {
+        this.type = type
+        this.bubbles = options !== null && options.bubbles === true
+        this.cancelable = options !== null && options.cancelable === true
+        this.composed = options !== null && options.composed === true
+        this.timeStamp = f64(now() - origin) / 1_000_000
+    }
+
+    /** The target it is dispatched to, or was last; null before. */
+    get target(): EventTarget | null {
+        return this.eventState.target
+    }
+
+    /** The target whose listeners run, during a dispatch; null otherwise. */
+    get currentTarget(): EventTarget | null {
+        return this.eventState.currentTarget
+    }
+
+    /** `Event.AT_TARGET` during a dispatch, `Event.NONE` otherwise. */
+    get eventPhase(): int {
+        return this.eventState.phase
+    }
+
+    /** Whether a listener canceled it with `preventDefault()`. */
+    get defaultPrevented(): bool {
+        return this.eventState.canceled
+    }
+
+    /** Whether the runtime dispatched it, as an `AbortSignal`'s `abort`, rather than `dispatchEvent`. */
+    get isTrusted(): bool {
+        return this.eventState.trusted
+    }
+
+    /** Cancels the event, if it is `cancelable` and the listener not passive: `dispatchEvent` then returns false. */
+    preventDefault(): void {
+        if (this.cancelable && !this.eventState.passive) this.eventState.canceled = true
+    }
+
+    /** Stops the event from reaching other targets; a target has no parent, so it has no other effect. */
+    stopPropagation(): void {
+        this.eventState.stopped = true
+    }
+
+    /** Stops the event: the listeners after this one do not run. */
+    stopImmediatePropagation(): void {
+        this.eventState.stopped = true
+        this.eventState.stoppedImmediately = true
+    }
+
+    /** The targets the event goes through: its target during a dispatch, none otherwise. */
+    composedPath(): EventTarget[] {
+        const target = this.eventState.currentTarget
+        return target !== null ? [target] : []
+    }
+}
+
+/** An event with data for its listeners, as JavaScript's `CustomEvent`: `new CustomEvent("tick", { detail: 1 })`. */
+export class CustomEvent<T> extends Event {
+    readonly detail: T
+
+    constructor(type: string, options: CustomEventInit<T>) {
+        super(type, { bubbles: options.bubbles, cancelable: options.cancelable, composed: options.composed })
+        this.detail = options.detail
+    }
+}
+
+/** A listener of a target, and how it was added. */
+class Listener {
+    /** Set when it is removed, so that a dispatch under way does not call it. */
+    removed = false
+
+    constructor(
+        readonly type: string,
+        readonly callback: (event: Event) => void,
+        readonly capture: bool,
+        readonly once: bool,
+        readonly passive: bool,
+    ) {}
+}
+
+/**
+ * What events are dispatched to, as JavaScript's `EventTarget`: listeners
+ * are added for a type of event and called with each event of that type
+ * dispatched. Classes extend it: `class Emitter extends EventTarget`.
+ */
+export class EventTarget {
+    private eventListeners: Listener[] = []
+
+    static {
+        listenersOf = (target) => target.eventListeners
+    }
+
+    /**
+     * Calls `callback` with each event of `type` dispatched to the target,
+     * after the listeners added before; once for the same `type`, `callback`
+     * and `capture`. `options` is an `AddEventListenerOptions` or `capture`.
+     */
+    addEventListener(
+        type: string,
+        callback: ((event: Event) => void) | null,
+        options: AddEventListenerOptions | bool = false,
+    ): void {
+        if (callback === null) return
+        let capture = false
+        let once = false
+        let passive = false
+        let signal: AbortSignal | null = null
+        if (typeof options === "boolean") {
+            capture = options
+        } else {
+            capture = options.capture === true
+            once = options.once === true
+            passive = options.passive === true
+            signal = options.signal
+        }
+        if (signal !== null && signal.aborted) return
+        if (findListener(this, type, callback, capture) !== null) return
+        const listener = new Listener(type, callback, capture, once, passive)
+        this.eventListeners.push(listener)
+        if (signal !== null) abortStateOf!(signal).algorithms.push(() => removeListener(this, listener))
+    }
+
+    /** Removes the listener added with the same `type`, `callback` and `capture`, if any. */
+    removeEventListener(
+        type: string,
+        callback: ((event: Event) => void) | null,
+        options: EventListenerOptions | bool = false,
+    ): void {
+        if (callback === null) return
+        const capture = typeof options === "boolean" ? options : options.capture === true
+        const listener = findListener(this, type, callback, capture)
+        if (listener !== null) removeListener(this, listener)
+    }
+
+    /**
+     * Dispatches `event` to the target: calls the listeners of its type, in
+     * order; whether no listener canceled it. An event being dispatched
+     * panics with `InvalidStateError`, as JavaScript throws.
+     */
+    dispatchEvent(event: Event): bool {
+        const state = eventStateOf!(event)
+        if (state.dispatching) {
+            const message = `The event "${event.type}" is already being dispatched`
+            process.panic(`InvalidStateError: ${message}`)
+        }
+        state.trusted = false
+        return dispatch(this, event)
+    }
+}
+
+function findListener(
+    target: EventTarget,
+    type: string,
+    callback: (event: Event) => void,
+    capture: bool,
+): Listener | null {
+    for (const l of listenersOf!(target))
+        if (l.type === type && l.callback === callback && l.capture === capture) return l
+    return null
+}
+
+function removeListener(target: EventTarget, listener: Listener): void {
+    listener.removed = true
+    const listeners = listenersOf!(target)
+    const i = listeners.indexOf(listener)
+    if (i >= 0) listeners.splice(i, 1)
+}
+
+/** The DOM Standard's dispatch of `event` to `target`, a target without a parent. */
+function dispatch(target: EventTarget, event: Event): bool {
+    const state = eventStateOf!(event)
+    state.dispatching = true
+    state.target = target
+    state.currentTarget = target
+    state.phase = Event.AT_TARGET
+    // The listeners as they are now: those added meanwhile wait for the next dispatch.
+    const listeners = listenersOf!(target).filter((l) => l.type === event.type)
+    for (const l of listeners) {
+        if (state.stopped) break
+        if (l.removed) continue
+        if (l.once) removeListener(target, l)
+        state.passive = l.passive
+        l.callback(event)
+        state.passive = false
+        if (state.stoppedImmediately) break
+    }
+    state.phase = Event.NONE
+    state.currentTarget = null
+    state.dispatching = false
+    state.stopped = false
+    state.stoppedImmediately = false
+    return !state.canceled
+}
+
+/** The reason of an abort without one: an Error named `AbortError`, where JavaScript has a DOMException. */
+function abortError(): unknown {
+    const e = new Error("This operation was aborted")
+    e.name = "AbortError"
+    return e
+}
+
+/** Aborts `signal` with `reason`, then the signals of `AbortSignal.any` that follow it, as the DOM Standard. */
+function signalAbort(signal: AbortSignal, reason: unknown): void {
+    const state = abortStateOf!(signal)
+    if (state.aborted) return
+    state.aborted = true
+    state.reason = reason
+    const dependents: AbortSignal[] = []
+    for (const d of state.dependents) {
+        const ds = abortStateOf!(d)
+        if (ds.aborted) continue
+        ds.aborted = true
+        ds.reason = reason
+        dependents.push(d)
+    }
+    runAbortSteps(signal)
+    for (const d of dependents) runAbortSteps(d)
+}
+
+/** Runs the abort algorithms of `signal`, then dispatches its `abort` event. */
+function runAbortSteps(signal: AbortSignal): void {
+    const state = abortStateOf!(signal)
+    const algorithms = state.algorithms
+    state.algorithms = []
+    for (const run of algorithms) run()
+    const event = new Event("abort")
+    eventStateOf!(event).trusted = true
+    dispatch(signal, event)
+}
+
+/**
+ * Whether an operation should stop, as JavaScript's `AbortSignal`: made by
+ * an `AbortController`, or by `AbortSignal.abort`, `AbortSignal.timeout` and
+ * `AbortSignal.any`. It dispatches an `abort` event once, when it aborts.
+ */
+export class AbortSignal extends EventTarget {
+    private readonly abortState = new AbortState()
+
+    static {
+        abortStateOf = (signal) => signal.abortState
+        makeSignal = () => new AbortSignal()
+    }
+
+    private constructor() {
+        super()
+    }
+
+    /** Whether it aborted. */
+    get aborted(): bool {
+        return this.abortState.aborted
+    }
+
+    /** Why it aborted: the value given to `abort`, an `AbortError` by default; null before. */
+    get reason(): unknown {
+        return this.abortState.reason
+    }
+
+    /** Called with the `abort` event, as a listener added when it was first set. */
+    get onabort(): ((event: Event) => void) | null {
+        return this.abortState.handler
+    }
+
+    set onabort(handler: ((event: Event) => void) | null) {
+        const state = this.abortState
+        state.handler = handler
+        const listener = state.handlerListener
+        if (handler === null && listener !== null) {
+            this.removeEventListener("abort", listener)
+            state.handlerListener = null
+        } else if (handler !== null && listener === null) {
+            const call = (event: Event): void => {
+                const h = state.handler
+                if (h !== null) h(event)
+            }
+            state.handlerListener = call
+            this.addEventListener("abort", call)
+        }
+    }
+
+    /**
+     * Panics with the reason if it aborted, as JavaScript throws it: an
+     * Error as `Name: message`. To stop with the reason as a value, test
+     * `aborted` and return `reason`.
+     */
+    throwIfAborted(): void {
+        const state = this.abortState
+        if (!state.aborted) return
+        const reason = state.reason
+        if (reason instanceof Error) process.panic(reason.toString())
+        if (typeof reason === "string") process.panic(reason)
+        process.panic("The operation was aborted")
+    }
+
+    /** A signal that aborted already, with `reason`. */
+    static abort(reason: unknown = abortError()): AbortSignal {
+        const signal = makeSignal!()
+        signal.abortState.aborted = true
+        signal.abortState.reason = reason
+        return signal
+    }
+
+    /**
+     * A signal that aborts after `ms` milliseconds with an Error named
+     * `TimeoutError`, from the event loop. Its timer does not keep the
+     * program running, as in Node; a negative `ms` panics with `RangeError`.
+     */
+    static timeout(ms: int): AbortSignal {
+        if (ms < 0 || ms > 4294967295) {
+            const range = `It must be >= 0 && <= 4294967295. Received ${ms}`
+            process.panic(`RangeError: The value of "delay" is out of range. ${range}`)
+        }
+        const signal = makeSignal!()
+        weakTimeout(() => {
+            const e = new Error("The operation was aborted due to timeout")
+            e.name = "TimeoutError"
+            signalAbort(signal, e)
+        }, ms * 1_000_000)
+        return signal
+    }
+
+    /** A signal that aborts with the first of `signals` to abort, with its reason; aborted already if one is. */
+    static any(signals: AbortSignal[]): AbortSignal {
+        const result = makeSignal!()
+        const state = result.abortState
+        for (const s of signals) {
+            if (s.abortState.aborted) {
+                state.aborted = true
+                state.reason = s.abortState.reason
+                return result
+            }
+        }
+        state.dependent = true
+        for (const s of signals) {
+            // A signal of `any` is followed through its own sources.
+            const sources = s.abortState.dependent ? s.abortState.sources : [s]
+            for (const source of sources) {
+                if (state.sources.includes(source)) continue
+                state.sources.push(source)
+                source.abortState.dependents.push(result)
+            }
+        }
+        return result
+    }
+}
+
+/** Aborts its `signal`, as JavaScript's `AbortController`: `controller.abort()`. */
+export class AbortController {
+    readonly signal: AbortSignal
+
+    constructor() {
+        this.signal = makeSignal!()
+    }
+
+    /** Aborts the signal with `reason`, an Error named `AbortError` by default; again does nothing. */
+    abort(reason: unknown = abortError()): void {
+        signalAbort(this.signal, reason)
+    }
+}

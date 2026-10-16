@@ -108,6 +108,9 @@ exports, type assertions (Ore converts: `i32(x)`).
   waits for streams).
 - `Headers` from MDN, after the Fetch Standard (done; the constructor
   takes no `Map` or other iterable of pairs).
+- `Event`, `CustomEvent`, `EventTarget`, `AbortController` and
+  `AbortSignal` from MDN, with the DOM Standard's dispatch (done; targets
+  have no parent, listeners are functions).
 - `globalThis`, as in JavaScript: the global names (`globalThis.console`,
   `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
   members of one value, with the type `typeof globalThis`; a module's own

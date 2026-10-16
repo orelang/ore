@@ -1,0 +1,61 @@
+// `instanceof` names an instance of a generic class with its type arguments,
+// as TypeScript's instantiation expressions: a value of the base class
+// narrows to it, and is tested for that instance, where JavaScript, which
+// erases them, tests for the class. On an `unknown`, `Error` is the class of
+// `new Error(...)`.
+
+class Shape {
+    constructor(readonly name: string) {}
+}
+
+class Tagged<T> extends Shape {
+    constructor(
+        name: string,
+        readonly tag: T,
+    ) {
+        super(name)
+    }
+}
+
+function describe(shape: Shape): string {
+    if (shape instanceof Tagged<int>) return `${shape.name} int ${shape.tag + 1}`
+    if (shape instanceof Tagged<string>) return `${shape.name} string ${shape.tag.toUpperCase()}`
+    return `${shape.name} plain`
+}
+
+console.log(describe(new Tagged("a", 41)))
+console.log(describe(new Tagged("b", "tag")))
+console.log(describe(new Tagged("c", true)))
+console.log(describe(new Shape("d")))
+const shapes: Shape[] = [new Tagged<int>("e", 1), new Shape("f")]
+console.log(shapes.filter((s) => s instanceof Tagged<int>).length)
+// A comparison after `<` is not taken for type arguments.
+const a = 1
+const b = 2
+console.log(a < b, a > b)
+
+class NotFound extends Error {
+    constructor(readonly path: string) {
+        super(`${path} not found`)
+        this.name = "NotFound"
+    }
+}
+
+class RangeErrorLike extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = "RangeError"
+    }
+}
+
+function explain(value: unknown): string {
+    if (value instanceof NotFound) return `not found: ${value.path}`
+    if (value instanceof Error) return `${value.name}: ${value.message}`
+    return "not an error"
+}
+
+console.log(explain(new Error("plain")))
+console.log(explain(new NotFound("/x")))
+console.log(explain("text"))
+const unknownError: unknown = new RangeErrorLike("out of range")
+console.log(explain(unknownError))

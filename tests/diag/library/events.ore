@@ -1,0 +1,16 @@
+// Events and signals are typed: listeners take an Event, a CustomEvent its detail, and signals come from controllers.
+const target = new EventTarget()
+target.addEventListener("x", (event: CustomEvent<int>) => console.log(event.detail)) // error: does not match the expected
+target.addEventListener("x", () => {}, { once: 1 }) // error: is not assignable
+target.addEventListener("x", () => {}, "capture") // error: is not assignable
+const custom = new CustomEvent("x") // error: Cannot infer type argument
+const typed = new CustomEvent<string>("x", { detail: 1 }) // error: is not assignable
+const event = new Event("x")
+event.target = target // error: has a getter but no setter
+event.type = "y" // error: read-only
+const signal = new AbortSignal() // error: private
+const timeout = AbortSignal.timeout(1.5) // error: is not assignable
+target.addEventListener("x", (e) => {
+    if (e instanceof CustomEvent) console.log(e.type) // error: is never an instance of 'CustomEvent'
+    if (e instanceof Event<int>) console.log(e.type) // error: is not generic
+})

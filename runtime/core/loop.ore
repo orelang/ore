@@ -185,6 +185,15 @@ export function timeout(callback: () => void, ns: int): Timer {
     return addTimer(new Timer(callback), ns, 0)
 }
 
+/**
+ * Runs `callback` once, `ns` nanoseconds from now or later, if the program
+ * still runs then: the timer does not keep it running, nor a top-level
+ * await waiting, as Node's unref'd timers.
+ */
+export function weakTimeout(callback: () => void, ns: int): Timer {
+    return timeout(callback, ns).unref()
+}
+
 /** Runs `callback` every `ns` nanoseconds until cancelled. */
 export function interval(callback: () => void, ns: int): Timer {
     return addTimer(new Timer(callback), ns, ns > 0 ? ns : 1)

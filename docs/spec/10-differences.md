@@ -34,7 +34,8 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | missing value | `undefined` | `null` |
 | `let x: unknown` | `undefined` | `null` |
 | `typeof x === "number"` on an `unknown` | narrows to `number` | narrows to `f64`; an integer converts |
-| `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it |
+| `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it (`Error` is the class of `new Error(...)`, as `instanceof Error` is in JavaScript) |
+| `x instanceof Box<int>` | tests for the class `Box` (type arguments are erased) | tests for the instance `Box<int>`, and narrows to it |
 | `map.get(missing)` | `undefined` | `null` |
 | a replacer function of `JSON.stringify` leaving a value out | returns `undefined` | returns `JSON.omit` (`null` writes `null`, as in JavaScript); the call returns `string \| null`, where TypeScript declares `string` |
 | `d[k]` of `{ [k: string]: V }` | `V` (`V \| undefined` with `noUncheckedIndexedAccess`) | `V \| null` |
@@ -69,6 +70,10 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `1n < 2`, `1n == 1` | compare the values | compile error: no mixing of bigints and numbers |
 | `BigInt(9007199254740993)` | `9007199254740992n` (the double) | `9007199254740993n` (constants are exact) |
 | `BigInt(x)` of a fraction or bad text, `1n / 0n` | throw | panic (`BigInt(1.5)` of a constant is a compile error) |
+| `signal.throwIfAborted()` | throws the reason | panics with it (test `signal.aborted` and return `signal.reason` instead) |
+| the reason of `abort()`, `AbortSignal.timeout(ms)` | a `DOMException` named `AbortError`, `TimeoutError` | an `Error` with that name |
+| `new CustomEvent(type)` without `detail` | `detail` is `null` | compile error: `detail` is required (or use `new Event(type)`) |
+| `addEventListener(type, { handleEvent })` | an object listener | compile error: a listener is a function |
 | generic bodies | checked once | checked per instance |
 | `setTimeout(f, ms)`, `setInterval`, `setImmediate` | a `Timeout` object (Node) or a number (browsers) | Node's `Timeout`, the class `time.Timer` of `time.timeout`: `ref`, `unref`, `hasRef`, `refresh`, but no `Symbol.toPrimitive` (not a number) |
 | `clearTimeout(id)` | takes a timer, its number, `undefined` or `null` | takes a timer, `null` or nothing |

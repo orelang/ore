@@ -453,6 +453,10 @@ must panic or exit on the other paths ([ORE6078](../errors/ORE6078.md)).
 - `x instanceof Box` names a generic class without type arguments, and
   narrows a union such as `string | Box<int>` or `T | Box<T>` to its
   member of that class.
+  With type arguments, `x instanceof Box<int>` names that instance, as
+  TypeScript's instantiation expressions write it: it narrows a value of a
+  base class of `Box` too, and is true only for a `Box<int>`, where
+  JavaScript, which erases them, tests for the class.
 
 ## Computed types
 

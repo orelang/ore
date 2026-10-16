@@ -1,0 +1,28 @@
+// AbortSignal.timeout aborts from the event loop with a TimeoutError, in
+// order with other timers; its timer alone does not keep the program running.
+
+const short = AbortSignal.timeout(20)
+const long = AbortSignal.timeout(60)
+const never = AbortSignal.timeout(100000)
+const either = AbortSignal.any([long, new AbortController().signal])
+console.log("start", short.aborted)
+short.onabort = () => {
+    const reason = short.reason
+    if (reason instanceof Error) console.log("short", reason.name, reason.message)
+}
+either.addEventListener("abort", () => console.log("either", long.aborted, either.aborted))
+setTimeoutLike(40, () => console.log("timer 40", short.aborted, long.aborted))
+
+function setTimeoutLike(ms: int, callback: () => void): void {
+    async function run() {
+        await time.delay(ms * time.millisecond)
+        callback()
+    }
+    run()
+}
+
+async function main() {
+    await time.delay(80 * time.millisecond)
+    console.log("end", short.aborted, long.aborted, never.aborted)
+}
+main()

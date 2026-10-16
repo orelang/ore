@@ -51,6 +51,7 @@ Rules for this code:
 | `url.ore` | The global classes `URL` and `URLSearchParams`: the WHATWG URL Standard's parser and its state overrides for the setters, IPv4 and IPv6 hosts, percent-encoding, the form encoding of queries, and how `console.log` and `JSON.stringify` write them |
 | `blob.ore` | The global classes `Blob` and `File` of the W3C File API: immutable bytes from strings, `u8[]` and other blobs, slices that share them, `text()` and `bytes()` as promises, and how `console.log` and `JSON.stringify` write them |
 | `headers.ore` | The global class `Headers` of the Fetch Standard: names without case, checked as tokens, values normalized, "sort and combine" for iteration, and how `console.log` writes them |
+| `events.ore` | The global classes `Event`, `CustomEvent`, `EventTarget`, `AbortController` and `AbortSignal`: the DOM Standard's dispatch for targets without a parent, abort algorithms, `AbortSignal.any` and `AbortSignal.timeout` on a weak timer of the loop |
 | `spawn.ore` | Starting programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller: for `process` and `process.command` |
 | `process.ore` | The namespace `process` in Ore: `run`, `output` and `spawn` without options, `Child`, `Output`, `CommandOptions`, the environment |
 | `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |
