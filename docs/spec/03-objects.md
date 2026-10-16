@@ -509,9 +509,11 @@ names them is:
 
 The functions of `Object` take dictionaries, objects and class instances.
 The keys of an object are the names of its fields: of a class instance in
-declaration order (base class first), of an object type in name order, the
-order in which Ore keeps the fields of object types; an optional field that
-is null is left out, as an absent property. Methods are not keys; accessors
+declaration order (base class first), of an object type in the order its type
+was first written, by its declaration or the first literal of that shape
+(`{ b: 1, a: 2 }` has the keys `b`, `a`), which is the order JavaScript
+gives when every object of the shape is built the same way; an optional
+field that is null is left out, as an absent property. Methods are not keys; accessors
 of object literals are not either.
 
 - `Object.keys(o)`, `Object.values(o)` and `Object.entries(o)`: `string[]`,

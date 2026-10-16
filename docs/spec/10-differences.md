@@ -38,7 +38,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `map.get(missing)` | `undefined` | `null` |
 | `d[k]` of `{ [k: string]: V }` | `V` (`V \| undefined` with `noUncheckedIndexedAccess`) | `V \| null` |
 | `d[k] += 1` on a dictionary | `NaN` when missing | compile error: `d[k] = (d[k] ?? 0) + 1` |
-| `Object.keys` of an object type | insertion order of the properties | name order (Ore's order of the fields of object types); class instances in declaration order |
+| `Object.keys`, printing and JSON of an object type | the order each object's properties were added | the order the shape was first written, the same for every object of it |
 | `Object.groupBy(...)` | an object with a null prototype | a dictionary, printed as an object |
 | `Object.freeze(o)` of an object or class instance | freezes it | returns it unchanged; `readonly` fields are the frozen ones |
 | `a.length = n` | truncates, or grows with holes | truncates; a larger `n` panics (no holes) |

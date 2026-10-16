@@ -476,11 +476,10 @@ a set are printed and then `... 20 more items`, and an object inside
 itself is `[Circular *1]`, the outer one marked `<ref *1>`. A value wider
 than 80 columns, counting its indentation, or with more than three levels
 nested in it, is broken into lines indented by 2 spaces, an entry per line;
-arrays of more than 6 short entries are grouped in aligned columns. Two
-things differ from Node: the properties of object types are printed in
-alphabetical order (the order of their fields), and optional properties that
-are `null` are left out, as JavaScript leaves out those not set. Channels
-and C pointers cannot be printed.
+arrays of more than 6 short entries are grouped in aligned columns. One
+thing differs from Node: optional properties that are `null` are left out,
+as JavaScript leaves out those not set. Channels and C pointers cannot be
+printed.
 
 A first string followed by more values is a format, as Node's
 `util.format` reads it: `%s` takes the next value as a string (a string as
@@ -522,9 +521,9 @@ of these can be converted; interfaces and functions cannot. `JSON.parse<T>`
 checks the shape: an integer must be whole and in range, a string literal
 type must match, and a field must be present unless its type includes
 `null`; unknown fields are ignored. Its errors name the place, e.g.
-`JSON: expected a string, got a number at .tags[1]`. Fields of object types
-are written in alphabetical order, fields of classes in declaration order;
-non-finite floats are written as `null`.
+`JSON: expected a string, got a number at .tags[1]`. Fields are written in
+the order of the object's keys (see
+[The namespace Object](03-objects.md#the-namespace-object)); non-finite floats are written as `null`.
 
 Strings and bytes convert as with the globals of JavaScript's hosts, which
 are global names in Ore too, with `u8[]` where JavaScript has a
