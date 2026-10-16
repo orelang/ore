@@ -723,13 +723,11 @@ export function initStatics(c: Checker, decl: Node, scope: Scope, out: Stmt[]) {
     if (generic === null && info === null) return
     const statics: StaticMember[] = []
     if (info !== null) for (const [_, entry] of info.statics) statics.push(entry)
-    const className = nameNode(decl).text
+    // Like a static method, a block or a static field initializer has no `this`.
+    c.staticClass = nameNode(decl).text
     for (const member of members(decl)) {
         if (member.kind === "ClassStaticBlockDeclaration") {
-            // Like a static method, a block has no `this`.
-            c.staticClass = className
             out.push(checkBlock(c, body(member)!, scope))
-            c.staticClass = null
             continue
         }
         if (member.kind !== "PropertyDeclaration" || !hasModifier(member, "StaticKeyword")) continue
@@ -745,6 +743,7 @@ export function initStatics(c: Checker, decl: Node, scope: Scope, out: Stmt[]) {
             if (entry.decl === member && local !== null) initStatic(c, local, entry.decl, entry.name, scope, out)
         }
     }
+    c.staticClass = null
 }
 
 /** Initializes the global of static field `decl`: by its initializer, else by its type's zero value. */
@@ -813,9 +812,10 @@ export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope
         checkFieldInitializers(c, baseInfo, baseInfo.scope)
         for (let i = 0; i < base.fields.length; i++) info.type.fields[i] = base.fields[i]
     }
-    // Initializers run before the constructor body but cannot use `this`.
+    // Initializers run before the constructor body but cannot use `this`; arrow
+    // functions in them capture the instance, as in TypeScript: `h = () => this.x`.
     c.facts = [new Map<string, Type>()]
-    c.fn = new FuncContext(types.void, [], 0, null, null, null, null, false, true)
+    c.fn = new FuncContext(types.void, [], 0, null, null, info.ctorThis, info.type, false, true)
     for (const init of info.inits) {
         let index = -1
         for (let i = 0; i < info.type.fields.length; i++)

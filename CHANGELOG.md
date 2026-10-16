@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Arrow functions in field initializers capture the instance, as in
+  TypeScript: `h = (): int => this.x` works instead of reporting that
+  `this` is only allowed inside a class. At the top level of a module and in
+  its arrow functions, `this` is `null`.
 - `static { ... }` blocks in classes, run where the class is declared, in
   order with the static field initializers.
 - Methods can be called on a union of classes when every class has the

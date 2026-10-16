@@ -202,6 +202,11 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         const fn = c.fn
         const self = fn !== null ? fn.thisLocal : null
         const inStatic = c.staticClass
+        // `this` directly in a field initializer; arrow functions there capture it.
+        if (fn !== null && fn.fieldInit && fn.closure === null)
+            return c.fail(node, "Field initializers cannot use 'this'.")
+        // At the top level of a module and in its arrow functions, `this` is null (`undefined` in JavaScript).
+        if (self === null && fn !== null && fn.nullThis && inStatic === null) return typed(new NullLit(types.null))
         if (self === null)
             return c.fail(
                 node,

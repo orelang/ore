@@ -79,7 +79,13 @@
   fields (see [Interfaces](#interfaces)).
 - `new C(...)` allocates an instance, assigns parameter properties, runs
   field initializers in order, then the constructor body. Field initializers
-  cannot use `this`.
+  cannot use `this` directly, but arrow functions in them capture the
+  instance, as in TypeScript: `onClick = () => this.count++` keeps `this`
+  when the function is detached from the object.
+- Outside classes, at the top level of a module and in its arrow functions,
+  `this` is `null` (JavaScript's `undefined`), of type `null`. In a function
+  declaration or expression outside a class it is an error
+  ([ORE3003](../errors/ORE3003.md)).
 - A field without an initializer starts at its zero value (`0`, `false`,
   `""`, `[]`, a new map, or `null` for a type that includes it). A field of a
   type without a zero value (class, object or interface) must be assigned at

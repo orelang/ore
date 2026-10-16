@@ -1526,7 +1526,7 @@ export function checkClosure(
     const captures: Func[] = [func]
     if (isArrow && outerFn !== null && outerFn.thisCaptures !== null)
         for (const f of outerFn.thisCaptures) captures.push(f)
-    c.fn = new FuncContext(
+    const inner = new FuncContext(
         result,
         [],
         0,
@@ -1535,6 +1535,9 @@ export function checkClosure(
         self !== null ? self : isArrow && outerFn !== null ? outerFn.thisLocal : null,
         self !== null ? null : isArrow && outerFn !== null ? outerFn.cls : null,
     )
+    // An arrow function keeps a null `this` too.
+    inner.nullThis = self === null && isArrow && outerFn !== null && outerFn.nullThis
+    c.fn = inner
     // Default values, computed in the closure when their arguments are null, before the patterns.
     const start: Stmt[] = []
     for (let k = 0; k < defaultNodes.length; k++) {
