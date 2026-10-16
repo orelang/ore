@@ -3,10 +3,10 @@
 </p>
 
 <p align="center">
-  <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-C9A18B?labelColor=293239&style=for-the-badge">
-  <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/orelang/ore?label=release&color=C9A18B&cacheSeconds=3600&labelColor=293239&style=for-the-badge"></a>
-  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-C9A18B?labelColor=293239&style=for-the-badge">
-  <a href="https://github.com/orelang/ore/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/orelang/ore/release.yml?label=release%20build&color=C9A18B&labelColor=293239&style=for-the-badge"></a>
+  <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-D1A994?labelColor=293239&style=for-the-badge">
+  <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/orelang/ore?label=release&color=D1A994&cacheSeconds=3600&labelColor=293239&style=for-the-badge"></a>
+  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-D1A994?labelColor=293239&style=for-the-badge">
+  <a href="https://github.com/orelang/ore/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/orelang/ore/release.yml?label=release%20build&color=D1A994&labelColor=293239&style=for-the-badge"></a>
 </p>
 
 <p align="center">
