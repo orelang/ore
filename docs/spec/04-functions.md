@@ -121,9 +121,10 @@ end, and ranges are clamped as `slice` clamps them):
   the result's type depends on it), `toReversed()`,
   `toSorted(compare?)`, `toSpliced(start?, count?, ...items)`,
   `with(index, value)` (an index out of range panics with `Invalid index :
-  i`), and `join(separator = ",")`. `entries()`, `keys()` and `values()`
-  return arrays (of `[int, T]` tuples, of indices, a copy) until Ore has
-  iterators.
+  i`), and `join(separator = ",")`.
+- Iterators: `values()`, `keys()` and `entries()` (`[int, T]` tuples)
+  return lazy iterators, as in JavaScript (see
+  [Generators and iteration](#generators-and-iteration)).
 - In place, returning the array: `reverse()`, `sort(compare?)`,
   `fill(value, start?, end?)` and `copyWithin(target, start?, end?)`;
   `push`, `pop`, `shift`, `unshift` and `splice` as in
@@ -133,12 +134,75 @@ end, and ranges are clamped as `slice` clamps them):
 value and strings by bytes (JavaScript sorts everything as strings).
 
 `Array.from(items, mapFn?)` makes an array of the elements of an array (a
-copy), the characters of a string, the values of a set or the `[key, value]`
-entries of a map, passed through `mapFn(value, index)` when it is given;
+copy), the characters of a string, the values of a set, the `[key, value]`
+entries of a map or the values of any other iterable, passed through `mapFn(value, index)` when it is given;
 `Array.from({ length: n }, (_, i) => ...)` makes `n` elements by the
 function, given null and the index. `Array.of(...items)` is an array of its
 arguments, typed as an array literal. `Array.isArray(x)` is known from the
 type of `x`, and tested at run time for a union.
+
+## Generators and iteration
+
+The iteration protocol is JavaScript's. A value is iterable when it has a
+`[Symbol.iterator]()` method that returns an iterator, an object whose
+`next()` returns an `IteratorResult<T, TReturn>`:
+`{ value: T; done: false } | { value: TReturn; done: true }`, a
+discriminated union narrowed by `done` (`if (!r.done) use(r.value)`).
+`Symbol.iterator`, like `Symbol.dispose`, is a well-known symbol usable
+as a computed method name of classes and interfaces, and in
+`x[Symbol.iterator]()`; there are no other symbols.
+
+- The global interfaces `Iterator<T, TReturn = void, TNext = null>`
+  (`next()`), `Iterable<T>` (`[Symbol.iterator](): Iterator<T>`) and
+  `IterableIterator<T, TReturn = void, TNext = null>` (both, its
+  `[Symbol.iterator]()` returning an `IterableIterator`) describe them.
+  Interfaces are matched exactly (see [Interfaces](03-objects.md#interfaces)):
+  a class is an `Iterable<T>` when its `[Symbol.iterator]()` is declared to
+  return `Iterator<T>`. Ore writes `null` where TypeScript has `undefined`,
+  so `TNext` defaults to `null`, and a void `TReturn` is `null` at run
+  time. Iterator helpers (`map`, `filter`, `toArray` of ES2025) are not
+  supported yet.
+- `for (const x of iterable)`, `[...iterable]`, `Array.from(iterable)`,
+  `new Set(iterable)`, `new Map(iterable)` (of `[key, value]` tuples) and
+  `yield* iterable` take any iterable: arrays, strings (`[...s]` and
+  `Array.from(s)` give the characters as strings, while `for...of` over a
+  string gives runes, see [Strings](02-types.md#strings)), maps (their
+  entries), sets, generators and objects with `[Symbol.iterator]()`.
+  `for...of` calls `next()` until it is done; when the loop is left early
+  (`break`, `return`, a labeled `continue`), it calls the iterator's
+  `return()` if it has one without required arguments, as JavaScript does.
+- `array.values()`, `keys()` and `entries()`, `map.keys()`, `values()`
+  and `entries()`, and `set.values()`, `keys()` and `entries()` return
+  lazy iterators, which are iterable too: an array iterator reads the
+  length at each step, a map or set iterator visits the entries in
+  insertion order as it reaches them, those added meanwhile included, and
+  a finished iterator stays done.
+- A generator function `function* f(): Generator<T, TReturn, TNext>`, a
+  generator method `*m()` (also `*[Symbol.iterator]()`) or a generator
+  function expression returns a `Generator<T, TReturn = void, TNext = null>`
+  without running its body; the declared result type may also be
+  `Iterator<T, TReturn>` or `IterableIterator<T, TReturn>`, and is
+  required (it is not inferred from the `yield`s). `next()` runs the body
+  until its next `yield value` (`{ value, done: false }`) or its end
+  (`{ value: returned, done: true }`); `next(value)` makes `value` the result
+  of the `yield` the body waits at (the value of the first `next` is
+  ignored, and a `yield` resumed by a `next()` without a value is `null`,
+  which panics when `TNext` does not include it). `return(value)` ends the
+  generator as if its body returned `value` at that `yield`, without
+  running the rest of it. `yield* other` yields the values of another
+  iterable; of a generator, it passes on the values sent with `next` and
+  its value is the generator's return value. Calling `next` of a generator
+  from its own body panics with `TypeError: Generator is already running`.
+  A generator is iterable once: its `[Symbol.iterator]()` returns itself.
+- Ore has no exceptions, so generators have no `throw()`, and a panic in
+  the body ends the program. Async generators (`async function*`) are not
+  supported ([ORE5013](../errors/ORE5013.md)).
+- A generator runs its body on a fiber of its own, as async functions do
+  (see [concurrency](06-concurrency.md)): `next` switches to it and `yield`
+  switches back, a step costing two task switches. A generator that is not
+  run to its end keeps its fiber (a parked stack) until it finishes or
+  `return()` ends it; `for...of` ends it on an early exit, and spread and
+  `Array.from` run it to the end.
 
 ## Resources
 

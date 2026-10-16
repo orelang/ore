@@ -38,7 +38,7 @@ with `install.sh`, Homebrew and `ore update`) are done.
 
 What TypeScript has and Ore should, before the GC changes the runtime under
 it. Not gaps but choices (Go's semantics): `any`, `undefined`, `var`, enums,
-namespaces, exceptions, generators, `delete`, `in`, `for...in`, default
+namespaces, exceptions, `delete`, `in`, `for...in`, default
 exports, type assertions (Ore converts: `i32(x)`).
 
 - Expressions and statements, in order:
@@ -218,7 +218,14 @@ an LLVM coroutine. Left:
 - `Promise.withResolvers`, `await` of a union of a promise and other values.
 - `task.sleep(ms)` and `task.after(ms)` still count milliseconds: to
   nanoseconds, as the rest of `time`.
-- Generators and iterators on the same fibers.
+- Generators and iterators on the same fibers (done). A generator step is
+  two task switches through the scheduler (about 1.4 µs on a loaded
+  machine for `for...of` over a generator); a direct switch between the
+  caller and the generator's fiber, or compiling generators to state
+  machines, would make it tens of nanoseconds. A generator dropped before
+  its end keeps a parked stack until the program ends: the collector could
+  free the fibers of unreachable generators. Iterator helpers (ES2025
+  `map`, `filter`, `toArray`...) and async generators.
 
 ## Later
 

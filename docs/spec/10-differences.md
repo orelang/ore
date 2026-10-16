@@ -34,7 +34,8 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it |
 | `map.get(missing)` | `undefined` | `null` |
 | `a.length = n` | truncates, or grows with holes | truncates; a larger `n` panics (no holes) |
-| `map.keys()`, `set.values()`, `array.entries()` | iterator | array |
+| `generator.next()` after the generator returned `v` | `{ value: undefined, done: true }` | `{ value: v, done: true }` (the value of `return()` after it) |
+| `generator.throw(e)` | throws `e` at the `yield` | does not exist (no exceptions) |
 | `s.charCodeAt(i)`, `s.slice(i)`, other string positions | UTF-16 code units | bytes of UTF-8 (`charCodeAt` is the byte at `i`) |
 | `s.localeCompare(t)` | the locale's collation | code point order |
 | `new Array(3)` | three holes | three zero values of the element type |
