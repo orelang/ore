@@ -1,0 +1,35 @@
+// node: a method taken without a call is bound to its object; a converted function value is a new function
+// A function value converted to a function type with more parameters is wrapped.
+
+class Counter {
+    count = 0
+    bump(): void {
+        this.count++
+    }
+}
+
+function twice(handler: (n: number) => void) {
+    handler(1)
+    handler(2)
+}
+
+// A method taken without a call is bound: it converts too.
+const counter = new Counter()
+twice(counter.bump)
+console.log("count", counter.count)
+
+// A top-level function converts to the same function each time.
+function show(): void {
+    console.log("show")
+}
+const a: (n: number) => void = show
+const b: (n: number) => void = show
+console.log(a === b)
+
+// Other function values convert to a new function at each conversion: keep the converted one.
+const quiet = (): void => {}
+const c: (n: number) => void = quiet
+const d: (n: number) => void = quiet
+console.log(c === d, c === c)
+const handlers: ((n: number) => void)[] = [c]
+console.log(handlers.indexOf(c), handlers.indexOf(d))

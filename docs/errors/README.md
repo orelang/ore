@@ -419,6 +419,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5066](ORE5066.md) | Overload signatures are not supported in interfaces yet. |
 | [ORE5067](ORE5067.md) | An optional method of an interface cannot be generic. |
 | [ORE5068](ORE5068.md) | Member '…' is a different generic method in each part of the intersection. |
+| [ORE5069](ORE5069.md) | Field '…' is used before its type is known: its initializer uses '…', declared further down. Annotate the field. |
 
 ## ORE6xxx: Declarations, functions, generics, modules and C
 

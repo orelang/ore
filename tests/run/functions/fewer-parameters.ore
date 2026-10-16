@@ -1,0 +1,65 @@
+// A function value with fewer parameters converts to a function type with more: the extra arguments are dropped.
+
+class Ping {
+    constructor(readonly name: string) {}
+}
+
+function listen(handler: (event: Ping, at: number) => void) {
+    handler(new Ping("ping"), 1)
+}
+
+// A function literal kept in a variable and a top-level function.
+const quiet = (): void => console.log("quiet")
+listen(quiet)
+function named(event: Ping): void {
+    console.log("named", event.name)
+}
+listen(named)
+
+// The callbacks of generic methods, which pass the index and the array too.
+function double(n: number): number {
+    return n * 2
+}
+const numbers: number[] = [1, 2, 3, 4, 5]
+console.log(numbers.map(double))
+const isOdd = (n: number): boolean => n % 2 === 1
+console.log(numbers.filter(isOdd))
+// A callback with a wider parameter.
+const tag = (v: number | string): string => `<${v}>`
+console.log(numbers.map(tag))
+const twice = ["one", "three"].map((s: string): string => s + s)
+console.log(twice)
+
+// The arguments are evaluated, in order, even those the function does not take.
+function arg(n: number): number {
+    console.log("argument", n)
+    return n
+}
+const two: (a: number, b: number) => number = double
+console.log(two(arg(1), arg(2)))
+
+// A result converts to a wider expected one: to `unknown`, boxed, or to a union.
+function key(k: string, v: unknown): string {
+    return k
+}
+const replacer: (k: string, v: unknown) => unknown = key
+console.log(replacer("name", 1))
+const maybe: (n: number) => number | null = double
+console.log(maybe(21))
+const wide: (n: number) => number | string = double
+console.log(wide(4))
+
+// A parameter may be wider than the expected one: a subclass's instance is an instance of its base.
+class Loud extends Ping {}
+const loud: (event: Loud) => void = named
+loud(new Loud("loud"))
+
+// A top-level function converts to the same function each time, so the conversions are `===`.
+const first: (event: Ping, at: number) => void = named
+const second: (event: Ping, at: number) => void = named
+console.log(first === second)
+
+// In a union with null, as an optional callback.
+let optional: ((event: Ping, at: number) => void) | null = null
+optional = named
+if (optional !== null) optional(new Ping("optional"), 2)

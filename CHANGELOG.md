@@ -267,6 +267,20 @@ before 1.0, a minor version may change the language.
   directly). ORE5055 now reports calls whose instances need ever larger
   type arguments; ORE5067 an optional generic method, ORE5068 two generic
   methods of one name in an intersection.
+- A function value converts to a function type with more parameters, as in
+  TypeScript: `target.addEventListener("x", f)` with `f` taking no
+  parameters, `xs.map(double)` with `double(n: int)`, for named functions,
+  function values and bound methods alike; the extra arguments are
+  dropped. Its result may be narrower than the expected one, boxed into
+  `unknown` or widened to a union (a `JSON.stringify` replacer `(k: string,
+  v: unknown): string`), and its parameters wider, a base class for a
+  subclass or `unknown` for any value. A top-level function converts to the
+  same function each time, so the conversions are `===`.
+- Field initializers use the module's variables, declared before or after
+  the class, as they run when an instance is constructed: they were checked
+  before the top-level code and could not find them. A field without an
+  annotation has its type once the variables its initializer uses are
+  declared; top-level code using it before is an error (ORE5069).
 
 ## 0.5.0
 

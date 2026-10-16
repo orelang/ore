@@ -1,0 +1,32 @@
+// A function converts to a function type only when the arguments convert to its parameters and its result to the expected one.
+
+function show(n: int): void {
+    console.log(n)
+}
+const strings: (s: string) => void = show // error: Type '(i64) => void' is not assignable to type '(string) => void'.
+
+// More parameters than the function type gives.
+function pair(a: int, b: int): int {
+    return a + b
+}
+const one: (a: int) => int = pair // error: Type '(i64, i64) => i64' is not assignable to type '(i64) => i64'.
+
+// A void result where one is expected, and a result wider than the expected one.
+function nothing(): void {}
+const counted: () => int = nothing // error: Type '() => void' is not assignable to type '() => i64'.
+function maybe(): string | null {
+    return null
+}
+const text: () => string = maybe // error: Type '() => null | string' is not assignable to type '() => string'.
+
+// A parameter narrower than the expected one: the function cannot take every argument.
+function onlyInt(n: int): int {
+    return n
+}
+const either: (v: int | string) => int = onlyInt // error: Type '(i64) => i64' is not assignable to type '(i64 | string) => i64'.
+
+// An optional parameter is not left out for a function type that has fewer.
+function optional(a: int, b?: int): int {
+    return a
+}
+const fewer: (a: int) => int = optional // error: Type '(i64, i64 | null) => i64' is not assignable to type '(i64) => i64'.

@@ -31,6 +31,11 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | generic methods of interfaces | one function for any type arguments | an instance per type arguments that the program calls through the interface; checked against the interface's per instance; an object literal's is not a property (not printed, listed or spread) |
 | `JSON.stringify(a)` of an `A` holding a `B` | the fields of `B` | the fields of `A` (the static type) |
 | `===` on strings | value | value |
+| `===` on a function converted to a function type with more parameters, wider ones or a wider result | the same function | a new function wrapping it at each conversion, but for a top-level function, which converts to the same one each time: keep the converted value to remove a listener |
+| `obj.method` taken without a call | unbound (`this` is lost) | bound to `obj` |
+| a module variable read, by a function or a field initializer, before its declaration runs | throws a `ReferenceError` | its zero value |
+| a field without an annotation whose initializer uses a module variable declared below, used by top-level code before that declaration | the variable's type | compile error ([ORE5069](../errors/ORE5069.md)): annotate the field |
+| the default value of a parameter without an annotation using a module variable or constant | its type | compile error ("Cannot find name"): annotate the parameter (an annotated one sees every declaration of the module) |
 | integer literal `5` | `number` | `int` |
 | missing value | `undefined` | `null` |
 | `let x: unknown` | `undefined` | `null` |

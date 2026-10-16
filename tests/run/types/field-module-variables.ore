@@ -1,0 +1,48 @@
+// Field initializers run when an instance is constructed: they use the module's variables, declared before or after the class.
+
+let nextId: number = 0
+const names = new Map<number, string>()
+
+interface Tagged {
+    tags: string[]
+}
+
+class Item implements Tagged {
+    id: number = nextId++
+    label = `item ${nextId}`
+    note: string = suffix + "!"
+    // A field without an annotation takes its type from a variable declared after the class.
+    tags = defaultTags.slice()
+    describe = (): string => `${this.label}${suffix}`
+    constructor() {
+        names.set(this.id, this.label)
+    }
+}
+
+class Special extends Item {
+    special: boolean = specialOn
+    rank = nextId * 10
+}
+
+class Box<T> {
+    serial: number = nextId * 100
+    constructor(readonly value: T) {}
+}
+
+const suffix = ["?"].join("")
+const defaultTags: string[] = ["new"]
+let specialOn = true
+
+const a = new Item()
+const b = new Item()
+console.log(a.id, a.label, a.note, b.id, b.label, a.tags, a.describe())
+a.tags.push("used")
+console.log(a.tags, b.tags)
+const s = new Special()
+console.log(s.id, s.special, s.rank, s.tags.length)
+specialOn = false
+console.log(new Special().special)
+console.log(new Box<string>("x").serial)
+console.log([...names.entries()])
+const tagged: Tagged = a
+console.log(tagged.tags)

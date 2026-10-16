@@ -99,6 +99,14 @@
   cannot use `this` directly, but arrow functions in them capture the
   instance, as in TypeScript: `onClick = () => this.count++` keeps `this`
   when the function is detached from the object.
+- Field initializers can use any variable of their module, declared before
+  or after the class (`id: int = nextId++`), as they run when an instance is
+  constructed; one constructed before a variable's declaration runs reads
+  its zero value, as a function does (see
+  [Programs](01-programs.md)). A field without an annotation has the type
+  of its initializer, known once the top-level code has declared the
+  variables it uses: top-level code before that cannot use the field
+  ([ORE5069](../errors/ORE5069.md)).
 - Outside classes, at the top level of a module and in its arrow functions,
   `this` is `null` (JavaScript's `undefined`), of type `null`. In a function
   declaration or expression outside a class it is an error

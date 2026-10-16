@@ -138,6 +138,7 @@ import {
     genericMethod,
     genericStaticField,
     staticMember,
+    waitingField,
 } from "./classes"
 import {
     type AssignTarget,
@@ -1300,6 +1301,7 @@ function memberTarget(c: Checker, node: Node, object: Expr, nameId: Node, name: 
         }
         defineMember(c, nameId, struct, name)
         if (!checkAccess(c, struct, field.private, name, nameId)) return null
+        if (waitingField(c, struct, name, nameId)) return null
         // A constructor may initialize the read-only fields of its own instance.
         const fn = c.fn
         const initializing =
@@ -2502,6 +2504,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
         defineMember(c, nameNode_, type, name)
         if (field !== null) {
             if (!checkAccess(c, type, field.private, name, nameNode_)) return errorOperand
+            if (waitingField(c, type, name, nameNode_)) return errorOperand
             return typed(new FieldGet(field.type, value, name))
         }
         const method = findMethod(type, name)

@@ -8,6 +8,24 @@
   function expressions and nested function declarations. `===` compares
   identity; a function type can be in a union with `null`, and `f?.(x)`
   calls it unless it is null.
+- A function value converts to a function type it does not have exactly,
+  as in TypeScript, when that type's arguments convert to its parameters
+  and its result converts to that type's result (or that result is
+  `void`): it may declare fewer parameters (`(): void` where `(event:
+  Event) => void` is expected, or `xs.map(double)` with `double(n: int)`,
+  where `map` passes the index and the array too), wider ones (`(v: int |
+  string) => void` for `(v: int) => void`, a base class for a subclass,
+  `unknown` for any value), and return a narrower result (`(k: string, v:
+  unknown) => string` for `=> unknown`, boxed, or `=> int` for `=> int |
+  null`). The value is wrapped in a function of the expected type, which
+  receives the arguments, evaluated in order by the caller, drops those
+  past the function's parameters, converts the others and the result. A
+  top-level function converts to the same function each time, so
+  conversions to one type are `===`; other values (function literals kept
+  in variables, methods taken without a call) to a new function at each
+  conversion, so that `removeEventListener` needs the converted value kept
+  (`const onX: (e: Event) => void = handler`). Optional parameters (`b?:
+  T`) are given only by a function type with as many parameters.
 - Closures capture variables by reference, as in JavaScript: changes are
   seen by the closure and by the enclosing function. Each iteration of
   `for (let ...)` has its own copy of the loop variable.

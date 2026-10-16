@@ -19,9 +19,11 @@ import {
     namespaceNames,
 } from "./builtins"
 import {
+    checkAllInitializers,
     checkClassBodies,
     checkFieldInitializers,
     checkImplements,
+    checkWaitingInitializers,
     declareClass,
     declareClassMembers,
     declareInterface,
@@ -204,9 +206,10 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
     checkExports(c, modules)
     typeJsonImports(c)
 
-    // Pass 3: constants in module and source order, field initializers, the
-    // top-level code of each module, which declares its global variables, then
-    // bodies, which can use the globals.
+    // Pass 3: constants in module and source order, the initializers of fields
+    // without annotations, the top-level code of each module, which declares its
+    // global variables, then the other field initializers and bodies, which can
+    // use the globals.
     const constants = new Set<Node>()
     each((stmt, m) => {
         if (stmt.kind === "EnumDeclaration" || stmt.kind === "ModuleDeclaration")
@@ -219,7 +222,10 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
             constants.add(stmt)
     })
     for (const info of c.classes) checkFieldInitializers(c, info, info.scope)
-    for (const info of c.classes) checkImplements(c, info, info.scope)
+    // Classes with fields that wait for module variables implement their interfaces once those have types.
+    const waited = c.waitingClasses.slice()
+    for (const info of c.classes) if (!waited.some((x) => x === info)) checkImplements(c, info, info.scope)
+    c.variablesDeclared = () => checkWaitingInitializers(c)
     for (const m of modules) {
         checkTopLevel(
             c,
@@ -231,6 +237,10 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
                 stmt.kind !== "ModuleDeclaration",
         )
     }
+    c.variablesDeclared = null
+    // The other field initializers, which run when an instance is constructed, see every module variable.
+    for (const info of c.classes) checkAllInitializers(c, info)
+    for (const info of c.classes) if (waited.some((x) => x === info)) checkImplements(c, info, info.scope)
     checkExportsDeclared(c, modules)
     for (const b of bodies) if (!skipped.has(c.sourceOf(b.decl))) checkFunctionBody(c, b.decl, b.func, b.scope)
     for (const info of c.classes) if (!skipped.has(c.sourceOf(info.decl))) checkClassBodies(c, info, info.scope)

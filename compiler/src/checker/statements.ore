@@ -416,8 +416,12 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
     const fn = c.fn!
     const k = stmt.kind
     if (k === "Block") out.push(checkBlock(c, stmt, scope))
-    else if (k === "VariableStatement") checkVariables(c, declarationList(stmt), scope, out, stmt)
-    else if (k === "ExpressionStatement") {
+    else if (k === "VariableStatement") {
+        checkVariables(c, declarationList(stmt), scope, out, stmt)
+        // Field initializers that wait for module variables are checked once those are declared.
+        const declared = c.variablesDeclared
+        if (scope === c.globals && declared !== null && c.waitingClasses.length > 0) declared()
+    } else if (k === "ExpressionStatement") {
         const value = checkExpr(c, expression(stmt), scope)
         if (value.k === "typed") {
             out.push(new ExprStmt(value.expr))

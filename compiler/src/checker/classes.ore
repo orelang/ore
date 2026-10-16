@@ -56,6 +56,8 @@ import { type Node } from "../syntax/ast"
 import {
     defaultType as defaultTypeNode,
     body,
+    declarationList,
+    declarations,
     exclamationToken,
     expression,
     hasModifier,
@@ -992,27 +994,63 @@ export function memberModifiers(c: Checker, node: Node): MemberFlags {
     return flags
 }
 
-/** Checks field initializers and infers the types of fields without annotations. */
+/**
+ * Checks the initializers of fields without annotations, which give the
+ * fields their types, before the top-level code: those that use module
+ * variables not declared yet wait for them (see `checkWaitingInitializers`).
+ */
 export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope) {
     if (info.initsChecked) return
     info.initsChecked = true
+    checkInitializers(c, info, false)
+}
+
+/** Checks the waiting initializers of fields without annotations whose module variables are declared now. */
+export function checkWaitingInitializers(c: Checker) {
+    for (const info of c.waitingClasses.slice()) checkInitializers(c, info, false)
+}
+
+/**
+ * Checks the field initializers of a class left, after the top-level code,
+ * when every module variable is declared: initializers run when an instance
+ * is constructed and may use any variable of the module.
+ */
+export function checkAllInitializers(c: Checker, info: ClassInfo) {
+    info.initsChecked = true
+    checkInitializers(c, info, true)
+}
+
+function checkInitializers(c: Checker, info: ClassInfo, all: bool) {
+    const scope = info.scope
     const base = info.type.base
     const baseInfo = base === null ? null : c.classInfos.get(base.id)
+    let waiting = false
     if (base !== null && baseInfo !== null) {
-        // The inherited fields whose types come from their initializers.
-        checkFieldInitializers(c, baseInfo, baseInfo.scope)
+        // The inherited fields whose types come from their initializers, which may wait too.
+        baseInfo.initsChecked = true
+        checkInitializers(c, baseInfo, all)
         for (let i = 0; i < base.fields.length; i++) info.type.fields[i] = base.fields[i]
+        waiting = c.waitingClasses.some((x) => x === baseInfo)
     }
     // Initializers run before the constructor body but cannot use `this`; arrow
     // functions in them capture the instance, as in TypeScript: `h = () => this.x`.
+    const savedFn = c.fn
+    const savedFacts = c.facts
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(types.void, [], 0, null, null, info.ctorThis, info.type, false, true)
     for (const init of info.inits) {
+        if (init.checked) continue
         let index = -1
         for (let i = 0; i < info.type.fields.length; i++)
             if (index === -1 && info.type.fields[i].name === init.name) index = i
         const field = info.type.fields[index]
         const declared = field.type.kind === "void" ? null : field.type
+        if (!all && declared !== null) continue
+        if (!all && usesUndeclared(c, init.node, scope)) {
+            waiting = true
+            continue
+        }
+        init.checked = true
         const value = checkExpr(c, init.node, scope, declared)
         if (declared !== null) init.value = c.coerce(value, declared, init.node)
         else if (value.k !== "error") {
@@ -1023,7 +1061,70 @@ export function checkFieldInitializers(c: Checker, info: ClassInfo, scope: Scope
             c.info.types.set(nameNode(decl), expr.type)
         }
     }
-    c.fn = null
+    c.fn = savedFn
+    c.facts = savedFacts
+    const listed = c.waitingClasses.some((x) => x === info)
+    if (waiting && !listed) c.waitingClasses.push(info)
+    else if (!waiting && listed) c.waitingClasses = c.waitingClasses.filter((x) => x !== info)
+}
+
+/** Whether an expression names a variable of its module that is not declared yet (see `waitingClasses`). */
+function usesUndeclared(c: Checker, node: Node, scope: Scope): bool {
+    return undeclaredName(c, node, scope) !== null
+}
+
+/** The first variable of its module an expression names that is not declared yet. */
+function undeclaredName(c: Checker, node: Node, scope: Scope): string | null {
+    if (isIdentifier(node))
+        return moduleVariables(c, node).has(node.text) && scope.lookupValue(node.text) === null ? node.text : null
+    // `a.name` names a member, not a variable.
+    if (node.kind === "PropertyAccessExpression") return undeclaredName(c, expression(node), scope)
+    for (const child of node.children) {
+        const name = undeclaredName(c, child, scope)
+        if (name !== null) return name
+    }
+    return null
+}
+
+/**
+ * Reports a field used before its type is known: its initializer, which
+ * gives it its type, waits for a module variable declared further down.
+ */
+export function waitingField(c: Checker, type: StructType, name: string, at: Node): bool {
+    const field = findField(type, name)
+    if (field === null || field.type.kind !== "void") return false
+    for (const info of c.waitingClasses) {
+        for (const init of info.inits) {
+            if (init.checked || init.name !== name || !isSubclass(type, info.type)) continue
+            const variable = undeclaredName(c, init.node, info.scope) ?? "a module variable"
+            c.error(
+                at,
+                `Field '${name}' is used before its type is known: its initializer uses '${variable}', declared further down. Annotate the field.`,
+            )
+            c.noteDeclaration(c.memberDecls.get(info.type)!.get(name)!)
+            return true
+        }
+    }
+    return false
+}
+
+/** The names the top-level variable statements of a node's module declare. */
+function moduleVariables(c: Checker, node: Node): Set<string> {
+    const source = c.sourceOf(node)
+    const known = c.moduleVariables.get(source)
+    if (known !== null) return known
+    const names = new Set<string>()
+    for (const stmt of c.statementsOf(source))
+        if (stmt.kind === "VariableStatement")
+            for (const d of declarations(declarationList(stmt))) bindingNames(nameNode(d), names)
+    c.moduleVariables.set(source, names)
+    return names
+}
+
+/** Adds the names a binding name or pattern declares. */
+function bindingNames(node: Node, names: Set<string>) {
+    if (isIdentifier(node)) names.add(node.text)
+    for (const child of node.children) bindingNames(child, names)
 }
 
 /** Whether a node is inside the declaration of a class. */

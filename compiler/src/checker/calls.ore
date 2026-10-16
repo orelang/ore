@@ -852,7 +852,8 @@ function arrayFromLength(c: Checker, node: Node, source: Node, scope: Scope): Op
 /**
  * Checks a callback: a function literal gets the parameter types, and its
  * result is inferred when `result` is null; a function value may take
- * fewer parameters than given. With `ignoreResult`, any result is accepted.
+ * fewer parameters than given, wider ones, or return a narrower result
+ * (see `adaptFunction`). With `ignoreResult`, any result is accepted.
  */
 export function callback(
     c: Checker,
@@ -872,19 +873,17 @@ export function callback(
         return null
     }
     const type = value.expr.type
-    if (
-        type.kind !== "func" ||
-        type.params.length > params.length ||
-        !type.params.every((p, i) => sameType(p, params[i]))
-    ) {
-        c.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`)
-        return null
+    if (type.kind === "func" && type.params.length <= params.length) {
+        const wanted = !ignoreResult && result !== null ? result : type.result
+        if (type.params.every((p, i) => sameType(p, params[i])) && sameType(type.result, wanted))
+            return new Callback(value.expr, type.params.length, type.result)
+        // One whose parameters are wider, or whose result is narrower, through an adapter.
+        const target = new FuncTypeClass(params.slice(0, type.params.length), wanted)
+        const adapted = c.adaptFunction(value.expr, type, target, node)
+        if (adapted !== null) return new Callback(adapted, type.params.length, wanted)
     }
-    if (!ignoreResult && result !== null && !sameType(type.result, result)) {
-        c.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`)
-        return null
-    }
-    return new Callback(value.expr, type.params.length, type.result)
+    c.error(node, `Expected a function of type '${describe}', got '${typeToString(type)}'.`)
+    return null
 }
 
 /**

@@ -185,13 +185,20 @@ export class FuncContext {
     superInits: Expr[] | null = null
 }
 
-/** A field initializer, checked before constructor bodies. */
+/**
+ * A field initializer, checked before constructor bodies: one of a field
+ * without a type annotation, which gives the field its type, as soon as the
+ * module variables it uses are declared; the others after the top-level code.
+ */
 export class FieldInitInfo {
     constructor(
         readonly name: string,
         readonly node: Node,
         public value: Expr | null = null,
     ) {}
+
+    /** Checked, into `value` unless it has errors. */
+    checked = false
 }
 
 /** A method or accessor declaration and its function. */
