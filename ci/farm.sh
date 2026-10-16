@@ -27,7 +27,8 @@
 #
 # The machines are listed in $ORE_FARM (default ~/.config/ore/farm), a line
 # each: `user@host slots light`. A slot runs one job with the machine's
-# cores divided among its slots; a light slot runs a probe or a filtered
+# cores divided among its slots, and no more tasks than 700 MB each of the
+# memory available when it starts (the runner compiles in its process); a light slot runs a probe or a filtered
 # test, beside them. Each needs LLVM 22 with lld and clang (see
 # ci/Dockerfile), rsync, and the seed of ci/bootstrap.sh in ~/.cache/ore.
 set -euo pipefail
@@ -92,7 +93,7 @@ job() {
     git archive --format=tar "$commit" | ssh "$host" "rm -rf $dir && mkdir -p $dir && tar -x -C $dir"
     local status=0
     # shellcheck disable=SC2029
-    ssh "$host" "set -o pipefail; cd $dir && export PATH=/usr/lib/llvm-22/bin:\$PATH FARM_JOBS=\$(( \$(nproc) / $slots )) && $command" >>"$log" 2>&1 || status=$?
+    ssh "$host" "set -o pipefail; cd $dir && export PATH=/usr/lib/llvm-22/bin:\$PATH FARM_JOBS=\$(( \$(nproc) / $slots )) mem=\$(awk '/MemAvailable/ {print int(\$2 / 700000)}' /proc/meminfo) && { [ \$mem -ge 2 ] || mem=2; [ \$FARM_JOBS -le \$mem ] || FARM_JOBS=\$mem; } && $command" >>"$log" 2>&1 || status=$?
     [ $status = 0 ] && ssh "$host" "rm -rf $dir" || true
     echo "== $name: exit $status" >>"$log"
     tail -4 "$log"
