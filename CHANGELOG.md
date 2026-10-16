@@ -5,6 +5,23 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Dictionaries: `{ [key: string]: V }` and `Record<string, V>` are a type
+  of their own, a hash table of string keys in insertion order used with
+  the syntax of objects. Object literals create them (computed keys and
+  spreads included); `d.a` and `d[k]` read an entry as `V | null`;
+  `d[k] = v`, `d[k] ??= v`, `delete d[k]` and `k in d` work on them, as
+  `delete` and `in` do on nothing else. `console.log` prints them as Node
+  prints objects, `console.table` lists them, and JSON converts them to and
+  from objects. `Object.freeze` makes one read-only, and writing it then
+  panics with JavaScript's TypeError message. An index signature next to
+  other members, or with keys other than strings, is still an error.
+- The namespace `Object`: `keys`, `values`, `entries`, `hasOwn`, `assign`,
+  `fromEntries`, `groupBy`, `freeze` and `isFrozen`, on dictionaries, objects
+  and class instances (whose keys are their fields).
+- `p["x"]` reads and assigns the member `x` of an object, an interface or a
+  class instance, and `p[k]` with `k: keyof P` reads the field `k` names, of
+  type `P[K]`.
+
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

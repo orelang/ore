@@ -2,11 +2,13 @@
 
 ## Removed TypeScript features
 
-`any`, `var`, `==` / `!=`, `eval`, `delete`, `with`, `arguments`,
-`prototype`, computed and dynamic property keys on structs, decorators,
-`#name` private fields (use `private`),
-`enum` and `const enum` (use unions of literals), index signatures (use
-`Map`), `namespace` (use modules), `throw` / `try`.
+`any`, `var`, `==` / `!=`, `eval`, `with`, `arguments`, `prototype`,
+`for...in` (use `for...of` over `Object.keys(o)`), dynamic property keys on
+objects (use a [dictionary](03-objects.md#dictionaries); `delete` and `in`
+work on dictionaries only), index signatures as members of classes,
+interfaces and object types with other members, decorators, `#name` private
+fields (use `private`), `enum` and `const enum` (use unions of literals),
+`namespace` (use modules), `throw` / `try`.
 
 Promises never reject: there is no `reject`, `catch` or `Promise.allSettled`;
 a failure is a value (`Promise<T | Error>`), and a panic in an async function
@@ -33,6 +35,11 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `typeof x === "number"` on an `unknown` | narrows to `number` | narrows to `f64`; an integer converts |
 | `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it |
 | `map.get(missing)` | `undefined` | `null` |
+| `d[k]` of `{ [k: string]: V }` | `V` (`V \| undefined` with `noUncheckedIndexedAccess`) | `V \| null` |
+| `d[k] += 1` on a dictionary | `NaN` when missing | compile error: `d[k] = (d[k] ?? 0) + 1` |
+| `Object.keys` of an object type | insertion order of the properties | name order (Ore's order of the fields of object types); class instances in declaration order |
+| `Object.groupBy(...)` | an object with a null prototype | a dictionary, printed as an object |
+| `Object.freeze(o)` of an object or class instance | freezes it | returns it unchanged; `readonly` fields are the frozen ones |
 | `a.length = n` | truncates, or grows with holes | truncates; a larger `n` panics (no holes) |
 | `map.keys()`, `set.values()`, `array.entries()` | iterator | array |
 | `s.charCodeAt(i)`, `s.slice(i)`, other string positions | UTF-16 code units | bytes of UTF-8 (`charCodeAt` is the byte at `i`) |
