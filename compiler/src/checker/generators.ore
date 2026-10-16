@@ -184,7 +184,10 @@ export function generatorBody(
         else if (yields.ints) found.push(types.i64)
         // Without a value, as TypeScript's `never`, which no value has: null.
         if (found.length === 0) found.push(types.null)
-        t = new GeneratorTypes(c.unionOf(found), fn.result ?? types.void, types.null)
+        // Without a value returned, the result is null, as `Generator<T>`'s void is.
+        const returned = fn.result
+        const result = returned === null || returned.kind === "void" ? types.null : returned
+        t = new GeneratorTypes(c.unionOf(found), result, types.null)
         genType = generatorClass(c, t, decl)
         if (genType === null) return null
         self.type = genType
