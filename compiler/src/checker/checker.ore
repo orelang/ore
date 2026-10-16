@@ -47,6 +47,7 @@ import {
     typeJsonImports,
     unsupportedTopLevel,
 } from "./declarations"
+import { resolveGlobalThis } from "./globals"
 import { isDeclaration } from "./helpers"
 import { checkStatements } from "./statements"
 import { addTemplateSites } from "./templates"
@@ -146,6 +147,10 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
             if (value !== null) builtins.scope.declareValue(name, value)
         }
     }
+    // `globalThis.name`, now that every global name is declared.
+    const sources: Source[] = []
+    for (const m of modules) sources.push(m.source)
+    resolveGlobalThis(c, sources, builtins.scope)
 
     // Pass 2: type aliases, then signatures of functions and class members,
     // so that they can be used before their declaration and recursively.

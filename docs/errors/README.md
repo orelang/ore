@@ -220,6 +220,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3080](ORE3080.md) | An expression of type 'void' cannot be awaited. |
 | [ORE3081](ORE3081.md) | A union of promises and other values cannot be awaited yet. |
 | [ORE3082](ORE3082.md) | Static members cannot reference class type parameters. |
+| [ORE3083](ORE3083.md) | 'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'. |
 
 ## ORE4xxx: Calls and built-in functions
 

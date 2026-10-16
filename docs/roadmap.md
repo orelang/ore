@@ -99,7 +99,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   members of one value, with the type `typeof globalThis`; a module's own
   top-level declarations are not on it, as in ES modules. Adding properties
   at run time is not possible: declared names only, checked at compile
-  time.
+  time (done: resolved at compile time as the namespaces are, so
+  `globalThis` itself is no value).
 - Import attributes as in JavaScript (`import x from "./f" with { type: ... }`,
   see [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import/with)):
   `type: "json"` imports a JSON file as a typed value, checked against the

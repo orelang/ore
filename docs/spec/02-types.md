@@ -277,6 +277,20 @@ no value). A nested namespace written in Ore has a module of its own,
 whose exports are its members: `runtime/core/process-command.ore` for
 `process.command`.
 
+### globalThis
+
+`globalThis` holds the global names as members, as in JavaScript:
+`globalThis.Math.max(1, 2)`, `globalThis.console.log(...)`,
+`new globalThis.Date(0)`, `globalThis.Promise.resolve(1)`,
+`globalThis.time.second`, and as types `globalThis.Date` or
+`globalThis.Promise<int>`. Its members are the built-in namespaces, the
+global classes and the conversions; a module's own top-level declarations
+are not on it, as in ES modules (`globalThis.limit` of a module's `const
+limit` is an error), and a local declaration of the same name does not hide
+the global one. It is resolved at compile time, as the namespaces are:
+`globalThis.name` is the global `name`, nothing can be added to it, and
+`globalThis` itself is no value (`const g = globalThis` is an error).
+
 In the names of the standard library, only a class or a type is
 capitalized, and at most one part of a path: `process.Child`,
 `process.CommandOptions`; namespaces, functions, methods and fields are

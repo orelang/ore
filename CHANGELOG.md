@@ -5,6 +5,12 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `globalThis`: the global names as members of one value, as in
+  JavaScript (`globalThis.Math.max(1, 2)`, `new globalThis.Date(0)`,
+  `globalThis.Promise<int>` as a type), resolved at compile time. A
+  module's own top-level declarations are not on it, as in ES modules;
+  nothing can be added to it, and it is no value itself (`const g =
+  globalThis` is an error, ORE3083).
 - `Promise.withResolvers<T>()`: `{ promise, resolve }`, a pending promise
   and the function that resolves it (no `reject`: promises do not reject).
 - `fs.appendFile(path, data)`, Node's `appendFileSync`: appends to a file,
