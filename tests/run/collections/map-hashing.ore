@@ -1,0 +1,168 @@
+// The hash table under maps and sets: string keys of every length the hash
+// reads differently, many keys colliding in the index, deletion and
+// reinsertion, insertion order after deletes, and `map.set(key, f(map.get(key)))`,
+// which looks the key up once when `f` only computes.
+
+// Strings of lengths 0 to 40, as slices of one text and as fresh copies:
+// equal keys whatever their bytes' address and alignment.
+const text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+const byLength = new Map<string, int>()
+for (let n = 0; n <= 40; n++) byLength.set(text.slice(3, 3 + n), n)
+let found = 0
+for (let n = 0; n <= 40; n++) {
+    let copy = ""
+    for (let i = 0; i < n; i++) copy += text.slice(3 + i, 4 + i)
+    if (byLength.get(copy) === n) found++
+}
+console.log(byLength.size, found, byLength.get(""), byLength.get("defgh"), byLength.get("defgi"))
+
+// Keys that differ in one byte only, at each position, and prefixes of each other.
+const variants = new Set<string>()
+for (let n = 1; n <= 24; n++) {
+    const base = text.slice(10, 10 + n)
+    variants.add(base)
+    for (let i = 0; i < n; i++) variants.add(base.slice(0, i) + "#" + base.slice(i + 1))
+}
+console.log(variants.size, variants.has("klm"), variants.has("k#m"), variants.has("klm#"))
+
+// Many keys, every third deleted, then some put back: the size, the values
+// and the order, against a list kept alongside.
+const big = new Map<string, int>()
+const order: string[] = []
+for (let i = 0; i < 5000; i++) {
+    big.set(`key${i}`, i)
+    order.push(`key${i}`)
+}
+for (let i = 0; i < 5000; i += 3) big.delete(`key${i}`)
+for (let i = 0; i < 5000; i += 30) big.set(`key${i}`, -i)
+const expected: string[] = []
+for (const k of order) {
+    const i = Number.parseInt(k.slice(3)) ?? -1
+    if (i % 3 !== 0) expected.push(k)
+}
+for (let i = 0; i < 5000; i += 30) expected.push(`key${i}`)
+const keys = big.keys()
+let same = keys.length === expected.length
+for (let i = 0; same && i < keys.length; i++) same = keys[i] === expected[i]
+console.log(big.size, same, big.get("key3"), big.get("key30"), big.get("key31"), big.has("key6"))
+
+// Deleting all and adding again reuses the table; the order is the new one.
+for (const k of big.keys()) big.delete(k)
+console.log(big.size, big.get("key1"))
+big.set("z", 1).set("y", 2).set("key1", 3)
+console.log(big.keys().join(","), big.size)
+
+// Integer keys, among them the extremes and negative ones, deleted and put back.
+const ints = new Map<int, string>()
+for (const k of [0, -1, 1, 9223372036854775807, -9223372036854775807 - 1, 1 << 32, 1 << 40]) ints.set(k, `${k}`)
+ints.delete(1)
+ints.delete(0)
+ints.set(0, "zero again")
+console.log(ints.size, ints.get(-1), ints.get(1 << 32), ints.get(1), ints.values().join(" | "))
+
+// Small integer types and booleans go through the compiler's functions.
+const bytes = new Map<u8, int>()
+for (let i = 0; i < 300; i++) bytes.set(u8(i & 255), i)
+const flags = new Map<bool, string>([
+    [true, "yes"],
+    [false, "no"],
+])
+console.log(bytes.size, bytes.get(u8(3)), flags.get(false))
+
+// Objects by identity, as 8-byte keys.
+class Box {
+    constructor(public n: int) {}
+}
+const boxes: Box[] = []
+const byBox = new Map<Box, int>()
+for (let i = 0; i < 100; i++) {
+    const b = new Box(i)
+    boxes.push(b)
+    byBox.set(b, i)
+}
+for (let i = 0; i < 100; i += 2) byBox.delete(boxes[i])
+console.log(byBox.size, byBox.get(boxes[1]), byBox.get(boxes[2]), byBox.has(new Box(1)))
+
+// Counting with one lookup per word.
+const words = "the cat and the hat and the bat".split(" ")
+const counts = new Map<string, int>()
+for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1)
+console.log(
+    counts
+        .entries()
+        .map(([w, n]) => `${w}:${n}`)
+        .join(" "),
+)
+
+// The same shape after a delete adds the key again at the end.
+counts.delete("the")
+for (const w of ["the", "cat"]) counts.set(w, (counts.get(w) ?? 10) * 2)
+console.log(
+    counts
+        .entries()
+        .map(([w, n]) => `${w}:${n}`)
+        .join(" "),
+)
+
+// A value that calls a function is not fused: here the function changes the map.
+function grow(m: Map<string, int>, k: string): int {
+    m.set(`${k}!`, 1)
+    return (m.get(k) ?? 0) + 1
+}
+const calls = new Map<string, int>()
+const w = "x"
+calls.set(w, grow(calls, w))
+calls.set(w, grow(calls, w))
+console.log(
+    calls
+        .entries()
+        .map(([k, n]) => `${k}:${n}`)
+        .join(" "),
+)
+
+// Reads of another key or another map are not the fused read.
+const other = new Map<string, int>([["a", 100]])
+const a = "a"
+const b = "b"
+const both = new Map<string, int>()
+both.set(a, (both.get(b) ?? 0) + (other.get(a) ?? 0))
+both.set(b, (both.get(a) ?? 0) + 1)
+both.set(a, (both.get(a) ?? 0) + (both.get(a) ?? 0))
+console.log(
+    both
+        .entries()
+        .map(([k, n]) => `${k}:${n}`)
+        .join(" "),
+)
+
+// Values with pointers, and conditional updates.
+const lists = new Map<string, string>()
+for (const w of words) {
+    const prev = lists.get(w)
+    lists.set(w, prev === null ? w : `${prev}+${w}`)
+}
+const longest = new Map<int, int>()
+for (const w of words) {
+    const n = w.length
+    longest.set(n, (longest.get(n) ?? 0) > 2 ? 0 : (longest.get(n) ?? 0) + 1)
+}
+console.log(
+    lists.values().join(" "),
+    longest
+        .entries()
+        .map(([k, n]) => `${k}:${n}`)
+        .join(" "),
+)
+
+// Float keys: NaN equals NaN and -0 equals 0, through the compiler's functions.
+const floats = new Map<f64, int>()
+const zero: f64 = 0
+for (const x of [zero / zero, 0.0, -0.0, 1.5, zero / zero]) floats.set(x, (floats.get(x) ?? 0) + 1)
+console.log(floats.size, floats.get(zero / zero), floats.get(0.0), floats.get(1.5))
+
+// String sets keep their order after deletes too.
+const letters = new Set<string>(["d", "a", "c", "b"])
+letters.delete("a")
+letters.add("a")
+letters.add("d")
+console.log(letters.values().join(""), letters.size)

@@ -4,7 +4,7 @@ import { elementData, entryData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
 import { intRange, typeToString, unionRepr, type StructType, type Type, type UnionType } from "../ir/types"
 import { error, helper } from "./calls"
-import { keyFunctions } from "./collections"
+import { keyFunctions, keyKind } from "./collections"
 import {
     ARRAY,
     JSON_ARRAY,
@@ -594,6 +594,7 @@ export function decodeJson(g: Emitter, type: Type) {
                 elementData(g, kt),
                 elementData(g, vt),
                 entryData(g, kt, vt),
+                { ty: "i64", v: keyKind(g, keyType) },
             ])
             const len = g.b.value("i64", `load i64, ptr ${g.field("%v", JSON_VALUE, 4)}`)
             const items = g.b.value("ptr", `load ptr, ptr ${g.field("%v", JSON_VALUE, 5)}`)

@@ -5,6 +5,16 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
+  1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
+  keeps the high bits of each key's hash beside the entry, so probing
+  compares keys only when those match; string keys and 8-byte keys
+  (integers, objects by identity) are hashed and compared by the runtime
+  itself, strings a word at a time instead of FNV-1a's byte at a time; and
+  `map.set(key, f(map.get(key)))`, where `f` only computes with locals and
+  constants (`counts.set(w, (counts.get(w) ?? 0) + 1)`), hashes and looks
+  up the key once. `indexOf` and `split` no longer call memcmp for a
+  one-byte separator.
 - Generic classes can have static fields, `class Box<T> { static count = 0 }`:
   one for all instances, as in TypeScript, initialized where the class is
   declared, and read, assigned and updated from anywhere, its static and
