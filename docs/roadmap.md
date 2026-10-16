@@ -132,7 +132,13 @@ exports, type assertions (Ore converts: `i32(x)`).
 - Diagnostics with codes (`ORE1234`) and a page per code in the
   documentation, linked from the editor (`codeDescription`) and printed by
   the command line; messages that explain the cause and the fix, with the
-  related places (`relatedInformation`).
+  related places (`relatedInformation`) (done: a diagnostic carries notes at
+  related places, printed under it by the command line and sent as
+  `relatedInformation` by the language server: the first declaration of a
+  name declared twice, the declaration of a variable read before it is
+  assigned, the parameter, variable or field a value does not convert to,
+  the interface member a class or a value lacks, and the overload
+  signatures of a call none of them takes).
 
 ## 5. Own garbage collector
 

@@ -5,6 +5,13 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Diagnostics point at the places related to them: the first declaration of
+  a name declared twice, the declaration of a variable read before it is
+  assigned, the parameter, variable or field a value does not convert to,
+  the interface member that is missing or differs, and the overload
+  signatures of a call. The command line prints each as a `note:` with its
+  position and source line under the error; the language server sends them
+  as `relatedInformation`.
 - Numeric literal types in computations on types (`Prev[D]`,
   `D extends number = 10`, `[D] extends [never]`); `infer` in template
   literal types; `unknown`, `object`, `Function` and `readonly unknown[]`
