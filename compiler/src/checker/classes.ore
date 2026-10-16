@@ -36,7 +36,11 @@ import {
     StructType as StructTypeClass,
     findField,
     findMethod,
+    findOverloads,
+    implementingMethod,
     isSubclass,
+    overloadName,
+    sourceMethodName,
     overridden,
     sameType,
     types,
@@ -98,6 +102,7 @@ import {
     prepend,
     resolveParams,
     checkReturns,
+    forwardOverload,
     typeNames,
 } from "./declarations"
 import { checkExpr, settle } from "./expressions"
@@ -250,11 +255,31 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
         return true
     }
 
+    // Overload signatures waiting for their implementation, by name (`static name` for static methods).
+    const signatures = new Map<string, Node[]>()
     for (const member of members(decl)) {
         if (member.kind === "SemicolonClassElement" || member.kind === "ClassStaticBlockDeclaration") continue
         const flags = memberModifiers(c, member)
+        if (member.kind === "MethodDeclaration" && body(member) === null && !flags.isAbstract) {
+            // An overload signature, for the implementation that follows.
+            const name = c.memberName(nameNode(member))
+            if (name === null) continue
+            if (typeParameters(member).length > 0) {
+                c.error(nameNode(member), "Generic overload signatures are not supported yet.")
+                continue
+            }
+            const key = flags.isStatic ? `static ${name}` : name
+            const list = signatures.get(key)
+            if (list !== null) list.push(member)
+            else signatures.set(key, [member])
+            continue
+        }
         if (flags.isStatic) {
-            declareStatic(c, info, member, flags, scope)
+            const nameAt = member.child("name")
+            const name = nameAt !== null ? c.memberName(nameAt) : null
+            const sigs = name === null ? null : signatures.get(`static ${name}`)
+            if (sigs !== null) signatures.delete(`static ${name}`)
+            declareStatic(c, info, member, flags, scope, sigs)
             continue
         }
         if (flags.isAbstract && member.kind !== "MethodDeclaration") c.error(member, "Only methods can be abstract.")
@@ -288,6 +313,9 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
         } else if (member.kind === "MethodDeclaration") {
             const name = c.memberName(nameNode(member))
             if (name === null) continue
+            // An abstract method has no overload signatures: they are left without an implementation.
+            const sigs = flags.isAbstract ? null : signatures.get(name)
+            if (sigs !== null) signatures.delete(name)
             const typeParams = typeParameters(member)
             if (
                 !checkInherited(
@@ -318,13 +346,18 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                     c.error(nameNode(member), "Generic methods cannot be abstract.")
                     continue
                 }
-            } else if (body(member) === null) {
-                c.error(nameNode(member), "A method must have a body.")
+            }
+            if (sigs !== null && typeParams.length > 0) {
+                c.error(nameNode(member), "A generic function cannot have overload signatures yet.")
                 continue
             }
             // An override's `this` is the type of the class that first declared the method, so that its type
             // stays that of the method it overrides.
             const memberScope = inherited.has(name) ? thisScope(scope, rootClass(base!, name), decl) : instanceScope
+            if (sigs !== null) {
+                declareOverloadedMethod(c, info, member, name, flags, sigs, memberScope)
+                continue
+            }
             if (typeParams.length > 0) {
                 const generic = new GenericClass(name, member, typeParams, memberScope, new Map())
                 if (!c.genericMethods.has(type)) c.genericMethods.set(type, new Map<string, GenericMethod>())
@@ -356,8 +389,12 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             const method = new Method(name, func, flags.isPrivate || flags.isProtected)
             let index = -1
             for (let i = 0; i < type.methods.length; i++) if (index === -1 && type.methods[i].name === name) index = i
-            if (index === -1) type.methods.push(method)
-            else {
+            if (index === -1) {
+                // A method without overload signatures cannot override one with them.
+                const inherited = findOverloads(type, name)
+                if (inherited.length > 0) signaturesMismatch(c, name, inherited, base!, nameNode(member))
+                type.methods.push(method)
+            } else {
                 checkOverride(c, type.methods[index], method, base!, nameNode(member), flags)
                 type.methods[index] = method
             }
@@ -400,6 +437,8 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             )
         }
     }
+    // Methods without a body that no implementation follows.
+    for (const [_, sigs] of signatures) for (const d of sigs) c.error(nameNode(d), "A method must have a body.")
     if (type.ctor === null && baseInfo !== null) {
         // Without a constructor, a subclass takes the parameters of its base class's and passes them on.
         const params = baseInfo.ctorParams.map((p) => c.newLocal(p.name, p.type, false))
@@ -494,12 +533,88 @@ function checkOverride(c: Checker, old: Method, method: Method, base: StructType
     }
 }
 
+/**
+ * A method with overload signatures: the implementation, a method that is no
+ * member of the class, and for each signature a method, named by
+ * `overloadName`, that calls it on `this` (see `forwardOverload`). A subclass
+ * overrides the signatures, one by one, with signatures of the same types.
+ */
+function declareOverloadedMethod(
+    c: Checker,
+    info: ClassInfo,
+    member: Node,
+    name: string,
+    flags: MemberFlags,
+    signatures: Node[],
+    scope: Scope,
+) {
+    const type = info.type
+    const className = type.name!
+    const hidden = flags.isPrivate || flags.isProtected
+    const impl = makeMethod(c, member, info, scope, `${className}.${name}`, `ore_m_${info.cname}_${cIdent(name)}_impl`)
+    info.methods.push(new MethodInfo(member, impl))
+    if (flags.isProtected) info.protected.set(name, true)
+    const methods: Method[] = []
+    for (const sig of signatures) {
+        const sigFlags = memberModifiers(c, sig)
+        if (sigFlags.isPrivate !== flags.isPrivate || sigFlags.isProtected !== flags.isProtected)
+            c.error(
+                nameNode(sig),
+                "Overload signatures must all be public, private or protected, as the implementation.",
+            )
+        const index = methods.length
+        const func = makeMethod(
+            c,
+            sig,
+            info,
+            scope,
+            `${className}.${name}`,
+            `ore_m_${info.cname}_${cIdent(name)}_${index}`,
+        )
+        const self: Expr = new LocalRef(type, func.receiver!)
+        if (forwardOverload(c, impl, func, sig, scope, `The implementation of '${name}'`, self))
+            methods.push(new Method(overloadName(name, index), func, hidden))
+    }
+    const base = type.base
+    const inherited: Method[] = base === null ? [] : findOverloads(type, name)
+    const plain = base === null ? null : findMethod(type, name)
+    if (base !== null && plain !== null) {
+        signaturesMismatch(c, name, [plain], base, nameNode(member))
+        return
+    }
+    if (base !== null && inherited.length > 0) {
+        let same = inherited.length === methods.length
+        for (let i = 0; i < methods.length; i++)
+            if (same && !sameType(inherited[i].func.type, methods[i].func.type)) same = false
+        if (!same) {
+            signaturesMismatch(c, name, inherited, base, nameNode(member))
+            return
+        }
+        checkOverride(c, inherited[0], methods[0], base, nameNode(member), flags)
+    }
+    for (const method of methods) {
+        let index = -1
+        for (let i = 0; i < type.methods.length; i++)
+            if (index === -1 && type.methods[i].name === method.name) index = i
+        if (index === -1) type.methods.push(method)
+        else type.methods[index] = method
+    }
+}
+
+/** Reports a method that overrides `inherited`, the method or overload signatures of `base`, with other ones. */
+function signaturesMismatch(c: Checker, name: string, inherited: Method[], base: StructType, nameAt: Node) {
+    const list = inherited.map((m) => `'${typeToString(m.func.type)}'`).join(", ")
+    c.error(nameAt, `Method '${name}' must have the signatures of the method it overrides in '${base.name}': ${list}.`)
+}
+
 /** A member of a class, inherited ones included: its kind, and whether it is private or protected. */
 export function classMember(c: Checker, s: StructType, name: string): ClassMember | null {
     const field = findField(s, name)
     if (field !== null) return new ClassMember("field", field.private)
     const method = findMethod(s, name)
     if (method !== null) return new ClassMember("method", method.private)
+    const overloads = findOverloads(s, name)
+    if (overloads.length > 0) return new ClassMember("method", overloads[0].private)
     const generic = genericMethod(c, s, name)
     if (generic !== null) return new ClassMember("generic method", generic.private)
     const found = accessor(c, s, name)
@@ -620,12 +735,26 @@ export function dispatch(c: Checker, expr: Expr, name: string) {
     else if (node.k === "bound-method") c.dispatches.push(new Dispatch(node, name))
 }
 
+/** Records a call of an overload signature of a method, which a subclass may override: the signature taken. */
+export function dispatchOverload(c: Checker, expr: Expr, overloads: Method[]) {
+    const node = expr.k === "bind" ? expr.body : expr
+    if (node.k !== "method-call") return
+    for (const m of overloads) if (m.func === node.func) c.dispatches.push(new Dispatch(node, m.name))
+}
+
 /**
  * A static member: a field becomes a global, typed by its annotation or else
  * by its initializer where the class is declared (see `initStatics`), and a
  * method a function.
  */
-function declareStatic(c: Checker, info: ClassInfo, member: Node, flags: MemberFlags, scope: Scope) {
+function declareStatic(
+    c: Checker,
+    info: ClassInfo,
+    member: Node,
+    flags: MemberFlags,
+    scope: Scope,
+    signatures: Node[] | null,
+) {
     const nameAt = member.child("name")
     const name = nameAt !== null ? c.memberName(nameAt) : null
     if (nameAt === null || name === null) {
@@ -665,8 +794,8 @@ function declareStatic(c: Checker, info: ClassInfo, member: Node, flags: MemberF
         c.error(member, "Only fields and methods can be static.")
         return
     }
-    if (body(member) === null) {
-        c.error(nameAt, "A method must have a body.")
+    if (signatures !== null && typeParameters(member).length > 0) {
+        c.error(nameAt, "A generic function cannot have overload signatures yet.")
         return
     }
     if (typeParameters(member).length > 0) {
@@ -680,6 +809,27 @@ function declareStatic(c: Checker, info: ClassInfo, member: Node, flags: MemberF
         )
         const entry = new StaticMember(name, member, info, null, null, hidden)
         entry.generic = generic
+        info.statics.set(name, entry)
+        return
+    }
+    if (signatures !== null) {
+        // The implementation, hidden, and a function per signature that calls it, as for a function.
+        const impl = makeFunc(c, member, scope, `${className}.${name}`, `${info.cname}_s_${cIdent(name)}_impl`, false)
+        applyFuncDirectives(c, member, impl)
+        const overloads: Func[] = []
+        for (const sig of signatures) {
+            if (memberModifiers(c, sig).isPrivate !== flags.isPrivate)
+                c.error(
+                    sig.child("name")!,
+                    "Overload signatures must all be public, private or protected, as the implementation.",
+                )
+            const cname = `${info.cname}_s_${cIdent(name)}_${overloads.length}`
+            const func = makeFunc(c, sig, scope, `${className}.${name}`, cname, false)
+            if (forwardOverload(c, impl, func, sig, scope, `The implementation of '${name}'`, null))
+                overloads.push(func)
+        }
+        const entry = new StaticMember(name, member, info, null, impl, hidden)
+        entry.overloads = overloads
         info.statics.set(name, entry)
         return
     }
@@ -1577,6 +1727,11 @@ function classMembersOf(c: Checker, found: InterfaceMember[], decls: Map<string,
     }
     for (const m of cls.methods) {
         if (m.private) continue
+        if (sourceMethodName(m.name) !== m.name) {
+            // An overload signature, the first of its method.
+            if (m.name.endsWith("#0")) c.error(ref, "Overload signatures are not supported in interfaces yet.")
+            continue
+        }
         const decl = classDecls !== null ? classDecls.get(m.name) : null
         addMember(c, found, decls, new InterfaceMethod(m.name, m.func.type), ref, decl ?? ref)
     }
@@ -1584,6 +1739,8 @@ function classMembersOf(c: Checker, found: InterfaceMember[], decls: Map<string,
 
 /** Adds the members declared in the body of one declaration of an interface. */
 function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Map<string, Node>, memberScope: Scope) {
+    // The methods declared here: a second signature of one is an overload.
+    const ownMethods = new Map<string, bool>()
     for (const member of members(decl)) {
         if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
             const field = c.accessorSignature(member, members(decl), memberScope)
@@ -1629,6 +1786,11 @@ function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Ma
                 addMember(c, found, decls, field, memberName, member)
             }
         } else if (member.kind === "MethodSignature") {
+            if (ownMethods.has(name)) {
+                c.error(memberName, "Overload signatures are not supported in interfaces yet.")
+                continue
+            }
+            ownMethods.set(name, true)
             const typeParams = typeParameters(member)
             if (typeParams.length > 0)
                 c.error(
@@ -1720,10 +1882,18 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
                 )
             if (field.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null, member.name)
         } else {
-            const method = findMethod(from, member.name)
+            // Of a method with overload signatures, the signature of the member's type.
+            const method = implementingMethod(from, member.name, member.type)
             // A field holding a function of the method's type serves as the method (object literals' methods).
             const field = method === null ? findField(from, member.name) : null
             if (field !== null && !field.private && sameType(field.type, member.type)) continue
+            const overloads: Method[] = method === null ? findOverloads(from, member.name) : []
+            if (overloads.length > 0 && !overloads[0].private)
+                return new Conformance(
+                    `${what} has no overload signature of type '${typeToString(member.type)}'`,
+                    null,
+                    member.name,
+                )
             if (method === null || method.private) return new Conformance(`${what} is missing`, null, member.name)
             const decl = c.funcDecls.get(method.func)
             if (decl !== null) inferGenerator(c, method.func, decl)

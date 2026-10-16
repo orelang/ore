@@ -1070,27 +1070,8 @@ function declareOverloaded(c: Checker, decl: Node, scope: Scope, signatures: Nod
         if (hasModifier(sig, "ExportKeyword") !== exported)
             c.error(nameNode(sig), "Overload signatures must all be exported or not, as the implementation.")
         const func = makeFunc(c, sig, scope, name.text, `${c.prefix}${cIdent(name.text)}_${i}`, exported)
-        // The body: `return impl(params)`, its defaults filled in as for any call.
-        const args: Node[] = []
-        const operands: Operand[] = []
-        const sigParams = parameters(sig)
-        for (let k = 0; k < func.params.length; k++) {
-            const p = func.params[k]
-            args.push(k < sigParams.length ? nameNode(sigParams[k]) : nameNode(sig))
-            operands.push(typed(new LocalRef(p.type, p)))
-        }
-        const before = c.diagnostics.length
-        const call = callFunc(c, impl, args, sig, scope, `The implementation of '${name.text}'`, null, operands)
-        if (call.k !== "typed") continue
-        if (c.diagnostics.length > before) continue
-        const result = func.type.result
-        let value: Expr = call.expr
-        if (result.kind !== "void" && !sameType(value.type, result)) {
-            if (narrows(value.type, result)) value = new Recast(result, value)
-            else value = c.coerce(call, result, typeNode(sig) ?? nameNode(sig))
-        }
-        func.body = new Block([result.kind === "void" ? new ExprStmt(value) : new ReturnStmt(value)])
-        overloads.push(func)
+        if (forwardOverload(c, impl, func, sig, scope, `The implementation of '${name.text}'`, null))
+            overloads.push(func)
     }
     const symbol = new FuncSymbol(impl, decl)
     symbol.overloads = overloads
@@ -1099,6 +1080,43 @@ function declareOverloaded(c: Checker, decl: Node, scope: Scope, signatures: Nod
         return null
     }
     return impl
+}
+
+/**
+ * Gives overload signature `func`, declared by `sig`, its body: `return
+ * impl(params)`, on `receiver` for a method, its defaults filled in as for
+ * any call, and the result converted to the signature's. False if the
+ * implementation does not take the signature's arguments.
+ */
+export function forwardOverload(
+    c: Checker,
+    impl: Func,
+    func: Func,
+    sig: Node,
+    scope: Scope,
+    what: string,
+    receiver: Expr | null,
+): bool {
+    const args: Node[] = []
+    const operands: Operand[] = []
+    const sigParams = parameters(sig)
+    for (let k = 0; k < func.params.length; k++) {
+        const p = func.params[k]
+        args.push(k < sigParams.length ? nameNode(sigParams[k]) : nameNode(sig))
+        operands.push(typed(new LocalRef(p.type, p)))
+    }
+    const before = c.diagnostics.length
+    const call = callFunc(c, impl, args, sig, scope, what, receiver, operands)
+    if (call.k !== "typed") return false
+    if (c.diagnostics.length > before) return false
+    const result = func.type.result
+    let value: Expr = call.expr
+    if (result.kind !== "void" && !sameType(value.type, result)) {
+        if (narrows(value.type, result)) value = new Recast(result, value)
+        else value = c.coerce(call, result, typeNode(sig) ?? nameNode(sig))
+    }
+    func.body = new Block([result.kind === "void" ? new ExprStmt(value) : new ReturnStmt(value)])
+    return true
 }
 
 /** Whether `to` is a narrower union than `from`, or one of its members: a value of `from` converts to it by a check at run time. */

@@ -128,6 +128,18 @@
   of the class that declares them.
 - Methods are called on instances; `obj.method` without a call is a
   function value bound to `obj`.
+- Methods, static ones too, may have overload signatures, as top-level
+  functions do (see [Functions](04-functions.md#functions-and-closures)):
+  methods without a body before the implementation, `parse(s: string): int`,
+  `parse(s: string[]): int[]`, then
+  `parse(s: string | string[]): int | int[] { ... }`. Callers, `this.parse`
+  included, see only the signatures: a call takes the first that takes its
+  arguments and has its result type. The signatures have the visibility of
+  the implementation ([ORE5064](../errors/ORE5064.md)), and generic ones are
+  not supported. Such a method cannot be used as a value. Each signature
+  implements a method of an interface of its type: this class implements
+  `{ parse(s: string): int }`. Interfaces cannot have overload signatures
+  ([ORE5066](../errors/ORE5066.md)).
 - `class C implements I` checks that `C` has the members of `I`; `I` may be
   an instance of a generic interface, `class C implements It<int>`.
 - A `private` constructor is called with `new` only inside the class
@@ -149,7 +161,9 @@
   parameter and result types, and cannot be private, nor protected if the
   method of `A` is public. The `override` modifier is optional; on a member
   that overrides nothing it is an error. Accessors and generic methods cannot
-  be overridden.
+  be overridden. A method with overload signatures is overridden by one with
+  the same signatures, in the same order
+  ([ORE5065](../errors/ORE5065.md)); its implementation may differ.
 - Methods are virtual, as in JavaScript: calling `m` on a value of type `A`
   that holds a `B` runs `B`'s `m`, also through an interface or a bound
   method value. `super.m(...)` in a method of `B` runs `A`'s `m` (or the one
@@ -208,7 +222,9 @@ same offsets, so a `B` is passed where an `A` is expected unchanged. Classes
 without a base class or subclass have no table pointer, as before. Whether a
 method is overridden is decided over the whole program: a call is direct
 unless the receiver's class has a subclass that overrides the method, in
-which case the method is loaded from the table of the instance. An interface
+which case the method is loaded from the table of the instance. Each
+overload signature of a method is a method of its own in the table, which
+calls the class's implementation directly. An interface
 table built for `A` points, for a method that a subclass overrides, to a stub
 that dispatches through the class table. `instanceof B` compares the table
 pointer with the tables of `B` and of its subclasses; for an interface value,

@@ -14,6 +14,7 @@ import {
     isStringLike,
     membersOf,
     readonlyArrayOf,
+    sourceMethodName,
     typeToString,
     types,
 } from "../ir/types"
@@ -53,7 +54,11 @@ function memberNames(type: Type): string[] | null {
     if (type.kind === "struct") {
         if (type.tuple) return null
         for (const f of type.fields) if (!f.private) names.push(f.name)
-        for (const m of type.methods) if (!m.private && !names.includes(m.name)) names.push(m.name)
+        for (const m of type.methods) {
+            // The overload signatures of a method are one member.
+            const name = sourceMethodName(m.name)
+            if (!m.private && !names.includes(name)) names.push(name)
+        }
         return names
     }
     if (type.kind === "interface") {

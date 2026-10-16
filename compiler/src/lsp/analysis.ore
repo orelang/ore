@@ -10,7 +10,7 @@ import { basename, dirname, isAbsolute, resolve } from "ore:path"
 import { check } from "../checker/checker"
 import { type CheckInfo } from "../checker/context"
 import { arrayMethods, stringMethods } from "../checker/helpers"
-import { typeToString, type Type } from "../ir/types"
+import { sourceMethodName, typeToString, type Type } from "../ir/types"
 import { LoadOptions, loadProgram } from "../project/load"
 import { stdModules } from "../project/resolve"
 import { type Node } from "../syntax/ast"
@@ -807,7 +807,12 @@ function membersOfType(type: Type, out: Completion[]) {
                     out.push({ label: f.name, kind: "field", detail: typeToString(f.type), documentation: "" })
             for (const m of type.methods)
                 if (!m.private)
-                    out.push({ label: m.name, kind: "method", detail: typeToString(m.func.type), documentation: "" })
+                    out.push({
+                        label: sourceMethodName(m.name),
+                        kind: "method",
+                        detail: typeToString(m.func.type),
+                        documentation: "",
+                    })
             if (type.tuple) out.push({ label: "length", kind: "field", detail: "int", documentation: "" })
             return
         case "interface":

@@ -62,7 +62,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   - `**` and `satisfies` (done), `bigint` with its literals (`10n`),
     operators, conversions and the namespace `BigInt` (done);
   - overloads (several signatures of one function; done for top-level
-    functions);
+    functions and for methods, instance and static; not in interfaces, nor
+    generic);
   - tagged templates with `TemplateStringsArray` and `String.raw` (done;
     no type arguments on a tag);
   - generic closures, nested generic functions (done: nested declarations

@@ -53,6 +53,7 @@ import {
 import {
     type ArrayType,
     type FuncType,
+    type Method,
     type StructType,
     type Type,
     type UnionType,
@@ -65,6 +66,7 @@ import {
     arrayOf,
     findField,
     findMethod,
+    findOverloads,
     isNumeric,
     isStringLike,
     membersOf,
@@ -97,7 +99,16 @@ import { bigFromF64, bigText, bigToI64 } from "./bigint"
 import { type Checker } from "./base"
 import { cloneCall } from "./clone"
 import { consoleCall } from "./console"
-import { checkAccess, checkCtorAccess, dispatch, genericMethod, initOf, isThisType, itab } from "./classes"
+import {
+    checkAccess,
+    checkCtorAccess,
+    dispatch,
+    dispatchOverload,
+    genericMethod,
+    initOf,
+    isThisType,
+    itab,
+} from "./classes"
 import { closureCallee, genericCall, instantiate, isInternal } from "./declarations"
 import {
     checkArrayElements,
@@ -307,11 +318,23 @@ function toBigInt(c: Checker, name: string, node: Node, args: Node[], scope: Sco
     return c.fail(args[0], `Cannot convert '${typeToString(from)}' to 'bigint'.`)
 }
 
-/** A call of a function with overload signatures: the first signature whose parameters take the arguments. */
-function overloadedCall(c: Checker, name: string, overloads: Func[], args: Node[], node: Node, scope: Scope): Operand {
+/**
+ * A call of a function or method with overload signatures: the first
+ * signature whose parameters take the arguments.
+ */
+function overloadedCall(
+    c: Checker,
+    name: string,
+    overloads: Func[],
+    args: Node[],
+    node: Node,
+    scope: Scope,
+    receiver: Expr | null = null,
+): Operand {
     const before = c.diagnostics.length
     for (const func of overloads) {
-        const call = callFunc(c, func, args, node, scope, `Function '${name}'`)
+        const what = receiver === null ? `Function '${name}'` : `Method '${name}'`
+        const call = callFunc(c, func, args, node, scope, what, receiver)
         if (call.k === "typed" && c.diagnostics.length === before) return call
         c.truncateDiagnostics(before)
     }
@@ -1711,6 +1734,13 @@ function superMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Op
     if (typeArgs.length > 0)
         return c.fail(typeArgs[0], "Type arguments are only allowed for generic functions and methods.")
     const method = findMethod(base, name)
+    const overloads: Method[] = method === null ? findOverloads(base, name) : []
+    if (overloads.length > 0) {
+        defineMember(c, nameId, base, name)
+        if (!checkAccess(c, base, overloads[0].private, name, nameId)) return errorOperand
+        const funcs = overloads.map((m) => m.func)
+        return overloadedCall(c, `${base.name}.${name}`, funcs, argsOf(node), node, scope, new LocalRef(cls, self))
+    }
     if (method === null) {
         return c.fail(
             nameId,
@@ -2442,6 +2472,15 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
             dispatch(c, call.expr, name)
             if (decl !== null && isThisType(typeNode(decl)) && !sameType(call.expr.type, type))
                 return typed(new Recast(type, call.expr))
+            return call
+        }
+        const overloads = findOverloads(type, name)
+        if (overloads.length > 0) {
+            defineMember(c, nameId, type, name)
+            if (!checkAccess(c, type, overloads[0].private, name, nameId)) return errorOperand
+            const funcs = overloads.map((m) => m.func)
+            const call = overloadedCall(c, `${type.name}.${name}`, funcs, args, node, scope, value)
+            if (call.k === "typed") dispatchOverload(c, call.expr, overloads)
             return call
         }
         const field = findField(type, name)

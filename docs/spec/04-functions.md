@@ -56,7 +56,8 @@
   signature's result type: the implementation's result converts to it,
   checked at run time when it is narrower. The implementation must take
   every signature's arguments. Such a function cannot be used as a value;
-  generic signatures and overloaded methods are not supported yet.
+  generic signatures are not supported yet. Methods have overload
+  signatures the same way (see [Classes](03-objects.md#classes)).
 - Closures can have optional (`b?: T`), default (`b = 1`) and rest
   parameters, and so can function types (`(a: int, b?: int) => int`,
   `(...xs: string[]) => void`): a call of a function value passes null for

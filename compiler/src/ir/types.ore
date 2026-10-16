@@ -394,6 +394,44 @@ export function findMethod(t: StructType, name: string): Method | null {
     return null
 }
 
+/**
+ * The name of overload signature `index` of method `name` among the methods
+ * of a class: `name#index`, which no method of the source is named. Each
+ * signature is a method of its own, overridden by the subclasses' signature
+ * at its index; the implementation is no method of the class.
+ */
+export function overloadName(name: string, index: int): string {
+    return `${name}#${index}`
+}
+
+/** The name in the source of a method of a class: of an overload signature, the method's name. */
+export function sourceMethodName(name: string): string {
+    const hash = name.lastIndexOf("#")
+    return hash > 0 ? name.slice(0, hash) : name
+}
+
+/** The overload signatures of method `name` of a class, in order; empty for a method without them. */
+export function findOverloads(t: StructType, name: string): Method[] {
+    const found: Method[] = []
+    for (;;) {
+        const m = findMethod(t, overloadName(name, found.length))
+        if (m === null) return found
+        found.push(m)
+    }
+}
+
+/**
+ * The method of a class that implements method `name` of type `type` of an
+ * interface: the method so named, or else its overload signature of that
+ * type.
+ */
+export function implementingMethod(t: StructType, name: string, type: FuncType): Method | null {
+    const method = findMethod(t, name)
+    if (method !== null) return method
+    for (const m of findOverloads(t, name)) if (sameType(m.func.type, type)) return m
+    return null
+}
+
 /** Whether class `s` is `base` or a subclass of it. */
 export function isSubclass(s: StructType, base: StructType): bool {
     if (s === base) return true

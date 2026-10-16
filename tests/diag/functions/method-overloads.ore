@@ -1,0 +1,50 @@
+interface Both {
+    f(x: int): int
+    f(x: string): string // error: Overload signatures are not supported in interfaces yet.
+}
+interface Twice {
+    twice(x: bool): string
+}
+class A implements Twice {
+    // error: Class 'A' does not implement 'Twice': method 'twice' has no overload signature of type '(bool) => string'.
+    f(x: int): int
+    f(x: string): string
+    f(x: int | string): int | string {
+        return x
+    }
+    twice(x: int): string
+    twice(x: int | bool): string {
+        return `${x}`
+    }
+    private g(x: int): int // error: Overload signatures must all be public, private or protected, as the implementation.
+    g(x: int | string): int {
+        return 1
+    }
+    h(x: int): int // error: A method must have a body.
+    static s(x: int): int
+    static s(x: int | bool): int {
+        return 1
+    }
+    k(x: int): string // error: Type 'i64' is not assignable to type 'string'.
+    k(x: int | bool): int {
+        return 1
+    }
+}
+const a = new A()
+a.f(true) // error: No overload of 'A.f' takes these arguments. Its signatures: (i64) => i64; (string) => string.
+const m = a.f // error: Function 'A.f' has overload signatures and cannot be used as a value.
+A.s("x") // error: No overload of 'A.s' takes these arguments. Its signatures: (i64) => i64.
+class B extends A {
+    f(x: int): int {
+        // error: Method 'f' must have the signatures of the method it overrides in 'A': '(i64) => i64', '(string) => string'.
+        return x
+    }
+}
+class C extends A {
+    f(x: int): int
+    f(x: bool): bool
+    f(x: int | bool): int | bool {
+        // error: Method 'f' must have the signatures of the method it overrides in 'A': '(i64) => i64', '(string) => string'.
+        return x
+    }
+}

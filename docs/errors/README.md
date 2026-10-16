@@ -409,6 +409,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE5061](ORE5061.md) | A method returning 'this' must return 'this' or what a method returning 'this' returns on it. |
 | [ORE5062](ORE5062.md) | Constructor of class '…' is … and only accessible within the class declaration. |
 | [ORE5063](ORE5063.md) | Cannot extend a class '…': its constructor is private. |
+| [ORE5064](ORE5064.md) | Overload signatures must all be public, private or protected, as the implementation. |
+| [ORE5065](ORE5065.md) | Method '…' must have the signatures of the method it overrides in '…': …. |
+| [ORE5066](ORE5066.md) | Overload signatures are not supported in interfaces yet. |
 
 ## ORE6xxx: Declarations, functions, generics, modules and C
 

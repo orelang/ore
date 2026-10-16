@@ -34,6 +34,12 @@ before 1.0, a minor version may change the language.
   string]: string }` and the same interface, is a dictionary whose other
   members are named entries: always there unless optional, read and written
   as their own types, checked by `delete`, literals and `JSON.parse`.
+- Methods, instance and static, have overload signatures as top-level
+  functions do: callers, through `this` and `super` too, see only the
+  signatures, and a call has the result type of the one it takes. A subclass
+  overrides them with the same signatures, and each signature implements an
+  interface method of its type. Interfaces report overload signatures as not
+  supported yet (ORE5066).
 
 ## 0.5.0
 

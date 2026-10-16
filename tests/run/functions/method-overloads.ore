@@ -1,0 +1,59 @@
+// Overload signatures of methods: callers see the signatures, through `this`
+// and `super` too; subclasses override them, and each implements an
+// interface method of its type.
+interface Doubler {
+    twice(x: string): string
+}
+
+class Codec {
+    constructor(readonly prefix: string) {}
+
+    twice(x: int): int
+    twice(x: string): string
+    twice(x: int | string): int | string {
+        if (typeof x === "string") return `${this.prefix}${x}${x}`
+        return x * 2
+    }
+
+    describe(): string {
+        const n: int = this.twice(21)
+        const s: string = this.twice("ab")
+        return `${n} ${s}`
+    }
+
+    static parse(s: string): int
+    static parse(s: string, radix: int): int
+    static parse(s: string[]): int[]
+    static parse(s: string | string[], radix = 10): int | int[] {
+        if (typeof s === "string") return Number.parseInt(s, radix) ?? 0
+        const out: int[] = []
+        for (const x of s) out.push(Number.parseInt(x, radix) ?? 0)
+        return out
+    }
+}
+
+class Loud extends Codec {
+    override twice(x: int): int
+    override twice(x: string): string
+    override twice(x: int | string): int | string {
+        if (typeof x === "string") return super.twice(x).toUpperCase()
+        return super.twice(x) + 1
+    }
+}
+
+function show(d: Doubler): string {
+    return d.twice("xy")
+}
+
+const codec = new Codec(">")
+const a: int = codec.twice(5)
+const b: string = codec.twice("q")
+console.log(a, b, codec.describe())
+const loud: Codec = new Loud("!")
+console.log(loud.twice(5), loud.twice("q"), loud.describe())
+console.log(show(codec), show(loud))
+const one: int = Codec.parse("42")
+const hex: int = Codec.parse("ff", 16)
+const many: int[] = Codec.parse(["1", "2"])
+console.log(one, hex, many)
+console.log(Loud.parse("7"))

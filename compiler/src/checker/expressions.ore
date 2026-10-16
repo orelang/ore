@@ -74,6 +74,7 @@ import {
     dictMember,
     findField,
     findMethod,
+    findOverloads,
     isNumberLiterals,
     isNumeric,
     isSubclass,
@@ -2324,7 +2325,9 @@ function staticOf(c: Checker, type: StructType | null, decl: Node, object: Node,
     if (local !== null) return new LocalSymbol(local, member_.decl)
     const generic = member_.generic
     if (generic !== null) return new GenericFuncSymbol(generic, member_.decl)
-    return new FuncSymbol(member_.func!, member_.decl)
+    const symbol = new FuncSymbol(member_.func!, member_.decl)
+    symbol.overloads = member_.overloads
+    return symbol
 }
 
 export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
@@ -2388,6 +2391,11 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
         }
         if (genericMethod(c, type, name) !== null)
             return c.fail(nameNode_, `'${name}' is a generic method and cannot be used as a value; call it.`)
+        if (findOverloads(type, name).length > 0)
+            return c.fail(
+                nameNode_,
+                `Function '${type.name}.${name}' has overload signatures and cannot be used as a value.`,
+            )
     }
     if (type.kind === "interface") {
         defineMember(c, nameNode_, type, name)
