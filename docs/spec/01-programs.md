@@ -5,7 +5,8 @@
 - Extension: `.ore`. Encoding: UTF-8.
 - Syntax is exactly the TypeScript syntax. Ore adds no new syntax; it only
   restricts it and assigns native semantics.
-- A file is a module. Imports and exports use ES module syntax; see [modules](07-modules.md).
+- A file is a module. Imports and exports use ES module syntax; see
+  [modules](07-modules.md).
 
 ## Programs
 

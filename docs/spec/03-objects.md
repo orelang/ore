@@ -235,12 +235,13 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
 - the same checks of an `unknown`, which unbox it (see
   [unknown](02-types.md#unknown)).
 
-Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
-of `&&`, `||` and `?:` (where `a || b` narrows a reference to the union of
-what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`), and `switch` clauses on a literal (clauses reached by
-falling through code are not narrowed). An assignment narrows to the assigned
-value's type until the next assignment; a `?:` keeps the union of its
-branches' types (`u = t !== null ? t : "none"` makes `u` a string).
+Narrowing applies inside `if` / `else`, `while` and `for` bodies, the
+operands of `&&`, `||` and `?:` (where `a || b` narrows a reference to the
+union of what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`),
+and `switch` clauses on a literal (clauses reached by falling through code
+are not narrowed). An assignment narrows to the assigned value's type until
+the next assignment; a `?:` keeps the union of its branches' types
+(`u = t !== null ? t : "none"` makes `u` a string).
 
 Narrowing follows the flow of the code: after an `if`, a reference is
 narrowed to the union of its types at the ends of the branches that do not
@@ -398,9 +399,9 @@ names them is:
 ## Sets
 
 - `Set<T>` is a reference to a hash set that iterates in insertion order,
-  with the hashing and equality of `Map` keys (unions included). `new Set<T>()` creates one;
-  the type may come from the context; a variable or field without an
-  initializer starts as a new empty set.
+  with the hashing and equality of `Map` keys (unions included).
+  `new Set<T>()` creates one; the type may come from the context; a
+  variable or field without an initializer starts as a new empty set.
 - `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`) or
   of another set; without a type argument, `T` is their element type.
 - `add(value)` returns the set; `has`, `delete` (returns whether the value

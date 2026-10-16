@@ -380,12 +380,12 @@ const code = process.command.run("cc", ["-c", "main.c"], { cwd: "build", env: ne
   fills one while this program reads the other cannot deadlock. Many tasks
   can run programs at the same time.
 
-`console.log` prints any value as Node's `util.inspect` does; the code that formats a type is generated for it. Strings among the
-arguments are printed as they are, and the arguments are separated by
-spaces. Floats are printed in the shortest form that round-trips, like
-JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`, `-0`. Inside
-other values strings are quoted (`'a'`, or `"it's"`, with escapes such as
-`\n`), and:
+`console.log` prints any value as Node's `util.inspect` does; the code that
+formats a type is generated for it. Strings among the arguments are printed
+as they are, and the arguments are separated by spaces. Floats are printed
+in the shortest form that round-trips, like JavaScript: `0.1`, `1`, `1e+21`,
+`1e-7`, `NaN`, `Infinity`, `-0`. Inside other values strings are quoted
+(`'a'`, or `"it's"`, with escapes such as `\n`), and:
 
 | Value | Printed |
 |---|---|
@@ -544,15 +544,15 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   braces without Annex B (`/\a/u` is an error). Ignoring case compares
   simple case foldings: also `ſ` with `s`, the Kelvin sign with `k`, the Ohm
   sign with `Ω` and `ẞ` with `ß`; so `\w` and `\b` take `ſ` and the Kelvin
-  sign as word characters, and `\W` takes neither. Matching is by code
-  point with or without it. The properties of `\p{...}`, from Unicode
-  17.0: the General_Category values of letters and numbers (`L`, `LC`, `Lu`, `Ll`, `Lt`, `Lm`, `Lo`,
-  `N`, `Nd`, `Nl`, `No`, by their short or long names, alone or as
-  `gc=`/`General_Category=`), the scripts `Latin`, `Greek`, `Cyrillic` and
-  `Han` (`sc=`/`Script=`, also `Latn`, `Grek`, `Cyrl`, `Hani`), `Any` and
-  `ASCII`. Other properties JavaScript has (`Emoji`, `Script_Extensions`,
-  other categories and scripts) are errors: `The property 'Emoji' is not
-  supported`.
+  sign as word characters, and `\W` takes neither. Matching is by code point
+  with or without it. The properties of `\p{...}`, from Unicode 17.0: the
+  General_Category values of letters and numbers (`L`, `LC`, `Lu`, `Ll`,
+  `Lt`, `Lm`, `Lo`, `N`, `Nd`, `Nl`, `No`, by their short or long names,
+  alone or as `gc=`/`General_Category=`), the scripts `Latin`, `Greek`,
+  `Cyrillic` and `Han` (`sc=`/`Script=`, also `Latn`, `Grek`, `Cyrl`,
+  `Hani`), `Any` and `ASCII`. Other properties JavaScript has (`Emoji`,
+  `Script_Extensions`, other categories and scripts) are errors: `The
+  property 'Emoji' is not supported`.
 - `v` is `u` with JavaScript's classes of the `v` flag: nested classes
   (`[[a-z][0-9]]`), differences `[\p{L}--[a-z]]` and intersections
   `[\w&&\d]`, and the characters that must be escaped in them

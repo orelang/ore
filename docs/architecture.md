@@ -8,10 +8,11 @@ always underneath; they are in the [specification](spec).
 
 ## Principles
 
-1. **TS syntax as-is, no new syntax.** Only the semantics change. This reuses
-   tree-sitter-typescript, TextMate grammars and the habits of TS developers;
-   the compiler's own parser builds TypeScript's tree. Where Ore needs more (attributes,
-   thread-locals), it uses comments: `//ore:` directives.
+1. **TS syntax as-is, no new syntax.** Only the semantics change. This
+   reuses tree-sitter-typescript, TextMate grammars and the habits of TS
+   developers; the compiler's own parser builds TypeScript's tree. Where Ore
+   needs more (attributes, thread-locals), it uses comments: `//ore:`
+   directives.
 2. **Go-like in spirit.** One `ore` binary (`build`, `run`, `test`, `fmt`,
    `check`, `doc`, `lsp`), fast compilation, static binaries, a GC, structural
    interfaces, errors as values, simplicity over expressiveness.
@@ -64,13 +65,15 @@ Everything a program needs at run time is in [`runtime/`](../runtime):
   in spans of one size class, a page table for pointers into objects, each
   thread allocating from its own spans without locks. A collection stops the
   world with a signal, scans stacks conservatively and globals from a table
-  the compiler emits, and objects allocated as bytes not at all. Strings are immutable UTF-8 `{ptr, len}`; arrays are references
-  to `{data, len, cap}`; maps are insertion-ordered hash tables.
+  the compiler emits, and objects allocated as bytes not at all. Strings are
+  immutable UTF-8 `{ptr, len}`; arrays are references to `{data, len, cap}`;
+  maps are insertion-ordered hash tables.
 - **Tasks**: an M:N scheduler of green threads (stackful, with an assembly
   context switch on arm64 and x86-64) on `ORE_THREADS` OS threads, a run
-  queue per thread with work stealing and a global one, channels with a lock each, `select` claimed by compare-and-swap,
-  a handoff for blocking file operations, and a netpoller (kqueue / epoll)
-  for sockets. The collector scans the stacks of suspended tasks.
+  queue per thread with work stealing and a global one, channels with a lock
+  each, `select` claimed by compare-and-swap, a handoff for blocking file
+  operations, and a netpoller (kqueue / epoll) for sockets. The collector
+  scans the stacks of suspended tasks.
 - **Panics** print a message and, in debug builds, a stack trace from a
   shadow stack of frames kept by generated code.
 
