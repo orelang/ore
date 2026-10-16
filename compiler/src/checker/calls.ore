@@ -345,6 +345,8 @@ export function arrayMethod(
     scope: Scope,
 ): Operand {
     const T = type.elem
+    // A method that makes a new array makes a mutable one, also of a read-only array, as in TypeScript.
+    const fresh: ArrayType = type.readOnly ? arrayOf(T) : type
     const args = argsOf(node)
     const arity = arrayMethods.get(name)!
     if (arity.max === -1 && args.length < arity.min)
@@ -385,12 +387,12 @@ export function arrayMethod(
             // A callback with a type predicate narrows the elements that `filter` keeps.
             const narrowed = name === "filter" ? filteredType(c, cb.expr, T) : null
             if (narrowed !== null) {
-                const kept = new ArrayMethod(name, type, array, [cb.expr], cb.arity)
+                const kept = new ArrayMethod(name, fresh, array, [cb.expr], cb.arity)
                 return typed(new ArrayMethod("map", arrayOf(narrowed), kept, [narrowingFunc(c, T, narrowed, node)], 1))
             }
             const result: Type =
                 name === "filter"
-                    ? type
+                    ? fresh
                     : name === "find" || name === "findLast"
                       ? c.unionOf([T, types.null])
                       : name === "findIndex" || name === "findLastIndex"
@@ -434,7 +436,7 @@ export function arrayMethod(
             const index = checkIndex(c, args[0], scope, true)
             const value = c.coerce(checkExpr(c, args[1], scope, T), T, args[1])
             if (index === null) return errorOperand
-            return typed(new ArrayMethod(name, type, array, [index, value]))
+            return typed(new ArrayMethod(name, fresh, array, [index, value]))
         }
         case "fill":
         case "copyWithin": {
@@ -467,14 +469,14 @@ export function arrayMethod(
                 values.push(c.coerce(value, T, arg))
                 spread.push(false)
             }
-            return typed(new ArrayLit(type, values, spread))
+            return typed(new ArrayLit(fresh, values, spread))
         }
         case "entries":
             return typed(new ArrayMethod(name, arrayOf(c.tupleOf([types.i64, T])), array, []))
         case "keys":
             return typed(new ArrayMethod(name, arrayOf(types.i64), array, []))
         case "values":
-            return typed(new Slice(type, array, null, null))
+            return typed(new Slice(fresh, array, null, null))
         case "flat": {
             // The depth must be known to type the result: a constant, or Infinity for all the levels.
             let depth = 1
@@ -510,7 +512,7 @@ export function arrayMethod(
         }
         case "reverse":
         case "toReversed":
-            return typed(new ArrayMethod(name, type, array, []))
+            return typed(new ArrayMethod(name, name === "toReversed" ? fresh : type, array, []))
         case "shift":
             return typed(new ArrayMethod(name, T, array, []))
         case "unshift": {
@@ -527,7 +529,7 @@ export function arrayMethod(
                     : new IntLit(types.i64, args.length > 0 ? 9007199254740991 : 0)
             const items = arrayItems(c, args, 2, scope, type)
             if (start === null || count === null || items === null) return errorOperand
-            return typed(new ArrayMethod(name, type, array, [start, count, items]))
+            return typed(new ArrayMethod(name, name === "toSpliced" ? fresh : type, array, [start, count, items]))
         }
         default: {
             // sort and toSorted: by a comparator returning a number, or in natural order for numbers and strings.
@@ -537,12 +539,12 @@ export function arrayMethod(
                         nameNode(callee),
                         `Sorting '${typeToString(T)}' needs a comparator: 'sort((a, b) => ...)'.`,
                     )
-                return typed(new ArrayMethod(name, type, array, []))
+                return typed(new ArrayMethod(name, name === "toSorted" ? fresh : type, array, []))
             }
             const cb = callback(c, args[0], scope, [T, T], null)
             if (cb === null) return errorOperand
             if (!isNumeric(cb.result)) return c.fail(args[0], `The comparator of '${name}' must return a number.`)
-            return typed(new ArrayMethod(name, type, array, [cb.expr], cb.arity))
+            return typed(new ArrayMethod(name, name === "toSorted" ? fresh : type, array, [cb.expr], cb.arity))
         }
     }
 }
@@ -2641,8 +2643,10 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
             else offsets.push(o)
         }
         if (failed) return errorOperand
+        // A slice of a read-only array is a new, mutable one.
+        const sliced: Type = type.kind === "array" && type.readOnly ? arrayOf(type.elem) : type
         return typed(
-            new Slice(type, value, offsets.length > 0 ? offsets[0] : null, offsets.length > 1 ? offsets[1] : null),
+            new Slice(sliced, value, offsets.length > 0 ? offsets[0] : null, offsets.length > 1 ? offsets[1] : null),
         )
     }
     return c.fail(nameId, noProperty(type, name).replace("Property", "Method"))

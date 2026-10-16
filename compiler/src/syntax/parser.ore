@@ -1883,11 +1883,17 @@ export class Parser {
                 continue
             }
             const next = this.peek(1)
-            if ((this.at("GetKeyword") || this.at("SetKeyword")) && this.isPropertyNameStart(next.kind) && !next.newline) {
+            if (
+                (this.at("GetKeyword") || this.at("SetKeyword")) &&
+                this.isPropertyNameStart(next.kind) &&
+                !next.newline
+            ) {
                 // `get x(): T` and `set x(value: T)`: accessor signatures.
                 const kind: NodeKind = this.at("GetKeyword") ? "GetAccessor" : "SetAccessor"
                 this.next()
-                const accessor = new Node(kind, start, start).addAll(modifiers, "modifiers").add(this.propertyName(), "name")
+                const accessor = new Node(kind, start, start)
+                    .addAll(modifiers, "modifiers")
+                    .add(this.propertyName(), "name")
                 this.signature(accessor)
                 if (!this.eat("SemicolonToken")) this.eat("CommaToken")
                 members.push(this.finish(accessor, start))
