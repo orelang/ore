@@ -10,7 +10,7 @@ before 1.0, a minor version may change the language.
   string?]` of type `T | null` that literals can leave out, rest elements
   that spread tuple types `[...A, ...B]`, and `infer` with rest elements in
   conditional types (`T extends [infer H, ...infer R] ? ...`). A rest
-  element of array type in the type of a value is reported (ORE2069), as
+  element of array type in the type of a value is reported (ORE2072), as
   tuples have a fixed length.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
