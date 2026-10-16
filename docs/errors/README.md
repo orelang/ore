@@ -217,6 +217,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3079](ORE3079.md) | Static fields of generic classes are not supported yet. |
 | [ORE3080](ORE3080.md) | An expression of type 'void' cannot be awaited. |
 | [ORE3081](ORE3081.md) | A union of promises and other values cannot be awaited yet. |
+| [ORE3082](ORE3082.md) | Static members cannot reference class type parameters. |
 
 ## ORE4xxx: Calls and built-in functions
 

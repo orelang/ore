@@ -94,6 +94,7 @@ import {
     prepend,
     resolveParams,
     checkReturns,
+    typeNames,
 } from "./declarations"
 import { checkExpr, settle } from "./expressions"
 import { cIdent, findThis, hasZeroValue, indexSignatureMessage, zeroNeedsInit, zeroValue } from "./helpers"
@@ -616,6 +617,13 @@ function declareStatic(c: Checker, info: ClassInfo, member: Node, flags: MemberF
     const hidden = flags.isPrivate || flags.isProtected
     if (flags.isProtected) c.error(member, "Static members cannot be protected; make it private or public.")
     const className = info.type.name ?? ""
+    const generic = c.genericsByDecl.get(info.decl)
+    if (member.kind === "PropertyDeclaration" && generic !== null) {
+        // A static field of a generic class is one global, shared by its instances.
+        const shared = genericStaticField(c, member, generic)
+        info.statics.set(name, new StaticMember(name, member, info, shared, null, hidden))
+        return
+    }
     if (member.kind === "PropertyDeclaration") {
         const annotation = typeNode(member)
         const type = annotation !== null ? c.resolveValueType(annotation, scope) : null
@@ -666,31 +674,84 @@ export function staticMember(c: Checker, info: ClassInfo, name: string): StaticM
     return baseInfo === null ? null : staticMember(c, baseInfo, name)
 }
 
+/**
+ * The global of static field `member` of generic class `generic`, made on
+ * first use: one for all instances, as in TypeScript, so its type cannot
+ * name the class's type parameters.
+ */
+export function genericStaticField(c: Checker, member: Node, generic: Generic): Local {
+    const known = c.genericStaticFields.get(member)
+    if (known !== null) return known
+    const nameAt = member.child("name")!
+    const name = nameAt.text
+    const annotation = typeNode(member)
+    let type: Type | null = null
+    let poisoned = false
+    if (annotation !== null) {
+        const names: string[] = []
+        typeNames(annotation, names)
+        for (const p of generic.params) {
+            if (!poisoned && names.includes(nameNode(p).text)) {
+                c.error(annotation, "Static members cannot reference class type parameters.")
+                poisoned = true
+            }
+        }
+        if (!poisoned) type = c.resolveValueType(annotation, generic.scope)
+        if (type === null) poisoned = true
+    }
+    const local = c.newLocal(`${generic.name}.${name}`, type ?? types.void, !hasModifier(member, "ReadonlyKeyword"))
+    local.global = true
+    c.declNodes.set(local, nameAt)
+    if (type !== null) c.info.types.set(nameAt, type)
+    else if (!poisoned && initializer(member) !== null) c.untyped.add(local)
+    else {
+        if (!poisoned) c.error(nameAt, `Static field '${name}' needs a type annotation or an initializer.`)
+        c.poisoned.add(local)
+    }
+    c.genericStaticFields.set(member, local)
+    return local
+}
+
 /** The top-level code of a class declaration: its static fields, initialized in order. */
 export function initStatics(c: Checker, decl: Node, scope: Scope, out: Stmt[]) {
+    const generic = c.genericsByDecl.get(decl)
+    if (generic !== null) {
+        for (const member of members(decl)) {
+            if (member.kind !== "PropertyDeclaration" || !hasModifier(member, "StaticKeyword")) continue
+            const nameAt = member.child("name")
+            if (nameAt === null || !isIdentifier(nameAt)) continue
+            initStatic(c, genericStaticField(c, member, generic), member, nameAt.text, scope, out)
+        }
+        return
+    }
     let info: ClassInfo | null = null
     for (const i of c.classes) if (i.decl === decl) info = i
     if (info === null) return
     for (const [_, member] of info.statics) {
         const local = member.local
-        if (local === null) continue
-        const init = initializer(member.decl)
-        let value: Expr | null = null
-        if (init !== null) {
-            const typed_ = !c.untyped.has(local)
-            const operand = checkExpr(c, init, scope, typed_ ? local.type : null)
-            if (!typed_ && !settle(c, local, operand, init)) continue
-            if (operand.k !== "error") value = c.coerce(operand, local.type, init)
-        } else if (hasZeroValue(local.type)) {
-            value = zeroValue(local.type)
-        } else {
-            c.error(
-                member.decl.child("name")!,
-                `Static field '${member.name}' of type '${typeToString(local.type)}' needs an initializer.`,
-            )
-        }
-        if (value !== null) out.push(new LetStmt(local, value))
+        if (local !== null) initStatic(c, local, member.decl, member.name, scope, out)
     }
+}
+
+/** Initializes the global of static field `decl`: by its initializer, else by its type's zero value. */
+function initStatic(c: Checker, local: Local, decl: Node, name: string, scope: Scope, out: Stmt[]) {
+    if (c.poisoned.has(local)) return
+    const init = initializer(decl)
+    let value: Expr | null = null
+    if (init !== null) {
+        const typed_ = !c.untyped.has(local)
+        const operand = checkExpr(c, init, scope, typed_ ? local.type : null)
+        if (!typed_ && !settle(c, local, operand, init)) return
+        if (operand.k !== "error") value = c.coerce(operand, local.type, init)
+    } else if (hasZeroValue(local.type)) {
+        value = zeroValue(local.type)
+    } else {
+        c.error(
+            decl.child("name")!,
+            `Static field '${name}' of type '${typeToString(local.type)}' needs an initializer.`,
+        )
+    }
+    if (value !== null) out.push(new LetStmt(local, value))
 }
 
 export function memberModifiers(c: Checker, node: Node): MemberFlags {

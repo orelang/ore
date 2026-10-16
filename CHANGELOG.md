@@ -33,6 +33,11 @@ before 1.0, a minor version may change the language.
   parameter binds it to `void`. A function returning `null` may end without
   a `return`. A null-returning call converted to a union is no longer
   dropped.
+- Generic classes can have static fields, `class Box<T> { static count = 0 }`:
+  one for all instances, as in TypeScript, initialized where the class is
+  declared, and read, assigned and updated from anywhere, its static and
+  instance methods too. Their types cannot name the class's type
+  parameters (ORE3082); ORE3079 is no longer reported.
 - `Map` and `Set` have JavaScript's whole API: `map.forEach((value, key,
   map) => ...)`, `Map.groupBy(items, (element, index) => key)`,
   `set.forEach((value, value2, set) => ...)`, `set.keys()`,
