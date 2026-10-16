@@ -81,9 +81,12 @@ console.log(counts) // [ 1, 3 ]
   that resolves it, for code that resolves it outside an executor. There
   is no `reject` and no `catch`.
 - An `async` function, method or arrow function returns `Promise<T>`, which
-  its return type must be (`Promise<void>` without an annotation); its
-  `return` statements give a `T` or a promise of one. It runs at once until
-  its first `await`, then the caller continues.
+  its return type must be (`Promise<void>` without an annotation, whose
+  `return` may have no value); its `return` statements give a `T` or a
+  promise of one. It runs at once until its first `await`, then the caller
+  continues. As the result of a callback that may be async, `void |
+  Promise<T>` takes an async function too (see
+  [Unions and null](03-objects.md#unions-and-null)).
 - `await p` suspends an async function until `p` is fulfilled and gives its
   value; `await value` of anything else takes one tick, as for a fulfilled
   promise. The top-level code of a module may `await` too: it runs the
@@ -144,6 +147,11 @@ console.log(counts) // [ 1, 3 ]
 - Each call of an async function runs as a fiber: a task with its own stack
   that only the event loop resumes, so suspending it costs a switch of
   stacks, and a call that awaits forever keeps its stack.
+- The streams of JavaScript (`ReadableStream`, `WritableStream`,
+  `TransformStream`) are global classes on these promises (see
+  [Streams](02-types.md#streams)): where JavaScript rejects one of their
+  promises, Ore fulfills it with an `Error`, as `Promise<Error | null>` or
+  `Promise<ReadableStreamReadResult<R> | Error>`.
 - Async generators (`async function*`) and `for await` are JavaScript's
   (see [Async iteration](04-functions.md#async-iteration)): the body of an
   async generator runs on a fiber of its own, which awaits as an async

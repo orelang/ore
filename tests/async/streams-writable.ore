@@ -1,0 +1,76 @@
+// WritableStream: a sink's start, write and close, a writer's writes, ready
+// and closed, and backpressure past the high-water mark, in Node's order of
+// promises, which a ticker on every microtask shows.
+
+let tick = 0
+function ticker(n: number) {
+    let left = n
+    const step = () => {
+        tick++
+        console.log(`tick ${tick}`)
+        left--
+        if (left > 0) queueMicrotask(step)
+    }
+    queueMicrotask(step)
+}
+
+const written: string[] = []
+const stream = new WritableStream<string>(
+    {
+        start(controller) {
+            console.log("start")
+        },
+        async write(chunk) {
+            console.log("write", chunk)
+            await null
+            written.push(chunk)
+        },
+        close() {
+            console.log("sink close")
+        },
+    },
+    { highWaterMark: 2 },
+)
+const writer = stream.getWriter()
+console.log("locked", stream.locked, "desired", writer.desiredSize)
+writer.ready.then(() => console.log("ready"))
+writer.closed.then(() => console.log("closed"))
+ticker(16)
+writer.write("a").then(() => console.log("wrote a"))
+console.log("desired", writer.desiredSize)
+writer.write("b").then(() => console.log("wrote b"))
+console.log("desired", writer.desiredSize)
+writer.write("c").then(() => console.log("wrote c"))
+console.log("desired", writer.desiredSize)
+writer.ready.then(() => console.log("ready again", writer.desiredSize))
+await writer.close()
+console.log("written", written, writer.desiredSize)
+writer.releaseLock()
+console.log("locked", stream.locked)
+
+// The default sink takes everything at once; a strategy counts the chunks.
+const counted = new WritableStream<number>({}, new CountQueuingStrategy({ highWaterMark: 3 }))
+const w2 = counted.getWriter()
+console.log("count desired", w2.desiredSize)
+w2.write(1)
+w2.write(2)
+console.log("count desired", w2.desiredSize)
+await w2.ready
+console.log("count desired after", w2.desiredSize)
+
+// A sized strategy: the sizes of the chunks queued count against the mark.
+const sized = new WritableStream<string>(
+    {
+        write(chunk) {
+            return new Promise<void>((resolve) => setTimeout(() => resolve(), 1))
+        },
+    },
+    { highWaterMark: 5, size: (chunk) => (chunk === "abc" ? 3 : 2) },
+)
+const w3 = sized.getWriter()
+w3.write("abc")
+console.log("sized desired", w3.desiredSize)
+w3.write("de")
+console.log("sized desired", w3.desiredSize)
+await w3.close()
+console.log("sized closed", w3.desiredSize)

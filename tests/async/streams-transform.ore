@@ -1,0 +1,87 @@
+// TransformStream, pipeThrough and pipeTo: chunks through a transformer and
+// its flush into a sink, with the options of pipeTo, and the identity
+// transform of a TransformStream without a transformer.
+
+const upper = new TransformStream<string, string>({
+    start(controller) {
+        console.log("transform start")
+    },
+    transform(chunk, controller) {
+        controller.enqueue(chunk.toUpperCase())
+        if (chunk === "b") controller.enqueue("!")
+    },
+    flush(controller) {
+        controller.enqueue("END")
+    },
+})
+
+function source(chunks: string[]): ReadableStream<string> {
+    return new ReadableStream<string>({
+        start(controller) {
+            for (const c of chunks) controller.enqueue(c)
+            controller.close()
+        },
+    })
+}
+
+const got: string[] = []
+const sink = new WritableStream<string>({
+    write(chunk) {
+        got.push(chunk)
+    },
+    close() {
+        console.log("sink closed")
+    },
+})
+const done = await source(["a", "b", "c"]).pipeThrough(upper).pipeTo(sink)
+console.log("piped", done instanceof Error, got)
+
+// for await over a transformed stream.
+const doubled = source(["x", "y"]).pipeThrough(
+    new TransformStream<string, string>({
+        async transform(chunk, controller) {
+            await null
+            controller.enqueue(chunk + chunk)
+        },
+    }),
+)
+const out: string[] = []
+for await (const chunk of doubled) out.push(chunk)
+console.log("doubled", out)
+
+// Without a transformer, chunks pass as they are.
+const identity = new TransformStream<string>()
+const writer = identity.writable.getWriter()
+writer.write("same")
+writer.close()
+for await (const chunk of identity.readable) console.log("identity", chunk)
+
+// preventClose leaves the destination open; the writer can still write.
+const kept: string[] = []
+const open = new WritableStream<string>({
+    write(chunk) {
+        kept.push(chunk)
+    },
+})
+await source(["1", "2"]).pipeTo(open, { preventClose: true })
+const w = open.getWriter()
+await w.write("3")
+await w.close()
+console.log("kept", kept)
+
+// A transformer that terminates early: the readable side ends.
+const firstTwo = new TransformStream<string, string>({
+    transform(chunk, controller) {
+        controller.enqueue(chunk)
+        if (chunk === "q") controller.terminate()
+    },
+})
+const short: string[] = []
+const shortRead = (async () => {
+    for await (const chunk of firstTwo.readable) short.push(chunk)
+})()
+const tw = firstTwo.writable.getWriter()
+await tw.write("p")
+await tw.write("q")
+await shortRead
+console.log("terminated", short)

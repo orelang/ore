@@ -1,0 +1,70 @@
+// ReadableStream.from of arrays, sets and async generators, tee, values with
+// preventCancel, Blob.stream() and the text streams.
+
+async function collect(stream: ReadableStream<string>): Promise<string[]> {
+    const out: string[] = []
+    for await (const chunk of stream) out.push(chunk)
+    return out
+}
+
+console.log("array", await collect(ReadableStream.from(["a", "b", "c"])))
+console.log("set", await collect(ReadableStream.from(new Set(["s1", "s2"]))))
+
+async function* generate() {
+    yield "x"
+    await null
+    yield "y"
+}
+console.log("generator", await collect(ReadableStream.from(generate())))
+
+// Two branches of the same chunks; the source is locked.
+const source = ReadableStream.from(["t1", "t2", "t3"])
+const [left, right] = source.tee()
+console.log("tee locked", source.locked, left.locked, right.locked)
+console.log("left", await collect(left))
+console.log("right", await collect(right))
+
+// Leaving a loop early cancels the stream, unless preventCancel.
+let canceled = 0
+function counting(): ReadableStream<string> {
+    let i = 0
+    return new ReadableStream<string>({
+        pull(controller) {
+            i++
+            controller.enqueue(`n${i}`)
+        },
+        cancel(reason) {
+            canceled++
+        },
+    })
+}
+const endless = counting()
+for await (const chunk of endless) {
+    console.log("first of endless", chunk)
+    break
+}
+console.log("canceled", canceled, "locked", endless.locked)
+const kept = counting()
+for await (const chunk of kept.values({ preventCancel: true })) {
+    console.log("first of kept", chunk)
+    break
+}
+console.log("canceled", canceled, "locked", kept.locked)
+const reader = kept.getReader()
+const next = await reader.read()
+if (!(next instanceof Error) && !next.done) console.log("kept goes on", next.value)
+
+// A blob's bytes, decoded as they stream.
+const blob = new Blob(["héllo ", "wörld"])
+console.log("blob", (await collect(blob.stream().pipeThrough(new TextDecoderStream()))).join(""))
+
+// Strings encoded as UTF-8; an empty string gives no chunk.
+const encoded = ReadableStream.from(["hi", "", "é"]).pipeThrough(new TextEncoderStream())
+for await (const chunk of encoded) console.log("encoded", Array.from(chunk))
+
+// A character split between chunks is decoded whole.
+const bytes = new TextEncoder().encode("éA")
+const decoder = new TextDecoderStream()
+console.log("decoder", decoder.encoding, decoder.fatal, decoder.ignoreBOM)
+const decoded = ReadableStream.from([bytes.slice(0, 1), bytes.slice(1)]).pipeThrough(decoder)
+console.log("decoded", await collect(decoded))

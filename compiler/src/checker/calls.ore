@@ -2,7 +2,14 @@
 // `unsafe` and `JSON`), array and string methods.
 
 import { asyncSource, builtinIteratorOf, isProtocolIterable, iteratorFrom, toArray } from "./iteration"
-import { asyncIteratorFunc, inferGenerator, isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
+import {
+    asyncIteratorFunc,
+    inferGenerator,
+    isIteratorObject,
+    iteratorFunc,
+    iteratorInstance,
+    moduleFunc,
+} from "./generators"
 import { compileRegExp } from "../../../runtime/core/regexp-syntax"
 import {
     type Expr,
@@ -160,6 +167,8 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
         if (isIdentifier(callee)) c.info.definitions.set(callee, symbolOfCallee.decl)
         const generic = symbolOfCallee.generic
         if (c.sourceOf(generic.decl).path === "ore:runtime/iterator-from") return iteratorFromCall(c, node, scope)
+        if (generic.name === "ReadableStream.from" && c.sourceOf(generic.decl).path === streamsModule)
+            return readableFromCall(c, node, scope)
         // The first argument of `Object.fromEntries` and the `groupBy`s, an iterable, as an array;
         // an array literal is checked with the call, for the type of its elements.
         const checked: (Operand | null)[] = []
@@ -827,6 +836,26 @@ function arrayFromAsync(c: Checker, node: Node, scope: Scope): Operand {
     const source = asyncSource(c, value, args[0])
     if (source === null) return errorOperand
     const f = asyncIteratorFunc(c, "fromAsync", [value.type, source.elem], node)
+    if (f === null) return errorOperand
+    return typed(new Call(f.type.result, f, [value]))
+}
+
+/** The runtime's module of streams. */
+const streamsModule = "ore:runtime/streams"
+
+/**
+ * `ReadableStream.from(items)`: a stream of the values that `for await`
+ * takes from `items`, by the runtime's `readableFrom`.
+ */
+function readableFromCall(c: Checker, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    if (args.length !== 1) return c.fail(node, `'ReadableStream.from' expects 1 argument(s), got ${args.length}.`)
+    const operand = checkExpr(c, args[0], scope)
+    if (operand.k === "error") return errorOperand
+    const value = c.toDefault(operand, args[0])
+    const source = asyncSource(c, value, args[0])
+    if (source === null) return errorOperand
+    const f = moduleFunc(c, streamsModule, "readableFrom", [value.type, source.elem], node)
     if (f === null) return errorOperand
     return typed(new Call(f.type.result, f, [value]))
 }

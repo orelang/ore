@@ -1,0 +1,12 @@
+// Streams are typed: chunks by the stream's type, strategies by its chunks, and sources have no byte streams.
+const strings = new ReadableStream<string>({
+    start(controller) {
+        controller.enqueue(1) // error: is not assignable
+    },
+})
+const bytes = new ReadableStream<string>({ type: "bytes" }) // error: does not exist
+const sized = new ReadableStream<string>({}, new ByteLengthQueuingStrategy({ highWaterMark: 1 })) // error: is not assignable
+const ints = new WritableStream<int>()
+ints.getWriter().write("x") // error: is not assignable
+new ReadableStream<int>().pipeTo(new WritableStream<string>()) // error: is not assignable
+const reader = strings.getReader({ mode: "byob" }) // error: expects

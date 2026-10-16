@@ -1,0 +1,2133 @@
+// Streams, as the globals of JavaScript's hosts after the WHATWG Streams
+// Standard: `ReadableStream`, `WritableStream` and `TransformStream`, their
+// readers, writers and controllers, `CountQueuingStrategy`,
+// `ByteLengthQueuingStrategy`, `TextEncoderStream` and `TextDecoderStream`.
+// The algorithms are Node's (lib/internal/webstreams), which follow the
+// standard, so that the promises of streams settle in Node's order, tick for
+// tick: the callbacks of sources, sinks and transformers are called as
+// Node's `async (...args) => callback(...args)`.
+//
+// Promises do not reject in Ore. Where JavaScript rejects a promise of a
+// stream, Ore fulfills it with an Error: the reason itself when it is one,
+// else an Error whose `cause` is the reason (`toError`). The promises of
+// nothing (`closed`, `ready`, `cancel()`, `write()`, `pipeTo()`...) are
+// `Promise<Error | null>`, and `read()` is a `Promise<ReadableStreamReadResult<R>
+// | Error>`. A callback cannot throw: a source, sink or transformer fails by
+// calling its controller's `error(reason)`. What JavaScript throws at once
+// (a locked stream, a closed controller) panics, as JavaScript's uncaught
+// exceptions end a program, and so does `for await` over a stream that
+// errors.
+//
+// The state of a stream is in the classes below that are not exported; the
+// public classes hold it. Byte streams (`type: "bytes"`, BYOB readers) are
+// left out.
+
+import { AbortController, type AbortSignal, type Event } from "ore:runtime/events"
+import { microtask } from "ore:runtime/loop"
+import { TextDecoder, type TextDecoderOptions, TextEncoder } from "ore:runtime/text"
+
+/**
+ * How many chunks a stream queues before it applies backpressure: up to
+ * `highWaterMark` in total of the sizes that `size` gives (1 each without
+ * it). `CountQueuingStrategy` and `ByteLengthQueuingStrategy` are such
+ * strategies, as an object literal is: `{ highWaterMark: 4 }`.
+ */
+export interface QueuingStrategy<T> {
+    readonly highWaterMark: number
+    size?(chunk: T): number
+}
+
+/** The options of `new CountQueuingStrategy` and `new ByteLengthQueuingStrategy`. */
+export type QueuingStrategyInit = { highWaterMark: number }
+
+/** The result of a callback that may be async: nothing, or a promise of nothing. */
+type Started = void | Promise<void>
+
+/**
+ * The callbacks of a readable stream's source: `start` when it is made,
+ * `pull` when its queue wants more chunks (again only once the promise it
+ * returns is fulfilled), `cancel` when it is canceled. Each is given the
+ * controller, through which it enqueues chunks, closes or errors the
+ * stream.
+ */
+export type UnderlyingSource<R> = {
+    start?: (controller: ReadableStreamDefaultController<R>) => Started
+    pull?: (controller: ReadableStreamDefaultController<R>) => Started
+    cancel?: (reason: unknown) => Started
+}
+
+/**
+ * The callbacks of a writable stream's sink: `start` when it is made,
+ * `write` for each chunk, one at a time, `close` after the last one, `abort`
+ * when the stream is aborted.
+ */
+export type UnderlyingSink<W> = {
+    start?: (controller: WritableStreamDefaultController) => Started
+    write?: (chunk: W, controller: WritableStreamDefaultController) => Started
+    close?: () => Started
+    abort?: (reason: unknown) => Started
+}
+
+/**
+ * The callbacks of a transform stream: `transform` for each chunk written,
+ * which enqueues what it makes of it, `flush` after the last one, `cancel`
+ * when either side is canceled or aborted. Without `transform`, chunks pass
+ * as they are.
+ */
+export type Transformer<I, O> = {
+    start?: (controller: TransformStreamDefaultController<O>) => Started
+    transform?: (chunk: I, controller: TransformStreamDefaultController<O>) => Started
+    flush?: (controller: TransformStreamDefaultController<O>) => Started
+    cancel?: (reason: unknown) => Started
+}
+
+/** What `read()` gives: a chunk, or the end of the stream, where JavaScript's value is undefined. */
+export type ReadableStreamReadResult<T> = { value: T; done: false } | { value: null; done: true }
+
+/**
+ * The options of `pipeTo` and `pipeThrough`: whether the end of the source
+ * leaves the destination open (`preventClose`), an error of the source
+ * leaves it unaborted (`preventAbort`), an error of the destination leaves
+ * the source uncanceled (`preventCancel`), and a signal that stops the pipe.
+ */
+export type StreamPipeOptions = { preventClose?: bool; preventAbort?: bool; preventCancel?: bool; signal?: AbortSignal }
+
+/** The options of `values()`: whether leaving the loop early leaves the stream uncanceled. */
+export type ReadableStreamIteratorOptions = { preventCancel?: bool }
+
+/** What `pipeThrough` takes: a writable side, which a stream is piped to, and a readable side, which it returns. */
+export interface ReadableWritablePair<T, W> {
+    readonly readable: ReadableStream<T>
+    readonly writable: WritableStream<W>
+}
+
+// ---------------------------------------------------------------------------
+// Promises and errors
+
+/**
+ * A rejection of JavaScript as a value: the reason when it is an Error,
+ * else an Error whose `cause` is the reason, with the reason as its message
+ * when it is a string.
+ */
+function toError(reason: unknown): Error {
+    if (reason instanceof Error) return reason
+    const message = typeof reason === "string" ? reason : "The stream was errored"
+    return new Error(message, { cause: reason })
+}
+
+/** A TypeError that a promise of a stream rejects with, as Node's `ERR_INVALID_STATE`. */
+function typeError(message: string): Error {
+    const e = new Error(message)
+    e.name = "TypeError"
+    return e
+}
+
+/** Panics with a reason, as JavaScript throws it: an Error as `Name: message`. */
+function panicWith(reason: unknown): void {
+    if (reason instanceof Error) process.panic(reason.toString())
+    if (typeof reason === "string") process.panic(reason)
+    process.panic("The stream was errored")
+}
+
+/** A pending promise, resolved by its owner. */
+function pending<T>(): Promise<T> {
+    return new Promise<T>((resolve) => {})
+}
+
+/** A promise fulfilled with `value`, which is no promise. */
+function fulfilled<T>(value: T): Promise<T> {
+    const p = pending<T>()
+    p.resolveWith(value)
+    return p
+}
+
+/** A promise of nothing, fulfilled: JavaScript's `Promise.resolve()`. */
+function resolved(): Promise<Error | null> {
+    return fulfilled<Error | null>(null)
+}
+
+/** A promise of nothing, rejected with `reason`: JavaScript's `Promise.reject(reason)`. */
+function rejected(reason: unknown): Promise<Error | null> {
+    return fulfilled<Error | null>(toError(reason))
+}
+
+/** A promise of nothing and whether it settled: JavaScript's `Promise.withResolvers()`, or a promise settled already. */
+class Deferred {
+    readonly promise: Promise<Error | null> = pending<Error | null>()
+    settled = false
+
+    resolve(): void {
+        if (this.settled) return
+        this.settled = true
+        this.promise.resolveWith(null)
+    }
+
+    reject(reason: unknown): void {
+        if (this.settled) return
+        this.settled = true
+        this.promise.resolveWith(toError(reason))
+    }
+}
+
+function resolvedDeferred(): Deferred {
+    const d = new Deferred()
+    d.resolve()
+    return d
+}
+
+function rejectedDeferred(reason: unknown): Deferred {
+    const d = new Deferred()
+    d.reject(reason)
+    return d
+}
+
+/** `promise.then(onFulfilled, onRejected)`, whose own promise nobody uses. */
+function upon(promise: Promise<Error | null>, onFulfilled: () => void, onRejected: (error: Error) => void): void {
+    promise.react(() => {
+        const e = promise.valueOf()
+        if (e === null) onFulfilled()
+        else onRejected(e)
+    })
+}
+
+/** `promise.then(onFulfilled)`: a promise of what `onFulfilled` returns, or of the rejection of `promise`. */
+function after(
+    promise: Promise<Error | null>,
+    onFulfilled: () => Error | null | Promise<Error | null>,
+): Promise<Error | null> {
+    const out = pending<Error | null>()
+    promise.react(() => {
+        const e = promise.valueOf()
+        if (e !== null) out.resolveWith(e)
+        else out.resolveWith(onFulfilled())
+    })
+    return out
+}
+
+/** Resolves `out` with a callback's result: at once when it returned nothing, else as JavaScript adopts its promise. */
+function settleWith(out: Promise<Error | null>, result: Started): void {
+    if (result === null) {
+        out.resolveWith(null)
+        return
+    }
+    // NewPromiseResolveThenableJob: a job that reacts to the promise.
+    const p = result
+    microtask(() => p.react(() => out.resolveWith(null)))
+}
+
+/** The promise of a callback's result, as Node's `async (...args) => callback(...args)` makes it. */
+function called(result: Started): Promise<Error | null> {
+    const out = pending<Error | null>()
+    settleWith(out, result)
+    return out
+}
+
+/** `new Promise((resolve) => resolve(promise))`: a promise that follows `promise`, two ticks later. */
+function following(promise: Promise<Error | null>): Promise<Error | null> {
+    const out = pending<Error | null>()
+    out.resolveWith(promise)
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// Queues with sizes
+
+/** A chunk in a queue and its size; no chunk for the close of a writable stream. */
+class Queued<T> {
+    constructor(
+        readonly chunk: T[],
+        readonly size: number,
+    ) {}
+}
+
+/** The queue of a controller, with the total of the sizes. */
+class Queue<T> {
+    items: Queued<T>[] = []
+    total: number = 0
+
+    get length(): int {
+        return this.items.length
+    }
+
+    /** Adds a chunk; the message of a RangeError for a size that is negative, NaN or infinite. */
+    enqueue(chunk: T[], size: number): string | null {
+        if (Number.isNaN(size) || size < 0 || size === Number.POSITIVE_INFINITY)
+            return `The argument 'size' is invalid. Received ${size}`
+        this.items.push(new Queued<T>(chunk, size))
+        this.total += size
+        return null
+    }
+
+    dequeue(): T[] {
+        const q = this.items.shift()
+        this.total = Math.max(0, this.total - q.size)
+        return q.chunk
+    }
+
+    peek(): T[] {
+        return this.items[0].chunk
+    }
+
+    reset(): void {
+        this.items = []
+        this.total = 0
+    }
+}
+
+/** A RangeError, as Node throws it for a bad size. */
+function rangeError(message: string): Error {
+    const e = new Error(message)
+    e.name = "RangeError"
+    return e
+}
+
+/** The high-water mark of a strategy; a negative or NaN one panics with a RangeError. */
+function highWaterMarkOf(value: number): number {
+    if (Number.isNaN(value) || value < 0)
+        process.panic(`RangeError: The property 'strategy.highWaterMark' is invalid. Received ${value}`)
+    return value
+}
+
+/** The high-water mark and the size of a strategy. */
+class Sizing<T> {
+    constructor(
+        readonly highWaterMark: number,
+        readonly size: ((chunk: T) => number) | null,
+    ) {}
+}
+
+function sizingOf<T>(strategy: QueuingStrategy<T> | null, fallback: number): Sizing<T> {
+    if (strategy === null) return new Sizing<T>(fallback, null)
+    const size = strategy.size
+    return new Sizing<T>(highWaterMarkOf(strategy.highWaterMark), size)
+}
+
+/**
+ * Counts each chunk as 1, as JavaScript's `CountQueuingStrategy`: a stream
+ * made with it queues up to `highWaterMark` chunks.
+ */
+export class CountQueuingStrategy {
+    private readonly mark: number
+
+    constructor(init: QueuingStrategyInit) {
+        this.mark = init.highWaterMark
+    }
+
+    get highWaterMark(): number {
+        return this.mark
+    }
+
+    /** The size of any chunk: 1. */
+    size(): number {
+        return 1
+    }
+}
+
+/**
+ * Counts each chunk of bytes as its length, as JavaScript's
+ * `ByteLengthQueuingStrategy`: a stream of `u8[]` made with it queues up to
+ * `highWaterMark` bytes.
+ */
+export class ByteLengthQueuingStrategy {
+    private readonly mark: number
+
+    constructor(init: QueuingStrategyInit) {
+        this.mark = init.highWaterMark
+    }
+
+    get highWaterMark(): number {
+        return this.mark
+    }
+
+    /** The size of a chunk: its length. */
+    size(chunk: u8[]): number {
+        return f64(chunk.length)
+    }
+}
+
+/** The strategy a stream is made with: a `CountQueuingStrategy` counts each chunk as 1. */
+function strategySizing<T>(strategy: QueuingStrategy<T> | CountQueuingStrategy | null, fallback: number): Sizing<T> {
+    if (strategy instanceof CountQueuingStrategy) return new Sizing<T>(highWaterMarkOf(strategy.highWaterMark), null)
+    return sizingOf<T>(strategy, fallback)
+}
+
+// ---------------------------------------------------------------------------
+// Readable streams
+
+/** What a read is waiting for: a chunk, the end, or an error. */
+class ReadRequest<R> {
+    constructor(
+        readonly chunk: (value: R) => void,
+        readonly close: () => void,
+        readonly error: (reason: unknown) => void,
+    ) {}
+}
+
+/** The state of a reader. */
+class ReaderState<R> {
+    stream: ReadableState<R> | null = null
+    closed: Deferred = new Deferred()
+    readRequests: ReadRequest<R>[] = []
+}
+
+/** The state of a readable stream and of its controller. */
+class ReadableState<R> {
+    state: "readable" | "closed" | "errored" = "readable"
+    storedError: unknown = null
+    disturbed = false
+    reader: ReaderState<R> | null = null
+    readonly queue: Queue<R> = new Queue<R>()
+    closeRequested = false
+    pulling = false
+    pullAgain = false
+    started = false
+    pullAlgorithm: (() => Promise<Error | null>) | null = null
+    cancelAlgorithm: ((reason: unknown) => Promise<Error | null>) | null = null
+    size: ((chunk: R) => number) | null
+    readonly highWaterMark: number
+    readonly controller: ReadableStreamDefaultController<R>
+
+    constructor(sizing: Sizing<R>) {
+        this.highWaterMark = sizing.highWaterMark
+        this.size = sizing.size
+        this.controller = new ReadableStreamDefaultController<R>(this)
+    }
+}
+
+function readableLocked<R>(stream: ReadableState<R>): bool {
+    return stream.reader !== null
+}
+
+function readableCancel<R>(stream: ReadableState<R>, reason: unknown): Promise<Error | null> {
+    stream.disturbed = true
+    if (stream.state === "closed") return resolved()
+    if (stream.state === "errored") return rejected(stream.storedError)
+    readableClose(stream)
+    // The controller's cancel steps.
+    stream.queue.reset()
+    const cancel = stream.cancelAlgorithm
+    const result = cancel !== null ? cancel(reason) : resolved()
+    readableClearAlgorithms(stream)
+    return after(result, () => null)
+}
+
+function readableClose<R>(stream: ReadableState<R>): void {
+    stream.state = "closed"
+    const reader = stream.reader
+    if (reader === null) return
+    reader.closed.resolve()
+    const requests = reader.readRequests
+    reader.readRequests = []
+    for (const r of requests) r.close()
+}
+
+function readableError<R>(stream: ReadableState<R>, error: unknown): void {
+    stream.state = "errored"
+    stream.storedError = error
+    const reader = stream.reader
+    if (reader === null) return
+    reader.closed.reject(error)
+    const requests = reader.readRequests
+    reader.readRequests = []
+    for (const r of requests) r.error(error)
+}
+
+function readableFulfillRead<R>(stream: ReadableState<R>, chunk: R): void {
+    const request = stream.reader!.readRequests.shift()
+    request.chunk(chunk)
+}
+
+function readerInitialize<R>(reader: ReaderState<R>, stream: ReadableState<R>): void {
+    reader.stream = stream
+    stream.reader = reader
+    if (stream.state === "readable") reader.closed = new Deferred()
+    else if (stream.state === "closed") reader.closed = resolvedDeferred()
+    else reader.closed = rejectedDeferred(stream.storedError)
+}
+
+/** Locks `stream` to `reader`; a locked stream panics, as JavaScript throws. */
+function setupReader<R>(reader: ReaderState<R>, stream: ReadableState<R>): void {
+    if (readableLocked(stream)) process.panic("TypeError: Invalid state: ReadableStream is locked")
+    readerInitialize(reader, stream)
+    reader.readRequests = []
+}
+
+function readerGenericCancel<R>(reader: ReaderState<R>, reason: unknown): Promise<Error | null> {
+    return readableCancel(reader.stream!, reason)
+}
+
+/** Releases the lock of a reader: its `closed` rejects with "Reader released". */
+function readerGenericRelease<R>(reader: ReaderState<R>): void {
+    const stream = reader.stream!
+    const released = typeError("Invalid state: Reader released")
+    if (stream.state === "readable") reader.closed.reject(released)
+    else reader.closed = rejectedDeferred(released)
+    stream.reader = null
+    reader.stream = null
+}
+
+/** `releaseLock()`: the pending reads reject with "Releasing reader". */
+function readerRelease<R>(reader: ReaderState<R>): void {
+    readerGenericRelease(reader)
+    const releasing = typeError("Invalid state: Releasing reader")
+    const requests = reader.readRequests
+    reader.readRequests = []
+    for (const r of requests) r.error(releasing)
+}
+
+function readerRead<R>(reader: ReaderState<R>, request: ReadRequest<R>): void {
+    const stream = reader.stream!
+    stream.disturbed = true
+    if (stream.state === "closed") request.close()
+    else if (stream.state === "errored") request.error(stream.storedError)
+    else readablePullSteps(stream, request)
+}
+
+/** Whether `stream` is closed, read anew after the calls that may close it. */
+function readableClosed<R>(stream: ReadableState<R>): bool {
+    return stream.state === "closed"
+}
+
+function readableCanCloseOrEnqueue<R>(stream: ReadableState<R>): bool {
+    return !stream.closeRequested && stream.state === "readable"
+}
+
+function readableControllerClose<R>(stream: ReadableState<R>): void {
+    if (!readableCanCloseOrEnqueue(stream)) return
+    stream.closeRequested = true
+    if (stream.queue.length === 0) {
+        readableClearAlgorithms(stream)
+        readableClose(stream)
+    }
+}
+
+function readableControllerEnqueue<R>(stream: ReadableState<R>, chunk: R): void {
+    if (!readableCanCloseOrEnqueue(stream)) return
+    const reader = stream.reader
+    if (reader !== null && reader.readRequests.length > 0) {
+        readableFulfillRead(stream, chunk)
+    } else {
+        const size = stream.size
+        const failure = stream.queue.enqueue([chunk], size !== null ? size(chunk) : 1)
+        if (failure !== null) {
+            readableControllerError(stream, rangeError(failure))
+            process.panic(`RangeError: ${failure}`)
+        }
+    }
+    readableCallPullIfNeeded(stream)
+}
+
+function readableDesiredSize<R>(stream: ReadableState<R>): number | null {
+    if (stream.state === "errored") return null
+    if (stream.state === "closed") return 0
+    return stream.highWaterMark - stream.queue.total
+}
+
+function readableShouldCallPull<R>(stream: ReadableState<R>): bool {
+    if (!readableCanCloseOrEnqueue(stream) || !stream.started) return false
+    const reader = stream.reader
+    if (reader !== null && reader.readRequests.length > 0) return true
+    return stream.highWaterMark - stream.queue.total > 0
+}
+
+function readableCallPullIfNeeded<R>(stream: ReadableState<R>): void {
+    if (!readableShouldCallPull(stream)) return
+    if (stream.pulling) {
+        stream.pullAgain = true
+        return
+    }
+    const pull = stream.pullAlgorithm
+    if (pull === null) return
+    stream.pulling = true
+    upon(
+        pull(),
+        () => {
+            stream.pulling = false
+            if (stream.pullAgain) {
+                stream.pullAgain = false
+                readableCallPullIfNeeded(stream)
+            }
+        },
+        (e) => readableControllerError(stream, e),
+    )
+}
+
+function readableClearAlgorithms<R>(stream: ReadableState<R>): void {
+    stream.pullAlgorithm = null
+    stream.cancelAlgorithm = null
+    stream.size = null
+}
+
+function readableControllerError<R>(stream: ReadableState<R>, error: unknown): void {
+    if (stream.state !== "readable") return
+    stream.queue.reset()
+    readableClearAlgorithms(stream)
+    readableError(stream, error)
+}
+
+function readablePullSteps<R>(stream: ReadableState<R>, request: ReadRequest<R>): void {
+    if (stream.queue.length > 0) {
+        const chunk = stream.queue.dequeue()[0]
+        if (stream.closeRequested && stream.queue.length === 0) {
+            readableClearAlgorithms(stream)
+            readableClose(stream)
+        } else {
+            readableCallPullIfNeeded(stream)
+        }
+        request.chunk(chunk)
+        return
+    }
+    stream.reader!.readRequests.push(request)
+    readableCallPullIfNeeded(stream)
+}
+
+/** Sets up the controller of `stream` with its algorithms, and runs `start`. */
+function setupReadable<R>(
+    stream: ReadableState<R>,
+    start: () => Promise<Error | null>,
+    pull: () => Promise<Error | null>,
+    cancel: (reason: unknown) => Promise<Error | null>,
+): void {
+    stream.pullAlgorithm = pull
+    stream.cancelAlgorithm = cancel
+    upon(
+        start(),
+        () => {
+            stream.started = true
+            readableCallPullIfNeeded(stream)
+        },
+        (e) => readableControllerError(stream, e),
+    )
+}
+
+function setupReadableFromSource<R>(stream: ReadableState<R>, source: UnderlyingSource<R>): void {
+    const controller = stream.controller
+    const start = source.start
+    const pull = source.pull
+    const cancel = source.cancel
+    setupReadable<R>(
+        stream,
+        start !== null ? () => called(start(controller)) : () => called(null),
+        pull !== null ? () => called(pull(controller)) : () => resolved(),
+        cancel !== null ? (reason) => called(cancel(reason)) : (reason) => resolved(),
+    )
+}
+
+/** A readable stream with the state `made`, for the streams the runtime makes: tee, transform streams, `from`. */
+let madeReadable: unknown = null
+
+function readableOf<R>(stream: ReadableState<R>): ReadableStream<R> {
+    madeReadable = stream
+    return new ReadableStream<R>()
+}
+
+/** A readable stream whose controller runs these algorithms, as Node's `createReadableStream`. */
+function createReadable<R>(
+    start: () => Promise<Error | null>,
+    pull: () => Promise<Error | null>,
+    cancel: (reason: unknown) => Promise<Error | null>,
+    sizing: Sizing<R>,
+): ReadableState<R> {
+    const stream = new ReadableState<R>(sizing)
+    setupReadable(stream, start, pull, cancel)
+    return stream
+}
+
+/** A chunk that `read()` gives. */
+function chunkResult<R>(value: R): ReadableStreamReadResult<R> {
+    return { value, done: false }
+}
+
+/** The end of a stream that `read()` gives. */
+function doneResult<R>(): ReadableStreamReadResult<R> {
+    return { value: null, done: true }
+}
+
+/**
+ * Enqueues chunks into a readable stream, closes it or errors it, as
+ * JavaScript's `ReadableStreamDefaultController`: what a source's callbacks
+ * are given.
+ */
+export class ReadableStreamDefaultController<R> {
+    constructor(private readonly stream: ReadableState<R>) {}
+
+    /** How many more chunks the queue wants: the high-water mark less the sizes queued; 0 once closed, null once errored. */
+    get desiredSize(): number | null {
+        return readableDesiredSize(this.stream)
+    }
+
+    /** Closes the stream once its queue is read; a closed one panics, as JavaScript throws. */
+    close(): void {
+        if (!readableCanCloseOrEnqueue(this.stream))
+            process.panic("TypeError: Invalid state: Controller is already closed")
+        readableControllerClose(this.stream)
+    }
+
+    /** Gives a chunk to a read waiting, or queues it; a closed stream panics, as JavaScript throws. */
+    enqueue(chunk: R): void {
+        if (!readableCanCloseOrEnqueue(this.stream))
+            process.panic("TypeError: Invalid state: Controller is already closed")
+        readableControllerEnqueue(this.stream, chunk)
+    }
+
+    /** Errors the stream with `reason`: its queue is dropped and reads give the reason. */
+    error(reason: unknown = null): void {
+        readableControllerError(this.stream, reason)
+    }
+}
+
+/**
+ * Reads the chunks of a readable stream, which it locks, as JavaScript's
+ * `ReadableStreamDefaultReader`: `stream.getReader()`.
+ */
+export class ReadableStreamDefaultReader<R> {
+    private readonly reader: ReaderState<R> = new ReaderState<R>()
+
+    /** A reader of `stream`, which it locks; a locked stream panics, as JavaScript throws. */
+    constructor(stream: ReadableStream<R>) {
+        setupReader(this.reader, stream.state)
+    }
+
+    /** Fulfilled with null when the stream closes, with its error when it errors or the reader is released. */
+    get closed(): Promise<Error | null> {
+        return this.reader.closed.promise
+    }
+
+    /**
+     * A promise of the next chunk, `{ value, done: false }`, or of the end,
+     * `{ value: null, done: true }`; of an Error when the stream errors or
+     * the reader is released.
+     */
+    read(): Promise<ReadableStreamReadResult<R> | Error> {
+        const stream = this.reader.stream
+        if (stream === null)
+            return fulfilled<ReadableStreamReadResult<R> | Error>(
+                typeError("Invalid state: The reader is not attached to a stream"),
+            )
+        // Node's fast path: a chunk queued already.
+        if (stream.state === "readable" && stream.queue.length > 0) {
+            stream.disturbed = true
+            const chunk = stream.queue.dequeue()[0]
+            if (stream.closeRequested && stream.queue.length === 0) {
+                readableClearAlgorithms(stream)
+                readableClose(stream)
+            } else {
+                readableCallPullIfNeeded(stream)
+            }
+            return fulfilled<ReadableStreamReadResult<R> | Error>(chunkResult(chunk))
+        }
+        const out = pending<ReadableStreamReadResult<R> | Error>()
+        readerRead(
+            this.reader,
+            new ReadRequest<R>(
+                (value) => out.resolveWith(chunkResult(value)),
+                () => out.resolveWith(doneResult<R>()),
+                (reason) => out.resolveWith(toError(reason)),
+            ),
+        )
+        return out
+    }
+
+    /** Unlocks the stream: reads still waiting give an Error, and `closed` too. */
+    releaseLock(): void {
+        if (this.reader.stream === null) return
+        readerRelease(this.reader)
+    }
+
+    /** Cancels the stream, as `stream.cancel(reason)`. */
+    cancel(reason: unknown = null): Promise<Error | null> {
+        if (this.reader.stream === null)
+            return rejected(typeError("Invalid state: The reader is not attached to a stream"))
+        return readerGenericCancel(this.reader, reason)
+    }
+}
+
+/**
+ * The iterator of `for await` over a stream, which it locks: `next()` reads
+ * a chunk, and leaving the loop early cancels the stream (unless
+ * `preventCancel`) and releases it. A stream that errors panics with its
+ * reason, as the loop throws in JavaScript.
+ */
+export class ReadableStreamAsyncIterator<R> {
+    private started = false
+    private done = false
+    private current: Promise<ReadableStreamReadResult<R>> | null = null
+
+    constructor(
+        private readonly reader: ReaderState<R>,
+        private readonly preventCancel: bool,
+    ) {}
+
+    /** A promise of the next chunk, or of the end. */
+    next(): Promise<ReadableStreamReadResult<R>> {
+        // As Node, the first read waits a tick, for the controller to start.
+        if (!this.started) {
+            this.current = fulfilled<ReadableStreamReadResult<R>>(doneResult<R>())
+            this.started = true
+        }
+        const current = this.current
+        const next = current !== null ? chained(current, () => this.nextSteps()) : this.nextSteps()
+        this.current = next
+        return next
+    }
+
+    /**
+     * Ends the iteration, as `for await` does when it is left early: cancels
+     * the stream (unless `preventCancel`) and releases it.
+     */
+    return(): Promise<ReadableStreamReadResult<R>> {
+        this.started = true
+        const current = this.current
+        const next = current !== null ? chained(current, () => this.returnSteps()) : this.returnSteps()
+        this.current = next
+        return next
+    }
+
+    /** The iterator itself. */
+    [Symbol.asyncIterator](): ReadableStreamAsyncIterator<R> {
+        return this
+    }
+
+    private nextSteps(): Promise<ReadableStreamReadResult<R>> {
+        if (this.done) return fulfilled<ReadableStreamReadResult<R>>(doneResult<R>())
+        const reader = this.reader
+        if (reader.stream === null)
+            process.panic("TypeError: Invalid state: The reader is not bound to a ReadableStream")
+        const out = pending<ReadableStreamReadResult<R>>()
+        readerRead(
+            reader,
+            new ReadRequest<R>(
+                (chunk) => {
+                    this.current = null
+                    out.resolveWith(chunkResult(chunk))
+                },
+                () => {
+                    this.current = null
+                    this.done = true
+                    readerGenericRelease(reader)
+                    out.resolveWith(doneResult<R>())
+                },
+                (reason) => {
+                    this.current = null
+                    this.done = true
+                    readerGenericRelease(reader)
+                    panicWith(reason)
+                },
+            ),
+        )
+        return out
+    }
+
+    private async returnSteps(): Promise<ReadableStreamReadResult<R>> {
+        if (this.done) return doneResult<R>()
+        this.done = true
+        const reader = this.reader
+        if (reader.stream === null)
+            process.panic("TypeError: Invalid state: The reader is not bound to a ReadableStream")
+        if (!this.preventCancel) {
+            const result = readerGenericCancel(reader, null)
+            readerGenericRelease(reader)
+            await result
+            return doneResult<R>()
+        }
+        readerGenericRelease(reader)
+        return doneResult<R>()
+    }
+}
+
+/** `promise.then(step)`, where `step` returns a promise, which the result follows. */
+function chained<T>(promise: Promise<T>, step: () => Promise<T>): Promise<T> {
+    const out = pending<T>()
+    promise.react(() => out.resolveWith(step()))
+    return out
+}
+
+/**
+ * A source of chunks that are read one at a time, as JavaScript's
+ * `ReadableStream`: `new ReadableStream<string>({ start(controller) {
+ * controller.enqueue("a"); controller.close() } })`, read with
+ * `getReader()` or `for await`.
+ */
+export class ReadableStream<R> {
+    /** The state of the stream, for the runtime's streams. */
+    readonly state: ReadableState<R>
+
+    /**
+     * A stream of the chunks that `source` enqueues, queued up to the
+     * high-water mark of `strategy` (1 chunk by default).
+     */
+    constructor(source: UnderlyingSource<R> = {}, strategy: QueuingStrategy<R> | CountQueuingStrategy | null = null) {
+        const made = madeReadable
+        if (made instanceof ReadableState<R>) {
+            madeReadable = null
+            this.state = made
+            return
+        }
+        this.state = new ReadableState<R>(strategySizing<R>(strategy, 1))
+        setupReadableFromSource(this.state, source)
+    }
+
+    /** Whether a reader, an iterator or a pipe locks the stream. */
+    get locked(): bool {
+        return readableLocked(this.state)
+    }
+
+    /** Cancels the stream: its queue is dropped and its source's `cancel` is called with `reason`. */
+    cancel(reason: unknown = null): Promise<Error | null> {
+        if (readableLocked(this.state)) return rejected(typeError("Invalid state: ReadableStream is locked"))
+        return readableCancel(this.state, reason)
+    }
+
+    /** A reader, which locks the stream; a locked stream panics, as JavaScript throws. */
+    getReader(): ReadableStreamDefaultReader<R> {
+        return new ReadableStreamDefaultReader<R>(this)
+    }
+
+    /**
+     * Pipes the stream to `transform.writable` and returns `transform.readable`,
+     * as `stream.pipeThrough(new TextDecoderStream())`; a locked stream panics.
+     */
+    pipeThrough<T>(transform: ReadableWritablePair<T, R>, options: StreamPipeOptions = {}): ReadableStream<T> {
+        const readable = transform.readable
+        const writable = transform.writable
+        if (readableLocked(this.state)) process.panic("TypeError: Invalid state: The ReadableStream is locked")
+        if (writableLocked(writable.state)) process.panic("TypeError: Invalid state: The WritableStream is locked")
+        pipeStreams(this.state, writable.state, options)
+        return readable
+    }
+
+    /**
+     * Writes the chunks of the stream to `destination`, then closes it; an
+     * error of either side aborts or cancels the other. The promise is
+     * fulfilled with null once done, with an Error when either side errors.
+     */
+    pipeTo(destination: WritableStream<R>, options: StreamPipeOptions = {}): Promise<Error | null> {
+        if (readableLocked(this.state)) return rejected(typeError("Invalid state: The ReadableStream is locked"))
+        if (writableLocked(destination.state)) return rejected(typeError("Invalid state: The WritableStream is locked"))
+        return pipeStreams(this.state, destination.state, options)
+    }
+
+    /** Two streams of the chunks of this one, which they lock; canceling both cancels it. */
+    tee(): [ReadableStream<R>, ReadableStream<R>] {
+        return teeStream(this.state)
+    }
+
+    /** The iterator of `for await`, which locks the stream; leaving the loop early cancels it unless `preventCancel`. */
+    values(options: ReadableStreamIteratorOptions = {}): ReadableStreamAsyncIterator<R> {
+        const reader = new ReaderState<R>()
+        setupReader(reader, this.state)
+        return new ReadableStreamAsyncIterator<R>(reader, options.preventCancel ?? false)
+    }
+
+    /** `values()`: `for await (const chunk of stream)`. */
+    [Symbol.asyncIterator](): ReadableStreamAsyncIterator<R> {
+        return this.values()
+    }
+
+    /**
+     * A stream of the values of an async iterable or an iterable, each
+     * awaited: `ReadableStream.from(["a", "b"])`. The checker calls
+     * `readableFrom` instead, which takes what a generic method cannot.
+     */
+    static from<I>(iterable: I): ReadableStream<I> {
+        process.panic("ReadableStream.from is compiled to readableFrom")
+    }
+}
+
+/** The values of `items`, as `for await` takes them. */
+async function* iterate<I, E>(items: I): AsyncGenerator<E> {
+    for await (const value of items) yield value
+}
+
+/**
+ * `ReadableStream.from(items)`: a stream that pulls the values of anything
+ * `for await` takes, with a high-water mark of 0. Canceling it ends the
+ * iteration.
+ */
+export function readableFrom<I, E>(items: I): ReadableStream<E> {
+    const iterator = iterate<I, E>(items)
+    const stream = new ReadableState<E>(new Sizing<E>(0, null))
+    setupReadable<E>(
+        stream,
+        () => called(null),
+        () => pullFrom(stream, iterator),
+        (reason) => cancelFrom(iterator),
+    )
+    return readableOf(stream)
+}
+
+async function pullFrom<E>(stream: ReadableState<E>, iterator: AsyncGenerator<E>): Promise<Error | null> {
+    const r = await iterator.next()
+    if (r.done) readableControllerClose(stream)
+    else readableControllerEnqueue(stream, await r.value)
+    return null
+}
+
+async function cancelFrom<E>(iterator: AsyncGenerator<E>): Promise<Error | null> {
+    await iterator.close()
+    return null
+}
+
+/** Node's tee of a default stream: two branches of the chunks, read once. */
+function teeStream<R>(stream: ReadableState<R>): [ReadableStream<R>, ReadableStream<R>] {
+    const reader = new ReaderState<R>()
+    setupReader(reader, stream)
+    let reading = false
+    let canceled1 = false
+    let canceled2 = false
+    let reason1: unknown = null
+    let reason2: unknown = null
+    const cancelPromise = pending<Error | null>()
+    const branches: ReadableState<R>[] = []
+
+    const pull = (): Promise<Error | null> => {
+        if (reading) return resolved()
+        reading = true
+        readerRead(
+            reader,
+            new ReadRequest<R>(
+                (value) => {
+                    microtask(() => {
+                        reading = false
+                        if (!canceled1) readableControllerEnqueue(branches[0], value)
+                        if (!canceled2) readableControllerEnqueue(branches[1], value)
+                    })
+                },
+                () => {
+                    // Node waits for process.nextTick; Ore has no next-tick queue, so a microtask.
+                    microtask(() => {
+                        reading = false
+                        if (!canceled1) readableControllerClose(branches[0])
+                        if (!canceled2) readableControllerClose(branches[1])
+                        if (!canceled1 || !canceled2) cancelPromise.resolveWith(null)
+                    })
+                },
+                (reason) => {
+                    reading = false
+                },
+            ),
+        )
+        return resolved()
+    }
+    const cancel1 = (reason: unknown): Promise<Error | null> => {
+        canceled1 = true
+        reason1 = reason
+        if (canceled2) {
+            const both: unknown[] = [reason1, reason2]
+            cancelPromise.resolveWith(readableCancel(stream, both))
+        }
+        return cancelPromise
+    }
+    const cancel2 = (reason: unknown): Promise<Error | null> => {
+        canceled2 = true
+        reason2 = reason
+        if (canceled1) {
+            const both: unknown[] = [reason1, reason2]
+            cancelPromise.resolveWith(readableCancel(stream, both))
+        }
+        return cancelPromise
+    }
+    branches.push(createReadable<R>(() => called(null), pull, cancel1, new Sizing<R>(1, null)))
+    branches.push(createReadable<R>(() => called(null), pull, cancel2, new Sizing<R>(1, null)))
+    upon(
+        reader.closed.promise,
+        () => {},
+        (e) => {
+            readableControllerError(branches[0], stream.storedError)
+            readableControllerError(branches[1], stream.storedError)
+            if (!canceled1 || !canceled2) cancelPromise.resolveWith(null)
+        },
+    )
+    return [readableOf(branches[0]), readableOf(branches[1])]
+}
+
+// ---------------------------------------------------------------------------
+// Writable streams
+
+/** An abort waiting for the stream to finish erroring. */
+class AbortRequest {
+    constructor(
+        readonly promise: Deferred,
+        readonly reason: unknown,
+        readonly wasAlreadyErroring: bool,
+    ) {}
+}
+
+/** The state of a writer. */
+class WriterState<W> {
+    stream: WritableState<W> | null = null
+    closed: Deferred = new Deferred()
+    ready: Deferred = new Deferred()
+}
+
+/** The state of a writable stream and of its controller. */
+class WritableState<W> {
+    state: "writable" | "closed" | "erroring" | "errored" = "writable"
+    storedError: unknown = null
+    writer: WriterState<W> | null = null
+    backpressure = false
+    closeRequest: Deferred | null = null
+    inFlightWriteRequest: Deferred | null = null
+    inFlightCloseRequest: Deferred | null = null
+    pendingAbortRequest: AbortRequest | null = null
+    writeRequests: Deferred[] = []
+    readonly queue: Queue<W> = new Queue<W>()
+    started = false
+    writeAlgorithm: ((chunk: W) => Promise<Error | null>) | null = null
+    closeAlgorithm: (() => Promise<Error | null>) | null = null
+    abortAlgorithm: ((reason: unknown) => Promise<Error | null>) | null = null
+    size: ((chunk: W) => number) | null
+    readonly highWaterMark: number
+    readonly abortController: AbortController = new AbortController()
+    readonly controller: WritableStreamDefaultController
+
+    constructor(sizing: Sizing<W>) {
+        this.highWaterMark = sizing.highWaterMark
+        this.size = sizing.size
+        this.controller = new WritableStreamDefaultController(this.abortController.signal, (reason) => {
+            if (this.state === "writable") writableControllerError(this, reason)
+        })
+    }
+}
+
+function writableLocked<W>(stream: WritableState<W>): bool {
+    return stream.writer !== null
+}
+
+/** Locks `stream` to `writer`; a locked stream panics, as JavaScript throws. */
+function setupWriter<W>(writer: WriterState<W>, stream: WritableState<W>): void {
+    if (writableLocked(stream)) process.panic("TypeError: Invalid state: WritableStream is locked")
+    writer.stream = stream
+    stream.writer = writer
+    const state = stream.state
+    if (state === "writable") {
+        writer.ready =
+            !writableCloseQueuedOrInFlight(stream) && stream.backpressure ? new Deferred() : resolvedDeferred()
+        writer.closed = new Deferred()
+    } else if (state === "erroring") {
+        writer.ready = rejectedDeferred(stream.storedError)
+        writer.closed = new Deferred()
+    } else if (state === "closed") {
+        writer.ready = resolvedDeferred()
+        writer.closed = resolvedDeferred()
+    } else {
+        writer.ready = rejectedDeferred(stream.storedError)
+        writer.closed = rejectedDeferred(stream.storedError)
+    }
+}
+
+function writableAbort<W>(stream: WritableState<W>, reason: unknown): Promise<Error | null> {
+    const state = stream.state
+    if (state === "closed" || state === "errored") return resolved()
+    if (reason === null) stream.abortController.abort()
+    else stream.abortController.abort(reason)
+    const pendingAbort = stream.pendingAbortRequest
+    if (pendingAbort !== null) return pendingAbort.promise.promise
+    let wasAlreadyErroring = false
+    let given = reason
+    if (stream.state === "erroring") {
+        wasAlreadyErroring = true
+        given = null
+    }
+    const abort = new Deferred()
+    stream.pendingAbortRequest = new AbortRequest(abort, given, wasAlreadyErroring)
+    if (!wasAlreadyErroring) writableStartErroring(stream, given)
+    return abort.promise
+}
+
+function writableClose<W>(stream: WritableState<W>): Promise<Error | null> {
+    const state = stream.state
+    if (state === "closed" || state === "errored") return rejected(typeError("Invalid state: WritableStream is closed"))
+    const request = new Deferred()
+    stream.closeRequest = request
+    const writer = stream.writer
+    if (writer !== null && stream.backpressure && state === "writable") writer.ready.resolve()
+    // The controller's close: a marker queued after the chunks.
+    stream.queue.enqueue([], 0)
+    writableAdvanceQueueIfNeeded(stream)
+    return request.promise
+}
+
+function writableUpdateBackpressure<W>(stream: WritableState<W>, backpressure: bool): void {
+    const writer = stream.writer
+    if (writer !== null && stream.backpressure !== backpressure) {
+        if (backpressure) writer.ready = new Deferred()
+        else writer.ready.resolve()
+    }
+    stream.backpressure = backpressure
+}
+
+function writableStartErroring<W>(stream: WritableState<W>, reason: unknown): void {
+    stream.state = "erroring"
+    stream.storedError = reason
+    const writer = stream.writer
+    if (writer !== null) writerEnsureReadyRejected(writer, reason)
+    if (!writableHasOperationInFlight(stream) && stream.started) writableFinishErroring(stream)
+}
+
+function writableRejectCloseAndClosed<W>(stream: WritableState<W>): void {
+    const request = stream.closeRequest
+    if (request !== null) {
+        request.reject(stream.storedError)
+        stream.closeRequest = null
+    }
+    const writer = stream.writer
+    if (writer !== null) writer.closed.reject(stream.storedError)
+}
+
+function writableHasOperationInFlight<W>(stream: WritableState<W>): bool {
+    return stream.inFlightWriteRequest !== null || stream.inFlightCloseRequest !== null
+}
+
+function writableFinishInFlightWriteWithError<W>(stream: WritableState<W>, error: unknown): void {
+    stream.inFlightWriteRequest!.reject(error)
+    stream.inFlightWriteRequest = null
+    writableDealWithRejection(stream, error)
+}
+
+function writableFinishInFlightWrite<W>(stream: WritableState<W>): void {
+    stream.inFlightWriteRequest!.resolve()
+    stream.inFlightWriteRequest = null
+}
+
+function writableFinishInFlightCloseWithError<W>(stream: WritableState<W>, error: unknown): void {
+    stream.inFlightCloseRequest!.reject(error)
+    stream.inFlightCloseRequest = null
+    const abort = stream.pendingAbortRequest
+    if (abort !== null) {
+        abort.promise.reject(error)
+        stream.pendingAbortRequest = null
+    }
+    writableDealWithRejection(stream, error)
+}
+
+function writableFinishInFlightClose<W>(stream: WritableState<W>): void {
+    stream.inFlightCloseRequest!.resolve()
+    stream.inFlightCloseRequest = null
+    if (stream.state === "erroring") {
+        stream.storedError = null
+        const abort = stream.pendingAbortRequest
+        if (abort !== null) {
+            abort.promise.resolve()
+            stream.pendingAbortRequest = null
+        }
+    }
+    stream.state = "closed"
+    const writer = stream.writer
+    if (writer !== null) writer.closed.resolve()
+}
+
+function writableFinishErroring<W>(stream: WritableState<W>): void {
+    stream.state = "errored"
+    stream.queue.reset()
+    const storedError = stream.storedError
+    const requests = stream.writeRequests
+    stream.writeRequests = []
+    for (const r of requests) r.reject(storedError)
+    const abort = stream.pendingAbortRequest
+    if (abort === null) {
+        writableRejectCloseAndClosed(stream)
+        return
+    }
+    stream.pendingAbortRequest = null
+    if (abort.wasAlreadyErroring) {
+        abort.promise.reject(storedError)
+        writableRejectCloseAndClosed(stream)
+        return
+    }
+    // The controller's abort steps.
+    const abortAlgorithm = stream.abortAlgorithm
+    const result = abortAlgorithm !== null ? abortAlgorithm(abort.reason) : resolved()
+    writableClearAlgorithms(stream)
+    upon(
+        result,
+        () => {
+            abort.promise.resolve()
+            writableRejectCloseAndClosed(stream)
+        },
+        (e) => {
+            abort.promise.reject(e)
+            writableRejectCloseAndClosed(stream)
+        },
+    )
+}
+
+function writableDealWithRejection<W>(stream: WritableState<W>, error: unknown): void {
+    if (stream.state === "writable") {
+        writableStartErroring(stream, error)
+        return
+    }
+    writableFinishErroring(stream)
+}
+
+function writableCloseQueuedOrInFlight<W>(stream: WritableState<W>): bool {
+    return stream.closeRequest !== null || stream.inFlightCloseRequest !== null
+}
+
+function writerWrite<W>(writer: WriterState<W>, chunk: W): Promise<Error | null> {
+    const stream = writer.stream!
+    const chunkSize = writableChunkSize(stream, chunk)
+    if (stream !== writer.stream) return rejected(typeError("Invalid state: Mismatched WritableStreams"))
+    const state = stream.state
+    if (state === "errored") return rejected(stream.storedError)
+    if (writableCloseQueuedOrInFlight(stream) || state === "closed")
+        return rejected(typeError("Invalid state: WritableStream is closed"))
+    if (state === "erroring") return rejected(stream.storedError)
+    const request = new Deferred()
+    stream.writeRequests.push(request)
+    writableControllerWrite(stream, chunk, chunkSize)
+    return request.promise
+}
+
+/** `releaseLock()`: `ready` and `closed` reject with "Writer has been released". */
+function writerRelease<W>(writer: WriterState<W>): void {
+    const stream = writer.stream!
+    const released = typeError("Invalid state: Writer has been released")
+    writerEnsureReadyRejected(writer, released)
+    writerEnsureClosedRejected(writer, released)
+    stream.writer = null
+    writer.stream = null
+}
+
+function writerDesiredSize<W>(writer: WriterState<W>): number | null {
+    const stream = writer.stream!
+    const state = stream.state
+    if (state === "errored" || state === "erroring") return null
+    if (state === "closed") return 0
+    return stream.highWaterMark - stream.queue.total
+}
+
+function writerEnsureReadyRejected<W>(writer: WriterState<W>, error: unknown): void {
+    if (!writer.ready.settled) writer.ready.reject(error)
+    else writer.ready = rejectedDeferred(error)
+}
+
+function writerEnsureClosedRejected<W>(writer: WriterState<W>, error: unknown): void {
+    if (!writer.closed.settled) writer.closed.reject(error)
+    else writer.closed = rejectedDeferred(error)
+}
+
+function writerCloseWithErrorPropagation<W>(writer: WriterState<W>): Promise<Error | null> {
+    const stream = writer.stream!
+    const state = stream.state
+    if (writableCloseQueuedOrInFlight(stream) || state === "closed") return resolved()
+    if (state === "errored") return rejected(stream.storedError)
+    return writableClose(stream)
+}
+
+function writableControllerWrite<W>(stream: WritableState<W>, chunk: W, chunkSize: number): void {
+    const failure = stream.queue.enqueue([chunk], chunkSize)
+    if (failure !== null) {
+        writableErrorIfNeeded(stream, rangeError(failure))
+        return
+    }
+    if (!writableCloseQueuedOrInFlight(stream) && stream.state === "writable")
+        writableUpdateBackpressure(stream, writableBackpressure(stream))
+    writableAdvanceQueueIfNeeded(stream)
+}
+
+function writableProcessWrite<W>(stream: WritableState<W>, chunk: W): void {
+    stream.inFlightWriteRequest = stream.writeRequests.shift()
+    const write = stream.writeAlgorithm
+    upon(
+        write !== null ? write(chunk) : resolved(),
+        () => {
+            writableFinishInFlightWrite(stream)
+            const state = stream.state
+            stream.queue.dequeue()
+            if (!writableCloseQueuedOrInFlight(stream) && state === "writable")
+                writableUpdateBackpressure(stream, writableBackpressure(stream))
+            writableAdvanceQueueIfNeeded(stream)
+        },
+        (e) => {
+            if (stream.state === "writable") writableClearAlgorithms(stream)
+            writableFinishInFlightWriteWithError(stream, e)
+        },
+    )
+}
+
+function writableProcessClose<W>(stream: WritableState<W>): void {
+    stream.inFlightCloseRequest = stream.closeRequest
+    stream.closeRequest = null
+    stream.queue.dequeue()
+    const close = stream.closeAlgorithm
+    const result = close !== null ? close() : resolved()
+    writableClearAlgorithms(stream)
+    upon(
+        result,
+        () => writableFinishInFlightClose(stream),
+        (e) => writableFinishInFlightCloseWithError(stream, e),
+    )
+}
+
+function writableChunkSize<W>(stream: WritableState<W>, chunk: W): number {
+    const size = stream.size
+    return size !== null ? size(chunk) : 1
+}
+
+function writableErrorIfNeeded<W>(stream: WritableState<W>, error: unknown): void {
+    if (stream.state === "writable") writableControllerError(stream, error)
+}
+
+function writableControllerError<W>(stream: WritableState<W>, error: unknown): void {
+    writableClearAlgorithms(stream)
+    writableStartErroring(stream, error)
+}
+
+function writableClearAlgorithms<W>(stream: WritableState<W>): void {
+    stream.writeAlgorithm = null
+    stream.closeAlgorithm = null
+    stream.abortAlgorithm = null
+    stream.size = null
+}
+
+function writableBackpressure<W>(stream: WritableState<W>): bool {
+    return stream.highWaterMark - stream.queue.total <= 0
+}
+
+function writableAdvanceQueueIfNeeded<W>(stream: WritableState<W>): void {
+    if (!stream.started || stream.inFlightWriteRequest !== null) return
+    if (stream.state === "erroring") {
+        writableFinishErroring(stream)
+        return
+    }
+    if (stream.queue.length === 0) return
+    const chunk = stream.queue.peek()
+    if (chunk.length === 0) writableProcessClose(stream)
+    else writableProcessWrite(stream, chunk[0])
+}
+
+/** Sets up the controller of `stream` with its algorithms, and runs `start`. */
+function setupWritable<W>(
+    stream: WritableState<W>,
+    start: () => Promise<Error | null>,
+    write: (chunk: W) => Promise<Error | null>,
+    close: () => Promise<Error | null>,
+    abort: (reason: unknown) => Promise<Error | null>,
+): void {
+    stream.writeAlgorithm = write
+    stream.closeAlgorithm = close
+    stream.abortAlgorithm = abort
+    writableUpdateBackpressure(stream, writableBackpressure(stream))
+    upon(
+        start(),
+        () => {
+            stream.started = true
+            writableAdvanceQueueIfNeeded(stream)
+        },
+        (e) => {
+            stream.started = true
+            writableDealWithRejection(stream, e)
+        },
+    )
+}
+
+function setupWritableFromSink<W>(stream: WritableState<W>, sink: UnderlyingSink<W>): void {
+    const controller = stream.controller
+    const start = sink.start
+    const write = sink.write
+    const close = sink.close
+    const abort = sink.abort
+    setupWritable<W>(
+        stream,
+        start !== null ? () => called(start(controller)) : () => called(null),
+        write !== null ? (chunk) => called(write(chunk, controller)) : (chunk) => resolved(),
+        close !== null ? () => called(close()) : () => resolved(),
+        abort !== null ? (reason) => called(abort(reason)) : (reason) => resolved(),
+    )
+}
+
+/** A writable stream with the state `made`, for the transform streams the runtime makes. */
+let madeWritable: unknown = null
+
+function writableOf<W>(stream: WritableState<W>): WritableStream<W> {
+    madeWritable = stream
+    return new WritableStream<W>()
+}
+
+/**
+ * What a sink's callbacks are given, as JavaScript's
+ * `WritableStreamDefaultController`: `error(reason)` errors the stream, and
+ * `signal` aborts when the stream is aborted.
+ */
+export class WritableStreamDefaultController {
+    constructor(
+        /** Aborted with the reason of `abort()`, for a sink to stop a write under way. */
+        readonly signal: AbortSignal,
+        private readonly errorWith: (reason: unknown) => void,
+    ) {}
+
+    /** Errors the stream with `reason`: the writes after the one under way give it. */
+    error(reason: unknown = null): void {
+        this.errorWith(reason)
+    }
+}
+
+/**
+ * Writes chunks to a writable stream, which it locks, as JavaScript's
+ * `WritableStreamDefaultWriter`: `stream.getWriter()`.
+ */
+export class WritableStreamDefaultWriter<W> {
+    private readonly writer: WriterState<W> = new WriterState<W>()
+
+    /** A writer of `stream`, which it locks; a locked stream panics, as JavaScript throws. */
+    constructor(stream: WritableStream<W>) {
+        setupWriter(this.writer, stream.state)
+    }
+
+    /** Fulfilled with null when the stream closes, with its error when it errors or the writer is released. */
+    get closed(): Promise<Error | null> {
+        return this.writer.closed.promise
+    }
+
+    /** Fulfilled with null when the stream wants chunks (no backpressure), with its error when it errors. */
+    get ready(): Promise<Error | null> {
+        return this.writer.ready.promise
+    }
+
+    /** How many more chunks the queue wants: 0 once closed, null once errored. A released writer panics. */
+    get desiredSize(): number | null {
+        if (this.writer.stream === null)
+            process.panic("TypeError: Invalid state: Writer is not bound to a WritableStream")
+        return writerDesiredSize(this.writer)
+    }
+
+    /** Aborts the stream, as `stream.abort(reason)`. */
+    abort(reason: unknown = null): Promise<Error | null> {
+        const stream = this.writer.stream
+        if (stream === null) return rejected(typeError("Invalid state: Writer is not bound to a WritableStream"))
+        return writableAbort(stream, reason)
+    }
+
+    /** Closes the stream after the chunks queued: fulfilled with null once the sink closed. */
+    close(): Promise<Error | null> {
+        const stream = this.writer.stream
+        if (stream === null) return rejected(typeError("Invalid state: Writer is not bound to a WritableStream"))
+        if (writableCloseQueuedOrInFlight(stream))
+            return rejected(typeError("Invalid state: Failure to close WritableStream"))
+        return writableClose(stream)
+    }
+
+    /** Unlocks the stream: `ready` and `closed` give an Error. */
+    releaseLock(): void {
+        if (this.writer.stream === null) return
+        writerRelease(this.writer)
+    }
+
+    /** Queues a chunk: fulfilled with null once the sink wrote it, with an Error when the stream errors. */
+    write(chunk: W): Promise<Error | null> {
+        if (this.writer.stream === null)
+            return rejected(typeError("Invalid state: Writer is not bound to a WritableStream"))
+        return writerWrite(this.writer, chunk)
+    }
+}
+
+/**
+ * A destination of chunks written one at a time, as JavaScript's
+ * `WritableStream`: `new WritableStream<string>({ write(chunk) {
+ * console.log(chunk) } })`, written with `getWriter()` or `pipeTo`.
+ */
+export class WritableStream<W> {
+    /** The state of the stream, for the runtime's streams. */
+    readonly state: WritableState<W>
+
+    /**
+     * A stream that gives its chunks to `sink`, one at a time, applying
+     * backpressure past the high-water mark of `strategy` (1 chunk by
+     * default).
+     */
+    constructor(sink: UnderlyingSink<W> = {}, strategy: QueuingStrategy<W> | CountQueuingStrategy | null = null) {
+        const made = madeWritable
+        if (made instanceof WritableState<W>) {
+            madeWritable = null
+            this.state = made
+            return
+        }
+        this.state = new WritableState<W>(strategySizing<W>(strategy, 1))
+        setupWritableFromSink(this.state, sink)
+    }
+
+    /** Whether a writer or a pipe locks the stream. */
+    get locked(): bool {
+        return writableLocked(this.state)
+    }
+
+    /** Aborts the stream: its queue is dropped and its sink's `abort` is called with `reason`. */
+    abort(reason: unknown = null): Promise<Error | null> {
+        if (writableLocked(this.state)) return rejected(typeError("Invalid state: WritableStream is locked"))
+        return writableAbort(this.state, reason)
+    }
+
+    /** Closes the stream after the chunks queued. */
+    close(): Promise<Error | null> {
+        if (writableLocked(this.state)) return rejected(typeError("Invalid state: WritableStream is locked"))
+        if (writableCloseQueuedOrInFlight(this.state))
+            return rejected(typeError("Invalid state: Failure closing WritableStream"))
+        return writableClose(this.state)
+    }
+
+    /** A writer, which locks the stream; a locked stream panics, as JavaScript throws. */
+    getWriter(): WritableStreamDefaultWriter<W> {
+        return new WritableStreamDefaultWriter<W>(this)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipes
+
+/** Node's `readableStreamPipeTo`: the state of a pipe from `source` to `dest`. */
+class Pipe<T> {
+    readonly reader: ReaderState<T> = new ReaderState<T>()
+    readonly writer: WriterState<T> = new WriterState<T>()
+    readonly promise: Deferred = new Deferred()
+    shuttingDown = false
+    currentWrite: Promise<Error | null> = resolved()
+    listener: ((event: Event) => void) | null = null
+
+    constructor(
+        readonly source: ReadableState<T>,
+        readonly dest: WritableState<T>,
+        readonly preventClose: bool,
+        readonly preventAbort: bool,
+        readonly preventCancel: bool,
+        readonly signal: AbortSignal | null,
+    ) {}
+
+    finalize(failed: bool, error: unknown): void {
+        writerRelease(this.writer)
+        readerGenericRelease(this.reader)
+        const signal = this.signal
+        const listener = this.listener
+        if (signal !== null && listener !== null) signal.removeEventListener("abort", listener)
+        if (failed) this.promise.reject(error)
+        else this.promise.resolve()
+    }
+
+    async waitForCurrentWrite(): Promise<Error | null> {
+        const write = this.currentWrite
+        const e = await write
+        if (e !== null) return e
+        if (write !== this.currentWrite) return await this.waitForCurrentWrite()
+        return null
+    }
+
+    shutdownWithAnAction(action: () => Promise<Error | null>, failed: bool, originalError: unknown): void {
+        if (this.shuttingDown) return
+        this.shuttingDown = true
+        const complete = (): void => {
+            upon(
+                action(),
+                () => this.finalize(failed, originalError),
+                (e) => this.finalize(true, e),
+            )
+        }
+        if (this.dest.state === "writable" && !writableCloseQueuedOrInFlight(this.dest)) {
+            upon(this.waitForCurrentWrite(), complete, (e) => this.finalize(true, e))
+            return
+        }
+        complete()
+    }
+
+    shutdown(failed: bool, error: unknown): void {
+        if (this.shuttingDown) return
+        this.shuttingDown = true
+        if (this.dest.state === "writable" && !writableCloseQueuedOrInFlight(this.dest)) {
+            upon(
+                this.waitForCurrentWrite(),
+                () => this.finalize(failed, error),
+                (e) => this.finalize(true, e),
+            )
+            return
+        }
+        this.finalize(failed, error)
+    }
+
+    abortAlgorithm(): void {
+        const error = this.signal!.reason
+        const actions: (() => Promise<Error | null>)[] = []
+        const dest = this.dest
+        const source = this.source
+        if (!this.preventAbort)
+            actions.push(() => (dest.state === "writable" ? writableAbort(dest, error) : resolved()))
+        if (!this.preventCancel)
+            actions.push(() => (source.state === "readable" ? readableCancel(source, error) : resolved()))
+        this.shutdownWithAnAction(() => all(actions.map((a) => a())), true, error)
+    }
+
+    async step(): Promise<bool> {
+        if (this.shuttingDown) return true
+        const source = this.source
+        const dest = this.dest
+        if (dest.backpressure) {
+            const e = await this.writer.ready.promise
+            if (e !== null || this.shuttingDown) return true
+        }
+        // Node's fast path: the chunks queued already, written in a batch.
+        if (source.state === "readable" && source.queue.length > 0) {
+            while (source.queue.length > 0) {
+                if (this.shuttingDown) return true
+                const chunk = source.queue.dequeue()[0]
+                if (source.closeRequested && source.queue.length === 0) {
+                    readableClearAlgorithms(source)
+                    readableClose(source)
+                }
+                this.currentWrite = writerWrite(this.writer, chunk)
+                if (dest.backpressure) break
+                if (dest.state !== "writable" || writableCloseQueuedOrInFlight(dest)) break
+            }
+            readableCallPullIfNeeded(source)
+            return readableClosed(source)
+        }
+        const out = pending<bool>()
+        readerRead(
+            this.reader,
+            new ReadRequest<T>(
+                (chunk) =>
+                    microtask(() => {
+                        this.currentWrite = writerWrite(this.writer, chunk)
+                        out.resolveWith(false)
+                    }),
+                () => out.resolveWith(true),
+                (reason) => out.resolveWith(true),
+            ),
+        )
+        return out
+    }
+
+    async run(): Promise<void> {
+        while (!(await this.step())) {}
+    }
+
+    start(): Promise<Error | null> {
+        const source = this.source
+        const dest = this.dest
+        const signal = this.signal
+        if (signal !== null) {
+            if (signal.aborted) {
+                this.abortAlgorithm()
+                return this.promise.promise
+            }
+            const listener = (event: Event): void => this.abortAlgorithm()
+            this.listener = listener
+            signal.addEventListener("abort", listener, { once: true })
+        }
+        this.run()
+        // The source errors: abort the destination.
+        const sourceErrored = (): void => {
+            const error = source.storedError
+            if (!this.preventAbort) this.shutdownWithAnAction(() => writableAbort(dest, error), true, error)
+            else this.shutdown(true, error)
+        }
+        if (source.state === "errored") sourceErrored()
+        else
+            upon(
+                this.reader.closed.promise,
+                () => {},
+                (e) => sourceErrored(),
+            )
+        // The destination errors: cancel the source.
+        const destErrored = (): void => {
+            const error = dest.storedError
+            if (!this.preventCancel) this.shutdownWithAnAction(() => readableCancel(source, error), true, error)
+            else this.shutdown(true, error)
+        }
+        if (dest.state === "errored") destErrored()
+        else
+            upon(
+                this.writer.closed.promise,
+                () => {},
+                (e) => destErrored(),
+            )
+        // The source closes: close the destination.
+        const sourceClosed = (): void => {
+            if (!this.preventClose)
+                this.shutdownWithAnAction(() => writerCloseWithErrorPropagation(this.writer), false, null)
+            else this.shutdown(false, null)
+        }
+        if (source.state === "closed") sourceClosed()
+        else upon(this.reader.closed.promise, sourceClosed, (e) => {})
+        if (writableCloseQueuedOrInFlight(dest) || dest.state === "closed") {
+            const error = typeError("Invalid state: Destination WritableStream is closed")
+            if (!this.preventCancel) this.shutdownWithAnAction(() => readableCancel(source, error), true, error)
+            else this.shutdown(true, error)
+        }
+        return this.promise.promise
+    }
+}
+
+/** `Promise.all` of promises of nothing: fulfilled once each is, rejected with the first rejection. */
+function all(promises: Promise<Error | null>[]): Promise<Error | null> {
+    const out = pending<Error | null>()
+    let left = promises.length
+    if (left === 0) out.resolveWith(null)
+    for (const p of promises) {
+        p.react(() => {
+            const e = p.valueOf()
+            if (e !== null) out.resolveWith(e)
+            left--
+            if (left === 0) out.resolveWith(null)
+        })
+    }
+    return out
+}
+
+/** Pipes `source` to `dest`, which are not locked. */
+function pipeStreams<T>(
+    source: ReadableState<T>,
+    dest: WritableState<T>,
+    options: StreamPipeOptions,
+): Promise<Error | null> {
+    const pipe = new Pipe<T>(
+        source,
+        dest,
+        options.preventClose ?? false,
+        options.preventAbort ?? false,
+        options.preventCancel ?? false,
+        options.signal,
+    )
+    setupReader(pipe.reader, source)
+    setupWriter(pipe.writer, dest)
+    source.disturbed = true
+    return pipe.start()
+}
+
+// ---------------------------------------------------------------------------
+// Transform streams
+
+/** The state of a transform stream and of its controller. */
+class TransformState<I, O> {
+    backpressure = false
+    backpressureChange: Deferred | null = null
+    transformAlgorithm: ((chunk: I) => Promise<Error | null>) | null = null
+    flushAlgorithm: (() => Promise<Error | null>) | null = null
+    cancelAlgorithm: ((reason: unknown) => Promise<Error | null>) | null = null
+    finishPromise: Promise<Error | null> | null = null
+    readonly readable: ReadableState<O>
+    readonly writable: WritableState<I>
+    readonly controller: TransformStreamDefaultController<O>
+
+    constructor(start: Promise<Error | null>, writableSizing: Sizing<I>, readableSizing: Sizing<O>) {
+        const starting = (): Promise<Error | null> => following(start)
+        this.writable = new WritableState<I>(writableSizing)
+        this.readable = new ReadableState<O>(readableSizing)
+        this.controller = new TransformStreamDefaultController<O>(
+            (chunk) => transformEnqueue(this, chunk),
+            (reason) => transformError(this, reason),
+            () => transformTerminate(this),
+            () => readableDesiredSize(this.readable),
+        )
+        setupWritable<I>(
+            this.writable,
+            starting,
+            (chunk) => transformSinkWrite(this, chunk),
+            () => transformSinkClose(this),
+            (reason) => transformSinkAbort(this, reason),
+        )
+        setupReadable<O>(
+            this.readable,
+            starting,
+            () => transformSourcePull(this),
+            (reason) => transformSourceCancel(this, reason),
+        )
+        transformSetBackpressure(this, true)
+    }
+}
+
+function transformError<I, O>(ts: TransformState<I, O>, error: unknown): void {
+    readableControllerError(ts.readable, error)
+    transformErrorWritableAndUnblockWrite(ts, error)
+}
+
+function transformErrorWritableAndUnblockWrite<I, O>(ts: TransformState<I, O>, error: unknown): void {
+    transformClearAlgorithms(ts)
+    writableErrorIfNeeded(ts.writable, error)
+    transformUnblockWrite(ts)
+}
+
+function transformUnblockWrite<I, O>(ts: TransformState<I, O>): void {
+    if (ts.backpressure) transformSetBackpressure(ts, false)
+}
+
+function transformSetBackpressure<I, O>(ts: TransformState<I, O>, backpressure: bool): void {
+    const change = ts.backpressureChange
+    if (change !== null) change.resolve()
+    ts.backpressureChange = new Deferred()
+    ts.backpressure = backpressure
+}
+
+function transformClearAlgorithms<I, O>(ts: TransformState<I, O>): void {
+    ts.transformAlgorithm = null
+    ts.flushAlgorithm = null
+    ts.cancelAlgorithm = null
+}
+
+function transformEnqueue<I, O>(ts: TransformState<I, O>, chunk: O): void {
+    const readable = ts.readable
+    if (!readableCanCloseOrEnqueue(readable)) process.panic("TypeError: Invalid state: Unable to enqueue")
+    readableControllerEnqueue(readable, chunk)
+    if (!readableShouldCallPull(readable) !== ts.backpressure) transformSetBackpressure(ts, true)
+}
+
+async function transformPerform<I, O>(ts: TransformState<I, O>, chunk: I): Promise<Error | null> {
+    const transform = ts.transformAlgorithm
+    if (transform === null) return null
+    const e = await transform(chunk)
+    if (e !== null) transformError(ts, e)
+    return e
+}
+
+function transformTerminate<I, O>(ts: TransformState<I, O>): void {
+    readableControllerClose(ts.readable)
+    transformErrorWritableAndUnblockWrite(ts, typeError("Invalid state: TransformStream has been terminated"))
+}
+
+function transformSinkWrite<I, O>(ts: TransformState<I, O>, chunk: I): Promise<Error | null> {
+    if (ts.backpressure) {
+        return after(ts.backpressureChange!.promise, () => {
+            const writable = ts.writable
+            if (writable.state === "erroring") return toError(writable.storedError)
+            return transformPerform(ts, chunk)
+        })
+    }
+    return transformPerform(ts, chunk)
+}
+
+async function transformSinkAbort<I, O>(ts: TransformState<I, O>, reason: unknown): Promise<Error | null> {
+    const finish = ts.finishPromise
+    if (finish !== null) return finish
+    const out = pending<Error | null>()
+    ts.finishPromise = out
+    const cancel = ts.cancelAlgorithm
+    const cancelPromise = cancel !== null ? cancel(reason) : resolved()
+    transformClearAlgorithms(ts)
+    const readable = ts.readable
+    upon(
+        cancelPromise,
+        () => {
+            if (readable.state === "errored") out.resolveWith(toError(readable.storedError))
+            else {
+                readableControllerError(readable, reason)
+                out.resolveWith(null)
+            }
+        },
+        (e) => {
+            readableControllerError(readable, e)
+            out.resolveWith(e)
+        },
+    )
+    return out
+}
+
+function transformSinkClose<I, O>(ts: TransformState<I, O>): Promise<Error | null> {
+    const finish = ts.finishPromise
+    if (finish !== null) return finish
+    const out = pending<Error | null>()
+    ts.finishPromise = out
+    const flush = ts.flushAlgorithm
+    const flushPromise = flush !== null ? flush() : resolved()
+    transformClearAlgorithms(ts)
+    const readable = ts.readable
+    upon(
+        flushPromise,
+        () => {
+            if (readable.state === "errored") out.resolveWith(toError(readable.storedError))
+            else {
+                readableControllerClose(readable)
+                out.resolveWith(null)
+            }
+        },
+        (e) => {
+            readableControllerError(readable, e)
+            out.resolveWith(e)
+        },
+    )
+    return out
+}
+
+function transformSourcePull<I, O>(ts: TransformState<I, O>): Promise<Error | null> {
+    transformSetBackpressure(ts, false)
+    return ts.backpressureChange!.promise
+}
+
+function transformSourceCancel<I, O>(ts: TransformState<I, O>, reason: unknown): Promise<Error | null> {
+    const finish = ts.finishPromise
+    if (finish !== null) return finish
+    const out = pending<Error | null>()
+    ts.finishPromise = out
+    const cancel = ts.cancelAlgorithm
+    const cancelPromise = cancel !== null ? cancel(reason) : resolved()
+    transformClearAlgorithms(ts)
+    const writable = ts.writable
+    upon(
+        cancelPromise,
+        () => {
+            if (writable.state === "errored") out.resolveWith(toError(writable.storedError))
+            else {
+                writableErrorIfNeeded(writable, reason)
+                transformUnblockWrite(ts)
+                out.resolveWith(null)
+            }
+        },
+        (e) => {
+            writableErrorIfNeeded(writable, e)
+            transformUnblockWrite(ts)
+            out.resolveWith(e)
+        },
+    )
+    return out
+}
+
+/**
+ * What a transformer's callbacks are given, as JavaScript's
+ * `TransformStreamDefaultController`: `enqueue` gives a chunk to the
+ * readable side, `error` errors both sides, `terminate` closes the readable
+ * side and errors the writable one.
+ */
+export class TransformStreamDefaultController<O> {
+    constructor(
+        private readonly enqueueChunk: (chunk: O) => void,
+        private readonly errorWith: (reason: unknown) => void,
+        private readonly terminateStream: () => void,
+        private readonly desired: () => number | null,
+    ) {}
+
+    /** How many more chunks the readable side wants. */
+    get desiredSize(): number | null {
+        return this.desired()
+    }
+
+    /** Gives a chunk to the readable side; a closed one panics, as JavaScript throws. */
+    enqueue(chunk: O): void {
+        this.enqueueChunk(chunk)
+    }
+
+    /** Errors both sides with `reason`. */
+    error(reason: unknown = null): void {
+        this.errorWith(reason)
+    }
+
+    /** Closes the readable side and errors the writable one. */
+    terminate(): void {
+        this.terminateStream()
+    }
+}
+
+/**
+ * A writable side whose chunks a transformer turns into those of a readable
+ * side, as JavaScript's `TransformStream`: `new TransformStream<string,
+ * string>({ transform(chunk, controller) { controller.enqueue(chunk.toUpperCase()) } })`,
+ * used with `pipeThrough`. Without `transform`, chunks pass as they are,
+ * which needs `O` to be `I`.
+ */
+export class TransformStream<I, O = I> {
+    /** The side that gives the transformed chunks. */
+    readonly readable: ReadableStream<O>
+    /** The side the chunks are written to. */
+    readonly writable: WritableStream<I>
+
+    /**
+     * A transform stream of `transformer`, whose writable side queues by
+     * `writableStrategy` (1 chunk by default) and readable side by
+     * `readableStrategy` (none by default).
+     */
+    constructor(
+        transformer: Transformer<I, O> = {},
+        writableStrategy: QueuingStrategy<I> | CountQueuingStrategy | null = null,
+        readableStrategy: QueuingStrategy<O> | CountQueuingStrategy | null = null,
+    ) {
+        const readableSizing = strategySizing<O>(readableStrategy, 0)
+        const writableSizing = strategySizing<I>(writableStrategy, 1)
+        const startPromise = pending<Error | null>()
+        const ts = new TransformState<I, O>(startPromise, writableSizing, readableSizing)
+        const controller = ts.controller
+        const transform = transformer.transform
+        const flush = transformer.flush
+        const cancel = transformer.cancel
+        ts.transformAlgorithm =
+            transform !== null
+                ? (chunk) => called(transform(chunk, controller))
+                : (chunk) => {
+                      // Chunks pass as they are: O is I, which `as` checks.
+                      const value: unknown = chunk
+                      transformEnqueue(ts, value as O)
+                      return resolved()
+                  }
+        ts.flushAlgorithm = flush !== null ? () => called(flush(controller)) : () => resolved()
+        ts.cancelAlgorithm = cancel !== null ? (reason) => called(cancel(reason)) : (reason) => resolved()
+        this.readable = readableOf(ts.readable)
+        this.writable = writableOf(ts.writable)
+        const start = transformer.start
+        settleWith(startPromise, start !== null ? start(controller) : null)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text streams
+
+/**
+ * A transform stream of strings into their UTF-8 bytes, as JavaScript's
+ * `TextEncoderStream`: `stream.pipeThrough(new TextEncoderStream())`. An
+ * empty string gives no chunk.
+ */
+export class TextEncoderStream {
+    /** Always `"utf-8"`. */
+    readonly encoding = "utf-8"
+    readonly readable: ReadableStream<u8[]>
+    readonly writable: WritableStream<string>
+
+    constructor() {
+        const encoder = new TextEncoder()
+        const ts = new TransformStream<string, u8[]>({
+            transform: (chunk, controller) => {
+                if (chunk.length > 0) controller.enqueue(encoder.encode(chunk))
+            },
+        })
+        this.readable = ts.readable
+        this.writable = ts.writable
+    }
+}
+
+/**
+ * A transform stream of UTF-8 bytes into strings, as JavaScript's
+ * `TextDecoderStream`: a character split between chunks is decoded whole,
+ * and an empty string gives no chunk.
+ */
+export class TextDecoderStream {
+    readonly readable: ReadableStream<string>
+    readonly writable: WritableStream<u8[]>
+    private readonly decoder: TextDecoder
+
+    /** A decoder stream of `label`'s encoding (only UTF-8), with the options of `new TextDecoder`. */
+    constructor(label: string = "utf-8", options: TextDecoderOptions = {}) {
+        const decoder = new TextDecoder(label, options)
+        this.decoder = decoder
+        const ts = new TransformStream<u8[], string>({
+            transform: (chunk, controller) => {
+                const text = decoder.decode(chunk, { stream: true })
+                if (text !== "") controller.enqueue(text)
+            },
+            flush: (controller) => {
+                const text = decoder.decode()
+                if (text !== "") controller.enqueue(text)
+                controller.terminate()
+            },
+        })
+        this.readable = ts.readable
+        this.writable = ts.writable
+    }
+
+    /** Always `"utf-8"`. */
+    get encoding(): string {
+        return this.decoder.encoding
+    }
+
+    /** Whether an invalid sequence panics. */
+    get fatal(): bool {
+        return this.decoder.fatal
+    }
+
+    /** Whether a leading byte order mark is kept. */
+    get ignoreBOM(): bool {
+        return this.decoder.ignoreBOM
+    }
+}

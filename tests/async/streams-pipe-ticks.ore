@@ -1,0 +1,59 @@
+// pipeTo and pipeThrough with a ticker on every microtask: their steps come
+// in Node's order.
+
+let tick = 0
+function ticker(n: number) {
+    let left = n
+    const step = () => {
+        tick++
+        console.log(`tick ${tick}`)
+        left--
+        if (left > 0) queueMicrotask(step)
+    }
+    queueMicrotask(step)
+}
+
+function logged(name: string): WritableStream<string> {
+    return new WritableStream<string>({
+        write(chunk) {
+            console.log(name, "write", chunk)
+        },
+        close() {
+            console.log(name, "close")
+        },
+    })
+}
+
+const source = new ReadableStream<string>({
+    start(controller) {
+        controller.enqueue("a")
+        controller.enqueue("b")
+    },
+    pull(controller) {
+        console.log("pull")
+        controller.close()
+    },
+})
+ticker(30)
+await source.pipeTo(logged("sink"))
+console.log("piped")
+
+const upper = new TransformStream<string, string>({
+    transform(chunk, controller) {
+        console.log("transform", chunk)
+        controller.enqueue(chunk.toUpperCase())
+    },
+    flush(controller) {
+        console.log("flush")
+    },
+})
+ticker(40)
+const xy = new ReadableStream<string>({
+    start(controller) {
+        controller.enqueue("x")
+        controller.enqueue("y")
+        controller.close()
+    },
+})
+await xy.pipeThrough(upper).pipeTo(logged("upper"))
+console.log("through")

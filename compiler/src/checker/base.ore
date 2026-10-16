@@ -110,6 +110,7 @@ import {
     type SlotLink,
     CheckInfo,
 } from "./context"
+import { promiseValue } from "./async"
 import { instantiate } from "./declarations"
 import {
     disposeName,
@@ -402,15 +403,21 @@ export class Checker {
         }
         if (node.kind === "UnionType") {
             const found: Type[] = []
+            let voidNode: Node | null = null
             for (const m of typeNodes(node)) {
                 const type = this.resolveType(m, scope)
                 if (type === null) return null
                 // `never` adds nothing to a union: `A | never` is `A`.
-                if (type.kind === "void") {
-                    this.error(m, `A union cannot contain '${type.kind}'.`)
+                if (type.kind === "void") voidNode = m
+                else found.push(type)
+            }
+            if (voidNode !== null) {
+                // `void | Promise<T>`, the result of a callback that may be async, is `Promise<T> | null`.
+                if (found.length === 0 || !found.every((t) => promiseValue(this, t) !== null)) {
+                    this.error(voidNode, "A union cannot contain 'void'.")
                     return null
                 }
-                found.push(type)
+                found.push(types.null)
             }
             return this.unionOf(found)
         }

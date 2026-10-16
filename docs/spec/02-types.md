@@ -595,10 +595,13 @@ writes the whole characters that fit into `bytes` and returns
 `{ read, written }`, both in bytes. `new TextDecoder(label?, { fatal,
 ignoreBOM }?)` takes only UTF-8 (`"utf-8"`, `"utf8"`,
 `"unicode-1-1-utf-8"`; another label panics with `RangeError: The "x"
-encoding is not supported`), and `decode(bytes?)` reads them as the
-Encoding Standard does: the longest prefix of a character that is invalid
-is one U+FFFD (a panic with `fatal`) and a leading byte order mark is
-dropped unless `ignoreBOM`. `btoa(s)` is the base64 of a binary string,
+encoding is not supported`), and `decode(bytes?, { stream }?)` reads them
+as the Encoding Standard does: the longest prefix of a character that is
+invalid is one U+FFFD (a panic with `fatal`) and a leading byte order mark
+is dropped unless `ignoreBOM`. With `stream: true` more bytes follow: a
+character incomplete at the end waits for the next call, and a call
+without `stream` ends the stream (an incomplete character is then
+U+FFFD). `btoa(s)` is the base64 of a binary string,
 whose characters are U+0000 to U+00FF (another panics with
 `InvalidCharacterError: Invalid character`), and `atob(s)` the binary
 string of base64 text, skipping ASCII whitespace, with the padding
@@ -1012,7 +1015,8 @@ bytes with a media type.
   leading byte order mark left out, as `TextDecoder` does) and `bytes()`
   copies them, both as promises, `Promise<string>` and `Promise<u8[]>`.
   `arrayBuffer()` is `bytes()`: Ore has `u8[]` where JavaScript has an
-  `ArrayBuffer`.
+  `ArrayBuffer`. `stream()` is a `ReadableStream<u8[]>` of the bytes (see
+  [Streams](#streams)), in chunks of up to 65536 bytes.
 - `new File(parts, name, { type, endings, lastModified }?)` is a blob with
   a `name`, the time of its last change `lastModified`, an `int` of
   milliseconds since 1970 (`Date.now()` when left out), and
@@ -1022,8 +1026,9 @@ bytes with a media type.
   (`[Blob]` beyond the depth limit), and `JSON.stringify` writes `{}`, as
   JavaScript, which finds no properties of their own.
 - Differences from JavaScript: a part is a string, a `u8[]` or a blob,
-  not any value converted to a string; `stream()` is missing (as are
-  `URL.createObjectURL` and `FileReader`); `structuredClone` does not copy
+  not any value converted to a string; `stream()` gives a stream of
+  `u8[]` chunks, where JavaScript's is a byte stream of `Uint8Array`s;
+  `URL.createObjectURL` and `FileReader` are missing; `structuredClone` does not copy
   a blob (ORE4091, a class with methods).
 - `Blob` and `File` are classes of the runtime written in Ore
   (`runtime/core/blob.ore`), global names as in JavaScript.
@@ -1326,6 +1331,123 @@ JavaScript's, after the HTML Standard, with Node's `ref` and `unref`:
   (its constructor takes what only `MessageChannel` has).
   The classes are of the runtime written in Ore
   (`runtime/core/messaging.ore`), global names as in JavaScript.
+## Streams
+
+```ts
+const source = new ReadableStream<string>({
+  start(controller) {
+    controller.enqueue("héllo ")
+    controller.enqueue("wörld")
+    controller.close()
+  },
+})
+const upper = new TransformStream<string, string>({
+  transform(chunk, controller) {
+    controller.enqueue(chunk.toUpperCase())
+  },
+})
+for await (const chunk of source.pipeThrough(upper)) console.log(chunk)
+
+const reader = ReadableStream.from(["a", "b"]).getReader()
+const result = await reader.read()       // ReadableStreamReadResult<string> | Error
+if (result instanceof Error) console.log("failed:", result.message)
+else if (!result.done) console.log(result.value)                // a
+```
+
+`ReadableStream`, `WritableStream` and `TransformStream` are JavaScript's,
+after the WHATWG Streams Standard, with the algorithms of Node, so that
+their promises settle in Node's order, tick for tick. They hold chunks of
+one type: `ReadableStream<R>`, `WritableStream<W>`, `TransformStream<I, O
+= I>`.
+
+- Promises do not reject in Ore (see [Concurrency](06-concurrency.md#async-functions-and-promises)):
+  where JavaScript rejects a promise of a stream, Ore fulfills it with an
+  `Error`. The promises of nothing, which JavaScript fulfills with
+  `undefined`, are `Promise<Error | null>`: `closed`, `ready`, `cancel()`,
+  `abort()`, `close()`, `write()` and `pipeTo()` give `null`, or the error.
+  `read()` gives a `ReadableStreamReadResult<R> | Error`, where the result
+  is `{ value, done: false }` or `{ value: null, done: true }`. The error is
+  the reason the stream was errored with when it is an `Error`, else an
+  `Error` whose `cause` is the reason (and whose message is the reason when
+  it is a string); the errors of the streams themselves are named
+  `TypeError` or `RangeError`, with Node's messages (`Invalid state:
+  Releasing reader`). Reasons are `unknown`, as `AbortSignal`'s.
+- Callbacks cannot throw: a source, sink or transformer fails by calling
+  `controller.error(reason)`. Their callbacks return `void | Promise<void>`
+  (see [Unions and null](03-objects.md#unions-and-null)): nothing, or a
+  promise that the stream waits for, as the result of an async method.
+- What JavaScript throws at once panics, as an uncaught exception ends a
+  program: a reader or writer of a locked stream (`TypeError: Invalid
+  state: ReadableStream is locked`), `enqueue` or `close` of a closed
+  controller, a negative or NaN `highWaterMark`, a chunk of a negative,
+  NaN or infinite size. `for await` over a stream that errors panics with
+  its reason, as the loop throws in JavaScript; a reader reads the error as
+  a value.
+- `new ReadableStream<R>(source?, strategy?)`: `source` is `{ start?,
+  pull?, cancel? }`. `start(controller)` runs at once; `pull(controller)`
+  runs when the queue holds less than the strategy's high-water mark (1
+  chunk by default) or a read waits, again only once the promise of the
+  last one is fulfilled; `cancel(reason)` when the stream is canceled. The
+  `ReadableStreamDefaultController<R>` has `enqueue(chunk)`, `close()`,
+  `error(reason?)` and `desiredSize` (the high-water mark less the sizes
+  queued; 0 once closed, null once errored). The stream has `locked`,
+  `cancel(reason?)`, `getReader()`, `tee()` (a tuple of two streams of the
+  same chunks), `pipeTo(writable, { preventClose, preventAbort,
+  preventCancel, signal }?)`, `pipeThrough(transform, options?)`, `values({
+  preventCancel }?)` and `[Symbol.asyncIterator]()`: `for await (const
+  chunk of stream)` reads it, and leaving the loop early cancels it (unless
+  `preventCancel`) and releases it. `ReadableStream.from(iterable)` is a
+  stream of the values of anything `for await` takes (arrays, sets,
+  generators, async generators...).
+- `ReadableStreamDefaultReader<R>` (`stream.getReader()` or `new
+  ReadableStreamDefaultReader(stream)`) has `read()`, `closed`,
+  `cancel(reason?)` and `releaseLock()`, after which reads still waiting
+  give an `Error`.
+- `new WritableStream<W>(sink?, strategy?)`: `sink` is `{ start?, write?,
+  close?, abort? }`; `write(chunk, controller)` is called for one chunk at
+  a time, once the promise of the last one is fulfilled. The
+  `WritableStreamDefaultController` has `error(reason?)` and `signal`, an
+  `AbortSignal` aborted by `abort()`. The stream has `locked`,
+  `abort(reason?)`, `close()` and `getWriter()`. The
+  `WritableStreamDefaultWriter<W>` has `write(chunk)`, `close()`,
+  `abort(reason?)`, `releaseLock()`, `closed`, `ready` (pending while the
+  queue is at the high-water mark: backpressure) and `desiredSize`.
+- `new TransformStream<I, O>(transformer?, writableStrategy?,
+  readableStrategy?)`: `transformer` is `{ start?, transform?, flush?,
+  cancel? }`, whose `TransformStreamDefaultController<O>` has
+  `enqueue(chunk)`, `error(reason?)`, `terminate()` and `desiredSize`; the
+  stream has `readable` and `writable`. Without `transform`, chunks pass as
+  they are, which needs `O` to be `I` (else the first chunk panics with
+  `value is not of type`). A class with `readable` and `writable` fields or
+  getters, such as `TransformStream`, `TextEncoderStream` and
+  `TextDecoderStream`, is a `ReadableWritablePair<T, W>`, the interface
+  `pipeThrough` takes.
+- A strategy is a `QueuingStrategy<T>`, an interface with `highWaterMark`
+  and an optional `size(chunk)`: an object literal (`{ highWaterMark: 0 }`,
+  `{ highWaterMark: 64, size: (chunk) => f64(chunk.length) }`), a
+  `CountQueuingStrategy` (each chunk is 1) or a
+  `ByteLengthQueuingStrategy`, whose `size(chunk)` is the length of a
+  `u8[]`, so that only streams of `u8[]` take it. Both are made with `{
+  highWaterMark }`; sizes and high-water marks are `number`s.
+- `new TextEncoderStream()` is a transform stream of strings into their
+  UTF-8 bytes (an empty string gives no chunk), `new
+  TextDecoderStream(label?, { fatal, ignoreBOM }?)` one of bytes into
+  strings, a character split between chunks decoded whole, as
+  `TextDecoder.decode(bytes, { stream: true })` does. `blob.stream()` is a
+  `ReadableStream<u8[]>` of a blob's bytes.
+- Differences from JavaScript: byte streams (`type: "bytes"`) and BYOB
+  readers are left out, so `getReader()` takes no options; a strategy needs
+  a `highWaterMark`; `ByteLengthQueuingStrategy` takes `u8[]` chunks, where
+  JavaScript reads `byteLength`; a done result's `value` is `null`;
+  `return()` of a stream's iterator takes no value (the stream is canceled
+  with `null`); streams are not transferable, and `console.log` prints them
+  as instances of their classes. A stream belongs to the event loop: the
+  top-level code and async functions use it, not other tasks. As Node waits for `process.nextTick`
+  before closing the branches of `tee()` and Ore has no such queue, they
+  close a microtask after the source. The classes are of the runtime
+  written in Ore (`runtime/core/streams.ore`), global names as in
+  JavaScript, and so are the interfaces `QueuingStrategy` and
+  `ReadableWritablePair`.
 
 ## Arrays
 
@@ -1413,7 +1535,8 @@ JavaScript's, after the HTML Standard, with Node's `ref` and `unref`:
   read-only tuple of its elements' `as const` types, and an object literal
   read-only fields of theirs: `const Dirs = ["n", "s"] as const` is a
   `readonly ["n", "s"]`, and `(typeof Dirs)[number]` is `"n" | "s"`, an
-  enum of string literals. Other type assertions are not supported.
+  enum of string literals. `x as T` of an `unknown` is checked (see
+  [unknown](#unknown)); other type assertions are not supported.
 
 ## unknown
 
@@ -1431,6 +1554,9 @@ JavaScript's, after the HTML Standard, with Node's `ref` and `unref`:
   type and value, or for numbers of any types with the same value, and for
   two nulls), tested with `x === null`, given a fallback with `??`, passed
   where an `unknown` is expected, and printed.
+- `x as T` is the value it holds as a `T`, checked at run time: it panics
+  with `value is not of type T` when it holds another type (other type
+  assertions are not supported).
 - Checks narrow it: `typeof x === "string"` to `string`, `"number"` to
   `number` (`f64`, which a number of any type converts to), `"boolean"` to
   `bool`, `"bigint"` to `bigint`, and `x instanceof C` to the class `C` or

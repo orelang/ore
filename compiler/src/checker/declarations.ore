@@ -80,10 +80,11 @@ import {
 import { type Source } from "../syntax/source"
 import { leadingCommentRanges } from "../syntax/nodes"
 import { checkAssigned } from "./assigned"
-import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseValue } from "./async"
+import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseOrNull, promiseValue } from "./async"
 import { generatorStmts, isGenerator, startBody } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import {
+    accessor,
     conformance,
     checkAllInitializers,
     checkClassBodies,
@@ -1858,7 +1859,10 @@ export function inferFrom(
                 const mname = memberName.text
                 const annotation = typeNode(member)
                 if (member.kind === "PropertySignature" && annotation !== null) {
-                    const field = fieldType(type, mname)
+                    // A field, or a getter, which implements a field.
+                    let field = fieldType(type, mname)
+                    const property = field === null ? accessor(c, type, mname) : null
+                    if (property !== null && !property.private && property.hasGet) field = property.type
                     if (field !== null) inferFrom(c, annotation, field, inner, found, generic.scope)
                 } else if (member.kind === "MethodSignature") {
                     const method = methodType(type, mname)
@@ -2337,8 +2341,11 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(func.type.result, [], 0)
     enterPredicate(c, func, scope)
-    const value = isAsync(decl) && !isGenerator(decl) ? promiseValue(c, func.type.result) : null
-    if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    // An async function returning `void | Promise<T>` returns the promise.
+    const promise = promiseOrNull(c, func.type.result)
+    const value = isAsync(decl) && !isGenerator(decl) ? promiseValue(c, promise ?? func.type.result) : null
+    const wrapped = promise !== null ? func.type.result : null
+    if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName, wrapped))
     else if (isGenerator(decl)) func.body = new Block(generatorStmts(c, decl, func, scope))
     else func.body = checkBlock(c, body(decl)!, scope)
     if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
@@ -2365,6 +2372,11 @@ export function checkReturns(c: Checker, func: Func, node: Node) {
     // A function returning null may end without a return, as TypeScript's undefined-returning ones.
     if (result.kind === "null" && !naked && !terminates(func.body)) {
         func.body.body.push(new ReturnStmt(new NullLit(types.null)))
+        return
+    }
+    // So may one returning `void | Promise<T>`, which is `Promise<T> | null`.
+    if (promiseOrNull(c, result) !== null && !naked && !terminates(func.body)) {
+        func.body.body.push(new ReturnStmt(c.coerce(new Typed(new NullLit(types.null)), result, node)))
         return
     }
     if (result.kind !== "void" && !naked && !terminates(func.body)) {

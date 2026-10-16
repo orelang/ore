@@ -5,6 +5,38 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Streams, as in JavaScript, after the WHATWG Streams Standard with Node's
+  algorithms, so that their promises settle in Node's order: the global
+  classes `ReadableStream<R>` (`getReader()`, `cancel`, `tee`, `pipeTo`,
+  `pipeThrough`, `values`, `for await`, `ReadableStream.from` of anything
+  `for await` takes), `ReadableStreamDefaultReader`,
+  `ReadableStreamDefaultController`, `WritableStream<W>`,
+  `WritableStreamDefaultWriter` (backpressure through `ready` and
+  `desiredSize`), `WritableStreamDefaultController` (with its `signal`),
+  `TransformStream<I, O>`, `TransformStreamDefaultController`,
+  `CountQueuingStrategy`, `ByteLengthQueuingStrategy` (of `u8[]` chunks),
+  `TextEncoderStream` and `TextDecoderStream`, and the interfaces
+  `QueuingStrategy` and `ReadableWritablePair`. Promises do not reject: a
+  promise of a stream that JavaScript rejects is fulfilled with an `Error`
+  (the reason, or an `Error` whose `cause` is the reason), `read()` is a
+  `Promise<ReadableStreamReadResult<R> | Error>` and the promises of
+  nothing are `Promise<Error | null>`; callbacks fail through
+  `controller.error(reason)`, and what JavaScript throws at once panics.
+  Byte streams and BYOB readers are left out. `Blob.stream()` is a
+  `ReadableStream<u8[]>`, and `TextDecoder.decode(bytes, { stream: true })`
+  decodes a stream of chunks.
+- `void | Promise<T>`, TypeScript's result of a callback that may be async,
+  is `Promise<T> | null`: a function or function literal of that result
+  may return nothing, a void call, or a promise, and an async one returns
+  its promise. `void` is still in no other union
+  ([ORE2005](docs/errors/ORE2005.md)).
+- `x as T` of an `unknown` is the value it holds as a `T`, checked at run
+  time (a panic when it holds another type).
+- A `return` without a value ends a function whose result is `null`, as an
+  async function of a `Promise<void>`.
+- The inference of a generic call takes the getters of a class for the
+  fields of an interface: `stream.pipeThrough(new TextDecoderStream())`.
+
 - Async generators and `for await`, as in JavaScript: `async function*`
   declarations and expressions, `async *method()` (also `async
   *[Symbol.asyncIterator]()` and in object literals) return an

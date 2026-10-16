@@ -295,6 +295,14 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
             if (value.k === "error") return value
             return typed(c.coerce(value, type, expression(node)))
         }
+        // `x as T` of an `unknown`: the value it holds, checked at run time.
+        const value = checkExpr(c, expression(node), scope)
+        if (value.k === "error") return value
+        if (value.k === "typed" && value.expr.type.kind === "unknown") {
+            const type = c.resolveValueType(asType, scope)
+            if (type === null) return errorOperand
+            return typed(type.kind === "unknown" ? value.expr : new Recast(type, value.expr))
+        }
         return c.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
     }
     if (k === "TemplateExpression") return checkTemplate(c, node, scope)

@@ -137,11 +137,50 @@ export class TextDecoder {
         this.ignoreBOM = options.ignoreBOM ?? false
     }
 
-    /** The string of UTF-8 bytes. */
-    decode(input: u8[] = []): string {
-        const bom = !this.ignoreBOM && input.length >= 3 && input[0] === 0xef && input[1] === 0xbb && input[2] === 0xbf
-        return decodeBytes(input, bom ? 3 : 0, input.length, this.fatal)
+    /** The bytes of a character that the last `decode` with `stream` left incomplete. */
+    private pending: u8[] = []
+    /** Whether the stream's first character was decoded, after which a byte order mark is a character. */
+    private bomSeen = false
+
+    /**
+     * The string of UTF-8 bytes. With `stream: true`, more bytes follow: a
+     * character incomplete at the end waits for them, and the next call
+     * without `stream` ends the stream (an incomplete character is then
+     * U+FFFD).
+     */
+    decode(input: u8[] = [], options: TextDecodeOptions = {}): string {
+        const stream = options.stream ?? false
+        let bytes = input
+        if (this.pending.length > 0) {
+            bytes = this.pending.concat(input)
+            this.pending = []
+        }
+        let start = 0
+        let stop = bytes.length
+        if (stream) {
+            stop = incompleteAt(bytes)
+            this.pending = bytes.slice(stop)
+        }
+        if (!this.bomSeen && stop > start) {
+            const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+            if (bom && !this.ignoreBOM) start = 3
+            this.bomSeen = true
+        }
+        const text = decodeBytes(bytes, start, stop, this.fatal)
+        if (!stream) this.bomSeen = false
+        return text
     }
+}
+
+/** The options of `TextDecoder.decode`: whether more bytes follow. */
+export type TextDecodeOptions = { stream?: bool }
+
+/** Where an incomplete character at the end of `bytes` starts, that more bytes may complete: their length if none. */
+function incompleteAt(bytes: u8[]): int {
+    const n = bytes.length
+    for (let at = n > 3 ? n - 3 : 0; at < n; at++)
+        if (charLength(bytes[at]) > n - at && validAt(bytes, at, n) === at - n) return at
+    return n
 }
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"

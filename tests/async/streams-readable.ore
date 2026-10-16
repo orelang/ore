@@ -1,0 +1,100 @@
+// ReadableStream: a source's start and pull, a reader's reads and closed, a
+// stream that is pulled as its queue drains, in Node's order of promises,
+// which a ticker on every microtask shows.
+
+let tick = 0
+function ticker(n: number) {
+    let left = n
+    const step = () => {
+        tick++
+        console.log(`tick ${tick}`)
+        left--
+        if (left > 0) queueMicrotask(step)
+    }
+    queueMicrotask(step)
+}
+
+let pulls = 0
+const stream = new ReadableStream<string>(
+    {
+        start(controller) {
+            console.log("start", controller.desiredSize)
+            controller.enqueue("a")
+            console.log("enqueued", controller.desiredSize)
+        },
+        pull(controller) {
+            pulls++
+            console.log("pull", pulls, controller.desiredSize)
+            if (pulls === 4) controller.close()
+            else controller.enqueue(`p${pulls}`)
+        },
+    },
+    { highWaterMark: 2 },
+)
+console.log("locked", stream.locked)
+const reader = stream.getReader()
+console.log("locked", stream.locked)
+reader.closed.then(() => console.log("closed"))
+ticker(12)
+
+async function readAll() {
+    for (;;) {
+        const r = await reader.read()
+        if (r instanceof Error) {
+            console.log("error", r.message)
+            return
+        }
+        if (r.done) {
+            console.log("done")
+            return
+        }
+        console.log("read", r.value)
+    }
+}
+await readAll()
+reader.releaseLock()
+console.log("locked", stream.locked)
+
+// An async pull: the next pull waits for its promise.
+let n = 0
+const slow = new ReadableStream<string>(
+    {
+        async pull(controller) {
+            n++
+            console.log("slow pull", n)
+            await null
+            if (n > 2) controller.close()
+            else controller.enqueue(`v${n}`)
+        },
+    },
+    { highWaterMark: 0 },
+)
+ticker(10)
+const values: string[] = []
+for await (const v of slow) values.push(v)
+console.log("values", values, slow.locked)
+
+// Reads waiting before the chunks: each is given one as it is enqueued.
+let feed: ReadableStreamDefaultController<string> | null = null
+const pushed = new ReadableStream<string>({
+    start(controller) {
+        feed = controller
+    },
+})
+const r2 = pushed.getReader()
+const first = r2.read()
+const second = r2.read()
+first.then((r) => {
+    if (!(r instanceof Error) && !r.done) console.log("first", r.value)
+})
+second.then((r) => {
+    if (!(r instanceof Error) && !r.done) console.log("second", r.value)
+})
+await null
+console.log("enqueue x")
+feed!.enqueue("x")
+console.log("enqueue y, close")
+feed!.enqueue("y")
+feed!.close()
+const third = await r2.read()
+if (!(third instanceof Error)) console.log("third done", third.done)

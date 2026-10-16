@@ -1,0 +1,40 @@
+// node: chunks of bytes are u8[], where JavaScript has a Uint8Array
+// CountQueuingStrategy and ByteLengthQueuingStrategy: their high-water
+// marks and sizes, and the queues of streams that count by them.
+
+const count = new CountQueuingStrategy({ highWaterMark: 3 })
+const bytes = new ByteLengthQueuingStrategy({ highWaterMark: 8 })
+const chunk: u8[] = [1, 2, 3, 4, 5]
+console.log(count.highWaterMark, count.size(), bytes.highWaterMark, bytes.size(chunk))
+
+const stream = new ReadableStream<u8[]>(
+    {
+        start(controller) {
+            controller.enqueue(chunk)
+            console.log("bytes desired", controller.desiredSize)
+            controller.enqueue(chunk)
+            console.log("bytes desired", controller.desiredSize)
+        },
+    },
+    bytes,
+)
+const counted = new ReadableStream<string>(
+    {
+        start(controller) {
+            controller.enqueue("a")
+            console.log("count desired", controller.desiredSize)
+        },
+    },
+    count,
+)
+const sink = new WritableStream<u8[]>({}, bytes)
+const writer = sink.getWriter()
+writer.write(chunk)
+console.log("writer desired", writer.desiredSize)
+await writer.close()
+console.log("writer closed", writer.desiredSize)
+
+// A transform stream with a strategy for each side.
+const ts = new TransformStream<u8[], u8[]>({}, bytes, { highWaterMark: 2 })
+const w2 = ts.writable.getWriter()
+console.log("transform desired", w2.desiredSize)

@@ -39,7 +39,8 @@ with `install.sh`, Homebrew and `ore update`) are done.
 What TypeScript has and Ore should, before the GC changes the runtime under
 it. Not gaps but choices (Go's semantics): `any`, `undefined`, `var`, enums,
 namespaces, exceptions, `delete`, `in`, `for...in`, default
-exports, type assertions (Ore converts: `i32(x)`).
+exports, type assertions (Ore converts: `i32(x)`; `x as T` only checks
+what an `unknown` holds).
 
 - Expressions and statements, in order:
   - spread arguments: among the rest arguments, in `push`, `console.log`,
@@ -107,8 +108,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   only the common abbreviations).
 - `URL` and `URLSearchParams` from MDN, with the WHATWG URL Standard's
   parser (done; no IDNA or Punycode for domains outside ASCII).
-- `Blob` and `File` from MDN, after the W3C File API (done; `stream()`
-  waits for streams).
+- `Blob` and `File` from MDN, after the W3C File API (done; `stream()` is a
+  stream of `u8[]` chunks, not a byte stream).
 - `Headers` from MDN, after the Fetch Standard (done; the constructor
   takes no `Map` or other iterable of pairs).
 - `Event`, `CustomEvent`, `EventTarget`, `AbortController` and
@@ -271,6 +272,14 @@ library (OpenSSL), packed with releases as libLLVM is. In order:
   nanoseconds); `MessageChannel` and `BroadcastChannel` (done); `FormData`.
 - Streams: `ReadableStream`, `WritableStream`, `TransformStream` and the
   text streams, on async generators and `for await`.
+  nanoseconds); `MessageChannel` and `BroadcastChannel`; `FormData`.
+- Streams: `ReadableStream`, `WritableStream`, `TransformStream`, the
+  queuing strategies and the text streams, with Node's algorithms and
+  order of promises (done; the rejections are `Error` values, byte streams
+  and BYOB readers are left out, `ReadableStream.from` reads through an
+  async generator, whose ticks are not Node's, and the branches of `tee()`
+  close a microtask after their source, where Node waits for
+  `process.nextTick`).
 - The network: `fetch` with `Request` and `Response` over an HTTP/1.1 client,
   an HTTP server that takes a handler from `Request` to `Response` (as
   `Bun.serve` and `Deno.serve`), `WebSocket`, and `https` with TLS.

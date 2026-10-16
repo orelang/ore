@@ -1,9 +1,11 @@
 // The global classes `Blob` and `File` of JavaScript's hosts, after the W3C
 // File API: immutable bytes with a media type, made of strings (UTF-8),
 // bytes and other blobs. Bytes are `u8[]`, where JavaScript has a
-// `Uint8Array` or an `ArrayBuffer`; a slice shares the bytes of its blob.
+// `Uint8Array` or an `ArrayBuffer`; a slice shares the bytes of its blob,
+// and `stream()` reads them as a `ReadableStream<u8[]>` (streams.ore).
 
 import { type Inspection, begin, end, field, paint, quote } from "ore:runtime/inspect"
+import { ReadableStream } from "ore:runtime/streams"
 import { decodeBytes } from "ore:runtime/text"
 
 /** A part of a new blob: a string, written as UTF-8, bytes, or another blob. */
@@ -39,6 +41,9 @@ function pushString(out: u8[], s: string, native: bool): void {
         } else out.push(b)
     }
 }
+
+/** The largest chunk of `Blob.stream()`, as Node reads blobs. */
+const chunkSize = 65536
 
 /** A position of `slice` in a blob of `size` bytes: from the end when negative, clamped to the blob. */
 function clamp(at: int, size: int): int {
@@ -127,6 +132,29 @@ export class Blob {
     /** A copy of the bytes, as `bytes()`: Ore has `u8[]` where JavaScript has an `ArrayBuffer`. */
     arrayBuffer(): Promise<u8[]> {
         return this.bytes()
+    }
+
+    /**
+     * A stream of the bytes, in chunks of up to 65536 bytes, each a copy:
+     * `for await (const chunk of blob.stream())`. An empty blob gives none.
+     */
+    stream(): ReadableStream<u8[]> {
+        const data = this.data
+        const stop = this.stop
+        let at = this.start
+        return new ReadableStream<u8[]>(
+            {
+                pull: (controller) => {
+                    if (at < stop) {
+                        const end = stop - at > chunkSize ? at + chunkSize : stop
+                        controller.enqueue(data.slice(at, end))
+                        at = end
+                    }
+                    if (at >= stop) controller.close()
+                },
+            },
+            { highWaterMark: 0 },
+        )
     }
 }
 

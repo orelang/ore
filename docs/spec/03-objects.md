@@ -325,6 +325,14 @@ on that slot reads the class table.
   `number` numeric literal types.
 - `null` is a value only of unions that contain `null`. A variable of such a
   type without an initializer starts as `null`. There is no `undefined`.
+- `void` is in no union ([ORE2005](../errors/ORE2005.md)) but one of
+  promises: `void | Promise<T>`, TypeScript's result of a callback that
+  may be async, is `Promise<T> | null`. A function or function literal of
+  that result may return nothing (a `return` without a value or the end of
+  its body gives `null`), a void call as an arrow's body, or a promise, and
+  an async one returns its promise: `{ run: (n: int) => void |
+  Promise<void> }` takes `(n) => console.log(n)` and `async (n) => { await
+  f(n) }`. The caller tells them apart with `result instanceof Promise`.
 - A string literal type such as `"circle"` has strings as values. A string
   literal expression takes the literal type its context asks for.
   So do `true` and `false`. An object literal for a union of object types

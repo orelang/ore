@@ -1,0 +1,104 @@
+// node: promises of streams resolve with the Error where JavaScript rejects them
+// Errors of streams as values: a stream errored by its controller, a
+// released reader, a canceled or aborted stream, an error carried through a
+// pipe, and the reasons that are no Error, which an Error's cause holds.
+
+function show(label: string, result: unknown) {
+    if (result instanceof Error) console.log(label, "error", result.name, result.message)
+    else console.log(label, "ok")
+}
+
+// A source that errors: reads give the error, and closed too.
+const failing = new ReadableStream<string>({
+    start(controller) {
+        controller.enqueue("a")
+        controller.error(new Error("broken"))
+    },
+})
+const reader = failing.getReader()
+show("read", await reader.read())
+show("closed", await reader.closed)
+show("cancel errored", await failing.cancel())
+
+// A reason that is no Error: the Error's message is the string, its cause the reason.
+const stringly = new ReadableStream<string>({
+    pull(controller) {
+        controller.error("plain reason")
+    },
+})
+const r2 = stringly.getReader()
+const got: unknown = await r2.read()
+if (got instanceof Error) console.log("string reason", got.message, got.cause === "plain reason")
+
+// Releasing a reader rejects its pending reads.
+const idle = new ReadableStream<string>()
+const r3 = idle.getReader()
+const waiting = r3.read()
+r3.releaseLock()
+show("released read", await waiting)
+show("released closed", await r3.closed)
+show("read after release", await r3.read())
+
+// A released stream cancels; a reader cancels its stream too.
+show("cancel unlocked", await idle.cancel())
+const r4 = idle.getReader()
+show("cancel reader", await r4.cancel("done"))
+show("read canceled", await r4.read())
+
+// A sink that errors: the writes after it, close and closed give the error.
+const sink = new WritableStream<string>({
+    write(chunk, controller) {
+        if (chunk === "bad") controller.error(new Error("sink failed"))
+    },
+})
+const writer = sink.getWriter()
+show("write good", await writer.write("good"))
+show("write bad", await writer.write("bad"))
+show("write after", await writer.write("late"))
+show("close", await writer.close())
+show("closed", await writer.closed)
+
+// Aborting a stream: the sink's abort gets the reason, the writes queued fail.
+const slow = new WritableStream<string>({
+    write(chunk) {
+        return new Promise<void>((resolve) => setTimeout(() => resolve(), 5))
+    },
+    abort(reason) {
+        if (reason instanceof Error) console.log("sink abort", reason.message)
+    },
+})
+const w2 = slow.getWriter()
+const first = w2.write("1")
+const second = w2.write("2")
+show("abort", await w2.abort(new Error("stop")))
+show("first", await first)
+show("second", await second)
+
+// A pipe from a source that errors aborts the destination.
+const errored = new ReadableStream<string>({
+    start(controller) {
+        controller.enqueue("x")
+        controller.error(new Error("source failed"))
+    },
+})
+const dest = new WritableStream<string>({
+    abort(reason) {
+        if (reason instanceof Error) console.log("dest abort", reason.message)
+    },
+})
+show("pipe", await errored.pipeTo(dest))
+
+// A pipe stopped by a signal.
+const controller = new AbortController()
+const endless = new ReadableStream<string>({
+    pull(c) {
+        c.enqueue("tick")
+    },
+})
+const drained = new WritableStream<string>({
+    write(chunk) {
+        controller.abort(new Error("enough"))
+    },
+})
+show("signal pipe", await endless.pipeTo(drained, { signal: controller.signal }))
+console.log("locked after", endless.locked, drained.locked)

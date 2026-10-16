@@ -60,7 +60,18 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `blob.arrayBuffer()` | `Promise<ArrayBuffer>` | `Promise<u8[]>`, as `blob.bytes()` |
 | `new Blob([x])` of a number, an object, ... | converts it to a string | compile error: parts are strings, `u8[]` and blobs |
 | `blob.slice(0, null)` | `null` is 0: an empty blob | `null` is a missing end: the whole blob |
-| `blob.stream()`, `URL.createObjectURL(blob)`, `FileReader` | exist | do not exist |
+| `URL.createObjectURL(blob)`, `FileReader` | exist | do not exist |
+| `blob.stream()` | a byte stream of `Uint8Array`s | a `ReadableStream<u8[]>` |
+| a promise of a stream that rejects (`read()`, `write()`, `closed`, `ready`, `cancel()`, `pipeTo()`...) | rejects with the reason | is fulfilled with an `Error`: the reason, or an `Error` whose `cause` is the reason; the promises of nothing are `Promise<Error \| null>`, `read()` a `Promise<ReadableStreamReadResult<R> \| Error>` |
+| a callback of a source, sink or transformer that throws or rejects | errors the stream | cannot throw: it calls `controller.error(reason)` |
+| `for await` over a stream that errors | throws the reason | panics with it |
+| `getReader()` of a locked stream, `enqueue()` of a closed controller | throws a `TypeError` | panics with it |
+| `reader.read()` at the end of a stream | `{ value: undefined, done: true }` | `{ value: null, done: true }` |
+| `type: "bytes"`, `getReader({ mode: "byob" })` | byte streams, BYOB readers | compile errors: not supported |
+| `new ByteLengthQueuingStrategy(init)` | sizes any chunk by its `byteLength` | sizes `u8[]` chunks: only streams of `u8[]` take it |
+| a queuing strategy without `highWaterMark` | the default mark | compile error |
+| `x as T` | an assertion, unchecked | only of an `unknown`, checked at run time: panics when it holds another type |
+| `void \| Promise<T>` | a union with `void` | `Promise<T> \| null`; `void` is in no other union |
 | an invalid header name or value given to `Headers` | throws a `TypeError` | panics with its message: `TypeError: Headers.append: "a b" is an invalid header name.` |
 | a header value with characters above U+00FF | throws a `TypeError` (not a `ByteString`) | kept, as UTF-8 |
 | `new FormData(form, submitter)` | the entries of a form element | does not exist: `new FormData()` starts empty, Ore has no forms |

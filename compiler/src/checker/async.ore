@@ -44,6 +44,21 @@ export function promiseValue(c: Checker, type: Type): Type | null {
 }
 
 /**
+ * For `Promise<T> | null`, which `void | Promise<T>` is (the result of a
+ * callback that may be async): the promise type; null for any other type.
+ */
+export function promiseOrNull(c: Checker, type: Type): Type | null {
+    if (type.kind !== "union" || type.members.length !== 2) return null
+    let promise: Type | null = null
+    let hasNull = false
+    for (const m of type.members) {
+        if (m.kind === "null") hasNull = true
+        else if (promiseValue(c, m) !== null) promise = m
+    }
+    return hasNull ? promise : null
+}
+
+/**
  * The value type T of an async function's result type, which must be
  * `Promise<T>`, as in TypeScript; reports any other.
  */
@@ -68,9 +83,18 @@ function runtimeFunc(c: Checker, name: string, typeArgs: Type[], node: Node): Fu
 /**
  * The body of an async function `decl`, whose promise has the value type
  * `value`: a closure of the body, which returns a value or a promise of it,
- * called by `asyncCall`. Returns the statements of the function's body.
+ * called by `asyncCall`. Returns the statements of the function's body,
+ * which returns the promise as a `wrapped` when that is not null (a `void |
+ * Promise<T>`).
  */
-export function checkAsyncBody(c: Checker, decl: Node, scope: Scope, value: Type, name: string): Stmt[] {
+export function checkAsyncBody(
+    c: Checker,
+    decl: Node,
+    scope: Scope,
+    value: Type,
+    name: string,
+    wrapped: Type | null = null,
+): Stmt[] {
     const outer = c.fn!
     const promise = promiseOf(c, value, decl)
     if (promise === null) return []
@@ -115,7 +139,8 @@ export function checkAsyncBody(c: Checker, decl: Node, scope: Scope, value: Type
     const call = runtimeFunc(c, "asyncCall", [value], decl)
     if (call === null) return []
     const closure: Expr = new Closure(func.type, func)
-    return [new ReturnStmt(new Call(promise, call, [closure]))]
+    const started: Expr = new Call(promise, call, [closure])
+    return [new ReturnStmt(wrapped !== null ? c.coerce(typed(started), wrapped, decl) : started)]
 }
 
 /** `await value`: the value of a promise, or the value itself after a tick. */

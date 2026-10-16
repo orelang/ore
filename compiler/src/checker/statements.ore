@@ -102,7 +102,7 @@ import {
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
-import { asyncValue, checkAsyncBody, isAsync, promiseOf } from "./async"
+import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseOrNull } from "./async"
 import { checkAsyncReturn, generatorBody, inferGenerator, isGenerator, iteratorModule } from "./generators"
 import {
     type AsyncSource,
@@ -1527,6 +1527,11 @@ export function checkReturn(c: Checker, stmt: Node, scope: Scope): ReturnStmt {
         return new ReturnStmt(expr)
     }
     if (valueNode === null) {
+        // A `void | Promise<T>` returns null.
+        if (promiseOrNull(c, current) !== null)
+            return new ReturnStmt(c.coerce(typed(new NullLit(types.null)), current, stmt))
+        // So does one whose result is null, as an async function's of a `Promise<void>`.
+        if (current.kind === "null") return new ReturnStmt(new NullLit(types.null))
         if (current.kind !== "void") c.error(stmt, `A return value of type '${typeToString(current)}' is required.`)
         else assertionReturn(c, stmt)
         return new ReturnStmt()
@@ -1771,9 +1776,12 @@ function asyncClosureBody(
     if (result === null || result.kind === "void") result = promiseOf(c, types.void, node)
     if (result === null) return false
     fn.result = result
-    const value = asyncValue(c, result, resultNode ?? node)
+    // For a `void | Promise<T>`, the promise.
+    const promise = promiseOrNull(c, result)
+    const value = asyncValue(c, promise ?? result, resultNode ?? node)
     if (value === null) return false
-    func.body = new Block(prepend(prologue, checkAsyncBody(c, node, scope, value, name)))
+    const wrapped = promise !== null ? result : null
+    func.body = new Block(prepend(prologue, checkAsyncBody(c, node, scope, value, name, wrapped)))
     const done = new FuncTypeClass(func.type.params, result)
     done.required = func.type.required
     done.rest = func.type.rest
@@ -1832,12 +1840,13 @@ function closureBody(
             func.body = new Block(value.k === "typed" ? [new ExprStmt(value.expr)] : [])
         } else if (
             result !== null &&
-            result.kind === "null" &&
+            (result.kind === "null" || promiseOrNull(c, result) !== null) &&
             value.k === "typed" &&
             value.expr.type.kind === "void"
         ) {
-            // A void call for a null result, as a callback whose type argument is void.
-            func.body = new Block([new ExprStmt(value.expr), new ReturnStmt(new NullLit(types.null))])
+            // A void call for a null result, as a callback whose type argument is void, or a `void | Promise<T>`.
+            const none = c.coerce(typed(new NullLit(types.null)), result, fnBody)
+            func.body = new Block([new ExprStmt(value.expr), new ReturnStmt(none)])
         } else {
             const expr = result !== null ? c.coerce(value, result, fnBody) : c.toDefault(value, fnBody)
             if (fn.result === null) fn.result = expr.type

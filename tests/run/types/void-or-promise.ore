@@ -1,0 +1,56 @@
+// `void | Promise<T>`, the result of a callback that may be async, is
+// `Promise<T> | null`: a function literal may return nothing or a promise,
+// and an async one returns its promise. A bare `return` ends an async
+// function of a `Promise<void>`, and `x as T` of an `unknown` is the value
+// it holds.
+
+type Hooks = { run: (n: int) => void | Promise<void> }
+
+async function call(hooks: Hooks, n: int) {
+    const result = hooks.run(n)
+    if (result instanceof Promise) {
+        await result
+        console.log("awaited", n)
+        return
+    }
+    console.log("returned", n)
+}
+
+await call({ run: (n) => console.log("expression", n) }, 1)
+await call(
+    {
+        run(n) {
+            if (n > 0) return
+            console.log("never")
+        },
+    },
+    2,
+)
+await call(
+    {
+        async run(n) {
+            await null
+            console.log("async method", n)
+        },
+    },
+    3,
+)
+await call({ run: async (n) => console.log("async arrow", n) }, 4)
+
+function maybeLater(later: bool): void | Promise<void> {
+    if (later) return Promise.resolve()
+}
+console.log(maybeLater(true) instanceof Promise, maybeLater(false) instanceof Promise)
+
+async function early(n: int) {
+    if (n > 0) return
+    console.log("not reached")
+}
+await early(1)
+
+const boxed: unknown = "text"
+const text = boxed as string
+console.log(text.length, text.toUpperCase())
+const values: unknown[] = [1.5, "two", true]
+const first = values[0] as number
+console.log(first * 2)
