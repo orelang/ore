@@ -194,8 +194,6 @@ the collector does not move objects, so it does not need them.
 ## Later
 
 - Escape analysis for arrays of known size.
-- Per-thread run queues with work stealing, if the shared queue becomes a
-  bottleneck.
 - UDP, TLS and HTTP in the standard library.
 - Semantic tokens in the language server.
 - Snap package; Windows.

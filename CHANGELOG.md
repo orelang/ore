@@ -5,6 +5,12 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Each worker thread has its own run queue, as in Go: a lock-free ring that
+  tasks it spawns or wakes go to, with a slot for the task the running one
+  woke last (so two tasks that wake each other run in turn on one thread),
+  stolen from by idle workers, half of it moved to the global queue when
+  full; the global queue is looked at every 61 tasks. bench/channels runs
+  about 1.5–2x faster on 10 threads; bench/tasks is unchanged.
 - Spawning tasks is about ten times faster (`bench/tasks`, 100000 tasks:
   1.1 s to 0.09 s on a 10-core Mac). A task gets its stack when it first
   runs, not when it is spawned, and gives it back when it ends to a cache

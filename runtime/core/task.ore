@@ -2,7 +2,8 @@
 // Green threads ("tasks") on several OS threads ("workers"), M:N like Go.
 //
 // Tasks run until they wait (on a channel, a timer or a select) or yield;
-// any worker runs any runnable task. Every task that has started, including
+// each worker runs the tasks of its own run queue, and steals from the others
+// when it has none (see "Run queues"). Every task that has started, including
 // the one running the program's top-level code, has its own mapped stack with
 // a guard page.
 // The program ends when the top-level code ends.
@@ -120,16 +121,29 @@ export class Task {
     }
 }
 
-/** The run queue, the timers and the workers, under `lock`. */
+/**
+ * The global run queue, the timers and the workers, under `lock`. Each worker
+ * also has a run queue of its own (see "Run queues").
+ */
 class Scheduler {
     lock = permanentMutex()
     cond = permanentCond()
     runHead: Task | null = null
     runTail: Task | null = null
+    /** How many tasks the global queue holds: changed under `lock`, read without it. */
+    runCount = permanent(8)
     /** Sleeping tasks by wake time. */
     timers: Task | null = null
+    /** The wake time of the first timer, or -1 when there is none: changed under `lock`, read without it. */
+    timerAt = permanent(8)
     workers = 0
-    idleWorkers = 0
+    /** Workers waiting on `cond`: changed under `lock`, read without it. */
+    idle = permanent(8)
+    /** Workers looking for tasks to steal, read and changed without `lock`. */
+    spinning = permanent(8)
+    /** The block of every worker (see "Per worker"), and how many there are, for thieves; set by ore_rt_run_main. */
+    workerList: ptr = nil()
+    workerListCount = permanent(8)
     blockingWorkers = 0
     maxWorkers = 0
     /** Tasks parked until a socket is ready: not a deadlock while there are any. */
@@ -158,11 +172,28 @@ export function scheduler(): Scheduler {
 //  40 a timespec, for clocks and deadlines (16 bytes)
 //  56 a mutex to unlock after the current task has left its stack, or null
 //  64 the state of Math.random's generator, zero until first used
+//  72 the head of the run queue: how many tasks were ever taken from it (by thieves too)
+//  80 the tail of the run queue: how many tasks were ever put in it (only by this worker)
+//  88 the task to run next, before the queue: the one the running task woke last, or 0
+//  96 how many tasks this worker has run
+// 104 how many in a row came from the slot at 88
+// 112 the state of the generator that picks whom to steal from
+// 120 a timespec for short naps (16 bytes)
+// 136 the run queue: a ring of `ringSize` task addresses
 
 //ore:threadlocal
 let worker: ptr
 
-const workerSize = 72
+const workerHead = 72
+const workerTail = 80
+const workerNext = 88
+const workerTicks = 96
+const workerInRow = 104
+const workerSeed = 112
+const workerNap = 120
+const workerRing = 136
+const ringSize = 256
+const workerSize = workerRing + ringSize * 8
 
 //ore:noinline
 function workerBlock(): ptr {
@@ -198,13 +229,21 @@ export function randomState(): ptr {
     return unsafe.add(workerBlock(), 64)
 }
 
-/** A new worker block for this thread; allocates no collected memory. */
+/** A new worker block for this thread, known to thieves; allocates no collected memory. */
 function newWorker(): ptr {
+    const s = scheduler()
     const w = permanent(workerSize)
     // The block may hold the only reference to the closure a parked task left
-    // for its worker (at 24) and to the current task (at 32).
+    // for its worker (at 24), to the current task (at 32) and to queued tasks.
     addRoot(w, workerSize)
+    unsafe.store<u64>(unsafe.add(w, workerSeed), unsafe.toInt(w) | 1)
+    unsafe.store<i64>(unsafe.add(w, workerNap + 8), 3000)
     setWorkerBlock(w)
+    lock(s.lock)
+    const n = unsafe.atomicLoad<i64>(s.workerListCount)
+    unsafe.store<ptr>(unsafe.add(s.workerList, n * 8), w)
+    unsafe.atomicStore<i64>(s.workerListCount, n + 1)
+    unlock(s.lock)
     return w
 }
 
@@ -416,24 +455,279 @@ function startStack(w: ptr, t: Task): void {
 // ---------------------------------------------------------------------------
 // Tasks
 
-/** Makes a task runnable; the caller holds the scheduler's lock. */
-export function enqueueLocked(t: Task): void {
-    const s = scheduler()
-    t.state = runnable
-    t.next = null
-    const tail = s.runTail
-    if (tail !== null) tail.next = t
-    else s.runHead = t
-    s.runTail = t
-    // Idle workers count themselves with the lock held, before they wait.
-    if (s.idleWorkers > 0) pthread_cond_signal(s.cond)
+// Run queues
+//
+// As in Go's runtime, each worker has a queue of its own: a ring that only
+// its worker puts tasks in, from the tail, and that its worker and thieves
+// take from at the head with a compare-and-swap, so neither takes a lock. The
+// task the running one woke last waits in a slot before the queue, so that
+// two tasks that wake each other (over a channel, say) run in turn on one
+// worker. A full ring moves half of itself to the global queue, under the
+// scheduler's lock, which also holds what threads that are no workers make
+// runnable (the network poller, the timers). A worker with nothing queued
+// takes from the global queue, then steals half of another worker's queue,
+// and only then waits on the scheduler's condition; every 61st task it runs
+// comes from the global queue when that has any, so that none waits there
+// forever.
+//
+// A worker that is about to wait counts itself idle, then looks at every queue
+// once more; one that queued a task wakes an idle worker unless one is already
+// looking for tasks (spinning), and a spinning worker that finds one wakes
+// another. All of these are sequentially consistent atomics, so a task is never
+// queued while every other worker sleeps without one of them seeing it.
+
+/** How many tasks in a row a worker runs from its next slot before it takes one from its queue. */
+const nextInRow = 32
+
+function taskAt(address: u64): Task {
+    return unsafe.fromAddress<Task>(unsafe.fromInt(address))
 }
 
+function ringSlot(w: ptr, i: int): ptr {
+    return unsafe.add(w, workerRing + (i & (ringSize - 1)) * 8)
+}
+
+/** Appends a chain of `n` tasks linked by `next` to the global queue; the caller holds the scheduler's lock. */
+function putGlobalLocked(first: Task, last: Task, n: int): void {
+    const s = scheduler()
+    last.next = null
+    const tail = s.runTail
+    if (tail !== null) tail.next = first
+    else s.runHead = first
+    s.runTail = last
+    unsafe.atomicStore<i64>(s.runCount, unsafe.load<i64>(s.runCount) + n)
+    // Idle workers count themselves with the lock held, before they wait.
+    let idle = unsafe.atomicLoad<i64>(s.idle)
+    for (let i = 0; i < n && idle > 0; i++) {
+        pthread_cond_signal(s.cond)
+        idle--
+    }
+}
+
+/** Makes a task runnable in the global queue; the caller holds the scheduler's lock. */
+export function enqueueLocked(t: Task): void {
+    t.state = runnable
+    putGlobalLocked(t, t, 1)
+}
+
+/**
+ * Makes a task runnable: at the tail of this worker's queue, or of the global
+ * one on a thread that is no worker.
+ */
 export function enqueue(t: Task): void {
+    ready(t, false)
+}
+
+/** Makes a task runnable as the next one this worker runs: for a task that the running one wakes. */
+export function enqueueNext(t: Task): void {
+    ready(t, true)
+}
+
+function ready(t: Task, next: bool): void {
+    const w = workerBlock()
+    if (isNil(w)) {
+        const s = scheduler()
+        lock(s.lock)
+        enqueueLocked(t)
+        unlock(s.lock)
+        return
+    }
+    t.state = runnable
+    putLocal(w, unsafe.toInt(unsafe.addressOf(t)), next)
+    wakeWorker()
+}
+
+/** Puts a task in this worker's next slot or at the tail of its queue, moving half the queue to the global one when it is full. */
+function putLocal(w: ptr, task: u64, next: bool): void {
+    let address = task
+    if (next) {
+        address = unsafe.atomicExchange<u64>(unsafe.add(w, workerNext), address)
+        // The task it replaces goes to the queue.
+        if (address === 0) return
+    }
+    while (true) {
+        const head = unsafe.atomicLoad<i64>(unsafe.add(w, workerHead))
+        const tail = unsafe.load<i64>(unsafe.add(w, workerTail))
+        if (tail - head < ringSize) {
+            unsafe.store<u64>(ringSlot(w, tail), address)
+            unsafe.atomicStore<i64>(unsafe.add(w, workerTail), tail + 1)
+            return
+        }
+        if (overflow(w, address, head, tail)) return
+        // Thieves took some meanwhile: there is room now.
+    }
+}
+
+/** Moves the first half of this worker's full queue and one more task to the global queue; false if thieves took some first. */
+function overflow(w: ptr, address: u64, head: int, tail: int): bool {
+    const n = (tail - head) / 2
+    if (!unsafe.atomicCompareExchange<i64>(unsafe.add(w, workerHead), head, head + n)) return false
+    // Only this worker writes the slots, so they stay as they are now that it took them.
+    const first = taskAt(unsafe.load<u64>(ringSlot(w, head)))
+    let last = first
+    for (let i = 1; i < n; i++) {
+        const t = taskAt(unsafe.load<u64>(ringSlot(w, head + i)))
+        last.next = t
+        last = t
+    }
+    const extra = taskAt(address)
+    last.next = extra
+    for (let i = 0; i < n; i++) unsafe.store<u64>(ringSlot(w, head + i), 0)
     const s = scheduler()
     lock(s.lock)
-    enqueueLocked(t)
+    putGlobalLocked(first, extra, n + 1)
     unlock(s.lock)
+    return true
+}
+
+/** The next task of this worker's own queue, or null. */
+function takeLocal(w: ptr): Task | null {
+    const nextCell = unsafe.add(w, workerNext)
+    const inRow = unsafe.load<i64>(unsafe.add(w, workerInRow))
+    if (inRow < nextInRow) {
+        const next = unsafe.atomicLoad<u64>(nextCell)
+        if (next !== 0 && unsafe.atomicCompareExchange<u64>(nextCell, next, 0)) {
+            unsafe.store<i64>(unsafe.add(w, workerInRow), inRow + 1)
+            return taskAt(next)
+        }
+    }
+    unsafe.store<i64>(unsafe.add(w, workerInRow), 0)
+    while (true) {
+        const head = unsafe.atomicLoad<i64>(unsafe.add(w, workerHead))
+        const tail = unsafe.load<i64>(unsafe.add(w, workerTail))
+        if (tail === head) break
+        const address = unsafe.load<u64>(ringSlot(w, head))
+        if (unsafe.atomicCompareExchange<i64>(unsafe.add(w, workerHead), head, head + 1)) {
+            // Forgotten, so that the queue does not keep the task alive; only this worker writes there.
+            unsafe.store<u64>(ringSlot(w, head), 0)
+            return taskAt(address)
+        }
+    }
+    // The queue is empty: the next slot, even after a run of them.
+    const next = unsafe.atomicLoad<u64>(nextCell)
+    if (next !== 0 && unsafe.atomicCompareExchange<u64>(nextCell, next, 0)) return taskAt(next)
+    return null
+}
+
+/**
+ * Steals half the queue of worker `victim` into this worker's empty one, and
+ * returns one of the tasks to run now; with `takeNext`, its next slot when its
+ * queue is empty. Null when there is nothing to steal.
+ */
+function stealFrom(w: ptr, victim: ptr, takeNext: bool): Task | null {
+    const own = unsafe.load<i64>(unsafe.add(w, workerTail))
+    while (true) {
+        const head = unsafe.atomicLoad<i64>(unsafe.add(victim, workerHead))
+        const tail = unsafe.atomicLoad<i64>(unsafe.add(victim, workerTail))
+        let n = tail - head
+        n = n - n / 2
+        if (n <= 0) {
+            if (!takeNext) return null
+            const nextCell = unsafe.add(victim, workerNext)
+            if (unsafe.atomicLoad<u64>(nextCell) === 0) return null
+            // Its worker is likely about to run it; give it a moment to.
+            nanosleep(unsafe.add(w, workerNap), nil())
+            const next = unsafe.atomicLoad<u64>(nextCell)
+            if (next === 0) return null
+            if (unsafe.atomicCompareExchange<u64>(nextCell, next, 0)) return taskAt(next)
+            continue
+        }
+        // Read while other thieves took from it: try again.
+        if (n > ringSize / 2) continue
+        for (let i = 0; i < n; i++)
+            unsafe.store<u64>(ringSlot(w, own + i), unsafe.load<u64>(ringSlot(victim, head + i)))
+        if (unsafe.atomicCompareExchange<i64>(unsafe.add(victim, workerHead), head, head + n)) {
+            // The last one runs now; the others are this worker's to run or to be stolen.
+            const last = ringSlot(w, own + n - 1)
+            const address = unsafe.load<u64>(last)
+            unsafe.store<u64>(last, 0)
+            if (n > 1) unsafe.atomicStore<i64>(unsafe.add(w, workerTail), own + n - 1)
+            return taskAt(address)
+        }
+    }
+}
+
+/** Steals from the other workers, starting at a random one; their next slots only on the last pass. */
+function steal(w: ptr): Task | null {
+    const s = scheduler()
+    const count = unsafe.atomicLoad<i64>(s.workerListCount)
+    if (count < 2) return null
+    const seed = unsafe.add(w, workerSeed)
+    for (let pass = 0; pass < 4; pass++) {
+        // xorshift64
+        let x = unsafe.load<u64>(seed)
+        x ^= x << 13
+        x ^= x >> 7
+        x ^= x << 17
+        unsafe.store<u64>(seed, x)
+        const start = i64(x % u64(count))
+        for (let k = 0; k < count; k++) {
+            const victim = unsafe.load<ptr>(unsafe.add(s.workerList, ((start + k) % count) * 8))
+            if (victim === w) continue
+            const t = stealFrom(w, victim, pass === 3)
+            if (t !== null) return t
+        }
+    }
+    return null
+}
+
+/** Whether any worker has a task queued. */
+function anyQueued(): bool {
+    const s = scheduler()
+    const count = unsafe.atomicLoad<i64>(s.workerListCount)
+    for (let i = 0; i < count; i++) {
+        const v = unsafe.load<ptr>(unsafe.add(s.workerList, i * 8))
+        if (unsafe.atomicLoad<i64>(unsafe.add(v, workerTail)) !== unsafe.atomicLoad<i64>(unsafe.add(v, workerHead)))
+            return true
+        if (unsafe.atomicLoad<u64>(unsafe.add(v, workerNext)) !== 0) return true
+    }
+    return false
+}
+
+/** Wakes an idle worker to look for the task just queued, unless one is looking already. */
+function wakeWorker(): void {
+    const s = scheduler()
+    if (unsafe.atomicLoad<i64>(s.idle) === 0 || unsafe.atomicLoad<i64>(s.spinning) !== 0) return
+    // Under the lock: an idle worker holds it from counting itself until it waits.
+    lock(s.lock)
+    pthread_cond_signal(s.cond)
+    unlock(s.lock)
+}
+
+/** A spinning worker found a task: if it was the last one looking, another looks for what may remain. */
+function stopSpinning(): void {
+    if (unsafe.atomicAdd<i64>(scheduler().spinning, -1) === 1) wakeWorker()
+}
+
+/**
+ * Takes tasks from the global queue: one, or with `batch` a share of them, the
+ * others put in this worker's empty queue. The caller holds the scheduler's lock.
+ */
+function takeGlobalLocked(w: ptr, batch: bool): Task | null {
+    const s = scheduler()
+    const count = unsafe.load<i64>(s.runCount)
+    if (count === 0) return null
+    let n = 1
+    if (batch) {
+        n = count / unsafe.atomicLoad<i64>(s.workerListCount) + 1
+        if (n > count) n = count
+        if (n > ringSize / 2) n = ringSize / 2
+    }
+    const first = s.runHead!
+    let t = first.next
+    for (let i = 1; i < n; i++) {
+        const queued = t!
+        t = queued.next
+        queued.next = null
+        const tail = unsafe.load<i64>(unsafe.add(w, workerTail))
+        unsafe.store<u64>(ringSlot(w, tail), unsafe.toInt(unsafe.addressOf(queued)))
+        unsafe.atomicStore<i64>(unsafe.add(w, workerTail), tail + 1)
+    }
+    s.runHead = t
+    if (t === null) s.runTail = null
+    first.next = null
+    unsafe.atomicStore<i64>(s.runCount, count - n)
+    return first
 }
 
 function newTask(body: () => void, stackSize: int): Task {
@@ -508,7 +802,7 @@ export function endTask(): void {
 
 //ore:runtime ore_rt_spawn
 function spawn(body: () => void): void {
-    enqueue(newTask(body, taskStackSize))
+    enqueueNext(newTask(body, taskStackSize))
 }
 
 /** What runs when the program's top-level code ends: the tests that "ore:test" collected. */
@@ -551,7 +845,21 @@ export function addTimerLocked(t: Task): void {
     t.next = next
     if (previous !== null) previous.next = t
     else s.timers = t
+    timersChangedLocked()
     pthread_cond_signal(s.cond)
+}
+
+/** Publishes the wake time of the first timer; the caller holds the scheduler's lock. */
+function timersChangedLocked(): void {
+    const s = scheduler()
+    const first = s.timers
+    unsafe.atomicStore<i64>(s.timerAt, first === null ? -1 : first.wakeAt)
+}
+
+/** Whether the first timer is due, read without the lock. */
+function timersDue(): bool {
+    const at = unsafe.atomicLoad<i64>(scheduler().timerAt)
+    return at >= 0 && now() >= at
 }
 
 export function removeTimerLocked(t: Task): void {
@@ -562,6 +870,7 @@ export function removeTimerLocked(t: Task): void {
         if (next === t) {
             if (previous !== null) previous.next = t.next
             else s.timers = t.next
+            timersChangedLocked()
             return
         }
         previous = next
@@ -604,9 +913,19 @@ function addWorkerLocked(): void {
 //ore:export ore_rt_blocking_enter
 export function blockingEnter(): void {
     const s = scheduler()
+    const w = workerBlock()
     lock(s.lock)
     s.blockingWorkers++
-    if (s.runHead !== null && s.idleWorkers === 0 && s.workers < s.maxWorkers) addWorkerLocked()
+    // Tasks queued here are stolen meanwhile: by an idle worker, or by a new one.
+    const queued =
+        unsafe.load<i64>(s.runCount) > 0 ||
+        (!isNil(w) &&
+            (unsafe.load<i64>(unsafe.add(w, workerTail)) !== unsafe.atomicLoad<i64>(unsafe.add(w, workerHead)) ||
+                unsafe.atomicLoad<u64>(unsafe.add(w, workerNext)) !== 0))
+    if (queued) {
+        if (unsafe.atomicLoad<i64>(s.idle) > 0) pthread_cond_signal(s.cond)
+        else if (s.workers < s.maxWorkers) addWorkerLocked()
+    }
     unlock(s.lock)
 }
 
@@ -625,13 +944,14 @@ function wakeTimersLocked(): void {
     const at = now()
     while (true) {
         const t = s.timers
-        if (t === null || t.wakeAt > at) return
+        if (t === null || t.wakeAt > at) break
         s.timers = t.next
         // A task waiting in a select wakes for its timeout unless a channel case fired first.
         const select = t.select
         if (select !== null && !unsafe.atomicCompareExchange<i64>(select.fired, selectWaiting, selectTimeout)) continue
         enqueueLocked(t)
     }
+    timersChangedLocked()
 }
 
 /** Counts a task that waits for a socket, so that waiting for it is no deadlock. */
@@ -642,18 +962,81 @@ export function addNetWaiterLocked(delta: int): void {
 /** The next task to run, waiting for one; panics when every task waits forever. */
 function nextTask(w: ptr): Task {
     const s = scheduler()
-    lock(s.lock)
-    while (true) {
+    const ticks = unsafe.load<i64>(unsafe.add(w, workerTicks)) + 1
+    unsafe.store<i64>(unsafe.add(w, workerTicks), ticks)
+    if (timersDue()) {
+        lock(s.lock)
         wakeTimersLocked()
-        const t = s.runHead
-        if (t !== null) {
-            s.runHead = t.next
-            if (s.runHead === null) s.runTail = null
+        unlock(s.lock)
+    }
+    // Now and then the global queue first, so that no task waits there forever.
+    if (ticks % 61 === 0 && unsafe.atomicLoad<i64>(s.runCount) > 0) {
+        lock(s.lock)
+        const t = takeGlobalLocked(w, false)
+        unlock(s.lock)
+        if (t !== null) return t
+    }
+    const t = takeLocal(w)
+    if (t !== null) return t
+    return findTask(w)
+}
+
+/** A task for a worker whose own queue is empty: from the global queue, stolen, or waited for. */
+function findTask(w: ptr): Task {
+    const s = scheduler()
+    let spinning = false
+    while (true) {
+        if (unsafe.atomicLoad<i64>(s.runCount) > 0 || timersDue()) {
+            lock(s.lock)
+            wakeTimersLocked()
+            const t = takeGlobalLocked(w, true)
             unlock(s.lock)
+            if (t !== null) {
+                if (spinning) stopSpinning()
+                return t
+            }
+        }
+        // At most half the busy workers look for tasks to steal; the others wait.
+        if (spinning || 2 * unsafe.atomicLoad<i64>(s.spinning) < s.workers - unsafe.atomicLoad<i64>(s.idle)) {
+            if (!spinning) {
+                spinning = true
+                unsafe.atomicAdd<i64>(s.spinning, 1)
+            }
+            const t = steal(w)
+            if (t !== null) {
+                stopSpinning()
+                return t
+            }
+        }
+        lock(s.lock)
+        wakeTimersLocked()
+        const t = takeGlobalLocked(w, true)
+        if (t !== null) {
+            unlock(s.lock)
+            if (spinning) stopSpinning()
             return t
         }
+        if (spinning) {
+            spinning = false
+            unsafe.atomicAdd<i64>(s.spinning, -1)
+        }
+        // Idle from here, then a last look: a worker that queued a task before
+        // this saw no idle worker to wake, but its task is visible now.
+        unsafe.atomicAdd<i64>(s.idle, 1)
+        if (anyQueued()) {
+            unsafe.atomicAdd<i64>(s.idle, -1)
+            unlock(s.lock)
+            spinning = true
+            unsafe.atomicAdd<i64>(s.spinning, 1)
+            continue
+        }
         const timers = s.timers
-        if (timers === null && s.blockingWorkers === 0 && s.netWaiters === 0 && s.idleWorkers === s.workers - 1) {
+        if (
+            timers === null &&
+            s.blockingWorkers === 0 &&
+            s.netWaiters === 0 &&
+            unsafe.atomicLoad<i64>(s.idle) === s.workers
+        ) {
             unlock(s.lock)
             const main = s.mainTask
             if (main !== null) {
@@ -662,7 +1045,6 @@ function nextTask(w: ptr): Task {
             }
             process.panic("all tasks are asleep - deadlock!")
         }
-        s.idleWorkers++
         if (timers !== null) {
             const wait = timers.wakeAt - now()
             deadlineIn(unsafe.add(w, 40), wait > 0 ? wait : 0)
@@ -670,7 +1052,11 @@ function nextTask(w: ptr): Task {
         } else {
             pthread_cond_wait(s.cond, s.lock)
         }
-        s.idleWorkers--
+        // Woken to look for a task: spinning, so that others need not be woken too.
+        spinning = true
+        unsafe.atomicAdd<i64>(s.spinning, 1)
+        unsafe.atomicAdd<i64>(s.idle, -1)
+        unlock(s.lock)
     }
 }
 
@@ -736,11 +1122,13 @@ export function runMain(entry: ptr): void {
     schedulerAddress = unsafe.addressOf(s)
     stackLock = permanentMutex()
     allStacks = permanent(8)
+    unsafe.store<i64>(s.timerAt, -1)
+    const count = workerCount()
+    s.maxWorkers = count + 64
+    s.workerList = permanent(s.maxWorkers * 8)
     newWorker()
     setStackRootsHook(unsafe.functionAddress(pushTaskStacks))
 
-    const count = workerCount()
-    s.maxWorkers = count + 64
     // The entry as a closure, called with an environment it ignores.
     const cell = permanent(16)
     unsafe.store<ptr>(cell, entry)
@@ -829,12 +1217,12 @@ function reportStuck(): void {
     writeRaw(2, "  workers ")
     writeNumber(2, s.workers, false, scratch)
     writeRaw(2, ", idle ")
-    writeNumber(2, s.idleWorkers, false, scratch)
+    writeNumber(2, unsafe.load<i64>(s.idle), false, scratch)
     writeRaw(2, ", in blocking calls ")
     writeNumber(2, s.blockingWorkers, false, scratch)
     writeRaw(2, ", waiting for sockets ")
     writeNumber(2, s.netWaiters, false, scratch)
-    writeRaw(2, s.runHead !== null ? ", runnable tasks queued" : ", no runnable task")
+    writeRaw(2, s.runHead !== null || anyQueued() ? ", runnable tasks queued" : ", no runnable task")
     writeRaw(2, s.timers !== null ? ", timers pending\n" : ", no timer\n")
     // Tasks that have a stack, with their debug frames: prev at 0, function at 8, file at 16, line at 24.
     let r = firstStack()
