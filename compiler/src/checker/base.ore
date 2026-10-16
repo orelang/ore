@@ -101,7 +101,7 @@ import {
     floatLit,
     hashable,
     indexSignatureMessage,
-    isSymbolDispose,
+    wellKnownSymbol,
     memberOf,
     poison,
     conversionName,
@@ -830,7 +830,10 @@ export class Checker {
     memberName(name: Node): string | null {
         if (isIdentifier(name)) return name.text
         if (name.kind === "StringLiteral") return stringText(name)
-        if (name.kind === "ComputedPropertyName" && isSymbolDispose(name.child("expression")!)) return disposeName
+        if (name.kind === "ComputedPropertyName") {
+            const symbol = wellKnownSymbol(name.child("expression")!)
+            if (symbol !== null) return symbol
+        }
         if (name.kind === "PrivateIdentifier")
             this.error(name, "'#' private names are forbidden in Ore. Use the 'private' modifier.")
         else this.error(name, "Computed property names are not supported.")

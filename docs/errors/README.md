@@ -185,7 +185,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3043](ORE3043.md) | Cannot assign to '…' because it is a constant. |
 | [ORE3044](ORE3044.md) | Cannot assign to '…': its type differs between the members of '…'. |
 | [ORE3045](ORE3045.md) | Branches of '?:' cannot be 'void'. |
-| [ORE3046](ORE3046.md) | Only an array or a tuple can be spread into an array. |
+| [ORE3046](ORE3046.md) | Only an array, a tuple or an iterable can be spread into an array. |
 | [ORE3047](ORE3047.md) | An array cannot contain values of type '…'. |
 | [ORE3048](ORE3048.md) | Only a tuple can be spread into a tuple. |
 | [ORE3049](ORE3049.md) | Expected … element(s) for tuple type '…', got …. |
@@ -236,8 +236,8 @@ The codes are grouped by the part of the language they concern:
 | Code | Message |
 |---|---|
 | [ORE4001](ORE4001.md) | Type arguments are only allowed for generic functions. |
-| [ORE4002](ORE4002.md) | '[Symbol.dispose]' takes no arguments. |
-| [ORE4003](ORE4003.md) | A constant is not disposable. |
+| [ORE4002](ORE4002.md) | '…' takes no arguments. |
+| [ORE4003](ORE4003.md) | A constant has no '…' method. |
 | [ORE4004](ORE4004.md) | Type '…' has no '[Symbol.dispose]' method. |
 | [ORE4005](ORE4005.md) | '…' has no member '…'. |
 | [ORE4006](ORE4006.md) | Spread arguments are not supported yet. |
@@ -316,7 +316,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE4079](ORE4079.md) | Cannot infer the type of the array. Write 'new Array<T>(length)' or annotate the variable. |
 | [ORE4080](ORE4080.md) | 'new Array(length)' needs elements with a zero value, and '…' has none. Use 'Array.from({ length }, (_, i) => ...)'. |
 | [ORE4081](ORE4081.md) | 'Array.isArray' cannot test an 'unknown' yet. |
-| [ORE4082](ORE4082.md) | 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '…'. |
+| [ORE4082](ORE4082.md) | 'Array.from' takes an iterable (an array, a string, a set, a map, a generator...) or '{ length: n }', got '…'. |
 | [ORE4083](ORE4083.md) | 'Array.from' takes an object only as '{ length: n }'. |
 | [ORE4084](ORE4084.md) | 'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'. |
 | [ORE4085](ORE4085.md) | A dictionary has no methods: '…' is an entry, of type '…'. |
@@ -341,7 +341,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5010](ORE5010.md) | Optional field '…' needs a type annotation. |
 | [ORE5011](ORE5011.md) | Field '…' needs a type annotation or an initializer. |
 | [ORE5012](ORE5012.md) | Methods cannot be 'readonly'. |
-| [ORE5013](ORE5013.md) | Generators are not supported in Ore. |
+| [ORE5013](ORE5013.md) | Async generators are not supported in Ore. |
 | [ORE5014](ORE5014.md) | Optional methods are not supported. |
 | [ORE5015](ORE5015.md) | Abstract methods can only appear within an abstract class. |
 | [ORE5016](ORE5016.md) | Method '…' cannot have an implementation because it is marked abstract. |
@@ -470,6 +470,11 @@ The codes are grouped by the part of the language they concern:
 | [ORE6076](ORE6076.md) | A type predicate's type must be assignable to its parameter's type: '…' is not assignable to '…'. |
 | [ORE6077](ORE6077.md) | This result does not show that '…' is '…': return a check of '…' that narrows it, such as 'typeof x === "string"' or 'x instanceof C', or false. |
 | [ORE6078](ORE6078.md) | The function can return here without showing that '…' is '…': it must panic or exit where the assertion does not hold. |
+| [ORE6079](ORE6079.md) | A generator function needs a return type annotation, such as 'Generator<T>'. |
+| [ORE6080](ORE6080.md) | The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '…'. |
+| [ORE6081](ORE6081.md) | 'yield' is only allowed in generator functions. |
+| [ORE6082](ORE6082.md) | 'yield' without a value yields null, which type '…' does not include. |
+| [ORE6083](ORE6083.md) | 'yield*' takes a generator of the same value and next types: '…' and '…'. |
 
 ## ORE7xxx: Statements
 
@@ -520,3 +525,4 @@ The codes are grouped by the part of the language they concern:
 | [ORE7043](ORE7043.md) | A rest element cannot have a default value. |
 | [ORE7044](ORE7044.md) | The rest of an object pattern must be a name, not a pattern. |
 | [ORE7045](ORE7045.md) | A dictionary is not iterable: loop over 'Object.keys(d)' or 'Object.entries(d)'. |
+| [ORE7046](ORE7046.md) | Type '…' is not iterable: it needs a '[Symbol.iterator]()' method. |

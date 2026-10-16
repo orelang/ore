@@ -69,6 +69,7 @@ import {
     types as typeNodes,
 } from "../syntax/nodes"
 import { checkAsyncBody, isAsync, promiseValue } from "./async"
+import { checkGeneratorBody, isGenerator } from "./generators"
 import { type Checker } from "./base"
 import {
     type InterfaceInfo,
@@ -286,7 +287,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                 continue
             if (flags.isReadonly) c.error(member, "Methods cannot be 'readonly'.")
             const asterisk = asteriskToken(member)
-            if (asterisk !== null) c.error(asterisk, "Generators are not supported in Ore.")
+            if (asterisk !== null && isAsync(member)) c.error(asterisk, "Async generators are not supported in Ore.")
             const question = questionToken(member)
             if (question !== null) c.error(question, "Optional methods are not supported.")
             if (flags.isAbstract) {
@@ -1110,11 +1111,14 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     enterPredicate(c, func, scope)
     const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    else if (isGenerator(decl))
+        func.body = new Block(checkGeneratorBody(c, decl, scope, func.type.result, func.sourceName))
     else func.body = checkBlock(c, body(decl)!, scope)
     if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
-    checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
+    // A generator's body is a closure, checked on its own; the function returns the generator.
+    if (!isGenerator(decl)) checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
 }
 
 /** Checks that a class has the members of the interfaces it `implements`. */
@@ -1125,11 +1129,25 @@ export function checkImplements(c: Checker, info: ClassInfo, scope: Scope) {
             const target = expression(ref)
             const type = isIdentifier(target) ? scope.lookupType(target.text) : null
             if (isIdentifier(target) && type !== null) c.info.definitions.set(target, type.decl)
-            if (type === null || type.type.kind !== "interface") {
+            let found: Type | null = type === null ? null : type.type
+            // A generic interface with type arguments: `implements Iterator<T>`.
+            const generic = type === null ? null : type.generic
+            if (generic !== null) {
+                const resolved: Type[] = []
+                for (const a of typeArguments(ref)) {
+                    const arg = c.resolveTypeArgument(a, scope)
+                    if (arg !== null) resolved.push(arg)
+                }
+                if (resolved.length < typeArguments(ref).length) continue
+                const instance = instantiate(c, generic, resolved, ref)
+                if (instance === null) continue
+                found = instance instanceof Func ? null : instance
+            }
+            if (found === null || found.kind !== "interface") {
                 c.error(ref, `'${c.text(target)}' is not an interface.`)
                 continue
             }
-            const iface = type.type
+            const iface = found
             const result = conformance(c, info.type, iface)
             if (result.reason !== null) {
                 c.error(ref, `Class '${info.type.name}' does not implement '${iface.name}': ${result.reason}.`)

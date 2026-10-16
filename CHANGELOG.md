@@ -52,6 +52,23 @@ before 1.0, a minor version may change the language.
   in the Result pattern `{ ok: true; value: T } | { ok: false; error: E }`:
   `if (r.ok)`, `if (!r.ok)`, `r.ok === false` and `switch (r.ok)` narrow
   `r`.
+- Generators and the iteration protocol, as in TypeScript: generator
+  functions, methods and function expressions (`function*`, `*m()`,
+  `*[Symbol.iterator]()`) return a `Generator<T, TReturn = void, TNext =
+  null>` with `next()`, `next(value)` and `return(value)`; `yield`,
+  `yield value` and `yield* iterable` (of a generator, its return value).
+  A generator runs its body on a fiber of its own, the async functions'
+  fibers. `Symbol.iterator` names methods as `Symbol.dispose` does, and the
+  global `Iterator`, `Iterable` and `IterableIterator` interfaces and the
+  `IteratorResult` type describe the protocol. `for...of`, spread,
+  `Array.from`, `new Map` and `new Set` take any iterable; `for...of`
+  calls `return()` when it leaves a loop early, which ends a generator's
+  fiber. `keys()`, `values()` and `entries()` of arrays, maps and sets
+  return lazy iterators, as in JavaScript, instead of arrays: code that
+  indexed their result or read its `length` now spreads it,
+  `[...map.keys()]`, or passes it to `Array.from`. Async generators are
+  not supported ([ORE5013](docs/errors/ORE5013.md)), and there is no
+  `throw()` (Ore has no exceptions).
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

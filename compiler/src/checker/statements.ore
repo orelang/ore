@@ -101,6 +101,8 @@ import {
     asteriskToken,
 } from "../syntax/nodes"
 import { asyncValue, checkAsyncBody, isAsync, promiseOf } from "./async"
+import { checkGeneratorBody, isGenerator, iteratorModule } from "./generators"
+import { isProtocolIterable, iteratorOf, iteratorValue, protocolLoop } from "./iteration"
 import { type Checker } from "./base"
 import { dispatch, initStatics } from "./classes"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
@@ -297,19 +299,24 @@ export function checkUsing(c: Checker, stmt: Node, rest: Node[], scope: Scope, o
 
 /** A call of `[Symbol.dispose]()` on a value, if its type has that method. */
 export function disposeCall(c: Checker, value: Expr): Expr | null {
+    return symbolMethodCall(c, value, disposeName)
+}
+
+/** A call of the method `name` without arguments, such as `[Symbol.iterator]()`, if the value's type has it. */
+export function symbolMethodCall(c: Checker, value: Expr, name: string): Expr | null {
     const type = value.type
     if (type.kind === "struct") {
-        const method = findMethod(type, disposeName)
+        const method = findMethod(type, name)
         if (method !== null && method.func.params.length === 0) {
             const call: Expr = new MethodCall(method.func.type.result, method.func, value, [])
-            dispatch(c, call, disposeName)
+            dispatch(c, call, name)
             return call
         }
     }
     if (type.kind === "interface") {
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
-            if (m.name !== disposeName) continue
+            if (m.name !== name) continue
             if (m.k === "method" && m.type.params.length === 0)
                 return new IfaceCall(m.type.result, value, index, m.type, [])
             return null
@@ -1143,7 +1150,40 @@ export function checkFor(c: Checker, stmt: Node, outer: Scope): Stmt {
     return new Block(prelude)
 }
 
-export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | null {
+/** A loop over a collection for one over the iterator of its `keys()`, `values()` or `entries()`. */
+class DirectIteration {
+    constructor(
+        readonly source: Expr,
+        /** The keys of a map, without its values. */
+        readonly keyOnly: bool,
+        /** The values of a map, without a key variable. */
+        readonly valueOnly: bool,
+    ) {}
+}
+
+/**
+ * For an iterable made by `array.values()`, `set.values()`, `set.keys()`,
+ * `map.keys()`, `map.values()` or `map.entries()` destructured as
+ * `[key, value]`: the collection to loop over instead, as the iterator
+ * would visit it.
+ */
+function directIteration(c: Checker, iterable: Expr, pattern: Node): DirectIteration | null {
+    if (iterable.k !== "call" || iterable.args.length !== 1) return null
+    const f = iterable.func
+    const file = f.file
+    if (file === null || !file.startsWith(iteratorModule)) return null
+    const name = f.sourceName
+    const source = iterable.args[0]
+    if (name.startsWith("arrayValues<") || name.startsWith("setValues<"))
+        return new DirectIteration(source, false, false)
+    if (name.startsWith("mapKeys<")) return new DirectIteration(source, true, false)
+    if (name.startsWith("mapValues<")) return new DirectIteration(source, false, true)
+    if (name.startsWith("mapEntries<") && pattern.kind === "ArrayBindingPattern")
+        return new DirectIteration(source, false, false)
+    return null
+}
+
+export function checkForOf(c: Checker, stmt: Node, outer: Scope): Stmt | null {
     const list = initializer(stmt)!
     const kind = list.kind === "VariableDeclarationList" ? declarationKind(list, c.sourceOf(list).text) : "var"
     if (kind !== "const" && kind !== "let") {
@@ -1157,7 +1197,10 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
 
     const value = checkExpr(c, expression(stmt), outer)
     if (value.k === "error") return null
-    const iterable = c.toDefault(value, expression(stmt))
+    let iterable = c.toDefault(value, expression(stmt))
+    // `values()`, `keys()` and `entries()` of a collection loop over the collection itself, as fast.
+    const direct = directIteration(c, iterable, nameNode(decl))
+    if (direct !== null) iterable = direct.source
     const type = iterable.type
     const mutable = kind === "let"
     if (type.kind === "map" && type.dict) {
@@ -1167,7 +1210,23 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
     // Names and types of the loop variables: one, or `[key, value]` for a map.
     const names: Node[] = []
     const elemTypes: Type[] = []
-    if (type.kind === "map") {
+    // Of a class or interface: its iterator, by the iteration protocol.
+    let iterator: Expr | null = null
+    if (direct !== null && direct.keyOnly) {
+        names.push(nameNode(decl))
+        elemTypes.push(type.kind === "map" ? type.key : types.void)
+    } else if (direct !== null && direct.valueOnly && type.kind === "map") {
+        // The key is a hidden loop variable.
+        names.push(nameNode(decl))
+        elemTypes.push(type.key)
+        names.push(nameNode(decl))
+        elemTypes.push(type.value)
+    } else if (isProtocolIterable(type)) {
+        iterator = iteratorOf(c, iterable, expression(stmt))
+        if (iterator === null) return null
+        names.push(nameNode(decl))
+        elemTypes.push(iteratorValue(c, iterator.type)!)
+    } else if (type.kind === "map") {
         const pattern = nameNode(decl)
         const found: (Node | null)[] = []
         if (pattern.kind === "ArrayBindingPattern") {
@@ -1208,6 +1267,10 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
     for (let i = 0; i < names.length; i++) {
         const name = names[i]
         const t = elemTypes[i]
+        if (direct !== null && direct.valueOnly && type.kind === "map" && i === 0) {
+            locals.push(c.newLocal("key", t, false))
+            continue
+        }
         if (!isIdentifier(name)) {
             const local = c.newLocal("item", t, false)
             bindPattern(c, name, new LocalRef(t, local), mutable, scope, prologue)
@@ -1221,6 +1284,8 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
         locals.push(local)
     }
     const loop = checkLoopBody(c, statement(stmt), scope)
+    if (iterator !== null)
+        return protocolLoop(c, iterator, locals[0], loop.context.id, loop.context.labeled, prologue, loop.body, stmt)
     let loopBody = loop.body
     if (prologue.length > 0)
         loopBody = new Block(prepend(prologue, loopBody.k === "block" ? loopBody.body : [loopBody]))
@@ -1422,7 +1487,7 @@ export function checkClosure(
     const typeParams = typeParameters(node)
     if (typeParams.length > 0 && instance === null) return c.fail(typeParams[0], "Generic closures are not supported.")
     const asterisk = asteriskToken(node)
-    if (asterisk !== null) return c.fail(asterisk, "Generators are not supported in Ore.")
+    if (asterisk !== null && isAsync(node)) return c.fail(asterisk, "Async generators are not supported in Ore.")
     // The expected function type, also from a union such as `(() => void) | null`.
     const funcs: FuncType[] = []
     if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "func") funcs.push(m)
@@ -1579,7 +1644,9 @@ export function checkClosure(
     for (const s of prologue) start.push(s)
     const ok = isAsync(node)
         ? asyncClosureBody(c, node, func, scope, start, resultNode, name)
-        : closureBody(c, node, func, scope, start, resultNode)
+        : isGenerator(node)
+          ? generatorClosureBody(c, node, func, scope, start, name)
+          : closureBody(c, node, func, scope, start, resultNode)
     c.fn = savedFn
     c.facts = savedFacts
     if (!ok) return errorOperand
@@ -1606,6 +1673,21 @@ function asyncClosureBody(
     const value = asyncValue(c, result, resultNode ?? node)
     if (value === null) return false
     func.body = new Block(prepend(prologue, checkAsyncBody(c, node, scope, value, name)))
+    const done = new FuncTypeClass(func.type.params, result)
+    done.required = func.type.required
+    done.rest = func.type.rest
+    func.type = done
+    return true
+}
+
+/** The body of a generator function expression: its result type comes from an annotation or the context. */
+function generatorClosureBody(c: Checker, node: Node, func: Func, scope: Scope, prologue: Stmt[], name: string): bool {
+    const result = c.fn!.result
+    if (result === null) {
+        c.error(node, "A generator function needs a return type annotation, such as 'Generator<T>'.")
+        return false
+    }
+    func.body = new Block(prepend(prologue, checkGeneratorBody(c, node, scope, result, name)))
     const done = new FuncTypeClass(func.type.params, result)
     done.required = func.type.required
     done.rest = func.type.rest

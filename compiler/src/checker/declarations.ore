@@ -79,6 +79,7 @@ import { type Source } from "../syntax/source"
 import { leadingCommentRanges } from "../syntax/nodes"
 import { checkAssigned } from "./assigned"
 import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseValue } from "./async"
+import { checkGeneratorBody, isGenerator } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import {
     conformance,
@@ -1013,7 +1014,7 @@ export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | nu
         return null
     }
     const asterisk = asteriskToken(decl)
-    if (asterisk !== null) c.error(asterisk, "Generators are not supported in Ore.")
+    if (asterisk !== null && isAsync(decl)) c.error(asterisk, "Async generators are not supported in Ore.")
     for (const mod of modifiers(decl)) {
         if (mod.kind === "AsyncKeyword") continue
         else if (mod.kind === "DefaultKeyword") c.error(mod, "Default exports are not supported in Ore.")
@@ -1176,6 +1177,8 @@ export function resultType(c: Checker, decl: Node, scope: Scope): Type {
         return t
     }
     if (isAsync(decl)) return promiseOf(c, types.void, decl) ?? types.void
+    if (isGenerator(decl))
+        c.error(nameNode(decl), "A generator function needs a return type annotation, such as 'Generator<T>'.")
     return types.void
 }
 
@@ -2161,11 +2164,14 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     enterPredicate(c, func, scope)
     const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    else if (isGenerator(decl))
+        func.body = new Block(checkGeneratorBody(c, decl, scope, func.type.result, func.sourceName))
     else func.body = checkBlock(c, body(decl)!, scope)
     if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
-    checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
+    // A generator's body is a closure, checked on its own; the function returns the generator.
+    if (!isGenerator(decl)) checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
     // Without a frame, a naked function can branch only on what is known at compile time.
     const attributes = func.attributes
     if (attributes !== null && attributes.naked) {

@@ -1,0 +1,356 @@
+//ore:internal
+// The iteration protocol of JavaScript, generators, and the iterators of
+// arrays, maps and sets.
+//
+// `for...of`, spread, `Array.from`, `new Map`, `new Set` and `yield*` take
+// any value with a `[Symbol.iterator]()` method, whose iterator's `next()`
+// returns an `IteratorResult` (declared in types.ore) until one is done.
+// The classes and interfaces `Generator`, `Iterator`, `Iterable` and
+// `IterableIterator` are global names.
+//
+// A generator is a fiber of its own (see "Fibers" in task.ore), started by
+// the first `next()`: `next` hands the current task's turn to it, and
+// `yield` hands it back with a value, so the body runs on its own stack
+// between the calls. A generator that is not run to its end keeps its fiber
+// parked until `return()` ends it; `for...of` ends it when it leaves the
+// loop early, as JavaScript calls `return()`.
+
+import { mapCount, mapKey, mapLive, mapValue } from "ore:runtime/map"
+import { type Task, endFiber, handBack, handTo, newFiber } from "ore:runtime/task"
+
+/** An object that produces values one at a time with `next()`. */
+export interface Iterator<T, TReturn = void, TNext = null> {
+    next(): IteratorResult<T, TReturn>
+}
+
+/** An object that `for...of`, spread and `Array.from` take: its `[Symbol.iterator]()` makes an iterator. */
+export interface Iterable<T> {
+    [Symbol.iterator](): Iterator<T>
+}
+
+/** An iterator that is iterable too, whose `[Symbol.iterator]()` returns itself, as generators and the built-in iterators. */
+export interface IterableIterator<T, TReturn = void, TNext = null> {
+    next(): IteratorResult<T, TReturn>
+    [Symbol.iterator](): IterableIterator<T, TReturn, TNext>
+}
+
+const created = 0
+const suspended = 1
+const running = 2
+const finished = 3
+
+/**
+ * The object a generator function returns: `next()` runs the body until
+ * its next `yield`, whose value it returns; `next(value)` also makes
+ * `value` the result of the `yield` the body waits at.
+ */
+export class Generator<T, TReturn = void, TNext = null> {
+    /** The fiber of the body, from the first `next()` until it ends. */
+    private fiber: Task | null = null
+    private state = created
+    /** The value of the last `yield`: one element once the body yielded. */
+    private yielded: T[] = []
+    /** What the body returned, or what `return(value)` gave: one element once done. */
+    private returned: TReturn[] = []
+    /** The value given to `next` for the `yield` it resumes: one element, or none. */
+    private sent: TNext[] = []
+    /** Whether `return()` asked the suspended body to end. */
+    private ending = false
+    /** Ends the generator that a `yield*` of the body waits on, when this one ends there. */
+    private inner: (() => void) | null = null
+
+    constructor(private readonly body: (generator: Generator<T, TReturn, TNext>) => TReturn) {}
+
+    /** Runs the body until its next `yield` (`done: false`) or its end (`done: true`). */
+    next(): IteratorResult<T, TReturn> {
+        return this.result(this.resume(null))
+    }
+
+    /** `next(value)`: `value` is the result of the `yield` that the body waits at. */
+    send(value: TNext): IteratorResult<T, TReturn> {
+        return this.result(this.resume(value))
+    }
+
+    /**
+     * Ends the generator, as if its body returned `value` at the `yield`
+     * where it waits, and returns `{ value, done: true }`. A generator that
+     * has not started never runs.
+     */
+    return(value: TReturn): IteratorResult<T, TReturn> {
+        this.close()
+        this.returned = [value]
+        return { value, done: true }
+    }
+
+    /** The generator itself: generators are iterable once. */
+    [Symbol.iterator](): IterableIterator<T, TReturn, TNext> {
+        return this
+    }
+
+    /**
+     * Runs the body until its next `yield` or its end: true when it yielded,
+     * its value in `current()`. What `for...of` calls.
+     */
+    advance(value: TNext | null): bool {
+        return this.resume(value)
+    }
+
+    /** The value of the last `yield`, after `advance` returned true. */
+    current(): T {
+        return this.yielded[0]
+    }
+
+    /** What the body returned, once done. */
+    returnValue(): TReturn {
+        return this.returned[0]
+    }
+
+    /** Ends the generator without running more of its body, as `return()` does: what `for...of` calls when it leaves early. */
+    close(): void {
+        if (this.state === running) process.panic("TypeError: Generator is already running")
+        if (this.state === suspended) {
+            this.ending = true
+            this.state = running
+            handTo(this.fiber!)
+        }
+        this.state = finished
+    }
+
+    private result(yielded: bool): IteratorResult<T, TReturn> {
+        if (yielded) return { value: this.yielded[0], done: false }
+        return { value: this.returned[0], done: true }
+    }
+
+    private resume(value: TNext | null): bool {
+        if (this.state === finished) return false
+        if (this.state === running) process.panic("TypeError: Generator is already running")
+        if (this.state === created) {
+            // The value of the first `next` has no `yield` to go to.
+            this.fiber = newFiber(() => {
+                this.finish(this.body(this))
+                endFiber()
+            })
+        } else if (value !== null) {
+            this.sent = [value]
+        }
+        this.state = running
+        handTo(this.fiber!)
+        return this.state === suspended
+    }
+
+    /** The body returned `value`. */
+    private finish(value: TReturn): void {
+        this.returned = [value]
+        this.state = finished
+        this.fiber = null
+    }
+
+    /**
+     * `yield value` in the body: hands the value to `next` and waits for the
+     * following call, whose value it returns (null when none was given). After
+     * `return()`, the body ends here.
+     */
+    yieldValue(value: T): TNext | null {
+        if (this.yielded.length === 0) this.yielded.push(value)
+        else this.yielded[0] = value
+        this.sent = []
+        this.state = suspended
+        handBack()
+        if (this.ending) {
+            const inner = this.inner
+            if (inner !== null) inner()
+            this.fiber = null
+            endFiber()
+        }
+        return this.sent.length > 0 ? this.sent[0] : null
+    }
+
+    /** While a `yield*` of the body waits on another generator: what ends that one. */
+    delegating(inner: (() => void) | null): void {
+        this.inner = inner
+    }
+}
+
+/** A generator whose body is `body`, given the generator for its `yield`s: what a generator function returns. */
+export function generator<T, TReturn, TNext>(
+    body: (generator: Generator<T, TReturn, TNext>) => TReturn,
+): Generator<T, TReturn, TNext> {
+    return new Generator<T, TReturn, TNext>(body)
+}
+
+/** `yield* inner` of a generator in the body of `self`: yields its values, passes on what `next` sends, returns its result. */
+export function delegate<T, R, TReturn, TNext>(self: Generator<T, TReturn, TNext>, inner: Generator<T, R, TNext>): R {
+    self.delegating(() => inner.close())
+    let sent: TNext | null = null
+    while (inner.advance(sent)) sent = self.yieldValue(inner.current())
+    self.delegating(null)
+    return inner.returnValue()
+}
+
+/** `yield* iterable` of any other iterable in the body of `self`: yields the values of its iterator. */
+export function delegateIterator<T, TReturn, TNext>(self: Generator<T, TReturn, TNext>, iterator: Iterator<T>): void {
+    while (true) {
+        const r = iterator.next()
+        if (r.done) return
+        self.yieldValue(r.value)
+    }
+}
+
+/** The values a generator yields, as an array: `[...generator]`. */
+export function generatorToArray<T, TReturn, TNext>(g: Generator<T, TReturn, TNext>): T[] {
+    const out: T[] = []
+    while (g.advance(null)) out.push(g.current())
+    return out
+}
+
+/** The values of an iterator, as an array: `[...iterable]`, `Array.from(iterable)`. */
+export function iteratorToArray<T>(iterator: Iterator<T>): T[] {
+    const out: T[] = []
+    while (true) {
+        const r = iterator.next()
+        if (r.done) return out
+        out.push(r.value)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The iterators of arrays, maps and sets
+//
+// They are lazy, as JavaScript's: an array iterator reads the length again
+// at every step, so it sees elements pushed meanwhile; a map or set iterator
+// visits the entries in insertion order as they are when it gets to them,
+// including those added meanwhile. Once done, an iterator stays done.
+
+/** The iterator of an array's `values()`, `keys()` and `entries()`: what `read` makes of each index. */
+export class ArrayIterator<E, T> {
+    private index = 0
+    private done = false
+
+    constructor(
+        private readonly items: E[],
+        private readonly read: (items: E[], index: int) => T,
+    ) {}
+
+    next(): IteratorResult<T, void> {
+        if (this.done || this.index >= this.items.length) {
+            this.done = true
+            return { value: null, done: true }
+        }
+        const value = this.read(this.items, this.index)
+        this.index++
+        return { value, done: false }
+    }
+
+    [Symbol.iterator](): IterableIterator<T> {
+        return this
+    }
+
+    /** `[object Array Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Array Iterator]"
+    }
+}
+
+/** The iterator of a map's `keys()`, `values()` and `entries()`: what `read` makes of each entry. */
+export class MapIterator<K, V, T> {
+    private index = 0
+    private done = false
+
+    constructor(
+        private readonly map: Map<K, V>,
+        private readonly read: (key: K, value: V) => T,
+    ) {}
+
+    next(): IteratorResult<T, void> {
+        const m = unsafe.addressOf(this.map)
+        while (!this.done && this.index < mapCount(m)) {
+            const i = this.index
+            this.index++
+            if (!mapLive(m, i)) continue
+            return { value: this.read(unsafe.load<K>(mapKey(m, i)), unsafe.load<V>(mapValue(m, i))), done: false }
+        }
+        this.done = true
+        return { value: null, done: true }
+    }
+
+    [Symbol.iterator](): IterableIterator<T> {
+        return this
+    }
+
+    /** `[object Map Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Map Iterator]"
+    }
+}
+
+/** The iterator of a set's `values()`, `keys()` and `entries()`: what `read` makes of each element. */
+export class SetIterator<E, T> {
+    private index = 0
+    private done = false
+
+    constructor(
+        private readonly set: Set<E>,
+        private readonly read: (value: E) => T,
+    ) {}
+
+    next(): IteratorResult<T, void> {
+        const m = unsafe.addressOf(this.set)
+        while (!this.done && this.index < mapCount(m)) {
+            const i = this.index
+            this.index++
+            if (!mapLive(m, i)) continue
+            return { value: this.read(unsafe.load<E>(mapKey(m, i))), done: false }
+        }
+        this.done = true
+        return { value: null, done: true }
+    }
+
+    [Symbol.iterator](): IterableIterator<T> {
+        return this
+    }
+
+    /** `[object Set Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Set Iterator]"
+    }
+}
+
+/** `array.values()`, also an array's `[Symbol.iterator]()`. */
+export function arrayValues<T>(items: T[]): ArrayIterator<T, T> {
+    return new ArrayIterator<T, T>(items, (a, i) => a[i])
+}
+
+/** `array.keys()`. */
+export function arrayKeys<T>(items: T[]): ArrayIterator<T, int> {
+    return new ArrayIterator<T, int>(items, (a, i) => i)
+}
+
+/** `array.entries()`. */
+export function arrayEntries<T>(items: T[]): ArrayIterator<T, [int, T]> {
+    return new ArrayIterator<T, [int, T]>(items, (a, i) => [i, a[i]])
+}
+
+/** `map.keys()`. */
+export function mapKeys<K, V>(map: Map<K, V>): MapIterator<K, V, K> {
+    return new MapIterator<K, V, K>(map, (k, v) => k)
+}
+
+/** `map.values()`. */
+export function mapValues<K, V>(map: Map<K, V>): MapIterator<K, V, V> {
+    return new MapIterator<K, V, V>(map, (k, v) => v)
+}
+
+/** `map.entries()`, also a map's `[Symbol.iterator]()`. */
+export function mapEntries<K, V>(map: Map<K, V>): MapIterator<K, V, [K, V]> {
+    return new MapIterator<K, V, [K, V]>(map, (k, v) => [k, v])
+}
+
+/** `set.values()` and `set.keys()`, also a set's `[Symbol.iterator]()`. */
+export function setValues<T>(set: Set<T>): SetIterator<T, T> {
+    return new SetIterator<T, T>(set, (v) => v)
+}
+
+/** `set.entries()`: each value twice, as JavaScript's. */
+export function setEntries<T>(set: Set<T>): SetIterator<T, [T, T]> {
+    return new SetIterator<T, [T, T]>(set, (v) => [v, v])
+}

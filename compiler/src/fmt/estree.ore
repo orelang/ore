@@ -55,6 +55,8 @@ export class ENode {
     prefix = false
     isAsync = false
     generator = false
+    /** For a YieldExpression: `yield*`. */
+    delegate = false
     declare = false
     isAbstract = false
     definite = false
@@ -593,6 +595,11 @@ export class Converter {
             }
             case "AwaitExpression":
                 return this.make("AwaitExpression", node).set("argument", this.req(node.child("expression")))
+            case "YieldExpression": {
+                const y = this.make("YieldExpression", node).set("argument", this.opt(node.child("expression")))
+                y.delegate = node.child("asteriskToken") !== null
+                return y
+            }
             case "ParenthesizedExpression":
                 return this.req(node.child("expression"))
             case "CallExpression": {

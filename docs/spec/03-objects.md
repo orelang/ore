@@ -106,7 +106,8 @@
   of the class that declares them.
 - Methods are called on instances; `obj.method` without a call is a
   function value bound to `obj`.
-- `class C implements I` checks that `C` has the members of `I`.
+- `class C implements I` checks that `C` has the members of `I`; `I` may be
+  an instance of a generic interface, `class C implements It<int>`.
 
 ## Inheritance
 
@@ -480,13 +481,14 @@ of object literals are not either.
   `[key, value]` pairs, set in order (a repeated key keeps its first place
   and its last value). Without type arguments or a context, the key and
   value types are those of the first pair. Any other array of `[K, V]`
-  [tuples](02-types.md#tuples) works the same, and `new Map(other)` copies
-  another map.
+  [tuples](02-types.md#tuples) works the same, and so does any other
+  iterable of them, such as a generator; `new Map(other)` copies another
+  map.
 - `get(key)` returns `V | null`; `set(key, value)` returns the map;
   `has`, `delete` (returns whether the key was present), `clear`, `size`.
-  `keys()`, `values()` and `entries()` (`[key, value]` tuples) return arrays
-  in insertion order (JavaScript returns iterators; Ore will too once it has
-  them).
+  `keys()`, `values()` and `entries()` (`[key, value]` tuples) return lazy
+  iterators in insertion order, as in JavaScript (see
+  [Generators and iteration](04-functions.md#generators-and-iteration)).
 - `forEach((value, key, map) => ...)` calls the function for each entry in
   insertion order; entries set during the loop are visited, deleted ones
   are not, and `clear` ends it. The function may take fewer parameters.
@@ -509,12 +511,11 @@ of object literals are not either.
   with the hashing and equality of `Map` keys (unions included).
   `new Set<T>()` creates one; the type may come from the context; a
   variable or field without an initializer starts as a new empty set.
-- `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`) or
-  of another set; without a type argument, `T` is their element type.
+- `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`),
+  of another set or of any other iterable; without a type argument, `T` is their element type.
 - `add(value)` returns the set; `has`, `delete` (returns whether the value
-  was present), `clear`, `size`; `values()` and `keys()` return an array in
-  insertion order, `entries()` an array of `[value, value]` tuples (arrays
-  for now, as for maps). `forEach((value, value2, set) => ...)` passes each
+  was present), `clear`, `size`; `values()` and `keys()` return a lazy iterator in
+  insertion order, `entries()` one of `[value, value]` tuples, as for maps. `forEach((value, value2, set) => ...)` passes each
   value twice, as JavaScript does, and visits values added during the loop.
 - The set methods of ES2024 take another `Set<T>` and return a new set or a
   `bool`: `union` (the elements of this set, then the new ones of the
