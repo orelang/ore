@@ -338,6 +338,8 @@ before 1.0, a minor version may change the language.
   reported "Cannot find name". A variable whose value has a function in it,
   or calls a function declared after the parameter's, needs an annotation,
   on it or on the parameter (new: [ORE6086](docs/errors/ORE6086.md)).
+- The language server lists an optional method of an interface, `area?():
+  int`, as a method in completions, where it was a field.
 
 ## 0.5.0
 

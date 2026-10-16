@@ -501,6 +501,57 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     expect(client.close()).toBe(1)
 })
 
+test("an optional method of an interface: hover and completion show a method", () => {
+    const client = new Client()
+    client.initialize()
+    const text = [
+        "interface Shape {",
+        "    area?(): int",
+        "}",
+        "function measure(s: Shape): int {",
+        "    return s.area?.() ?? 0",
+        "}",
+        "interface Box<T> {",
+        "    get?(): T",
+        "}",
+        "function peek(b: Box<int>, s: Shape): int {",
+        "    const literal: Shape = { area: () => 1 }",
+        "    return (b.get?.() ?? 0) + s.area!() + literal.area!()",
+        "}",
+        "",
+    ]
+    client.send(didOpen(text.join("\n")))
+    expect(client.diagnostics(uri).length).toBe(0)
+    const at = (line: int, character: int) =>
+        `{"textDocument":{"uri":${JSON.stringify(uri)}},"position":{"line":${line},"character":${character}}}`
+    const shown = JSON.stringify("```ore\narea?(): int\n```")
+    // Where it is declared, and where it is called.
+    expect(client.request("1", "textDocument/hover", at(1, 5))).toBe(
+        message(`"id":1,"result":{"contents":{"kind":"markdown","value":${shown}},"range":${range(1, 4, 1, 8)}}`),
+    )
+    expect(client.request("2", "textDocument/hover", at(4, 14))).toBe(
+        message(`"id":2,"result":{"contents":{"kind":"markdown","value":${shown}},"range":${range(4, 13, 4, 17)}}`),
+    )
+    // Of a generic interface, and called after `!`.
+    expect(client.request("4", "textDocument/hover", at(11, 15))).toBe(
+        message(
+            `"id":4,"result":{"contents":{"kind":"markdown","value":${JSON.stringify("```ore\nget?(): T\n```")}},"range":${range(11, 14, 11, 17)}}`,
+        ),
+    )
+    expect(client.request("5", "textDocument/hover", at(11, 33))).toBe(
+        message(`"id":5,"result":{"contents":{"kind":"markdown","value":${shown}},"range":${range(11, 32, 11, 36)}}`),
+    )
+    const typing = "interface Shape {\n    area?(): int\n}\nfunction measure(s: Shape) {\n    s.\n}\n"
+    client.notify(
+        "textDocument/didChange",
+        `{"textDocument":{"uri":${JSON.stringify(uri)},"version":2},"contentChanges":[{"text":${JSON.stringify(typing)}}]}`,
+    )
+    client.diagnostics(uri)
+    const members = client.request("3", "textDocument/completion", at(4, 6))
+    expect(members.includes(`"kind":2,"label":"area"`)).toBe(true)
+    expect(client.close()).toBe(1)
+})
+
 test("the places related to a diagnostic: the declaration of a name declared twice, a parameter", () => {
     const client = new Client()
     client.initialize()

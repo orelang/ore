@@ -816,10 +816,11 @@ function membersOfType(type: Type, out: Completion[]) {
             if (type.tuple) out.push({ label: "length", kind: "field", detail: "int", documentation: "" })
             return
         case "interface":
+            // An optional method, `m?(): T`, is a field of a function type that a class implements with a method.
             for (const m of type.members)
                 out.push({
                     label: m.name,
-                    kind: m.k === "method" ? "method" : "field",
+                    kind: m.k === "method" || (m.k === "field" && m.method) ? "method" : "field",
                     detail: typeToString(m.type),
                     documentation: "",
                 })
