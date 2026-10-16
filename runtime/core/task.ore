@@ -39,6 +39,8 @@ import {
     enterSwitch,
     exitSwitch,
     ownStackBase,
+    parkedSleep,
+    parkedWait,
     registerThread,
     scanRange,
     setStackBase,
@@ -64,8 +66,6 @@ import {
     permanentCond,
     permanentMutex,
     pthread_cond_signal,
-    pthread_cond_timedwait,
-    pthread_cond_wait,
     startThread,
     unlock,
     unmap,
@@ -854,7 +854,7 @@ function stealFrom(w: ptr, victim: ptr, takeNext: bool): Task | null {
             const nextCell = unsafe.add(victim, workerNext)
             if (unsafe.atomicLoad<u64>(nextCell) === 0) return null
             // Its worker is likely about to run it; give it a moment to.
-            nanosleep(unsafe.add(w, workerNap), nil())
+            parkedSleep(unsafe.add(w, workerNap))
             const next = unsafe.atomicLoad<u64>(nextCell)
             if (next === 0) return null
             if (unsafe.atomicCompareExchange<u64>(nextCell, next, 0)) return taskAt(next)
@@ -1366,9 +1366,9 @@ function findTask(w: ptr): Task {
         if (timers !== null) {
             const wait = timers.wakeAt - now()
             deadlineIn(unsafe.add(w, 40), wait > 0 ? wait : 0)
-            pthread_cond_timedwait(s.cond, s.lock, unsafe.add(w, 40))
+            parkedWait(s.cond, s.lock, unsafe.add(w, 40))
         } else {
-            pthread_cond_wait(s.cond, s.lock)
+            parkedWait(s.cond, s.lock, nil())
         }
         // Woken to look for a task: spinning, so that others need not be woken too.
         spinning = true

@@ -47,6 +47,10 @@ import {
     pthread_self,
     sigaction,
     unlock,
+    backoff,
+    waitWord,
+    wakeWord,
+    pthread_cond_timedwait,
 } from "ore:runtime/os"
 
 /** The table of the program's globals, {address, size} pairs, emitted by the compiler. */
@@ -132,7 +136,14 @@ const threadWbBuffer = 88
 const threadWbCount = 96
 /** The thread's own marker, for mark assists. */
 const threadAssist = 104
-const threadCache = 112
+/**
+ * 1 while the thread waits in the scheduler with its registers saved and its
+ * stack pointer recorded (see `parkedWait`): the collector counts it as
+ * stopped without a signal, and the thread waits for the collection to end
+ * before it runs on.
+ */
+const threadParked = 112
+const threadCache = 120
 const threadRecordSize = threadCache + maxClasses * 2 * 8
 const wbCap = 256
 
@@ -213,10 +224,11 @@ const switchWriter = 1 << 62
 
 /** Takes the read side: before a worker leaves one stack for another. */
 export function enterSwitch(): void {
+    let round = 0
     while (true) {
         const state = unsafe.atomicLoad<i64>(switchState)
         if ((state & switchWriter) === 0 && unsafe.atomicCompareExchange<i64>(switchState, state, state + 1)) return
-        nanosleep(pause, nil())
+        backoff(round++, pause)
     }
 }
 
@@ -887,8 +899,47 @@ function stopHere(t: ptr): void {
         if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) {
             unsafe.atomicStore<i64>(unsafe.add(t, threadStoppedFor), generation)
         }
-        nanosleep(pause, nil())
+        // Asleep in the kernel until `startWorld` wakes it, instead of polling.
+        waitWord(stoppingCell, 1)
     }
+}
+
+/**
+ * Waits on a condition variable of the scheduler, parked: the thread saves
+ * its registers in this frame and records its stack pointer, as `stopHere`
+ * does, so that a collection scans it without stopping it by a signal (a
+ * signal would wake an idle thread from deep sleep: tens of microseconds
+ * each). On waking it stops for a collection in progress, before running on.
+ * With a nil `deadline`, it waits without one.
+ */
+//ore:noinline
+export function parkedWait(cond: ptr, mutex: ptr, deadline: ptr): void {
+    if (target.arch === "arm64") unsafe.asm("", "~{x19},~{x20},~{x21},~{x22},~{x23},~{x24},~{x25},~{x26},~{x27},~{x28}")
+    else unsafe.asm("", "~{rbx},~{r12},~{r13},~{r14},~{r15}")
+    const t = threadRecord()
+    unsafe.atomicStore<ptr>(unsafe.add(t, threadSp), currentSp())
+    unsafe.atomicStore<i64>(unsafe.add(t, threadParked), 1)
+    if (isNil(deadline)) pthread_cond_wait(cond, mutex)
+    else pthread_cond_timedwait(cond, mutex, deadline)
+    unpark(t)
+}
+
+/** Sleeps for the timespec `duration`, parked (see `parkedWait`). */
+//ore:noinline
+export function parkedSleep(duration: ptr): void {
+    if (target.arch === "arm64") unsafe.asm("", "~{x19},~{x20},~{x21},~{x22},~{x23},~{x24},~{x25},~{x26},~{x27},~{x28}")
+    else unsafe.asm("", "~{rbx},~{r12},~{r13},~{r14},~{r15}")
+    const t = threadRecord()
+    unsafe.atomicStore<ptr>(unsafe.add(t, threadSp), currentSp())
+    unsafe.atomicStore<i64>(unsafe.add(t, threadParked), 1)
+    nanosleep(duration, nil())
+    unpark(t)
+}
+
+/** Ends a parked wait: a collection that counted the thread stopped is waited for. */
+function unpark(t: ptr): void {
+    unsafe.atomicStore<i64>(unsafe.add(t, threadParked), 0)
+    if (unsafe.atomicLoad<i64>(stoppingCell) !== 0) stopHere(t)
 }
 
 function currentSp(): ptr {
@@ -1312,7 +1363,10 @@ function drain(m: ptr): void {
                 return
             }
             unlock(poolLock)
-            nanosleep(pause, nil())
+            // Until work is shared or every marker is idle, as the hints say without the lock.
+            let round = 0
+            while (unsafe.atomicLoad<i64>(poolHint) === 0 && unsafe.atomicLoad<i64>(idleHint) < markerCount)
+                backoff(round++, pause)
             lock(poolLock)
         }
         unlock(poolLock)
@@ -1323,22 +1377,32 @@ function drain(m: ptr): void {
 function stopWorld(self: ptr): int {
     // No worker is between two stacks while the collector holds the write side.
     unsafe.atomicOr<i64>(switchState, switchWriter)
-    while ((unsafe.atomicLoad<i64>(switchState) & ~switchWriter) !== 0) nanosleep(pause, nil())
+    let round = 0
+    while ((unsafe.atomicLoad<i64>(switchState) & ~switchWriter) !== 0) backoff(round++, pause)
     const generation = unsafe.atomicAdd<i64>(generationCell, 1) + 1
     unsafe.atomicStore<i64>(stoppingCell, 1)
+    // A parked thread is stopped already: it saw `stoppingCell` set if it
+    // unparked before this read (both sides use sequentially consistent
+    // atomics), and then stops itself. Others get the signal.
     let others = 0
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
         if (t === self) continue
-        pthread_kill(pointerAt(t, threadId), stopSignal())
         others++
+        if (unsafe.atomicLoad<i64>(unsafe.add(t, threadParked)) !== 0) {
+            unsafe.atomicStore<i64>(unsafe.add(t, threadStoppedFor), generation)
+            continue
+        }
+        pthread_kill(pointerAt(t, threadId), stopSignal())
     }
     // Every other thread has stopped once it acknowledged this stop.
     const since = nowNs(clock)
     let warned = false
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
         if (t === self) continue
+        // A thread answers within microseconds, unless it allocates: spin first.
+        let waits = 0
         while (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) {
-            nanosleep(pause, nil())
+            backoff(waits++, pause)
             // A stop should take microseconds: after 5 s, say which thread holds it up, once.
             if (!warned && nowNs(clock) - since > 5000000000) {
                 warned = true
@@ -1359,23 +1423,32 @@ function stopWorld(self: ptr): int {
 /** Lets the threads `stopWorld` stopped run again. */
 function startWorld(): void {
     unsafe.atomicStore<i64>(stoppingCell, 0)
+    wakeWord(stoppingCell)
     unsafe.atomicAnd<i64>(switchState, ~switchWriter)
 }
 
-/** Marks until there is nothing left to mark, on this thread and the helpers. */
-function markAll(): void {
-    idleMarkers = 0
+/**
+ * Marks until there is nothing left to mark, on this thread and, with
+ * `helpers`, the helper threads: waking them costs more than a little work.
+ */
+function markAll(helpers: bool): void {
+    const others = helpers ? markerCount - 1 : 0
+    idleMarkers = markerCount - 1 - others
     unsafe.atomicStore<i64>(idleHint, 0)
     unsafe.atomicStore<i64>(helpersDone, 0)
-    if (markerCount > 1) {
+    if (others > 0) {
         lock(helperLock)
         markRound++
         pthread_cond_broadcast(helperCond)
         unlock(helperLock)
     }
     drain(pointerAt(markers, 0))
-    while (unsafe.atomicLoad<i64>(helpersDone) < markerCount - 1) nanosleep(pause, nil())
+    let round = 0
+    while (unsafe.atomicLoad<i64>(helpersDone) < others) backoff(round++, pause)
 }
+
+/** Objects waiting to be marked: below this, the collector finishes alone. */
+const smallFinish = 4096
 
 /**
  * Collects garbage, marking alongside the program: the world stops to scan
@@ -1417,13 +1490,13 @@ export function collect(): void {
     if (concurrent) startWorld()
     const resumed = nowNs(clock)
 
-    markAll()
+    markAll(true)
     const marked = nowNs(clock)
     if (concurrent) stopWorld(self)
     const stoppedAgain = nowNs(clock)
     // What the barrier shaded since: in the threads' buffers and the pool.
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) flushBarrier(t)
-    markAll()
+    markAll(poolCount + field(pointerAt(markers, 0), markerTop) > smallFinish)
     unsafe.atomicStore<i64>(markingCell, 0)
     const terminated = nowNs(clock)
     prepareSweep()

@@ -66,6 +66,10 @@ export declare function pthread_self(): ptr
 export declare function pthread_kill(thread: ptr, signal: i32): i32
 export declare function sigaction(signal: i32, action: ptr, previous: ptr): i32
 export declare function nanosleep(duration: ptr, remaining: ptr): i32
+export declare function sched_yield(): i32
+export declare function syscall(number: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64): i64
+export declare function __ulock_wait(operation: u32, address: ptr, value: u64, timeout: u32): i32
+export declare function __ulock_wake(operation: u32, address: ptr, wakeValue: u64): i32
 /** macOS: the base (highest address) of a thread's stack. */
 export declare function pthread_get_stackaddr_np(thread: ptr): ptr
 /** Linux: a thread's attributes, which hold its stack. */
@@ -193,6 +197,55 @@ function clockMonotonic(): i32 {
 export function nowMs(time: ptr): int {
     clock_gettime(clockMonotonic(), time)
     return unsafe.load<i64>(time) * 1000 + unsafe.load<i64>(unsafe.add(time, 8)) / 1000000
+}
+
+// ---------------------------------------------------------------------------
+// Waiting on a word, for the collector's stops, which happen in signal
+// handlers: a futex on Linux and `__ulock` on macOS (what libc++'s atomic
+// wait uses), both system calls, safe in a handler, unlike pthread condition
+// variables. They compare and wait on the low 32 bits of the word.
+
+/** Tells the processor that this thread spins, for a short busy wait. */
+export function spinPause(): void {
+    if (target.arch === "arm64") unsafe.asm("yield", "~{memory}")
+    else unsafe.asm("pause", "~{memory}")
+}
+
+/** Waits until the low 32 bits of the word at `address` may differ from `value`; may return early. */
+export function waitWord(address: ptr, value: i64): void {
+    if (target.os === "darwin") {
+        // UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, no timeout.
+        __ulock_wait(0x01000001, address, u64(value & 0xffffffff), 0)
+    } else {
+        // futex(address, FUTEX_WAIT_PRIVATE, value, no timeout).
+        syscall(target.arch === "arm64" ? 98 : 202, i64(unsafe.toInt(address)), 128, value & 0xffffffff, 0, 0, 0)
+    }
+}
+
+/** Wakes every thread waiting on the word at `address`. */
+export function wakeWord(address: ptr): void {
+    if (target.os === "darwin") {
+        // UL_COMPARE_AND_WAIT | ULF_WAKE_ALL | ULF_NO_ERRNO.
+        __ulock_wake(0x01000101, address, 0)
+    } else {
+        // futex(address, FUTEX_WAKE_PRIVATE, every waiter).
+        syscall(target.arch === "arm64" ? 98 : 202, i64(unsafe.toInt(address)), 129, 0x7fffffff, 0, 0, 0)
+    }
+}
+
+/**
+ * One step of waiting for another thread that should answer within
+ * microseconds: spinning first, then giving the processor away, then
+ * sleeping for `pause` (a timespec). `round` counts the steps from 0.
+ */
+export function backoff(round: int, pause: ptr): void {
+    if (round < 200) {
+        for (let i = 0; i < 16; i++) spinPause()
+    } else if (round < 220) {
+        sched_yield()
+    } else {
+        nanosleep(pause, nil())
+    }
 }
 
 /** Nanoseconds on a clock that only goes forward. */
