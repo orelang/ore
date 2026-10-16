@@ -4,16 +4,33 @@ import { type Node } from "./ast"
 
 /** Whether an import has the attribute `type: "text"`. */
 export function importsText(stmt: Node): bool {
+    return importType(stmt) === "text"
+}
+
+/** Whether an import has the attribute `type: "json"`. */
+export function importsJson(stmt: Node): bool {
+    return importType(stmt) === "json"
+}
+
+/**
+ * The value of the attribute `type` of an import (`with { type: "json" }`):
+ * the string, the text of a value that is not a string, or "" without one.
+ */
+export function importType(stmt: Node): string {
     const attributes = stmt.child("attributes")
-    if (attributes === null) return false
+    if (attributes === null) return ""
     for (const element of attributes.list("elements")) {
         const name = element.child("name")
         const value = element.child("value")
-        if (name === null || value === null) continue
-        const key = name.kind === "StringLiteral" ? stringValue(name) : name.text
-        if (key === "type" && value.kind === "StringLiteral" && stringValue(value) === "text") return true
+        if (name === null || value === null || attributeName(name) !== "type") continue
+        return value.kind === "StringLiteral" ? stringValue(value) : value.text === "" ? "?" : value.text
     }
-    return false
+    return ""
+}
+
+/** The name of an import attribute, written as an identifier or a string. */
+export function attributeName(name: Node): string {
+    return name.kind === "StringLiteral" ? stringValue(name) : name.text
 }
 
 /** The string literal that is the module specifier of an import or export declaration, if any. */

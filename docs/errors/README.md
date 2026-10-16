@@ -413,6 +413,10 @@ The codes are grouped by the part of the language they concern:
 | [ORE6064](ORE6064.md) | Cannot download …: … |
 | [ORE6065](ORE6065.md) | Cannot import …: it has no branch or tag '…'. |
 | [ORE6066](ORE6066.md) | Cannot import …: modules from GitHub are kept in the cache, which is off. |
+| [ORE6067](ORE6067.md) | Invalid JSON: …. |
+| [ORE6068](ORE6068.md) | A JSON import has one name: 'import data from "…" with { type: "json" }'. |
+| [ORE6069](ORE6069.md) | Unknown import type '…'. Use 'text' or 'json'. |
+| [ORE6070](ORE6070.md) | Unknown import attribute '…'. Only 'type' is supported. |
 
 ## ORE7xxx: Statements
 

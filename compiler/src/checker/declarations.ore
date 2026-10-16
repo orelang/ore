@@ -29,7 +29,8 @@ import {
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { Diagnostic } from "../syntax/diagnostic"
-import { importsText } from "../syntax/imports"
+import { attributeName, importType } from "../syntax/imports"
+import { jsonExport } from "../project/json"
 import {
     args as argsOf,
     asteriskToken,
@@ -529,10 +530,17 @@ export function exportOf(
 }
 
 export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
-    if (importsText(stmt)) {
+    const type = checkImportAttributes(c, stmt)
+    if (type === "text") {
         declareTextImport(c, stmt, module)
         return
     }
+    if (type === "json") {
+        declareJsonImport(c, stmt, module)
+        return
+    }
+    // An unknown type was reported.
+    if (type !== "") return
     const specifier = moduleSpecifierNode(stmt)
     const target = specifier !== null ? importedModule(c, specifier, module) : null
     const clause = importClause(stmt)
@@ -594,6 +602,56 @@ export function declareTextImport(c: Checker, stmt: Node, module: ModuleInfo) {
     const value: Operand = new Typed(new StringLit(types.string, contents))
     if (!module.scope.declareValue(name.text, new ConstSymbol(value, types.string, clause)))
         c.error(name, `Duplicate declaration '${name.text}'.`)
+}
+
+/**
+ * Reports the attributes of an import other than `type: "text"` and
+ * `type: "json"`, and gives the type: "" for none.
+ */
+function checkImportAttributes(c: Checker, stmt: Node): string {
+    const attributes = stmt.child("attributes")
+    if (attributes === null) return ""
+    for (const element of attributes.list("elements")) {
+        const name = element.child("name")
+        const value = element.child("value")
+        if (name === null || value === null) continue
+        const key = attributeName(name)
+        if (key !== "type") c.error(name, `Unknown import attribute '${key}'. Only 'type' is supported.`)
+        else if (value.kind !== "StringLiteral" || (stringText(value) !== "text" && stringText(value) !== "json"))
+            c.error(value, `Unknown import type '${importType(stmt)}'. Use 'text' or 'json'.`)
+    }
+    return importType(stmt)
+}
+
+/**
+ * `import name from "./file.json" with { type: "json" }`: the value of the
+ * JSON file, parsed when the program is compiled, typed as the same literal
+ * written in Ore. The loader made the file a module that exports it.
+ */
+export function declareJsonImport(c: Checker, stmt: Node, module: ModuleInfo) {
+    const clause = importClause(stmt)
+    const specifier = moduleSpecifierNode(stmt)!
+    const name = clause === null ? null : clause.child("name")
+    if (clause === null || name === null || namedBindings(clause) !== null) {
+        c.error(
+            stmt,
+            `A JSON import has one name: 'import data from "${stringText(specifier)}" with { type: "json" }'.`,
+        )
+        return
+    }
+    // The loader reported a missing file.
+    const target = importedModule(c, specifier, module)
+    if (target === null) return
+    if (!module.scope.declareAlias(name.text, () => exportOf(c, target, jsonExport)))
+        c.error(name, `Duplicate declaration '${name.text}'.`)
+    c.specifiers.push(() => {
+        const exported = exportOf(c, target, jsonExport)
+        const value = exported === null ? null : exported.value
+        if (value === null) return
+        // The value in the JSON file rather than the declaration the loader added.
+        const initializer = value.decl.child("initializer")
+        c.info.definitions.set(name, initializer ?? value.decl)
+    })
 }
 
 /** Reports exports of names that a module does not declare. */

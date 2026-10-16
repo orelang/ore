@@ -2,9 +2,10 @@
 
 import { dirname, join, resolve } from "ore:path"
 import { Diagnostic } from "../syntax/diagnostic"
-import { importsText, moduleSpecifier, stringValue } from "../syntax/imports"
+import { importType, moduleSpecifier, stringValue } from "../syntax/imports"
 import { parse, type ParseResult } from "../syntax/parse"
 import { type Source } from "../syntax/source"
+import { jsonModule } from "./json"
 import { findPackageRoot, isFile, resolveImport, runtimeModules, stdModules } from "./resolve"
 
 export class Program {
@@ -22,14 +23,14 @@ export class Program {
         readonly syntaxErrors: bool,
     ) {}
 
-    /** The absolute paths of the files imported as text, found or not. */
+    /** The absolute paths of the files imported as text or JSON, found or not. */
     textFiles: string[] = []
 }
 
 /**
  * The files a program is made of, as absolute paths, each once: its modules
- * but the embedded "ore:" ones, the files they import as text (also those
- * not found), and the package.json of the package of each module.
+ * but the embedded "ore:" ones, the files they import as text or JSON (also
+ * those not found), and the package.json of the package of each module.
  */
 export function programFiles(program: Program): string[] {
     const files: string[] = []
@@ -142,20 +143,30 @@ class Loader {
             const specifier = moduleSpecifier(stmt)
             if (specifier === null) continue
             const name = stringValue(specifier)
+            const type = stmt.kind === "ImportDeclaration" ? importType(stmt) : ""
             // A file imported as text is embedded in the program, not loaded as a module.
-            if (stmt.kind === "ImportDeclaration" && importsText(stmt)) {
+            if (type === "text") {
                 const file = resolve(dirname(path), name)
-                if (!this.textFiles.includes(file)) this.textFiles.push(file)
-                let contents = this.options.overrides.get(file)
-                if (contents === null && isFile(file)) {
-                    const read = fs.readFile(file)
-                    if (read instanceof Error) return read
-                    contents = read
-                }
+                const contents = this.readImported(file)
+                if (contents instanceof Error) return contents
                 if (contents === null) this.error(source, specifier.start, specifier.end, `Cannot find file '${name}'.`)
                 else textsOfModule.set(name, contents)
                 continue
             }
+            // A JSON file is a module that exports its value.
+            if (type === "json") {
+                const file = resolve(dirname(path), name)
+                const contents = this.readImported(file)
+                if (contents instanceof Error) return contents
+                if (contents === null) {
+                    this.error(source, specifier.start, specifier.end, `Cannot find file '${name}'.`)
+                    continue
+                }
+                resolved.set(name, this.visitJson(file, contents))
+                continue
+            }
+            // The checker reports other types.
+            if (type !== "") continue
             const target = resolveImport(name, path)
             if (target instanceof Error) {
                 this.error(source, specifier.start, specifier.end, target.message)
@@ -171,6 +182,30 @@ class Loader {
             if (module instanceof Error) return module
             resolved.set(name, module)
         }
+        this.order.push(source)
+        return source
+    }
+
+    /** The contents of a file imported as text or JSON, null when there is none. */
+    private readImported(file: string): string | null | Error {
+        if (!this.textFiles.includes(file)) this.textFiles.push(file)
+        const override = this.options.overrides.get(file)
+        if (override !== null) return override
+        if (!isFile(file)) return null
+        return fs.readFile(file)
+    }
+
+    /** The module of a JSON file, made once. */
+    private visitJson(file: string, contents: string): Source {
+        const existing = this.byPath.get(file)
+        if (existing !== null) return existing
+        const json = jsonModule(this.options.absolutePaths ? file : displayPath(file), contents)
+        const source = json.source
+        this.byPath.set(file, source)
+        for (const d of json.diagnostics) this.diagnostics.push(d)
+        if (json.diagnostics.length > 0) this.syntaxErrors = true
+        this.imports.set(source, new Map<string, Source>())
+        this.texts.set(source, new Map<string, string>())
         this.order.push(source)
         return source
     }

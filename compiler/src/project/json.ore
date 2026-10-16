@@ -1,0 +1,289 @@
+// JSON files imported with `with { type: "json" }`: checking their syntax
+// and turning them into a module that exports their value.
+
+import { type Node } from "../syntax/ast"
+import { Diagnostic } from "../syntax/diagnostic"
+import { parse } from "../syntax/parse"
+import { Source } from "../syntax/source"
+
+/** A syntax error of a JSON text: its message and byte offset. */
+export class JsonError {
+    constructor(
+        readonly message: string,
+        readonly offset: int,
+    ) {}
+}
+
+/** The module of a JSON file, with its syntax errors. */
+export class JsonModule {
+    constructor(
+        readonly source: Source,
+        readonly diagnostics: Diagnostic[],
+    ) {}
+}
+
+/** The name the module of a JSON file exports its value under. */
+export const jsonExport = "json"
+
+const prefix = `export const ${jsonExport} = `
+
+/**
+ * The module of a JSON file: `export const json = <the JSON>`, which types
+ * the value as the same literal written in Ore would be. Its text is the
+ * JSON text, then a line with that declaration: the nodes of the value have
+ * the offsets of the JSON text, so that diagnostics point into the file, and
+ * the nodes around it are on the added line, where their text is. A JSON
+ * syntax error is a diagnostic, and the module is then empty.
+ */
+export function jsonModule(path: string, text: string): JsonModule {
+    const error = checkJson(text)
+    if (error !== null) {
+        const parsed = parse(path, "")
+        const source = new Source(path, text, parsed.source.ast)
+        let length = 0
+        if (error.offset < text.length) length = 1
+        return new JsonModule(source, [
+            new Diagnostic(source, error.offset, length, "error", `Invalid JSON: ${error.message}.`),
+        ])
+    }
+    const generated = prefix + text
+    const parsed = parse(path, generated)
+    const ast = parsed.source.ast
+    const added = text.length + 1
+    place(ast, prefix.length, added)
+    const source = new Source(path, `${text}\n${generated}`, ast)
+    const diagnostics: Diagnostic[] = []
+    for (const d of parsed.diagnostics) {
+        const start = d.start >= prefix.length ? d.start - prefix.length : d.start + added
+        diagnostics.push(new Diagnostic(source, start, d.length, d.severity, d.message))
+    }
+    return new JsonModule(source, diagnostics)
+}
+
+/**
+ * Moves the nodes of the generated module to the text of its source: those
+ * of the JSON value back by the length of the prefix, the others to the
+ * added line, at `added`.
+ */
+function place(node: Node, prefixLength: int, added: int) {
+    if (node.start >= prefixLength) {
+        node.start -= prefixLength
+        node.end -= prefixLength
+    } else {
+        node.start += added
+        node.end += added
+    }
+    for (const child of node.children) place(child, prefixLength, added)
+}
+
+const TAB: u8 = 0x09
+const LF: u8 = 0x0a
+const CR: u8 = 0x0d
+const SPACE: u8 = 0x20
+const QUOTE: u8 = 0x22
+const PLUS: u8 = 0x2b
+const COMMA: u8 = 0x2c
+const MINUS: u8 = 0x2d
+const DOT: u8 = 0x2e
+const ZERO: u8 = 0x30
+const NINE: u8 = 0x39
+const COLON: u8 = 0x3a
+const UPPER_E: u8 = 0x45
+const OPEN_BRACKET: u8 = 0x5b
+const BACKSLASH: u8 = 0x5c
+const CLOSE_BRACKET: u8 = 0x5d
+const LOWER_E: u8 = 0x65
+const OPEN_BRACE: u8 = 0x7b
+const CLOSE_BRACE: u8 = 0x7d
+
+/** The first syntax error of a JSON text (RFC 8259), or null when it is valid. */
+export function checkJson(text: string): JsonError | null {
+    const reader = new JsonReader(text)
+    reader.space()
+    reader.value()
+    if (reader.error === null) {
+        reader.space()
+        if (reader.at < text.length) reader.fail("unexpected text after the value")
+    }
+    return reader.error
+}
+
+class JsonReader {
+    at = 0
+    error: JsonError | null = null
+
+    constructor(readonly text: string) {}
+
+    fail(message: string) {
+        if (this.error === null) this.error = new JsonError(message, this.at)
+    }
+
+    /** Skips white space. */
+    space() {
+        while (this.at < this.text.length) {
+            const c = this.text[this.at]
+            if (c !== SPACE && c !== TAB && c !== LF && c !== CR) return
+            this.at++
+        }
+    }
+
+    /** Reads one value, setting `error` when it is not one. */
+    value() {
+        if (this.at >= this.text.length) {
+            this.fail("unexpected end of the file")
+            return
+        }
+        const c = this.text[this.at]
+        if (c === OPEN_BRACE) this.object()
+        else if (c === OPEN_BRACKET) this.array()
+        else if (c === QUOTE) this.string()
+        else if (c === MINUS || (c >= ZERO && c <= NINE)) this.number()
+        else if (!this.word("true") && !this.word("false") && !this.word("null")) this.unexpected()
+    }
+
+    unexpected() {
+        if (this.at >= this.text.length) this.fail("unexpected end of the file")
+        else if (this.text[this.at] >= 0x80) this.fail("unexpected character")
+        else this.fail(`unexpected character '${this.text.slice(this.at, this.at + 1)}'`)
+    }
+
+    word(w: string): bool {
+        if (this.text.slice(this.at, this.at + w.length) !== w) return false
+        this.at += w.length
+        return true
+    }
+
+    object() {
+        this.at++
+        this.space()
+        if (this.at < this.text.length && this.text[this.at] === CLOSE_BRACE) {
+            this.at++
+            return
+        }
+        while (this.error === null) {
+            this.space()
+            if (this.at >= this.text.length || this.text[this.at] !== QUOTE) {
+                if (this.at < this.text.length) this.fail("expected a property name in double quotes")
+                else this.fail("unexpected end of the file")
+                return
+            }
+            this.string()
+            this.space()
+            if (this.error !== null) return
+            if (this.at >= this.text.length || this.text[this.at] !== COLON) {
+                this.fail("expected ':'")
+                return
+            }
+            this.at++
+            this.space()
+            this.value()
+            this.space()
+            if (this.error !== null) return
+            if (this.at < this.text.length && this.text[this.at] === COMMA) {
+                this.at++
+                continue
+            }
+            if (this.at < this.text.length && this.text[this.at] === CLOSE_BRACE) {
+                this.at++
+                return
+            }
+            this.fail("expected ',' or '}'")
+        }
+    }
+
+    array() {
+        this.at++
+        this.space()
+        if (this.at < this.text.length && this.text[this.at] === CLOSE_BRACKET) {
+            this.at++
+            return
+        }
+        while (this.error === null) {
+            this.space()
+            this.value()
+            this.space()
+            if (this.error !== null) return
+            if (this.at < this.text.length && this.text[this.at] === COMMA) {
+                this.at++
+                continue
+            }
+            if (this.at < this.text.length && this.text[this.at] === CLOSE_BRACKET) {
+                this.at++
+                return
+            }
+            this.fail("expected ',' or ']'")
+        }
+    }
+
+    string() {
+        const start = this.at
+        this.at++
+        while (this.at < this.text.length) {
+            const c = this.text[this.at]
+            if (c === QUOTE) {
+                this.at++
+                return
+            }
+            if (c < SPACE) {
+                this.fail("a control character in a string")
+                return
+            }
+            if (c !== BACKSLASH) {
+                this.at++
+                continue
+            }
+            this.at++
+            const e = this.at < this.text.length ? this.text.slice(this.at, this.at + 1) : ""
+            if (e === "u") {
+                for (let i = 1; i <= 4; i++) {
+                    if (this.at + i >= this.text.length || !isHex(this.text[this.at + i])) {
+                        this.at--
+                        this.fail("invalid escape in a string")
+                        return
+                    }
+                }
+                this.at += 5
+            } else if (e !== "" && '"\\/bfnrt'.includes(e)) {
+                this.at++
+            } else {
+                this.at--
+                this.fail("invalid escape in a string")
+                return
+            }
+        }
+        this.at = start
+        this.fail("unterminated string")
+    }
+
+    number() {
+        const start = this.at
+        if (this.text[this.at] === MINUS) this.at++
+        let valid = true
+        if (this.at < this.text.length && this.text[this.at] === ZERO) this.at++
+        else if (this.digits() === 0) valid = false
+        if (valid && this.at < this.text.length && this.text[this.at] === DOT) {
+            this.at++
+            if (this.digits() === 0) valid = false
+        }
+        if (valid && this.at < this.text.length && (this.text[this.at] === LOWER_E || this.text[this.at] === UPPER_E)) {
+            this.at++
+            if (this.at < this.text.length && (this.text[this.at] === PLUS || this.text[this.at] === MINUS)) this.at++
+            if (this.digits() === 0) valid = false
+        }
+        if (!valid) {
+            this.at = start
+            this.fail("invalid number")
+        }
+    }
+
+    /** Reads decimal digits, giving how many. */
+    digits(): int {
+        const start = this.at
+        while (this.at < this.text.length && this.text[this.at] >= ZERO && this.text[this.at] <= NINE) this.at++
+        return this.at - start
+    }
+}
+
+function isHex(c: u8): bool {
+    return (c >= ZERO && c <= NINE) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66)
+}

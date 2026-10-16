@@ -3,6 +3,9 @@
 
 import { test, expect, fail } from "ore:test"
 import { basename, dirname, join } from "ore:path"
+import { check } from "../src/checker/checker"
+import { type Diagnostic } from "../src/syntax/diagnostic"
+import { checkJson } from "../src/project/json"
 import { LoadOptions, loadProgram } from "../src/project/load"
 import { resolveImport, runtimeModules } from "../src/project/resolve"
 
@@ -83,4 +86,61 @@ test("uses overridden texts", () => {
     const program = loadProgram(join(root, "main.ore"), options)
     if (program instanceof Error) fail(program.message)
     expect(program.entry.ast.list("statements").length).toBe(1)
+})
+
+/** Diagnostics as `file:line:column: message`, with one-based lines and columns. */
+function located(diagnostics: Diagnostic[]): string {
+    const lines: string[] = []
+    for (const d of diagnostics) {
+        const { line, column } = d.source.position(d.start)
+        lines.push(`${basename(d.source.path)}:${line + 1}:${column + 1}: ${d.message}`)
+    }
+    return lines.join("\n")
+}
+
+/** The syntax error of a JSON text as `offset: message`, or "valid". */
+function jsonError(text: string): string {
+    const error = checkJson(text)
+    return error === null ? "valid" : `${error.offset}: ${error.message}`
+}
+
+test("checks the syntax of JSON", () => {
+    same(jsonError(' {"a": [1, -2.5e+3, true, false, null, "\\u00e9\\n"], "b": {}} '), "valid")
+    same(jsonError("[]"), "valid")
+    same(jsonError(""), "0: unexpected end of the file")
+    same(jsonError("{'a': 1}"), "1: expected a property name in double quotes")
+    same(jsonError('{"a" 1}'), "5: expected ':'")
+    same(jsonError('{"a": 1,}'), "8: expected a property name in double quotes")
+    same(jsonError("[1, 2"), "5: expected ',' or ']'")
+    same(jsonError("[01]"), "2: expected ',' or ']'")
+    same(jsonError("[1.]"), "1: invalid number")
+    same(jsonError('"a\\x"'), "2: invalid escape in a string")
+    same(jsonError('"abc'), "0: unterminated string")
+    same(jsonError("nul"), "0: unexpected character 'n'")
+    same(jsonError("1 2"), "2: unexpected text after the value")
+})
+
+test("reports JSON syntax errors at their line and column in the file", () => {
+    const files = new Map<string, string>()
+    files.set("main.ore", 'import config from "./config.json" with { type: "json" }\nconsole.log(config.name)\n')
+    files.set("config.json", '{\n  "name": "x",\n  "port": 80,\n}\n')
+    const root = project(files)
+    const program = loadProgram(join(root, "main.ore"))
+    if (program instanceof Error) fail(program.message)
+    expect(program.syntaxErrors).toBe(true)
+    same(located(program.diagnostics), "config.json:4:1: Invalid JSON: expected a property name in double quotes.")
+})
+
+test("reports type errors of a JSON file in the file", () => {
+    const files = new Map<string, string>()
+    files.set("main.ore", 'import config from "./config.json" with { type: "json" }\nconsole.log(config.name)\n')
+    files.set("config.json", '{\n  "name": "x",\n  "tags": []\n}\n')
+    const root = project(files)
+    const program = loadProgram(join(root, "main.ore"))
+    if (program instanceof Error) fail(program.message)
+    same(located(program.diagnostics), "")
+    same(
+        located(check(program).diagnostics),
+        "config.json:3:11: Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'.",
+    )
 })
