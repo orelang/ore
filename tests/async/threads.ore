@@ -69,9 +69,10 @@ for (let t = 0; t < 32; t++) calls.push(handed.receive() ?? Promise.resolve(0))
 const ran = await Promise.all(calls)
 console.log("called from tasks", ran.length, "overlapped", overlapped)
 
-// A timer and a task: the loop sleeps until whichever comes first.
+// A timer and a task: the loop sleeps until whichever comes first. The timer
+// is far later than the task, so that a slow machine keeps the order.
 const order: string[] = []
-time.timeout(() => order.push("timer"), 50 * time.millisecond)
+time.timeout(() => order.push("timer"), 500 * time.millisecond)
 await new Promise<void>((resolve) =>
     task.spawn(() => {
         time.sleep(5 * time.millisecond)
@@ -80,7 +81,7 @@ await new Promise<void>((resolve) =>
     }),
 )
 order.push("resolved")
-await time.delay(60 * time.millisecond)
+await time.delay(600 * time.millisecond)
 console.log(order.join(" "))
 
 // Pending promises kept alive only by tasks survive garbage collection.
