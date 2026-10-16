@@ -307,8 +307,15 @@ export function print(g: Emitter, v: V, t: Type) {
 
 const libm = [
     "sqrt",
-    "pow",
     "exp",
+    "expm1",
+    "log1p",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asinh",
+    "acosh",
+    "atanh",
     "log",
     "log2",
     "log10",
@@ -319,7 +326,6 @@ const libm = [
     "acos",
     "atan",
     "atan2",
-    "hypot",
     "floor",
     "ceil",
     "trunc",
@@ -491,6 +497,14 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
                 const yWins = g.b.value("i1", `${isFloat ? "fcmp" : "icmp"} ${pick} ${ty} ${y.v}, ${x.v}`)
                 let r = g.b.value(ty, `select i1 ${yWins.v}, ${ty} ${y.v}, ${ty} ${x.v}`)
                 if (isFloat) {
+                    // Of equal values, -0 is the smaller: min ors the sign bits, max ands them.
+                    const it = ty === "float" ? "i32" : "i64"
+                    const xb = g.b.value(it, `bitcast ${ty} ${x.v} to ${it}`)
+                    const yb = g.b.value(it, `bitcast ${ty} ${y.v} to ${it}`)
+                    const both = g.b.value(it, `${name === "Math.min" ? "or" : "and"} ${it} ${xb.v}, ${yb.v}`)
+                    const zero = g.b.value(ty, `bitcast ${it} ${both.v} to ${ty}`)
+                    const equal = g.b.value("i1", `fcmp oeq ${ty} ${x.v}, ${y.v}`)
+                    r = g.b.value(ty, `select i1 ${equal.v}, ${ty} ${zero.v}, ${ty} ${r.v}`)
                     const nan = g.b.value("i1", `fcmp uno ${ty} ${x.v}, ${y.v}`)
                     r = g.b.value(ty, `select i1 ${nan.v}, ${ty} 0x7FF8000000000000, ${ty} ${r.v}`)
                 }
@@ -524,6 +538,8 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
         }
         case "Math.round":
             return g.rt("ore_rt_round", [a[0]])
+        case "Math.pow":
+            return g.rt("ore_rt_pow_f64", [a[0], a[1]])
         case "Math.cbrt":
             return g.rt("ore_rt_cbrt", [a[0]])
         case "Math.sign": {
@@ -541,6 +557,18 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
             return g.rt("ore_rt_big_from_string", [a[0]])
         case "Number.toFixed":
             return g.rt("ore_rt_str_fixed", [a[0], a[1]])
+        case "Number.toPrecision":
+            return g.rt("ore_rt_to_precision", [a[0], a[1]])
+        case "Number.toExponential":
+            return g.rt("ore_rt_to_exponential", [a[0], a[1], a[2]])
+        case "Number.intToString":
+            return g.rt("ore_rt_int_to_radix", [a[0], a[1], a[2]])
+        case "Number.floatToString":
+            return g.rt("ore_rt_float_to_radix", [a[0], a[1]])
+        case "Number.intToLocaleString":
+            return g.rt("ore_rt_int_to_locale", [a[0], a[1]])
+        case "Number.floatToLocaleString":
+            return g.rt("ore_rt_float_to_locale", [a[0]])
         case "Number.parseInt":
         case "Number.parseFloat": {
             const isInt = name === "Number.parseInt"

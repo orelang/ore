@@ -1,0 +1,96 @@
+//ore:internal
+// Math: the members that are not single instructions or libm calls, with
+// JavaScript's results.
+//
+// The exports of this module are members of the namespace `Math`.
+
+function isFinite(x: f64): bool {
+    return x - x === 0
+}
+
+/** ToUint32 of JavaScript: the integer part of x modulo 2^32, and 0 for NaN and the infinities. */
+function toUint32(x: f64): u32 {
+    if (!isFinite(x)) return 0
+    let r = Math.trunc(x) % 4294967296.0
+    if (r < 0) r += 4294967296.0
+    return u32(r)
+}
+
+/**
+ * The square root of the sum of the squares of the values: the length of a
+ * vector. Infinity if any value is infinite, else NaN if any is NaN; 0 with
+ * no values.
+ */
+export function hypot(...values: f64[]): f64 {
+    // Scaled by the largest value, against overflow, and summed with Kahan's compensation, as V8 does.
+    let max = 0.0
+    let nan = false
+    for (const v of values) {
+        const a = Math.abs(v)
+        if (a - a !== 0 && a === a) return a
+        if (a !== a) nan = true
+        else if (a > max) max = a
+    }
+    if (nan) return zero() / zero()
+    if (max === 0) return 0
+    let sum = 0.0
+    let compensation = 0.0
+    for (const v of values) {
+        const n = Math.abs(v) / max
+        const summand = n * n - compensation
+        const preliminary = sum + summand
+        compensation = preliminary - sum - summand
+        sum = preliminary
+    }
+    return Math.sqrt(sum) * max
+}
+
+/** Zero, which the compiler does not fold into a division by zero. */
+function zero(): f64 {
+    return 0.0
+}
+
+/** The number of leading zero bits of x converted to a 32-bit unsigned integer (modulo 2^32). */
+export function clz32(x: f64): f64 {
+    let v = toUint32(x)
+    if (v === 0) return 32
+    let n = 0
+    while ((v & 0x80000000) === 0) {
+        v <<= 1
+        n++
+    }
+    return f64(n)
+}
+
+/** The product of a and b as 32-bit integers (each modulo 2^32), wrapping as C's int32 multiplication. */
+export function imul(a: f64, b: f64): f64 {
+    return f64(i32(toUint32(a) * toUint32(b)))
+}
+
+/** x rounded to the nearest f32, ties to even. */
+export function fround(x: f64): f64 {
+    return f64(f32(x))
+}
+
+/** x rounded to the nearest 16-bit float (IEEE 754 half precision), ties to even. */
+export function f16round(x: f64): f64 {
+    if (x !== x || x === 0 || !isFinite(x)) return x
+    const negative = x < 0
+    const a = negative ? -x : x
+    // Above the largest half, 65504, by half its spacing: an infinity.
+    let r: f64
+    if (a >= 65520) r = 1 / zero()
+    else {
+        // The spacing of halves near a: 2^-24 below 2^-14, the subnormals; else 2^(exponent - 10).
+        const biased = i64((unsafe.bitcast<u64>(a) >> 52) & 0x7ff)
+        const exponent = biased - 1023 < -14 ? -14 : biased - 1023
+        const quantum = unsafe.bitcast<f64>(u64(exponent - 10 + 1023) << 52)
+        const scaled = a / quantum
+        const whole = Math.floor(scaled)
+        const rest = scaled - whole
+        let n = whole
+        if (rest > 0.5 || (rest === 0.5 && whole % 2 !== 0)) n = whole + 1
+        r = n * quantum
+    }
+    return negative ? -r : r
+}

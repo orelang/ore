@@ -31,7 +31,8 @@ Rules for this code:
 | `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |
 | `json.ore` | The string builder, the JSON parser and the helpers of the generated encoders and decoders |
 | `bigint.ore` | `bigint`: arithmetic, Knuth's division, shifts and bitwise operations in two's complement, comparison, hashing, conversions to and from numbers and text in radixes 2 to 36; the namespace `BigInt` |
-| `number.ore` | `parseInt`, `parseFloat` and `toFixed` as JavaScript computes them, `Math.round`, `Math.cbrt`, `process.getenv` |
+| `number.ore` | `parseInt`, `parseFloat`, `toString(radix)`, `toFixed`, `toPrecision`, `toExponential` and `toLocaleString` as JavaScript computes them, `Math.round`, `Math.cbrt`, `Math.pow`, `process.getenv`; the namespace `Number` |
+| `math.ore` | The namespace `Math` beyond libm: `hypot`, `clz32`, `imul`, `fround`, `f16round` |
 | `os.ore` | libc, pthreads and signals, with the sizes and constants of each platform |
 | `gc.ore` | The garbage collector: size-classed spans, per-thread allocation, a precise heap (a pointer map per type from the compiler), marking alongside the program behind a write barrier with two short stops, a pacer, sweeping, and giving free pages back to the system. Settings: `ORE_GOGC` (percent the heap grows between collections, 100; `off`), `ORE_MEMLIMIT` (a soft heap limit, e.g. `512M`), `ORE_GCPROCS` (markers), `ORE_GCSTW=1` (mark with the world stopped), `ORE_GCTRACE=1` (print each collection) |
 | `task.ore` | The M:N scheduler: tasks on mapped stacks, the context switch in assembly, workers, timers, the collector's view of task stacks; per-worker state of the clock and `Math.random` |

@@ -1,6 +1,8 @@
 //ore:internal
-// Numbers: Number.parseInt, Number.parseFloat and toFixed with JavaScript's
-// results, Math.round and Math.cbrt; and small helpers of the process.
+// Numbers: Number.parseInt and Number.parseFloat, and the methods of numbers
+// (toString with a radix, toFixed, toPrecision, toExponential,
+// toLocaleString) with JavaScript's results; Math.round, Math.cbrt and
+// Math.pow; and small helpers of the process.
 //
 // The exports of this module are members of the namespace `Number`.
 
@@ -9,6 +11,7 @@ import { big, strFromF64 } from "ore:runtime/float"
 /** Reads decimal text exactly, rounding to the nearest f64; from libc. */
 declare function strtod(text: ptr, end: ptr): f64
 declare function cbrt(x: f64): f64
+declare function pow(x: f64, y: f64): f64
 declare function getenv(name: string): ptr
 
 function isSpace(c: u8): bool {
@@ -56,9 +59,13 @@ function parseInt(s: string, base: int, out: ptr): bool {
     if (radix < 2 || radix > 36) return false
     let value: u64 = 0
     const start = i
+    // The largest magnitude an int holds: 2^63 - 1, or 2^63 below zero.
+    const limit: u64 = negative ? u64(1) << 63 : (u64(1) << 63) - 1
     while (i < s.length) {
         const d = digitValue(s[i])
         if (d >= radix) break
+        // Too large for an int: none, rather than a wrapped value.
+        if (value > (limit - u64(d)) / u64(radix)) return false
         value = value * u64(radix) + u64(d)
         i++
     }
@@ -97,7 +104,7 @@ function parseFloat(s: string, out: ptr): bool {
  */
 //ore:runtime ore_rt_str_fixed
 function toFixed(x: f64, digits: int): string {
-    if (digits < 0 || digits > 100) process.panic("toFixed() digits out of range")
+    if (digits < 0 || digits > 100) process.panic("toFixed() digits argument must be between 0 and 100")
     if (x !== x || x >= 1e21 || x <= -1e21) return strFromF64(x)
     const negative = x < 0
     const a = negative ? -x : x
@@ -124,15 +131,320 @@ function toFixed(x: f64, digits: int): string {
     return negative ? `-${text}` : text
 }
 
+/** Digits d1 d2 ... and an exponent, for the number d1.d2... × 10^exponent. */
+class Decimal {
+    constructor(
+        public digits: string,
+        public exponent: int,
+    ) {}
+}
+
+/** All the decimal digits of a positive finite float, which has as many as its binary value needs. */
+function exactDigits(a: f64): Decimal {
+    const bits = unsafe.bitcast<u64>(a)
+    const biased = i64(bits >> 52)
+    const mantissa = biased === 0 ? bits & 0xfffffffffffff : (bits & 0xfffffffffffff) | (u64(1) << 52)
+    const e = biased === 0 ? -1074 : biased - 1075
+    if (e >= 0) {
+        const text = big(mantissa).shiftLeft(e).decimal()
+        return new Decimal(text, text.length - 1)
+    }
+    // mantissa × 2^e = mantissa × 5^-e × 10^e.
+    const text = big(mantissa).timesPow10(-e).shiftRight(-e).decimal()
+    return new Decimal(text, text.length - 1 + e)
+}
+
+/** The shortest digits of a positive finite float, those of its toString. */
+function shortestDigits(a: f64): Decimal {
+    const text = strFromF64(a)
+    let exponent = 0
+    let end = text.length
+    const mark = text.indexOf("e")
+    if (mark >= 0) {
+        end = mark
+        const negative = text[mark + 1] === 0x2d
+        for (let i = mark + 2; i < text.length; i++) exponent = exponent * 10 + i64(text[i] - 0x30)
+        if (negative) exponent = -exponent
+    }
+    const point = text.indexOf(".")
+    const whole = point >= 0 && point < end ? point : end
+    let digits = point >= 0 && point < end ? `${text.slice(0, point)}${text.slice(point + 1, end)}` : text.slice(0, end)
+    let zeros = 0
+    while (zeros < digits.length - 1 && digits[zeros] === 0x30) zeros++
+    digits = digits.slice(zeros)
+    let last = digits.length
+    while (last > 1 && digits[last - 1] === 0x30) last--
+    return new Decimal(digits.slice(0, last), whole - 1 - zeros + exponent)
+}
+
+/** The decimal digits of `text` plus one, which may have one more digit. */
+function increment(text: string): string {
+    const out = unsafe.allocBytes(text.length + 1)
+    unsafe.copy(unsafe.add(out, 1), unsafe.stringData(text), text.length)
+    unsafe.store<u8>(out, 0x30)
+    let i = text.length
+    while (unsafe.load<u8>(unsafe.add(out, i)) === 0x39) {
+        unsafe.store<u8>(unsafe.add(out, i), 0x30)
+        i--
+    }
+    unsafe.store<u8>(unsafe.add(out, i), unsafe.load<u8>(unsafe.add(out, i)) + 1)
+    return i === 0 ? unsafe.makeString(out, text.length + 1) : unsafe.makeString(unsafe.add(out, 1), text.length)
+}
+
+/** `d` rounded to `count` significant digits, halves up, as toPrecision and toExponential round. */
+function roundDigits(d: Decimal, count: int): Decimal {
+    if (d.digits.length <= count) return new Decimal(d.digits.padEnd(count, "0"), d.exponent)
+    const head = d.digits.slice(0, count)
+    if (d.digits[count] < 0x35) return new Decimal(head, d.exponent)
+    const up = increment(head)
+    // 99.9 became 100.0: one digit more, and a larger exponent.
+    if (up.length > count) return new Decimal(up.slice(0, count), d.exponent + 1)
+    return new Decimal(up, d.exponent)
+}
+
+/** "e+5" or "e-7". */
+function exponentText(e: int): string {
+    return e >= 0 ? `e+${e}` : `e${e}`
+}
+
+/** d1.d2...e±x, of a Decimal. */
+function exponential(d: Decimal): string {
+    const mantissa = d.digits.length > 1 ? `${d.digits.slice(0, 1)}.${d.digits.slice(1)}` : d.digits
+    return `${mantissa}${exponentText(d.exponent)}`
+}
+
+/**
+ * Number.prototype.toPrecision: x with `precision` significant digits, the
+ * larger of two equally close results, in exponent notation when the
+ * exponent is below -6 or not below the precision.
+ */
+//ore:runtime ore_rt_to_precision
+function toPrecision(x: f64, precision: int): string {
+    if (x !== x || x === infinity() || x === -infinity()) return strFromF64(x)
+    if (precision < 1 || precision > 100) process.panic("toPrecision() argument must be between 1 and 100")
+    const negative = x < 0
+    const a = negative ? -x : x
+    const d = a === 0 ? new Decimal("".padEnd(precision, "0"), 0) : roundDigits(exactDigits(a), precision)
+    const e = d.exponent
+    let text: string
+    if (e < -6 || e >= precision) text = exponential(d)
+    else if (e === precision - 1) text = d.digits
+    else if (e >= 0) text = `${d.digits.slice(0, e + 1)}.${d.digits.slice(e + 1)}`
+    else text = `0.${"".padEnd(-e - 1, "0")}${d.digits}`
+    return negative ? `-${text}` : text
+}
+
+/**
+ * Number.prototype.toExponential: x as d.ddde±x with `digits` digits after the
+ * point (the larger of two equally close results), or with as many as it
+ * needs when none are `given`.
+ */
+//ore:runtime ore_rt_to_exponential
+function toExponential(x: f64, digits: int, given: bool): string {
+    if (x !== x || x === infinity() || x === -infinity()) return strFromF64(x)
+    if (given && (digits < 0 || digits > 100)) process.panic("toExponential() argument must be between 0 and 100")
+    const negative = x < 0
+    const a = negative ? -x : x
+    let d: Decimal
+    if (a === 0) d = new Decimal("".padEnd(given ? digits + 1 : 1, "0"), 0)
+    else if (!given) d = shortestDigits(a)
+    else d = roundDigits(exactDigits(a), digits + 1)
+    const text = exponential(d)
+    return negative ? `-${text}` : text
+}
+
+const radixDigits = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+function checkRadix(radix: int) {
+    if (radix < 2 || radix > 36) process.panic("toString() radix argument must be between 2 and 36")
+}
+
+/** The bytes `start` to `end` of a buffer, as a string. */
+function bufferText(buffer: ptr, start: int, end: int): string {
+    const out = unsafe.allocBytes(end - start)
+    unsafe.copy(out, unsafe.add(buffer, start), end - start)
+    return unsafe.makeString(out, end - start)
+}
+
+/** Number.prototype.toString(radix) of an integer, all its digits exact; `x` is a u64 when `unsigned`. */
+//ore:runtime ore_rt_int_to_radix
+function intToRadix(x: i64, unsigned: bool, radix: int): string {
+    checkRadix(radix)
+    const negative = !unsigned && x < 0
+    let v = negative ? u64(0) - u64(x) : u64(x)
+    const buffer = unsafe.allocBytes(65)
+    let at = 65
+    while (true) {
+        at--
+        unsafe.store<u8>(unsafe.add(buffer, at), radixDigits[i64(v % u64(radix))])
+        v /= u64(radix)
+        if (v === 0) break
+    }
+    if (negative) {
+        at--
+        unsafe.store<u8>(unsafe.add(buffer, at), 0x2d)
+    }
+    return bufferText(buffer, at, 65)
+}
+
+/** The binary exponent of a float: its value is an integer mantissa times 2 to it. */
+function binaryExponent(x: f64): int {
+    const biased = i64((unsafe.bitcast<u64>(x) >> 52) & 0x7ff)
+    return biased === 0 ? -1074 : biased - 1075
+}
+
+/**
+ * Number.prototype.toString(radix) of a float, by V8's algorithm, which
+ * JavaScript engines share: fraction digits only up to the precision of the
+ * float, the last rounded half to even; zeros for the integer digits below
+ * its precision.
+ */
+//ore:runtime ore_rt_float_to_radix
+function floatToRadix(x: f64, radix: int): string {
+    checkRadix(radix)
+    if (radix === 10 || x !== x || x === infinity() || x === -infinity()) return strFromF64(x)
+    const r = f64(radix)
+    // Integer digits are written leftward from the middle, fraction digits rightward.
+    const size = 2200
+    const middle = size / 2
+    const buffer = unsafe.allocBytes(size)
+    let integerAt = middle
+    let fractionAt = middle
+    const negative = x < 0
+    const value = negative ? -x : x
+    let integer = Math.floor(value)
+    let fraction = value - integer
+    // Half the distance to the next float: digits below it are noise.
+    let delta = 0.5 * (unsafe.bitcast<f64>(unsafe.bitcast<u64>(value) + 1) - value)
+    const tiny = unsafe.bitcast<f64>(u64(1))
+    if (delta < tiny) delta = tiny
+    if (fraction >= delta) {
+        unsafe.store<u8>(unsafe.add(buffer, fractionAt), 0x2e)
+        fractionAt++
+        while (true) {
+            fraction *= r
+            delta *= r
+            const digit = i64(fraction)
+            unsafe.store<u8>(unsafe.add(buffer, fractionAt), radixDigits[digit])
+            fractionAt++
+            fraction -= f64(digit)
+            if (fraction > 0.5 || (fraction === 0.5 && (digit & 1) !== 0)) {
+                if (fraction + delta > 1) {
+                    // Round up, carrying through the digits written.
+                    while (true) {
+                        fractionAt--
+                        if (fractionAt === middle) {
+                            integer += 1
+                            break
+                        }
+                        const c = unsafe.load<u8>(unsafe.add(buffer, fractionAt))
+                        const d = c > 0x39 ? i64(c - 0x61) + 10 : i64(c - 0x30)
+                        if (d + 1 < radix) {
+                            unsafe.store<u8>(unsafe.add(buffer, fractionAt), radixDigits[d + 1])
+                            fractionAt++
+                            break
+                        }
+                    }
+                    break
+                }
+            }
+            if (fraction < delta) break
+        }
+    }
+    // Digits below the precision of the integer part are zeros.
+    while (binaryExponent(integer / r) > 0) {
+        integer /= r
+        integerAt--
+        unsafe.store<u8>(unsafe.add(buffer, integerAt), 0x30)
+    }
+    while (true) {
+        const remainder = integer % r
+        integerAt--
+        unsafe.store<u8>(unsafe.add(buffer, integerAt), radixDigits[i64(remainder)])
+        integer = (integer - remainder) / r
+        if (integer <= 0) break
+    }
+    if (negative) {
+        integerAt--
+        unsafe.store<u8>(unsafe.add(buffer, integerAt), 0x2d)
+    }
+    const text = bufferText(buffer, integerAt, fractionAt)
+    return text
+}
+
+/** The digits of an integer with a comma between groups of three, as en-US writes them. */
+function grouped(digits: string): string {
+    const parts: string[] = []
+    const first = digits.length % 3 === 0 ? 3 : digits.length % 3
+    parts.push(digits.slice(0, first))
+    for (let i = first; i < digits.length; i += 3) parts.push(digits.slice(i, i + 3))
+    return parts.join(",")
+}
+
+/** Number.prototype.toLocaleString of an integer, in en-US: digits grouped by commas; `x` is a u64 when `unsigned`. */
+//ore:runtime ore_rt_int_to_locale
+function intToLocale(x: i64, unsigned: bool): string {
+    const negative = !unsigned && x < 0
+    const digits = intToRadix(x, unsigned, 10)
+    return negative ? `-${grouped(digits.slice(1))}` : grouped(digits)
+}
+
+/**
+ * Number.prototype.toLocaleString of a float, in en-US: the shortest digits
+ * rounded to at most three decimals, halves away from zero, the integer
+ * digits grouped by commas.
+ */
+//ore:runtime ore_rt_float_to_locale
+function floatToLocale(x: f64): string {
+    if (x !== x) return "NaN"
+    const negative = unsafe.bitcast<u64>(x) >> 63 !== 0
+    const sign = negative ? "-" : ""
+    if (x === infinity() || x === -infinity()) return `${sign}∞`
+    if (x === 0) return `${sign}0`
+    const d = shortestDigits(negative ? -x : x)
+    // thousandths = d × 10^shift, rounded to an integer.
+    const shift = d.exponent - d.digits.length + 1 + 3
+    let thousandths: string
+    if (shift >= 0) thousandths = `${d.digits}${"".padEnd(shift, "0")}`
+    else {
+        const keep = d.digits.length + shift
+        if (keep < 0) thousandths = "0"
+        else {
+            const head = keep === 0 ? "0" : d.digits.slice(0, keep)
+            thousandths = d.digits[keep] >= 0x35 ? increment(head) : head
+        }
+    }
+    const padded = thousandths.padStart(4, "0")
+    const whole = padded.slice(0, padded.length - 3)
+    let fraction = padded.slice(padded.length - 3)
+    while (fraction.length > 0 && fraction[fraction.length - 1] === 0x30)
+        fraction = fraction.slice(0, fraction.length - 1)
+    return fraction.length > 0 ? `${sign}${grouped(whole)}.${fraction}` : `${sign}${grouped(whole)}`
+}
+
+/**
+ * Math.round: half up, toward +Infinity; -0 for -0 and for the values from
+ * -0.5 to 0, as JavaScript rounds.
+ */
 //ore:runtime ore_rt_round
 function round(x: f64): f64 {
     const r = Math.floor(x)
-    return x - r >= 0.5 ? r + 1 : r
+    const n = x - r >= 0.5 ? r + 1 : r
+    return n === 0 && x < 0 ? -0.0 : n
+}
+
+/** Math.pow and `**` of f64 as in JavaScript: NaN for a NaN exponent and for ±1 to an infinity, where C's pow gives 1. */
+//ore:runtime ore_rt_pow_f64
+function powF64(x: f64, y: f64): f64 {
+    if (y !== y || ((x === 1 || x === -1) && (y === infinity() || y === -infinity()))) return infinity() - infinity()
+    return pow(x, y)
 }
 
 //ore:runtime ore_rt_cbrt
 function cubeRoot(x: f64): f64 {
-    if (x === 0 || x !== x || x === infinity() || x === -infinity()) return cbrt(x)
+    // As libm gives them: NaN, zero and the infinities, and the ends of the range, where y³ would overflow or lose bits.
+    const a = x < 0 ? -x : x
+    if (x !== x || a < 1e-290 || a > 1e290) return cbrt(x)
     const y = cbrt(x)
     // One Newton step corrects the last bit of libm's result.
     return y - (y * y * y - x) / (3 * y * y)

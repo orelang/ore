@@ -1,0 +1,27 @@
+// The methods of numbers on every numeric type: integers keep all their digits
+// in toString and toLocaleString; arguments out of range panic with
+// JavaScript's RangeError message.
+
+import { expect, test } from "ore:test"
+
+const a: i32 = -2147483648
+const b: u64 = 18446744073709551615
+const c: i64 = -9223372036854775808
+const d: u8 = 200
+const e: f32 = 0.1
+console.log(a.toString(16), a.toString(2), b.toString(16), b.toString(36), c.toString(16), c.toString(7), d.toString(2))
+console.log(a.toLocaleString(), b.toLocaleString(), c.toLocaleString(), d.toLocaleString())
+const same: i32 = a.valueOf()
+console.log(same, a.toFixed(2), d.toPrecision(2), d.toExponential(), e.toFixed(3), d.toFixed())
+// NaN and the infinities are checked before the argument in toPrecision and toExponential.
+console.log(Number.NaN.toPrecision(0), Number.POSITIVE_INFINITY.toExponential(-1))
+
+test("ranges", () => {
+    const radix = "toString() radix argument must be between 2 and 36"
+    expect(() => (1.5).toString(1)).toPanic(radix)
+    expect(() => d.toString(37)).toPanic(radix)
+    expect(() => (1.5).toPrecision(0)).toPanic("toPrecision() argument must be between 1 and 100")
+    expect(() => (1.5).toExponential(101)).toPanic("toExponential() argument must be between 0 and 100")
+    expect(() => (1.5).toExponential(-1)).toPanic("toExponential() argument must be between 0 and 100")
+    expect(() => (1.5).toFixed(101)).toPanic("toFixed() digits argument must be between 0 and 100")
+})
