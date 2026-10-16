@@ -239,7 +239,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `fs.isFile(path)`, `fs.isDir(path)` | whether `path` is a file, a directory |
 | `fs.realpath(path)` | the absolute path without links, `.` and `..`, or an `Error` |
 | `fs.tempDir()`, `fs.mkdtemp(prefix?, dir?)` | `$TMPDIR` or `/tmp`; a new uniquely named directory in it |
-| `Date.now()` | milliseconds since the Unix epoch |
+| `Date.now()` | milliseconds since the Unix epoch, an `int`: a static of the class `Date` (see [dates](#dates)) |
 | `time.now()`, `time.unixNanos()` | nanoseconds on a monotonic clock (for durations); since the Unix epoch on the wall clock |
 | `time.nanosecond`, `time.microsecond`, `time.millisecond`, `time.second`, `time.minute`, `time.hour`, `time.day` | durations in nanoseconds, `int` |
 | `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
@@ -640,6 +640,83 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
     `new RegExp(pattern)` (with `g` for `matchAll`).
 - `RegExp` and `RegExpMatch` are classes of the runtime written in Ore
   (`runtime/core/regexp.ore`), global names as in JavaScript.
+
+## Dates
+
+```ts
+const d = new Date(2024, 9, 15, 12, 5)            // local time
+console.log(d.toISOString(), d.getDay())          // 2024-10-15T16:05:00.000Z 2 (in New York)
+console.log(new Date("2024-10-15").getTime(), Date.UTC(2024, 9, 15))  // 1728950400000 1728950400000
+console.log(d)                                    // 2024-10-15T16:05:00.000Z
+```
+
+`Date` is JavaScript's: a time value in milliseconds since the Unix epoch,
+an `f64`, which is NaN for an invalid date, within 8.64e15 ms of the epoch,
+on the proleptic Gregorian calendar with days of 86 400 000 ms.
+
+- `new Date()` is now; `new Date(ms)` a time value (truncated, NaN past
+  the limits); `new Date(string)` what `Date.parse` reads; `new Date(date)`
+  a copy; `new Date(year, monthIndex, day?, hours?, minutes?, seconds?,
+  ms?)` a local time: years 0 to 99 are 1900 to 1999, and fields out of
+  range carry over (`new Date(2024, 13, 1)` is February 2025).
+- Statics: `Date.now()` (an `int`), `Date.parse(s)`, and `Date.UTC(year,
+  monthIndex?, day?, hours?, minutes?, seconds?, ms?)`, which gives the
+  time value of a time in UTC.
+- Getters, in local time and in UTC: `getFullYear`/`getUTCFullYear`,
+  `getMonth` (from 0), `getDate`, `getDay` (0 is Sunday), `getHours`,
+  `getMinutes`, `getSeconds`, `getMilliseconds`, and `getTime`,
+  `valueOf`, `getTimezoneOffset` (the minutes UTC is ahead of local time),
+  `getYear`. Each is an `f64`, NaN for an invalid date.
+- Setters, in local time and in UTC: `setFullYear(year, month?, date?)`,
+  `setMonth(month, date?)`, `setDate`, `setHours(hours, minutes?,
+  seconds?, ms?)`, `setMinutes(minutes, seconds?, ms?)`,
+  `setSeconds(seconds, ms?)`, `setMilliseconds`, and `setTime`, `setYear`.
+  Each returns the new time value; fields out of range carry over
+  (`setDate(0)` is the last day of the month before). An invalid date
+  stays invalid, but `setFullYear` starts it from the epoch.
+- Strings: `toISOString()` (`2024-10-15T16:05:00.000Z`, `+275760-...`
+  past year 9999; it panics with `RangeError: Invalid time value` for an
+  invalid date, as JavaScript throws), `toJSON()` (the same, `null` for an
+  invalid date), `toString()` (`Tue Oct 15 2024 12:05:00 GMT-0400 (Eastern
+  Daylight Time)`), `toDateString()`, `toTimeString()`, `toUTCString()`
+  (`Tue, 15 Oct 2024 16:05:00 GMT`) and `toGMTString()`. An invalid date
+  is `Invalid Date`.
+- `toLocaleString()`, `toLocaleDateString()` and `toLocaleTimeString()`
+  give the format of `en-US`, the only locale (`10/15/2024, 12:05:00 PM`),
+  and take no arguments.
+- `Date.parse` reads the date time string format of ECMAScript
+  (`2024-10-15`, `2024-10-15T12:05`, `2024-10-15T12:05:00.000Z`,
+  `+002024-10-15T12:05-04:00`; a date alone is UTC, a date and time
+  without an offset local), then, as V8, other forms: what `toString` and
+  `toUTCString` print, `Oct 15 2024 12:05 GMT+0200`, `15 Oct 2024`,
+  `10/15/2024`, `2024/10/15`, with `AM`/`PM` and the zones `UTC`, `GMT`,
+  `Z` and `EST` to `PDT`. Anything else is NaN.
+- Local time is the zone of the `TZ` environment variable — a name of
+  `/usr/share/zoneinfo` (`America/New_York`), a path to a TZif file, or a
+  POSIX rule (`EST5EDT,M3.2.0,M11.1.0`) — else of `/etc/localtime`, else
+  UTC. It is read once, on first use. A local time that happens twice is
+  the earlier one; one that is skipped is read with the offset before the
+  change (`new Date(2024, 2, 10, 2, 30)` is 3:30 in New York), as in
+  JavaScript.
+- `console.log` prints a date as Node does: its ISO string, or
+  `Invalid Date` (an instance of a subclass after its class name).
+  `JSON.stringify` writes its `toJSON()`, the ISO string or `null`.
+- Differences from JavaScript: `Date.now()` is an `int` (its arguments
+  and the others are `f64`, so `new Date(Date.now())` needs
+  `f64(Date.now())`); arguments are not coerced (`new Date(2024, "1")`,
+  `d.setHours(1, "2")` are errors, and `new Date(string, month)` panics);
+  `null` stands for a missing argument, so `new Date(null)` is now (it is
+  the epoch in JavaScript); dates do not convert to numbers or strings by
+  themselves, so `d1 - d2` and `d1 < d2` are written with `getTime()`;
+  the name of a zone in
+  `toString` comes from its abbreviation (`EDT` is `Eastern Daylight
+  Time`) for the common zones of North America, Europe, Japan, Korea,
+  Hong Kong, Australia, New Zealand and South Africa, and is otherwise
+  `GMT+04:00`, where V8 has ICU's names (`Gulf Standard Time`);
+  `toLocale*String` know only `en-US`; `Symbol.toPrimitive` and
+  `toTemporalInstant` are missing.
+- `Date` is a class of the runtime written in Ore (`runtime/core/date.ore`),
+  a global name as in JavaScript.
 
 ## Arrays
 
