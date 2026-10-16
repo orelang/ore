@@ -447,7 +447,7 @@ functions.
   and `bool` as `console.log` prints them.
 - `s.length` is the length in bytes. `s[i]` is the byte at `i` as `u8`;
   an index out of range panics.
-- `s.slice(start, end?)` takes byte offsets with JavaScript rules: negative
+- `s.slice(start?, end?)` takes byte offsets with JavaScript rules: negative
   offsets count from the end, out-of-range offsets are clamped.
 - `<`, `<=`, `>`, `>=` compare strings byte-wise; `===` compares contents.
 - `for (const r of s)` iterates runes as `i32`. Invalid UTF-8 yields

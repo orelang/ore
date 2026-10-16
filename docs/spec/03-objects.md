@@ -341,9 +341,10 @@ names them is:
   as in `Prev[D]` and `D extends number = 10`, and are types of values too
   (see [numeric literal types](02-types.md#numeric-literal-types)). `never`
   inside tuples and object types takes part in them, as in
-  `[D] extends [never]`; values cannot have it yet. In the `extends` clause of a conditional type, `unknown` matches any
-  type, `object` any value that is not a primitive, `Function` any function
-  and `readonly unknown[]` any array or tuple; `{}` matches object types
+  `[D] extends [never]`; values cannot have it yet. In the `extends` clause
+  of a conditional type, `unknown` matches any type, `object` any value
+  that is not a primitive, `Function` any function and `readonly unknown[]`
+  any array or tuple; `{}` matches object types
   structurally (`{} extends Pick<T, K>` when K is optional in T); and a
   template literal type with `infer` takes a string literal type apart
   (`` P extends `${infer K}.${infer Rest}` ``). A member of two parts of an
