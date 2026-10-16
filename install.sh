@@ -288,6 +288,17 @@ case "$(uname -m)" in
     arm64 | aarch64) arch=arm64 ;;
     *) die "Unsupported machine: $(uname -m)" "Releases are built for amd64 (x86_64) and arm64 (aarch64)." ;;
 esac
+# The Linux releases are built with glibc 2.31 (Ubuntu 20.04, Debian 11) and
+# need it or newer; musl (Alpine) has no glibc at all.
+if [ "$os" = linux ]; then
+    glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
+    [ -n "$glibc" ] || die "This system's C library is not glibc" \
+        "ore is built for glibc 2.31 or newer (Ubuntu 20.04, Debian 11 and later); musl systems such as Alpine are not supported."
+    if ! printf '%s\n' "$glibc" | awk -F. '{ exit !($1 > 2 || ($1 == 2 && $2 >= 31)) }'; then
+        die "glibc $glibc is too old" \
+            "ore needs glibc 2.31 or newer (Ubuntu 20.04, Debian 11, RHEL 9 and later). glibc comes with the system: upgrade it, or use a newer image."
+    fi
+fi
 command -v curl >/dev/null || die "curl is needed" "Install curl with your package manager, then run this again."
 command -v tar >/dev/null || die "tar is needed" "Install tar with your package manager, then run this again."
 work=$(mktemp -d)
