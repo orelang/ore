@@ -239,6 +239,23 @@ an LLVM coroutine. Left:
   (`s[Symbol.iterator]()`, nor `[Symbol.iterator]()` of arrays, maps and
   sets), and `s.matchAll(re)` is an array, not a lazy iterator.
 
+## 7. Web APIs
+
+The globals of browsers, Node and Bun, under their own names (as `URL` and
+`TextEncoder` are), on the event loop of promises; TLS from the system's
+library (OpenSSL), packed with releases as libLLVM is. In order:
+
+- Without the network: `EventTarget`, `Event`, `CustomEvent`,
+  `AbortController` and `AbortSignal`; `Blob` and `File`; `Headers`;
+  `crypto.getRandomValues`, `performance`; `setTimeout` and the other timers
+  and `queueMicrotask` (in milliseconds, as in JavaScript; `time` keeps
+  nanoseconds); `MessageChannel` and `BroadcastChannel`; `FormData`.
+- Streams: `ReadableStream`, `WritableStream`, `TransformStream` and the
+  text streams, on async generators and `for await`.
+- The network: `fetch` with `Request` and `Response` over an HTTP/1.1 client,
+  an HTTP server that takes a handler from `Request` to `Response` (as
+  `Bun.serve` and `Deno.serve`), `WebSocket`, and `https` with TLS.
+
 ## Later
 
 - Escape analysis for arrays of known size.
