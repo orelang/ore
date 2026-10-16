@@ -3,7 +3,37 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
-## Unreleased
+## 0.4.3
+
+Garbage collection pauses under 0.1 ms.
+
+- Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
+  0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
+  0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its
+  registers saved and its stack pointer recorded, so the collector counts it
+  as stopped without a signal; stopped threads sleep on a futex (`__ulock`
+  on macOS) until the world runs again; the collector's waits spin before
+  they sleep; and the second pause finishes marking on one thread when
+  little is left.
+
+## 0.4.2
+
+Faster string-keyed maps.
+
+- String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
+  1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
+  keeps the high bits of each key's hash beside the entry, so probing
+  compares keys only when those match; string keys and 8-byte keys
+  (integers, objects by identity) are hashed and compared by the runtime
+  itself, strings a word at a time instead of FNV-1a's byte at a time; and
+  `map.set(key, f(map.get(key)))`, where `f` only computes with locals and
+  constants (`counts.set(w, (counts.get(w) ?? 0) + 1)`), hashes and looks
+  up the key once. `indexOf` and `split` no longer call memcmp for a
+  one-byte separator.
+
+## 0.4.1
+
+JavaScript's Date as a global class, and checker fixes.
 
 - `Date` is a global class, JavaScript's, written in Ore
   (runtime/core/date.ore): the constructors (`new Date()`, `new Date(ms)`,
@@ -20,16 +50,6 @@ before 1.0, a minor version may change the language.
   `console.log` prints a date as Node does, and `JSON.stringify` writes it,
   as its ISO string.
   `Date.now()` is still an `int`.
-- String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
-  1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
-  keeps the high bits of each key's hash beside the entry, so probing
-  compares keys only when those match; string keys and 8-byte keys
-  (integers, objects by identity) are hashed and compared by the runtime
-  itself, strings a word at a time instead of FNV-1a's byte at a time; and
-  `map.set(key, f(map.get(key)))`, where `f` only computes with locals and
-  constants (`counts.set(w, (counts.get(w) ?? 0) + 1)`), hashes and looks
-  up the key once. `indexOf` and `split` no longer call memcmp for a
-  one-byte separator.
 - Generic classes can have static fields, `class Box<T> { static count = 0 }`:
   one for all instances, as in TypeScript, initialized where the class is
   declared, and read, assigned and updated from anywhere, its static and
