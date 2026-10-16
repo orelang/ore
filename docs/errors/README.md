@@ -40,7 +40,9 @@ numbers), then:
 
 The examples and fixes are whole programs, checked with `ore check`: an
 example reports its page's code, and a fix reports no error. (A few
-messages are not produced by the compiler at present; their pages say so.) A line
+messages are not produced by the compiler at present; their pages say so.
+A block after `<!-- no-check -->` is not checked: its message is not
+produced, or it needs the network.) A line
 `// file: name.ore` starts another file of the same example, next to the
 first one. The link after the group on each page leads to the section of
 the [specification](../spec) that states the rule.
