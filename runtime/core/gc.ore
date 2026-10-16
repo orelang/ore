@@ -86,7 +86,9 @@ const spanClass = 72
  * 0 for a span of one large object.
  */
 const spanDivMul = 80
-const spanRecordSize = 88
+/** A bitmap of the objects allocated as growable strings (see `allocGrowable`). */
+const spanGrowBits = 88
+const spanRecordSize = 96
 
 // A thread record, in permanent memory, pointed to by the thread-local `thread`.
 const threadId = 0
@@ -403,6 +405,7 @@ function newRecord(): ptr {
     const r = meta(spanRecordSize)
     setPointer(r, spanAllocBits, meta(bitmapSize))
     setPointer(r, spanMarkBits, meta(bitmapSize))
+    setPointer(r, spanGrowBits, meta(bitmapSize))
     return r
 }
 
@@ -455,6 +458,7 @@ function useSpan(span: ptr, size: int, elems: int, noscan: bool, cls: int): void
     setField(span, spanDivMul, elems === 1 ? 0 : i64(~u32(0) / u32(size)) + 1)
     unsafe.fill(pointerAt(span, spanAllocBits), 0, bitmapSize)
     unsafe.fill(pointerAt(span, spanMarkBits), 0, bitmapSize)
+    unsafe.fill(pointerAt(span, spanGrowBits), 0, bitmapSize)
     const first = unsafe.diff(pointerAt(span, spanStart), heapBase) >> pageShift
     for (let i = 0; i < field(span, spanPages); i++) setPointer(pageTable, (first + i) * 8, span)
     if (spanCount === spanCap) {
@@ -568,6 +572,49 @@ export function alloc(size: int, noscan: bool): ptr {
     unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
     if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
     return p
+}
+
+/**
+ * `size` zeroed bytes, never scanned, flagged as the buffer of a growable
+ * string: `growable` finds it again from a pointer into it.
+ */
+export function allocGrowable(size: int): ptr {
+    const p = alloc(size, true)
+    const span = spanOf(p)
+    const index = objectIndex(span, p)
+    // Atomic: after a sweep, another thread may allocate from the same span.
+    unsafe.atomicOr<i64>(unsafe.add(pointerAt(span, spanGrowBits), (index >> 6) * 8), 1 << (index & 63))
+    return p
+}
+
+/**
+ * The start of the growable buffer that `p` points into, or nil if `p` points
+ * elsewhere: into another object, outside the heap, or nowhere.
+ */
+export function growable(p: ptr): ptr {
+    const offset = unsafe.toInt(p) - unsafe.toInt(heapBase)
+    if (offset >= u64(nextPage * pageSize)) return nil()
+    const span = pointerAt(pageTable, i64(offset >> 13) * 8)
+    if (isNil(span)) return nil()
+    const index = objectIndex(span, p)
+    if (index >= field(span, spanElems)) return nil()
+    if (!bit(pointerAt(span, spanGrowBits), index)) return nil()
+    return unsafe.add(pointerAt(span, spanStart), index * field(span, spanElemSize))
+}
+
+/** The size in bytes of the object at `p`, which `growable` returned: at least the size it was allocated with. */
+export function objectSize(p: ptr): int {
+    return field(spanOf(p), spanElemSize)
+}
+
+/** The span of `p`, an address in the heap's used pages. */
+function spanOf(p: ptr): ptr {
+    return pointerAt(pageTable, (unsafe.diff(p, heapBase) >> pageShift) * 8)
+}
+
+/** The index in `span` of the object that `p` points into. */
+function objectIndex(span: ptr, p: ptr): int {
+    return i64((u64(unsafe.diff(p, pointerAt(span, spanStart))) * u64(field(span, spanDivMul))) >> 32)
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,6 +1165,12 @@ function sweep(): void {
         }
         liveBytes += live * field(span, spanElemSize)
         const bits = pointerAt(span, spanAllocBits)
+        // A freed object is no longer growable: its slot may hold anything next.
+        const grow = pointerAt(span, spanGrowBits)
+        for (let w = 0; w < (elems + 63) / 64; w++) {
+            const at = unsafe.add(grow, w * 8)
+            unsafe.store<u64>(at, unsafe.load<u64>(at) & unsafe.load<u64>(unsafe.add(marks, w * 8)))
+        }
         setPointer(span, spanAllocBits, marks)
         setPointer(span, spanMarkBits, bits)
         unsafe.fill(bits, 0, bitmapSize)
