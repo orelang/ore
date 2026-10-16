@@ -46,6 +46,7 @@ import {
     sameType,
     types,
     typeToString,
+    displayFields,
 } from "../ir/types"
 import { Node } from "../syntax/ast"
 import {
@@ -241,7 +242,8 @@ function readable(dict: Expr, type: MapType): Expr {
 /** The fields of an object that `Object.keys` lists: its fields, but the hidden ones of accessors. */
 function dataFields(type: StructType): Field[] {
     const fields: Field[] = []
-    for (const f of type.fields) {
+    // In the order the object shows its fields, as Object.keys follows the order properties were added.
+    for (const f of displayFields(type)) {
         const ft = f.type
         if (f.private && ft.kind === "func" && (f.name.startsWith("get ") || f.name.startsWith("set "))) continue
         fields.push(f)
