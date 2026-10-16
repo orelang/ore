@@ -37,6 +37,9 @@ before 1.0, a minor version may change the language.
   with interface members) call them. Fields of names that no accessor
   implements are read and written through interfaces as before; the others
   test the table entry first.
+- `Math.min()` and `Math.max()` with no arguments are `Infinity` and
+  `-Infinity`, as in JavaScript (they were ORE4019), or the extreme of the
+  integer type expected, as with only empty arrays spread in.
 - Regular expressions of the `v` flag take string disjunctions
   (`[\q{abc|d}x]`), longest strings first, in their set operations too; a
   negated class that may hold strings is an error. With `u` (or `v`) and

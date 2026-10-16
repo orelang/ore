@@ -243,7 +243,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
             return typed(new Convert(numeric, value.expr))
         }
         case "builtin": {
-            if (!found.name.startsWith("console.")) return builtinCall(c, found.name, found.decl, node, scope)
+            if (!found.name.startsWith("console.")) return builtinCall(c, found.name, found.decl, node, scope, expected)
             // Spread tuples print their elements, and spread arrays theirs, each value once, in order.
             const values: Expr[] = []
             const spread: bool[] = []
@@ -559,11 +559,18 @@ function spreadable(name: string): bool {
 
 /**
  * `Math.min` and `Math.max` of any number of values of one numeric type, with
- * arrays and tuples spread in; each value is evaluated once, in order.
+ * arrays and tuples spread in; each value is evaluated once, in order. With
+ * none, as of only empty arrays: an infinity, or the extreme of the integer
+ * type that is expected.
  */
-function minMax(c: Checker, name: string, node: Node, scope: Scope): Operand {
+function minMax(c: Checker, name: string, node: Node, scope: Scope, expected: Type | null): Operand {
     const args = argsOf(node)
-    if (args.length === 0) return c.fail(node, `'${name}' expects at least 1 argument(s), got 0.`)
+    if (args.length === 0) {
+        const none: Expr[] = []
+        const spreads: bool[] = []
+        const result = expected !== null && isNumeric(expected) ? expected : types.f64
+        return typed(new BuiltinCall(result, name, none, null, null, spreads))
+    }
     const spreading = args.some((arg) => arg.kind === "SpreadElement")
     const locals: BindLocal[] = []
     const hold = (value: Expr): Expr => {
@@ -646,9 +653,16 @@ function minMax(c: Checker, name: string, node: Node, scope: Scope): Operand {
     return bindAround(locals, typed(call))
 }
 
-export function builtinCall(c: Checker, name: string, decl: Node, node: Node, scope: Scope): Operand {
+export function builtinCall(
+    c: Checker,
+    name: string,
+    decl: Node,
+    node: Node,
+    scope: Scope,
+    expected: Type | null = null,
+): Operand {
     if (name === "JSON.stringify" || name === "JSON.parse") return jsonCall(c, name, node, scope)
-    if (name === "Math.min" || name === "Math.max") return minMax(c, name, node, scope)
+    if (name === "Math.min" || name === "Math.max") return minMax(c, name, node, scope, expected)
     const generic = typeParameters(decl).length > 0
     if (name.startsWith("unsafe.") && generic) return unsafeCall(c, name, node, scope)
     const args = argsOf(node)

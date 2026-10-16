@@ -210,7 +210,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.run(program, args?)`, `process.output(program, args?)`, `process.spawn(program, args?)` | other programs (below); `spawn` starts one without waiting: a `process.Child` |
 | `process.command.run(program, args?, options?)`, `process.command.output(...)`, `process.command.spawn(...)` | the same with a `process.CommandOptions`: `cwd`, `env`, `clearEnv`, `stdin` |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
-| `Math.abs(x)`, `Math.min(...values)`, `Math.max(...values)` | for any numeric type, keeping it; `min` and `max` take one or more values, arrays and tuples spread in, and of only empty arrays give an infinity or the integer type's extreme |
+| `Math.abs(x)`, `Math.min(...values)`, `Math.max(...values)` | for any numeric type, keeping it; `min` and `max` take any number of values, arrays and tuples spread in, and with none (no arguments or only empty arrays) give an infinity, or the extreme of the integer type expected (`const n: i32 = Math.max()`) |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
 | `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
 | `Number.NaN`, `Number.POSITIVE_INFINITY`, `Number.NEGATIVE_INFINITY`, `Number.MAX_VALUE`, `Number.MIN_VALUE`, `Number.EPSILON`, `Number.MAX_SAFE_INTEGER`, `Number.MIN_SAFE_INTEGER` | `f64` constants, as in JavaScript (no global `NaN` and `Infinity`) |
