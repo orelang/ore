@@ -5,6 +5,21 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `Date` is a global class, JavaScript's, written in Ore
+  (runtime/core/date.ore): the constructors (`new Date()`, `new Date(ms)`,
+  `new Date("2024-10-15T12:00Z")`, `new Date(2024, 9, 15, 12)`), the
+  statics `Date.now()`, `Date.parse` and `Date.UTC`, the getters and
+  setters in local time and in UTC with fields out of range carrying over,
+  `toISOString`, `toJSON`, `toString`, `toDateString`, `toTimeString`,
+  `toUTCString` and `toLocale*String` (en-US, the only locale). Invalid
+  dates have a NaN time value and `toISOString` panics with `RangeError:
+  Invalid time value`. Local time comes from `TZ` or /etc/localtime,
+  read from the TZif files of /usr/share/zoneinfo with their POSIX rules,
+  and UTC without them. `Date.parse` reads the ECMAScript format and, as
+  V8, what `toString` and `toUTCString` print and the common other forms.
+  `console.log` prints a date as Node does, and `JSON.stringify` writes it,
+  as its ISO string.
+  `Date.now()` is still an `int`.
 - String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
   1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
   keeps the high bits of each key's hash beside the entry, so probing
@@ -52,21 +67,6 @@ JavaScript's built-in API (Array, String, Map, Set, Number, Math, console), the 
   (`Promise.resolve()`); a `const` or `let` whose value has functions that
   use it, as `const step = () => task.microtask(step)`, is declared before
   its value is checked.
-- `Date` is a global class, JavaScript's, written in Ore
-  (runtime/core/date.ore): the constructors (`new Date()`, `new Date(ms)`,
-  `new Date("2024-10-15T12:00Z")`, `new Date(2024, 9, 15, 12)`), the
-  statics `Date.now()`, `Date.parse` and `Date.UTC`, the getters and
-  setters in local time and in UTC with fields out of range carrying over,
-  `toISOString`, `toJSON`, `toString`, `toDateString`, `toTimeString`,
-  `toUTCString` and `toLocale*String` (en-US, the only locale). Invalid
-  dates have a NaN time value and `toISOString` panics with `RangeError:
-  Invalid time value`. Local time comes from `TZ` or /etc/localtime,
-  read from the TZif files of /usr/share/zoneinfo with their POSIX rules,
-  and UTC without them. `Date.parse` reads the ECMAScript format and, as
-  V8, what `toString` and `toUTCString` print and the common other forms.
-  `console.log` prints a date as Node does, and `JSON.stringify` writes it,
-  as its ISO string.
-  `Date.now()` is still an `int`.
 - Generic classes can have static methods, generic ones too (`Box.of<U>(v)`),
   which do not see the class's type parameters, as in TypeScript; a generic
   class name works with `instanceof` and narrows a union to its instance
