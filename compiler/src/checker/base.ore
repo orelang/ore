@@ -25,6 +25,7 @@ import {
     Field,
     FuncType,
     LiteralType,
+    NumberLiteralType,
     MapType,
     SetType,
     StructType,
@@ -134,6 +135,7 @@ export class Checker {
     readonly unions = new Map<string, UnionType>()
 
     readonly literals = new Map<string, LiteralType>()
+    readonly numberLiterals = new Map<string, NumberLiteralType>()
 
     /** The built-in `Error` interface, and the class behind `new Error(...)` once used. */
     errorType: InterfaceType | null = null
@@ -271,7 +273,10 @@ export class Checker {
             const lit = literal(node)
             if (lit.kind === "NullKeyword") return types.null
             if (lit.kind === "StringLiteral") return this.literal(stringText(lit))
-            this.error(node, "Only string literal types are supported yet.")
+            if (lit.kind === "NumericLiteral") return this.numberLiteral(lit.text)
+            const operand = lit.kind === "PrefixUnaryExpression" ? lit.child("operand") : null
+            if (operand !== null && operand.kind === "NumericLiteral") return this.numberLiteral(`-${operand.text}`)
+            this.error(node, "Only string and number literal types are supported yet.")
             return null
         }
         if (node.kind === "UnionType") {
@@ -279,7 +284,8 @@ export class Checker {
             for (const m of typeNodes(node)) {
                 const type = this.resolveType(m, scope)
                 if (type === null) return null
-                if (type.kind === "void" || type.kind === "never") {
+                // `never` adds nothing to a union: `A | never` is `A`.
+                if (type.kind === "void") {
                     this.error(m, `A union cannot contain '${type.kind}'.`)
                     return null
                 }
@@ -292,10 +298,15 @@ export class Checker {
             return elem === null ? null : arrayOf(elem)
         }
         if (node.kind === "TupleType") {
+            // A tuple can hold `never` and numeric literal types in computations on types: `[D] extends [never]`.
             const elems: Type[] = []
             for (const e of node.list("elements")) {
-                const type = this.resolveValueType(e, scope)
+                const type = this.resolveType(e, scope)
                 if (type === null) return null
+                if (type.kind === "void") {
+                    this.error(e, "A value cannot have type 'void'.")
+                    return null
+                }
                 elems.push(type)
             }
             return this.tupleOf(elems)
@@ -340,13 +351,13 @@ export class Checker {
             if (symbol === null) return null
             const generic = symbol.generic
             if (generic !== null) {
-                if (typeArgs.length === 0 && defaultTypeNode(generic.params[0]) === null) {
+                if (typeArgs.length === 0 && generic.params.length > 0 && defaultTypeNode(generic.params[0]) === null) {
                     this.error(node, `Generic type '${generic.name}' requires type arguments.`)
                     return null
                 }
                 const resolved: Type[] = []
                 for (const a of typeArgs) {
-                    const type = this.resolveValueType(a, scope)
+                    const type = this.resolveTypeArgument(a, scope)
                     if (type === null) return null
                     resolved.push(type)
                 }
@@ -573,6 +584,24 @@ export class Checker {
         return new SetType(elem)
     }
 
+    /** The numeric literal type of a number written in a type: `10`, `-1.5`, `0x10`. */
+    numberLiteral(text: string): NumberLiteralType {
+        const clean = text.replaceAll("_", "")
+        const negative = clean.startsWith("-")
+        const digits = negative ? clean.slice(1) : clean
+        const prefixed = digits.length > 1 && digits[0] === 0x30 && !digits.includes(".")
+        const parsed = prefixed ? Number.parseInt(digits) : null
+        const float = prefixed ? null : Number.parseFloat(digits)
+        const text = parsed !== null ? `${parsed}` : float !== null ? `${float}` : digits
+        const canonical = negative && text !== "0" ? `-${text}` : text
+        let type = this.numberLiterals.get(canonical)
+        if (type === null) {
+            type = new NumberLiteralType(canonical)
+            this.numberLiterals.set(canonical, type)
+        }
+        return type
+    }
+
     literal(value: string): LiteralType {
         let type = this.literals.get(value)
         if (type === null) {
@@ -597,6 +626,9 @@ export class Checker {
         let hasString = false
         for (const m of members_) if (m.kind === "string") hasString = true
         if (hasString) members_ = members_.filter((m) => m.kind !== "literal")
+        // `number` includes every numeric literal type.
+        if (members_.some((m) => m.kind === "float" && m.bits === 64))
+            members_ = members_.filter((m) => m.kind !== "number-literal")
         // A class includes its subclasses: `A | B` is `A` when `B extends A`.
         if (members_.filter((m) => m.kind === "struct").length > 1) {
             for (const m of members_) {
@@ -676,10 +708,31 @@ export class Checker {
     }
 
     /** Resolves the type of a variable or parameter, which cannot be `void` or `never`. */
+    /**
+     * A type argument of a generic alias, class or function, or a type that
+     * a computed type takes apart: it can be `never` or have numeric literal
+     * types in it (`Paths<T, Prev[D]>`), not `void`.
+     */
+    resolveTypeArgument(node: Node, scope: Scope): Type | null {
+        const type = this.resolveType(node, scope)
+        if (type !== null && type.kind === "void") {
+            this.error(node, "A value cannot have type 'void'.")
+            return null
+        }
+        return type
+    }
+
     resolveValueType(node: Node, scope: Scope): Type | null {
         const type = this.resolveType(node, scope)
         if (type !== null && (type.kind === "void" || type.kind === "never")) {
             this.error(node, `A value cannot have type '${type.kind}'.`)
+            return null
+        }
+        if (type !== null && typeOnly(type, new Set<Type>())) {
+            this.error(
+                node,
+                `Type '${typeToString(type)}' exists only in computations on types: values cannot have numeric literal types, or 'never' in a tuple or an object type, yet.`,
+            )
             return null
         }
         return type
@@ -950,4 +1003,26 @@ export function structOrInterface(type: Type): StructType | InterfaceType | null
     if (type.kind === "struct") return type
     if (type.kind === "interface") return type
     return null
+}
+
+/** Whether a type has a part that values cannot have yet: a numeric literal type, or `never` in a tuple or object type. */
+function typeOnly(type: Type, seen: Set<Type>): bool {
+    if (seen.has(type)) return false
+    seen.add(type)
+    switch (type.kind) {
+        case "number-literal":
+            return true
+        case "union":
+            return type.members.some((m) => typeOnly(m, seen))
+        case "array":
+        case "set":
+            return typeOnly(type.elem, seen)
+        case "map":
+            return typeOnly(type.key, seen) || typeOnly(type.value, seen)
+        case "struct":
+            // Only tuples and object types: the fields of classes are checked where they are declared.
+            if (type.name !== null && !type.tuple) return false
+            return type.fields.some((f) => f.type.kind === "never" || typeOnly(f.type, seen))
+    }
+    return false
 }

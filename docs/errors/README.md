@@ -52,7 +52,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2001](ORE2001.md) | 'any' is not supported in Ore. |
 | [ORE2002](ORE2002.md) | 'unknown' is not supported yet. |
 | [ORE2003](ORE2003.md) | 'undefined' is not supported in Ore. Use 'null'. |
-| [ORE2004](ORE2004.md) | Only string literal types are supported yet. |
+| [ORE2004](ORE2004.md) | Only string and number literal types are supported yet. |
 | [ORE2005](ORE2005.md) | A union cannot contain '…'. |
 | [ORE2006](ORE2006.md) | 'Map' expects exactly 2 type arguments. |
 | [ORE2007](ORE2007.md) | 'Set' expects exactly 1 type argument. |
@@ -114,6 +114,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2063](ORE2063.md) | 'infer' is supported in array, tuple, object, function, Map, Set and generic class types. |
 | [ORE2064](ORE2064.md) | 'intrinsic' is only the type of Uppercase, Lowercase, Capitalize and Uncapitalize. |
 | [ORE2065](ORE2065.md) | An integer constant is not assignable to type 'bigint'. Write a bigint literal: '…n'. |
+| [ORE2066](ORE2066.md) | Type '…' exists only in computations on types: values cannot have numeric literal types, or 'never' in a tuple or an object type, yet. |
 
 ## ORE3xxx: Expressions
 

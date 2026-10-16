@@ -199,6 +199,16 @@ export class LiteralType {
     constructor(readonly value: string) {}
 }
 
+/**
+ * A numeric literal type such as `0` or `-1.5`, by its number's canonical
+ * text. It exists in computations on types (`Prev[D]`, `D extends number`);
+ * values cannot have it yet.
+ */
+export class NumberLiteralType {
+    readonly kind: "number-literal" = "number-literal"
+    constructor(readonly value: string) {}
+}
+
 /** `Chan<T>`: a reference to a channel between tasks. */
 export class ChanType {
     readonly kind: "chan" = "chan"
@@ -260,6 +270,7 @@ export type PrimitiveType =
     | NeverType
     | NullType
     | LiteralType
+    | NumberLiteralType
     | PtrType
     | SelectCaseType
 export type Type =
@@ -272,6 +283,7 @@ export type Type =
     | NeverType
     | NullType
     | LiteralType
+    | NumberLiteralType
     | PtrType
     | SelectCaseType
     | FuncType
@@ -417,6 +429,7 @@ export function sameType(a: Type, b: Type): bool {
 function sameIn(a: Type, b: Type, assumed: Assumed | null): bool {
     if (a === b) return true
     if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
+    if (a.kind === "number-literal" && b.kind === "number-literal") return a.value === b.value
     if (a.kind === "array" && b.kind === "array") return sameIn(a.elem, b.elem, assumed)
     if (a.kind === "map" && b.kind === "map") return sameIn(a.key, b.key, assumed) && sameIn(a.value, b.value, assumed)
     if (a.kind === "set" && b.kind === "set") return sameIn(a.elem, b.elem, assumed)
@@ -466,6 +479,8 @@ export function typeToString(t: Type): string {
         }
         case "literal":
             return JSON.stringify(t.value)
+        case "number-literal":
+            return t.value
         case "map":
             return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
         case "set":
@@ -513,6 +528,8 @@ export function typeKey(type: Type): string {
             return type.members.map(typeKey).join("|")
         case "literal":
             return JSON.stringify(type.value)
+        case "number-literal":
+            return `#n${type.value}`
         case "map":
             return `Map<${typeKey(type.key)},${typeKey(type.value)}>`
         case "set":

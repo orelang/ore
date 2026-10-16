@@ -38,6 +38,7 @@ import {
     sameType,
     types,
     typeToString,
+    membersOf,
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
@@ -1040,42 +1041,54 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
     const memberTypes: Type[] = []
     const readonly: bool[] = []
     const methods: bool[] = []
-    const add = (name: string, type: Type, isReadonly: bool, method: bool, at: Node): bool => {
+    const optional: bool[] = []
+    const add = (name: string, type: Type, isReadonly: bool, method: bool, isOptional: bool, at: Node): bool => {
         const i = names.indexOf(name)
         if (i < 0) {
             names.push(name)
             memberTypes.push(type)
             readonly.push(isReadonly)
             methods.push(method)
+            optional.push(isOptional)
             return true
         }
-        if (!sameType(memberTypes[i], type) || methods[i] !== method) {
+        // A member in two parts has the types common to both: `{ a?: int } & { a: int }` has `a: int`.
+        const common = sameType(memberTypes[i], type)
+            ? type
+            : c.unionOf(membersOf(memberTypes[i]).filter((m) => membersOf(type).some((n) => sameType(m, n))))
+        if (common.kind === "never" || methods[i] !== method) {
             c.error(
                 at,
                 `Member '${name}' has the type '${typeToString(memberTypes[i])}' in one part of the intersection and '${typeToString(type)}' in another.`,
             )
             return false
         }
-        // Writable in one part is writable in the intersection.
+        memberTypes[i] = common
+        // Writable in one part is writable in the intersection, and required in one part is required.
         readonly[i] = readonly[i] && isReadonly
+        optional[i] = optional[i] && isOptional
         return true
     }
     let anyInterface = false
     for (const part of parts) {
         if (part.kind === "struct") {
-            for (const f of part.fields) if (!add(f.name, f.type, f.readonly, false, node)) return null
+            for (const f of part.fields) if (!add(f.name, f.type, f.readonly, false, f.optional, node)) return null
         } else if (part.kind === "interface") {
             anyInterface = true
             // Type aliases are resolved before interfaces are filled: this one is needed now.
             const info = c.interfaces.get(part)
             if (info !== null) fillInterface(c, info, info.scope)
             for (const m of part.members)
-                if (!add(m.name, m.type, m.k === "field" && m.readonly, m.k === "method", node)) return null
+                if (!add(m.name, m.type, m.k === "field" && m.readonly, m.k === "method", false, node)) return null
         }
     }
     if (!anyInterface) {
         const fields: Field[] = []
-        for (let i = 0; i < names.length; i++) fields.push(new Field(names[i], memberTypes[i], readonly[i]))
+        for (let i = 0; i < names.length; i++) {
+            const field = new Field(names[i], memberTypes[i], readonly[i])
+            field.optional = optional[i]
+            fields.push(field)
+        }
         return c.shape(fields)
     }
     const members: InterfaceMember[] = []

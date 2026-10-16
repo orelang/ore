@@ -4,7 +4,7 @@
 // type that names them is. A generic type alias is resolved for each list of
 // type arguments, so their type parameters are known types here.
 
-import { Field, FuncType, type Type, membersOf, typeToString, types } from "../ir/types"
+import { Field, FuncType, type Type, arrayOf, membersOf, typeToString, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
     constraint,
@@ -41,7 +41,7 @@ function memberNames(type: Type): string[] | null {
 export function keyofType(c: Checker, node: Node, scope: Scope): Type | null {
     const inner = typeNode(node)
     if (inner === null) return null
-    const type = c.resolveValueType(inner, scope)
+    const type = c.resolveTypeArgument(inner, scope)
     if (type === null) return null
     const names = memberNames(type)
     if (names === null || names.length === 0) {
@@ -74,7 +74,7 @@ export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
     const objectNode = node.child("objectType")
     const indexNode = node.child("indexType")
     if (objectNode === null || indexNode === null) return null
-    const object = c.resolveValueType(objectNode, scope)
+    const object = c.resolveTypeArgument(objectNode, scope)
     if (object === null) return null
     // A number: the elements of an array or a tuple.
     if (indexNode.kind === "NumberKeyword") {
@@ -100,6 +100,18 @@ export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
     }
     const index = c.resolveType(indexNode, scope)
     if (index === null) return null
+    if (index.kind === "never") return types.never
+    // A numeric literal type or `number` from a type parameter: `Prev[D]`, `T[K]` with K bound to number.
+    if (index.kind === "number-literal" && object.kind === "struct" && object.tuple) {
+        const element = memberType(object, index.value)
+        if (element === null)
+            c.error(
+                indexNode,
+                `Tuple type '${typeToString(object)}' of length ${object.fields.length} has no element at index ${index.value}.`,
+            )
+        return element
+    }
+    if (index.kind === "float" && object.kind === "array") return object.elem
     const keys: string[] = []
     if (index.kind === "literal") keys.push(index.value)
     else if (index.kind === "union") {
@@ -253,9 +265,12 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
         bindings.set(name, type)
         return true
     }
+    const wildcard = matchesKind(c, pattern, type, scope)
+    if (wildcard !== null) return wildcard
+    if (pattern.kind === "TemplateLiteralType" && hasInfer(pattern)) return matchesTemplate(c, pattern, type, bindings)
     if (!hasInfer(pattern)) {
         const target = c.resolveType(pattern, scope)
-        return target !== null && satisfiesConstraint(c, type, target)
+        return target !== null && (satisfiesConstraint(c, type, target) || fitsShape(c, type, target))
     }
     if (pattern.kind === "ArrayType") {
         const elem = pattern.child("elementType")!
@@ -323,6 +338,85 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
     return false
 }
 
+/**
+ * Whether a type matches a pattern that names a kind of types rather than a
+ * type: `unknown` (any type), `object` (any value that is not a primitive),
+ * `Function` (any function), `unknown[]` and `readonly unknown[]` (any array
+ * or tuple); null for other patterns.
+ */
+function matchesKind(c: Checker, pattern: Node, type: Type, scope: Scope): bool | null {
+    if (pattern.kind === "UnknownKeyword") return true
+    if (pattern.kind === "ObjectKeyword") {
+        const k = type.kind
+        return k === "struct" || k === "interface" || k === "array" || k === "map" || k === "set" || k === "func"
+    }
+    if (pattern.kind === "TypeReference" && c.text(pattern) === "Function" && scope.lookupType("Function") === null)
+        return type.kind === "func"
+    if (pattern.kind === "TypeOperator" && c.text(pattern).startsWith("readonly"))
+        return matchesKind(c, typeNode(pattern)!, type, scope)
+    if (pattern.kind === "ArrayType" && pattern.child("elementType")!.kind === "UnknownKeyword")
+        return type.kind === "array" || (type.kind === "struct" && type.tuple)
+    return null
+}
+
+/**
+ * Whether an object type has the fields of an object type `target`, each of
+ * the same type, or left out where `target`'s field is optional:
+ * `{} extends Pick<T, K>` when K is an optional field of T.
+ */
+function fitsShape(c: Checker, type: Type, target: Type): bool {
+    if (type.kind !== "struct" || target.kind !== "struct" || type.tuple || target.tuple || target.nominal) return false
+    for (const f of target.fields) {
+        let found = false
+        for (const g of type.fields)
+            if (g.name === f.name && !g.private && satisfiesConstraint(c, g.type, f.type)) found = true
+        if (!found && !f.optional) return false
+    }
+    return true
+}
+
+/**
+ * Whether a string literal type matches a template literal type with
+ * `infer`, binding them as TypeScript does: each placeholder takes the
+ * shortest text up to the next fixed text (one character when the next
+ * placeholder follows at once), the last one the rest. A placeholder of
+ * another type, such as `${string}`, takes text the same way and binds
+ * nothing.
+ */
+function matchesTemplate(c: Checker, pattern: Node, type: Type, bindings: Map<string, Type>): bool {
+    if (type.kind !== "literal") return false
+    const text = type.value
+    const head = templateText(c, pattern.child("head")!)
+    if (!text.startsWith(head)) return false
+    let at = head.length
+    const spans = pattern.list("templateSpans")
+    for (let i = 0; i < spans.length; i++) {
+        const after = templateText(c, spans[i].child("literal")!)
+        const last = i === spans.length - 1
+        let end = -1
+        if (last) {
+            if (!text.endsWith(after) || text.length - after.length < at) return false
+            end = text.length - after.length
+        } else if (after === "") {
+            if (at >= text.length) return false
+            end = at + 1
+        } else {
+            end = text.indexOf(after, at)
+            if (end < 0) return false
+        }
+        const placeholder = spans[i].child("type")!
+        if (placeholder.kind === "InferType") {
+            const name = nameNode(placeholder.child("typeParameter")!).text
+            const value = c.literal(text.slice(at, end))
+            const bound = bindings.get(name)
+            if (bound !== null && bound !== value) return false
+            bindings.set(name, value)
+        }
+        at = end + after.length
+    }
+    return true
+}
+
 /** One branch of a conditional type for a checked type that is not a union to distribute. */
 function conditionalBranch(c: Checker, node: Node, check: Type, param: Node | null, scope: Scope): Type | null {
     const inner = new Scope(scope)
@@ -355,10 +449,21 @@ export function conditionalType(c: Checker, node: Node, scope: Scope): Type | nu
     return results.length === 0 ? types.never : c.unionOf(results)
 }
 
-/** The fields of a type whose keys a mapped type over `keyof T` takes, for their `?` and `readonly`. */
-function homomorphicSource(c: Checker, keysNode: Node, scope: Scope): Field[] {
-    if (keysNode.kind !== "TypeOperator" || !c.text(keysNode).startsWith("keyof")) return []
-    const source = c.resolveType(typeNode(keysNode)!, scope)
+/**
+ * The fields whose `?` and `readonly` a mapped type keeps, as TypeScript's
+ * homomorphic mapped types: those of T for keys `keyof T`, or for fields of
+ * type `T[K]` (as `Pick<T, K>` has).
+ */
+function homomorphicSource(c: Checker, keysNode: Node, valueNode: Node | null, parameter: Node, scope: Scope): Field[] {
+    let sourceNode: Node | null = null
+    if (keysNode.kind === "TypeOperator" && c.text(keysNode).startsWith("keyof")) sourceNode = typeNode(keysNode)
+    else if (valueNode !== null && valueNode.kind === "IndexedAccessType") {
+        const index = valueNode.child("indexType")!
+        if (index.kind === "TypeReference" && c.text(index) === nameNode(parameter).text)
+            sourceNode = valueNode.child("objectType")
+    }
+    if (sourceNode === null) return []
+    const source = c.resolveType(sourceNode, scope)
     return source !== null && source.kind === "struct" ? source.fields : []
 }
 
@@ -366,6 +471,20 @@ function homomorphicSource(c: Checker, keysNode: Node, scope: Scope): Field[] {
 export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
     const parameter = node.child("typeParameter")!
     const keysNode = constraint(parameter)!
+    // Over `keyof T` of an array, the elements are mapped; of a type without fields, it is that type, as in TypeScript.
+    if (keysNode.kind === "TypeOperator" && c.text(keysNode).startsWith("keyof")) {
+        const source = c.resolveTypeArgument(typeNode(keysNode)!, scope)
+        if (source === null) return null
+        if (source.kind === "array") {
+            const valueNode = typeNode(node)
+            if (valueNode === null) return source
+            const inner = new Scope(scope)
+            inner.declareType(nameNode(parameter).text, new TypeSymbol(types.f64, parameter))
+            const elem = c.resolveValueType(valueNode, inner)
+            return elem === null ? null : arrayOf(elem)
+        }
+        if (source.kind !== "struct" && source.kind !== "interface") return source
+    }
     const keys = c.resolveType(keysNode, scope)
     if (keys === null) return null
     const valueNode = typeNode(node)
@@ -373,7 +492,7 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
         c.error(node, "A mapped type needs the type of its fields: '{ [K in Keys]: T }'.")
         return null
     }
-    const source = homomorphicSource(c, keysNode, scope)
+    const source = homomorphicSource(c, keysNode, valueNode, parameter, scope)
     const readonlyToken = node.child("readonlyToken")
     const questionToken = node.child("questionToken")
     const fields: Field[] = []
@@ -399,7 +518,8 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
             }
             name = renamed.value
         }
-        let type = c.resolveValueType(valueNode, inner)
+        // A field can be `never` here: `{ [K in keyof T]: ... ? K : never }[keyof T]`.
+        let type = c.resolveType(valueNode, inner)
         if (type === null) return null
         let optional = false
         let isReadonly = false
@@ -438,8 +558,11 @@ export function templateLiteralType(c: Checker, node: Node, scope: Scope): Type 
         const tail = templateText(c, span.child("literal")!)
         const next: string[] = []
         for (const m of membersOf(type)) {
-            if (m.kind !== "literal") return types.string
-            for (const s of strings) next.push(s + m.value + tail)
+            let text = ""
+            if (m.kind === "literal") text = m.value
+            else if (m.kind === "number-literal") text = m.value
+            else return types.string
+            for (const s of strings) next.push(s + text + tail)
         }
         strings = next
     }

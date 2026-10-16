@@ -44,3 +44,169 @@ export type Capitalize<S extends string> = intrinsic
 
 /** The string literal types of S with their first letter in lower case. */
 export type Uncapitalize<S extends string> = intrinsic
+
+/**
+ * Makes all properties optional except the specified keys which remain required.
+ */
+export type PartialExcept<T, K extends keyof T> = Partial<T> & Required<Pick<T, K>>
+
+/**
+ * Makes all properties optional and omits the specified keys entirely.
+ */
+export type PartialOmit<T, K extends keyof T> = Partial<Omit<T, K>>
+
+/**
+ * Makes only the specified keys optional, keeping the rest required.
+ */
+export type PartialPick<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>
+
+/**
+ * Makes all properties optional except the excluded keys which remain as-is (required).
+ */
+export type PartialWithExclusion<T, E extends keyof T> = { [K in keyof T as K extends E ? never : K]?: T[K] } & {
+    [K in E]: T[K]
+}
+
+/**
+ * Recursively makes all properties optional. Preserves functions and primitives.
+ */
+export type DeepPartial<T> = T extends object ? T extends Function ? T : { [P in keyof T]?: DeepPartial<T[P]> } : T
+
+/**
+ * Recursively makes all properties required, including nested objects.
+ */
+export type DeepRequired<T> = T extends object ? T extends Function ? T : { [P in keyof T]-?: DeepRequired<T[P]> } : T
+
+/**
+ * Recursively makes all properties readonly, including nested objects.
+ */
+export type DeepReadonly<T> = T extends object
+    ? T extends Function ? T : { readonly [P in keyof T]: DeepReadonly<T[P]> }
+    : T
+
+/**
+ * Recursively removes readonly modifiers from all properties, including nested objects.
+ */
+export type DeepMutable<T> = T extends object
+    ? T extends Function ? T : { -readonly [P in keyof T]: DeepMutable<T[P]> }
+    : T
+
+/**
+ * Picks only keys whose values extend the specified type.
+ */
+export type PickByValueType<T, V> = Pick<T, { [K in keyof T]: T[K] extends V ? K : never }[keyof T]>
+
+/**
+ * Omits keys whose values extend the specified type.
+ */
+export type OmitByValueType<T, V> = Omit<T, { [K in keyof T]: T[K] extends V ? K : never }[keyof T]>
+
+/**
+ * Extracts a union of keys whose values extend the specified type.
+ */
+export type KeysOfType<T, V> = { [K in keyof T]: T[K] extends V ? K : never }[keyof T]
+
+/**
+ * Makes only the specified keys optional while keeping the rest required.
+ */
+export type PartialByKeys<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>
+
+/**
+ * Makes only the specified keys required while keeping the rest as-is.
+ */
+export type RequiredByKeys<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>
+
+/**
+ * Makes only the specified keys readonly while keeping the rest mutable.
+ */
+export type ReadonlyByKeys<T, K extends keyof T> = Omit<T, K> & Readonly<Pick<T, K>>
+
+/**
+ * Makes only the specified keys mutable (removes readonly) while keeping the rest as-is.
+ */
+export type MutableByKeys<T, K extends keyof T> = Omit<T, K> & { -readonly [P in K]: T[P] }
+
+/**
+ * Strict version of Omit that requires keys to exist in the type (catches typos).
+ */
+export type StrictOmit<T, K extends keyof T> = Omit<T, K>
+
+/**
+ * Strict version of Pick that requires keys to exist in the type (catches typos).
+ */
+export type StrictPick<T, K extends keyof T> = Pick<T, K>
+
+/**
+ * Merges two types. Properties from B override those in A.
+ */
+export type Merge<A, B> = Omit<A, keyof B> & B
+
+/**
+ * Flattens an intersection type into a single object type for cleaner tooltips.
+ */
+export type Simplify<T> = { [K in keyof T]: T[K] } & {}
+
+/**
+ * Assigns properties from B to A, overriding existing keys. Flattens the result.
+ */
+export type Assign<A, B> = Simplify<Omit<A, keyof B> & B>
+
+/**
+ * Makes only the specified keys nullable while keeping the rest as-is.
+ */
+export type NullableByKeys<T, K extends keyof T> = Omit<T, K> & { [P in K]: T[P] | null }
+
+/**
+ * Removes null and undefined from the specified keys while keeping the rest as-is.
+ */
+export type NonNullableByKeys<T, K extends keyof T> = Omit<T, K> & { [P in K]: NonNullable<T[P]> }
+
+/**
+ * Makes all properties both optional and nullable.
+ */
+export type OptionalNullable<T> = { [K in keyof T]?: T[K] | null }
+
+/**
+ * Extracts a union of keys that are required (not optional).
+ */
+export type RequiredKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? never : K }[keyof T]
+
+/**
+ * Extracts a union of keys that are optional.
+ */
+export type OptionalKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? K : never }[keyof T]
+
+/**
+ * Ensures an object has no extra keys beyond what is defined in Shape.
+ */
+export type Exact<T, Shape> = T extends Shape ? Exclude<keyof T, keyof Shape> extends never ? T : never : never
+
+/**
+ * Internal helper for recursive depth limiting. Used by Paths.
+ */
+export type Prev = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+/**
+ * Generates a union of all possible dot-notation paths in an object.
+ */
+export type Paths<T, D extends number = 10> = [D] extends [never]
+    ? never
+    : T extends readonly unknown[]
+      ? never
+      : T extends object
+        ? { [K in keyof T]-?: K extends string | number ? `${K}` | Join<K, Paths<T[K], Prev[D]>> : never }[keyof T]
+        : never
+
+/**
+ * Internal helper for joining path segments. Used by Paths.
+ */
+export type Join<K, P> = K extends string | number ? P extends string | number ? `${K}.${P}` : never : never
+
+/**
+ * Gets the type of a value at a specific dot-notation path.
+ */
+export type PathValue<T, P extends Paths<T>> = P extends `${infer K}.${infer Rest}`
+    ? K extends keyof T ? Rest extends Paths<T[K]> ? PathValue<T[K], Rest> : never : never
+    : P extends keyof T
+      ? T[P]
+      : never

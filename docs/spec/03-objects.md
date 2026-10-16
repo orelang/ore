@@ -292,9 +292,27 @@ names them is:
   of the string literal types in it, and `string` with any other type.
   `Uppercase`, `Lowercase`, `Capitalize` and `Uncapitalize` change their
   letters.
+- Numeric literal types (`0`, `-1.5`) and `never` inside tuples and object
+  types take part in computations on types, as in `Prev[D]`,
+  `D extends number = 10` and `[D] extends [never]`; values cannot have them
+  yet. In the `extends` clause of a conditional type, `unknown` matches any
+  type, `object` any value that is not a primitive, `Function` any function
+  and `readonly unknown[]` any array or tuple; `{}` matches object types
+  structurally (`{} extends Pick<T, K>` when K is optional in T); and a
+  template literal type with `infer` takes a string literal type apart
+  (`` P extends `${infer K}.${infer Rest}` ``). A member of two parts of an
+  intersection has the types common to both, and is optional only when it
+  is optional in both.
 - The utility types of TypeScript are global names: `Partial`, `Required`,
   `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys; a Map for any
-  string), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and `Parameters`
+  string), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and
+  `Parameters`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
+  `PartialWithExclusion`, `DeepPartial`, `DeepRequired`, `DeepReadonly`,
+  `DeepMutable`, `PickByValueType`, `OmitByValueType`, `KeysOfType`,
+  `PartialByKeys`, `RequiredByKeys`, `ReadonlyByKeys`, `MutableByKeys`,
+  `StrictOmit`, `StrictPick`, `Merge`, `Simplify`, `Assign`,
+  `NullableByKeys`, `NonNullableByKeys`, `OptionalNullable`, `RequiredKeys`,
+  `OptionalKeys`, `Exact`, `Paths`, `Join`, `PathValue` and `Prev`
   (declared in runtime/core/types.ore).
 
 ## Maps

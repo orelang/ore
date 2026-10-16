@@ -5,6 +5,14 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Numeric literal types in computations on types (`Prev[D]`,
+  `D extends number = 10`, `[D] extends [never]`); `infer` in template
+  literal types; `unknown`, `object`, `Function` and `readonly unknown[]`
+  in conditional types; `{}` matched structurally; members of
+  intersections narrowed to the types common to their parts. With them, a
+  library of utility types is global: `DeepPartial`, `DeepReadonly`,
+  `Paths`, `PathValue`, `KeysOfType`, `PickByValueType`, `Merge`,
+  `Assign`, `RequiredKeys`, `OptionalKeys`, `Exact` and more.
 - Conditional types `T extends U ? X : Y`, distributed over unions, with
   `infer`; mapped types `{ [K in keyof T]?: T[K] }` with `readonly`, `?`,
   `-`/`+` and `as`; template literal types and `Uppercase` and the other
