@@ -116,6 +116,10 @@ exports, type assertions (Ore converts: `i32(x)`).
   have no parent, listeners are functions).
 - `FormData` from MDN, after the XMLHttpRequest Standard (done; no form
   elements, and the `multipart/form-data` encoding waits for `fetch`).
+- `MessageChannel`, `MessagePort`, `MessageEvent` and `BroadcastChannel`
+  from MDN, after the HTML Standard, with Node's `ref` and `unref` (done;
+  messages are typed, `unknown` by default, and structured clones; no
+  transfer lists).
 - `globalThis`, as in JavaScript: the global names (`globalThis.console`,
   `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
   members of one value, with the type `typeof globalThis`; a module's own
@@ -264,7 +268,7 @@ library (OpenSSL), packed with releases as libLLVM is. In order:
   `AbortController` and `AbortSignal`; `Blob` and `File`; `Headers`;
   `crypto.getRandomValues`, `performance`; `setTimeout` and the other timers
   and `queueMicrotask` (in milliseconds, as in JavaScript; `time` keeps
-  nanoseconds); `MessageChannel` and `BroadcastChannel`; `FormData`.
+  nanoseconds); `MessageChannel` and `BroadcastChannel` (done); `FormData`.
 - Streams: `ReadableStream`, `WritableStream`, `TransformStream` and the
   text streams, on async generators and `for await`.
 - The network: `fetch` with `Request` and `Response` over an HTTP/1.1 client,

@@ -1,0 +1,34 @@
+// A port keeps the program running while it has a `message` listener or was
+// ref'd, a broadcast channel from its creation, until closed or unref'd, as in Node.
+
+const channel = new MessageChannel<string>()
+const listener = (event: Event) => console.log("never", event.type)
+console.log("new", channel.port1.hasRef())
+channel.port1.addEventListener("message", listener)
+console.log("with a listener", channel.port1.hasRef())
+channel.port1.removeEventListener("message", listener)
+console.log("without", channel.port1.hasRef())
+channel.port1.onmessage = (event) => console.log("never", event.data)
+console.log("onmessage", channel.port1.hasRef())
+channel.port1.onmessage = null
+console.log("onmessage null", channel.port1.hasRef())
+channel.port1.ref()
+console.log("ref", channel.port1.hasRef())
+channel.port1.unref()
+console.log("unref", channel.port1.hasRef())
+
+// Listening, but unref'd: it lets the program end.
+channel.port2.onmessage = (event) => console.log("never", event.data)
+channel.port2.unref()
+console.log("port2", channel.port2.hasRef())
+
+const broadcast = new BroadcastChannel("refs")
+console.log(broadcast.unref() === broadcast, broadcast.ref() === broadcast)
+broadcast.unref()
+
+// Once closed, a port never keeps it running.
+const closed = new MessageChannel()
+closed.port1.onmessage = (event) => console.log("never", event.data)
+closed.port1.addEventListener("close", () => console.log("closed", closed.port1.hasRef()))
+closed.port1.close()
+console.log("end")

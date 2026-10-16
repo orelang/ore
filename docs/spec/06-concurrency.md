@@ -124,15 +124,19 @@ console.log(counts) // [ 1, 3 ]
   are due, by deadline and then creation, with the microtasks after each
   callback.
 - The program ends when its top-level code has ended and the event loop has
-  nothing left that can run: timers keep it running (unless unref'd), a
-  promise that nobody settles does not, and tasks still running are
-  stopped then.
+  nothing left that can run: timers keep it running (unless unref'd), and
+  so do a message port with a `message` listener and an open
+  `BroadcastChannel` (unless unref'd, see [Messages](02-types.md#messages)),
+  whose messages it waits for; a promise that nobody settles does not, and
+  tasks still running are stopped then.
 - Async code is single-threaded: only the top-level code and async functions
   hold the event loop, one at a time, so between two `await`s nothing else
   of them runs, however many threads there are. Tasks still run in
   parallel. A task can settle a promise, call an async function or queue a
   microtask or a timer: that is handed to the event loop, which wakes up for
-  it. Blocking calls in async code (a channel receive, `time.sleep`, file
+  it. So is what a task does with a `MessagePort` or a `BroadcastChannel`:
+  the messages it posts are dispatched on the event loop, in the order it
+  posted them, to listeners that run there. Blocking calls in async code (a channel receive, `time.sleep`, file
   I/O) block the event loop, as synchronous I/O does in Node; timers due
   meanwhile run after it. When the top-level code awaits a promise that only
   a task could settle and every task waits forever, the program panics with

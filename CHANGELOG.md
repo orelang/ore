@@ -281,6 +281,20 @@ before 1.0, a minor version may change the language.
   before the top-level code and could not find them. A field without an
   annotation has its type once the variables its initializer uses are
   declared; top-level code using it before is an error (ORE5069).
+- `MessageChannel`, `MessagePort`, `MessageEvent` and `BroadcastChannel`,
+  the global classes of the HTML Standard: `new MessageChannel<T>()` makes
+  two entangled ports; `postMessage(message)` sends a structured clone,
+  made then, dispatched to the other port as a `MessageEvent<T>` on the
+  event loop, a task per message, in order, once the port started
+  (`start()`, `onmessage`, or a `message` listener, as in Node); `close()`
+  closes both, each getting a `close` event. `new BroadcastChannel<T>(name)`
+  reaches the other open channels of the name. `T` is `unknown` by default,
+  as JavaScript's messages are `any`. As in Node, a listening port and an
+  open broadcast channel keep the program running, with `ref()`,
+  `unref()` and a port's `hasRef()`. Ports and channels work from any task:
+  what a task does is posted to the loop.
+- `structuredClone` copies an `unknown` as the value it holds, by its type
+  at run time; one that cannot be cloned panics with `DataCloneError`.
 
 ## 0.5.0
 

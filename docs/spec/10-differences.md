@@ -83,6 +83,12 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | the reason of `abort()`, `AbortSignal.timeout(ms)` | a `DOMException` named `AbortError`, `TimeoutError` | an `Error` with that name |
 | `new CustomEvent(type)` without `detail` | `detail` is `null` | compile error: `detail` is required (or use `new Event(type)`) |
 | `addEventListener(type, { handleEvent })` | an object listener | compile error: a listener is a function |
+| `port.addEventListener("message", (e) => e.data)` | `e` is a `MessageEvent` (overloads of the DOM's types) | `e` is an `Event`: `if (e instanceof MessageEvent<T>) e.data`; `onmessage` gets a `MessageEvent<T>` |
+| `postMessage(value)` of a port or `BroadcastChannel` | `value` is `any` | of the type `T` of `MessageChannel<T>`, `BroadcastChannel<T>`: `unknown` by default, narrowed by the receiver |
+| `postMessage(fn)` | throws a `DataCloneError` | compile error for a type that cannot be cloned; panics for an `unknown` holding one |
+| `postMessage(value, transfer)`, posting ports | transfers buffers and ports | no transfer list: messages are clones, `ports` is empty |
+| `new BroadcastChannel<A>(name)`, `new BroadcastChannel<B>(name)` | (no types) one channel | channels of other message types do not receive each other's messages |
+| `structuredClone(x)` of an `unknown` (TS: of `any`) holding a function | throws a `DataCloneError` | panics with it |
 | generic bodies | checked once | checked per instance |
 | `setTimeout(f, ms)`, `setInterval`, `setImmediate` | a `Timeout` object (Node) or a number (browsers) | Node's `Timeout`, the class `time.Timer` of `time.timeout`: `ref`, `unref`, `hasRef`, `refresh`, but no `Symbol.toPrimitive` (not a number) |
 | `clearTimeout(id)` | takes a timer, its number, `undefined` or `null` | takes a timer, `null` or nothing |

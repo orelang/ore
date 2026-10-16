@@ -1,0 +1,40 @@
+// MessageChannel: what one port posts, the other receives as `message`
+// events on the event loop, each a task of its own, in order; the data is a
+// clone made when it is posted.
+
+const channel = new MessageChannel<number[]>()
+const port1 = channel.port1
+const port2 = channel.port2
+const sent: number[] = [1, 2]
+port1.onmessage = (event) => {
+    const data = event.data
+    console.log("port1 got", data, data === sent, event.ports.length, event.origin === "", event.lastEventId === "")
+    queueMicrotask(() => console.log("microtask after", data[0]))
+    if (data[0] === 3) {
+        port1.postMessage([4])
+        port1.close()
+    }
+}
+port2.onmessage = (event) => console.log("port2 got", event.data)
+port2.addEventListener("close", () => {
+    console.log("port2 closed")
+    waiting()
+})
+port2.postMessage(sent)
+sent[0] = 2
+port2.postMessage(sent)
+port2.postMessage([3])
+console.log("posted", sent, port1.hasRef(), port2.hasRef())
+
+// Messages wait for a port to start: by start(), onmessage or, as in Node, a listener.
+function waiting() {
+    const second = new MessageChannel<string>()
+    second.port1.postMessage("kept")
+    second.port1.postMessage("until started")
+    console.log("second posted")
+    second.port2.addEventListener("message", (event) => {
+        if (!(event instanceof MessageEvent<string>)) return
+        console.log("second got", event.data)
+        if (event.data === "until started") second.port2.close()
+    })
+}

@@ -1,0 +1,50 @@
+// BroadcastChannel: what one channel posts, the other open channels of the
+// same name receive, each its own clone, in order; not the one that posts.
+
+type Note = { text: string; tags: string[] }
+
+const a = new BroadcastChannel<Note>("news")
+const b = new BroadcastChannel<Note>("news")
+const c = new BroadcastChannel<Note>("news")
+const other = new BroadcastChannel<Note>("sports")
+console.log(a.name, other.name)
+
+const byB: Note[] = []
+const byC: Note[] = []
+
+function both() {
+    if (byB.length + byC.length < 4) return
+    console.log("b got", byB)
+    const texts = byC.map((n) => n.text)
+    console.log("c got", texts)
+    console.log("copies are their own", byB[0] === byC[0], byB[0].tags === byC[0].tags, byB[0].tags === byB[1].tags)
+    c.close()
+    b.postMessage({ text: "to a alone", tags: [] })
+}
+
+a.onmessage = (event) => {
+    console.log("a got", event.data.text)
+    a.postMessage({ text: "last", tags: ["end"] })
+}
+b.onmessage = (event) => {
+    if (event.data.text === "last") {
+        console.log("b got last", event.data.tags)
+        a.close()
+        b.close()
+        other.close()
+        return
+    }
+    byB.push(event.data)
+    both()
+}
+c.addEventListener("message", (event) => {
+    if (!(event instanceof MessageEvent<Note>)) return
+    byC.push(event.data)
+    both()
+})
+other.onmessage = (event) => console.log("other got", event.data.text)
+
+const note: Note = { text: "first", tags: ["x"] }
+a.postMessage(note)
+note.text = "second"
+a.postMessage(note)

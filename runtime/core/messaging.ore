@@ -1,0 +1,417 @@
+// Messaging, as the globals of JavaScript's hosts after the HTML Standard:
+// the classes `MessageEvent`, `MessageChannel`, `MessagePort` and
+// `BroadcastChannel`. A message is a structured clone of the value posted,
+// made when it is posted, and is dispatched to the receiving side on the
+// event loop as a task of its own (an immediate), in the order posted. A
+// task other than the one holding the loop posts what it does to the loop's
+// inbox (loop.ore), so ports and channels are used from any task, and their
+// listeners run on the loop.
+//
+// As in Node, a port keeps the program running while it has a `message`
+// listener or was `ref`'d, and a broadcast channel from its creation, until
+// they close or are `unref`'d.
+
+import {
+    type AddEventListenerOptions,
+    Event,
+    type EventListenerOptions,
+    EventTarget,
+    listenerCount,
+} from "ore:runtime/events"
+import { holdLoop, immediate, post, releaseLoop } from "ore:runtime/loop"
+import { onLoop } from "ore:runtime/task"
+
+/** The options of `new MessageEvent(type, options)`: those of an event, its `data`, and where it comes from. */
+export type MessageEventInit<T> = {
+    bubbles?: bool
+    cancelable?: bool
+    composed?: bool
+    data: T
+    origin?: string
+    lastEventId?: string
+    source?: MessagePort | null
+    ports?: MessagePort[]
+}
+
+/**
+ * The event of a message, as JavaScript's `MessageEvent`: its `data`, a
+ * copy of the value posted. A port's `origin` and `lastEventId` are empty,
+ * its `source` null and its `ports` none, as in Node.
+ */
+export class MessageEvent<T = unknown> extends Event {
+    readonly data: T
+    readonly origin: string
+    readonly lastEventId: string
+    readonly source: MessagePort | null
+    readonly ports: MessagePort[]
+
+    constructor(type: string, options: MessageEventInit<T>) {
+        super(type, { bubbles: options.bubbles, cancelable: options.cancelable, composed: options.composed })
+        this.data = options.data
+        this.origin = options.origin ?? ""
+        this.lastEventId = options.lastEventId ?? ""
+        this.source = options.source ?? null
+        this.ports = options.ports ?? []
+    }
+}
+
+/** A handler of `onmessage` or `onmessageerror`, and the listener that calls it while there is one. */
+class Handler<T> {
+    callback: ((event: MessageEvent<T>) => void) | null = null
+    listener: ((event: Event) => void) | null = null
+}
+
+/** What a port or a broadcast channel receives with, changed on the loop. */
+class Receiver<T> {
+    /** Whether messages are dispatched, rather than kept in `pending`. */
+    started = false
+    closed = false
+    /** Whether it keeps the program running while open: `ref`, `unref`, and a port's listeners. */
+    refed = false
+    /** Whether a port has `message` listeners, as last counted. */
+    listening = false
+    /** Whether the loop counts it among the handles that keep the program running. */
+    held = false
+    /** The messages received before it started. */
+    pending: T[] = []
+    readonly message = new Handler<T>()
+    readonly messageError = new Handler<T>()
+
+    constructor(
+        readonly target: EventTarget,
+        /** Whether its `message` listeners ref it, as a port's: counted again after each message. */
+        readonly countsListeners: bool,
+    ) {}
+}
+
+/** Runs `job` on the loop: now on it, or posted to its inbox from another task. */
+function onTheLoop(job: () => void): void {
+    if (onLoop()) job()
+    else post(job)
+}
+
+/** Has the loop count `r` among what keeps the program running while it is open and ref'd, or no more. */
+function hold<T>(r: Receiver<T>): void {
+    const keeps = r.refed && !r.closed
+    if (keeps === r.held) return
+    r.held = keeps
+    if (keeps) holdLoop()
+    else releaseLoop()
+}
+
+/** Counts a port's `message` listeners again: having one refs it, having none unrefs it, as in Node. */
+function listened<T>(r: Receiver<T>): void {
+    const listening = listenerCount(r.target, "message") > 0
+    if (listening === r.listening) return
+    r.listening = listening
+    r.refed = listening
+    hold(r)
+}
+
+/** Takes a message for `r`: dispatched as a task of its own once started, kept until then, dropped once closed. */
+function receive<T>(r: Receiver<T>, data: T): void {
+    if (r.closed) return
+    if (r.started) immediate(() => dispatchMessage(r, data))
+    else r.pending.push(data)
+}
+
+/** Dispatches the `message` event of `data` to the target of `r`, unless it closed meanwhile. */
+function dispatchMessage<T>(r: Receiver<T>, data: T): void {
+    if (r.closed) return
+    r.target.dispatchEvent(new MessageEvent<T>("message", { data: data }))
+    // A listener added with `once` is gone.
+    if (r.countsListeners) listened(r)
+}
+
+/** Starts dispatching the messages of `r`, those kept first. */
+function start<T>(r: Receiver<T>): void {
+    if (r.closed || r.started) return
+    r.started = true
+    const pending = r.pending
+    r.pending = []
+    for (const data of pending) receive(r, data)
+}
+
+/** Closes `r`: it receives nothing more, lets the program end, and gets a `close` event, as in Node. */
+function shut<T>(r: Receiver<T>): void {
+    if (r.closed) return
+    r.closed = true
+    r.pending = []
+    hold(r)
+    immediate(() => {
+        r.target.dispatchEvent(new Event("close"))
+    })
+}
+
+/** Sets the handler of `onmessage` or `onmessageerror`: a listener of `type` added when it is first set, removed with it. */
+function setHandler<T>(
+    target: EventTarget,
+    type: string,
+    slot: Handler<T>,
+    callback: ((event: MessageEvent<T>) => void) | null,
+): void {
+    slot.callback = callback
+    const listener = slot.listener
+    if (callback === null && listener !== null) {
+        slot.listener = null
+        target.removeEventListener(type, listener)
+    } else if (callback !== null && listener === null) {
+        // Events of the type that are not messages of `T`, dispatched by the program, do not call it.
+        const call = (event: Event): void => {
+            const handler = slot.callback
+            if (handler !== null && event instanceof MessageEvent<T>) handler(event)
+        }
+        slot.listener = call
+        target.addEventListener(type, call)
+    }
+}
+
+/** What makes the two ports of a channel: no value a program has. */
+class Pair<T> {
+    first: MessagePort<T> | null = null
+}
+
+/**
+ * One end of a `MessageChannel`, as JavaScript's `MessagePort`: what one
+ * port posts, the other receives as `message` events, once started by
+ * `start()`, by setting `onmessage` or, as in Node, by adding a `message`
+ * listener. Closing either port closes both; the other receives the
+ * messages on their way to it first.
+ */
+export class MessagePort<T = unknown> extends EventTarget {
+    private readonly receiver: Receiver<T>
+    /** The port it is entangled with, until either closes. */
+    private other: MessagePort<T> | null = null
+
+    /** Ports are made in pairs by `new MessageChannel()`. */
+    constructor(pair: Pair<T>) {
+        super()
+        this.receiver = new Receiver<T>(this, true)
+        const first = pair.first
+        if (first === null) {
+            pair.first = this
+        } else {
+            this.other = first
+            first.other = this
+        }
+    }
+
+    /**
+     * Posts a structured clone of `message` to the other port, made now;
+     * nothing once either port closed. A type that cannot be cloned is an
+     * error, as for `structuredClone`; of an `unknown`, a panic.
+     */
+    postMessage(message: T): void {
+        const copy = structuredClone(message)
+        onTheLoop(() => {
+            const other = this.other
+            if (other !== null) receive(other.receiver, copy)
+        })
+    }
+
+    /** Starts dispatching the messages received, those kept until now first. */
+    start(): void {
+        onTheLoop(() => start(this.receiver))
+    }
+
+    /** Closes both ports: neither posts nor receives more, and each gets a `close` event. Again does nothing. */
+    close(): void {
+        onTheLoop(() => {
+            const other = this.other
+            this.other = null
+            shut(this.receiver)
+            if (other === null) return
+            other.other = null
+            // After the messages on their way to it.
+            immediate(() => shut(other.receiver))
+        })
+    }
+
+    /** Has the port keep the program running while it is open, as adding a `message` listener does. */
+    ref(): void {
+        onTheLoop(() => {
+            this.receiver.refed = true
+            hold(this.receiver)
+        })
+    }
+
+    /** Lets the program end while the port is open: it still receives while something else keeps the program running. */
+    unref(): void {
+        onTheLoop(() => {
+            this.receiver.refed = false
+            hold(this.receiver)
+        })
+    }
+
+    /** Whether the port keeps the program running. */
+    hasRef(): bool {
+        return this.receiver.refed && !this.receiver.closed
+    }
+
+    /** Called with each `message` event, as a listener added when it was first set; setting it starts the port. */
+    get onmessage(): ((event: MessageEvent<T>) => void) | null {
+        return this.receiver.message.callback
+    }
+
+    set onmessage(handler: ((event: MessageEvent<T>) => void) | null) {
+        onTheLoop(() => setHandler(this, "message", this.receiver.message, handler))
+    }
+
+    /** Called with each `messageerror` event: a message that could not be read, which a typed message never is. */
+    get onmessageerror(): ((event: MessageEvent<T>) => void) | null {
+        return this.receiver.messageError.callback
+    }
+
+    set onmessageerror(handler: ((event: MessageEvent<T>) => void) | null) {
+        onTheLoop(() => setHandler(this, "messageerror", this.receiver.messageError, handler))
+    }
+
+    /** As `EventTarget`'s, on the loop; a `message` listener starts the port and refs it, as in Node. */
+    override addEventListener(
+        type: string,
+        callback: ((event: Event) => void) | null,
+        options: AddEventListenerOptions | bool = false,
+    ): void {
+        if (!onLoop()) {
+            post(() => this.addEventListener(type, callback, options))
+            return
+        }
+        super.addEventListener(type, callback, options)
+        if (type !== "message") return
+        listened(this.receiver)
+        if (this.receiver.listening) start(this.receiver)
+    }
+
+    /** As `EventTarget`'s, on the loop; removing the last `message` listener unrefs the port, as in Node. */
+    override removeEventListener(
+        type: string,
+        callback: ((event: Event) => void) | null,
+        options: EventListenerOptions | bool = false,
+    ): void {
+        if (!onLoop()) {
+            post(() => this.removeEventListener(type, callback, options))
+            return
+        }
+        super.removeEventListener(type, callback, options)
+        if (type === "message") listened(this.receiver)
+    }
+}
+
+/**
+ * Two entangled ports, as JavaScript's `MessageChannel`: what `port1`
+ * posts, `port2` receives, and the other way. Messages are of type `T`,
+ * `unknown` by default.
+ */
+export class MessageChannel<T = unknown> {
+    readonly port1: MessagePort<T>
+    readonly port2: MessagePort<T>
+
+    constructor() {
+        const pair = new Pair<T>()
+        this.port1 = new MessagePort<T>(pair)
+        this.port2 = new MessagePort<T>(pair)
+    }
+}
+
+/** The open broadcast channels by name, changed on the loop. */
+const channels = new Map<string, EventTarget[]>()
+
+/**
+ * A channel to the other `BroadcastChannel`s of the same name in the
+ * program, as JavaScript's: each receives a clone of what one posts, as a
+ * `message` event, but the one that posts. Messages are of type `T`,
+ * `unknown` by default; channels of other types of messages, with the same
+ * name, do not receive them.
+ */
+export class BroadcastChannel<T = unknown> extends EventTarget {
+    readonly name: string
+    private readonly receiver: Receiver<T>
+    /** Whether `close` was called, where it was. */
+    private closing = false
+
+    constructor(name: string) {
+        super()
+        this.name = name
+        const r = new Receiver<T>(this, false)
+        r.started = true
+        r.refed = true
+        this.receiver = r
+        onTheLoop(() => {
+            if (r.closed) return
+            hold(r)
+            const open = channels.get(name)
+            if (open !== null) open.push(this)
+            else channels.set(name, [this])
+        })
+    }
+
+    /**
+     * Posts a structured clone of `message`, made now, to the other open
+     * channels of the name; a closed channel panics with `InvalidStateError`,
+     * as JavaScript throws.
+     */
+    postMessage(message: T): void {
+        if (this.closing) process.panic("InvalidStateError: BroadcastChannel is closed.")
+        const copy = structuredClone(message)
+        onTheLoop(() => {
+            const open = channels.get(this.name)
+            if (open === null) return
+            for (const target of open)
+                if (target !== this && target instanceof BroadcastChannel<T>)
+                    receive(target.receiver, structuredClone(copy))
+        })
+    }
+
+    /** Closes the channel: it posts and receives nothing more, and lets the program end. Again does nothing. */
+    close(): void {
+        if (this.closing) return
+        this.closing = true
+        onTheLoop(() => {
+            const r = this.receiver
+            r.closed = true
+            r.pending = []
+            hold(r)
+            const open = channels.get(this.name)
+            if (open === null) return
+            const at = open.indexOf(this)
+            if (at >= 0) open.splice(at, 1)
+            if (open.length === 0) channels.delete(this.name)
+        })
+    }
+
+    /** Has the channel keep the program running while it is open, as it does when made; returns it. */
+    ref(): BroadcastChannel<T> {
+        onTheLoop(() => {
+            this.receiver.refed = true
+            hold(this.receiver)
+        })
+        return this
+    }
+
+    /** Lets the program end while the channel is open; returns it. */
+    unref(): BroadcastChannel<T> {
+        onTheLoop(() => {
+            this.receiver.refed = false
+            hold(this.receiver)
+        })
+        return this
+    }
+
+    /** Called with each `message` event, as a listener added when it was first set. */
+    get onmessage(): ((event: MessageEvent<T>) => void) | null {
+        return this.receiver.message.callback
+    }
+
+    set onmessage(handler: ((event: MessageEvent<T>) => void) | null) {
+        onTheLoop(() => setHandler(this, "message", this.receiver.message, handler))
+    }
+
+    /** Called with each `messageerror` event: a message that could not be read, which a typed message never is. */
+    get onmessageerror(): ((event: MessageEvent<T>) => void) | null {
+        return this.receiver.messageError.callback
+    }
+
+    set onmessageerror(handler: ((event: MessageEvent<T>) => void) | null) {
+        onTheLoop(() => setHandler(this, "messageerror", this.receiver.messageError, handler))
+    }
+}

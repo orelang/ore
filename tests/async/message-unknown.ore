@@ -1,0 +1,22 @@
+// Messages of a MessageChannel without a type are `unknown`, as JavaScript's
+// `any`: a clone of the value posted, of the type it has, narrowed to be used.
+
+const channel = new MessageChannel()
+const values: unknown[] = ["text", 42, null, ["one", "two"], new Map<string, number>([["k", 1]]), new Date(0)]
+let received = 0
+channel.port1.onmessage = (event) => {
+    const data = event.data
+    if (typeof data === "string") console.log("a string", data.toUpperCase())
+    else if (typeof data === "number") console.log("a number", data + 1)
+    else if (data instanceof Date) console.log("a date", data.getTime(), data === values[5])
+    else console.log("something else", data)
+    received++
+    if (received === values.length) channel.port1.close()
+}
+for (const v of values) channel.port2.postMessage(v)
+
+// An event dispatched by the program reaches the handler if it is a message.
+const local = new MessageChannel<number>()
+local.port1.onmessage = (event) => console.log("dispatched", event.data, event.isTrusted)
+local.port1.dispatchEvent(new MessageEvent<number>("message", { data: 7 }))
+local.port1.close()

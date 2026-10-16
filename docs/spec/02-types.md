@@ -615,7 +615,10 @@ the copied keys in order. A type holding a function is an error (ORE4090),
 where JavaScript throws a `DataCloneError` at run time. A class with
 methods is an error too (ORE4091): JavaScript would copy an instance into a
 plain object without them, which the class type cannot describe; so are
-`RegExp`, `Promise`, interfaces, `unknown`, channels and `ptr` (ORE4092).
+`RegExp`, `Promise`, interfaces, channels and `ptr` (ORE4092). An
+`unknown` is copied as the value it holds, by its type at run time: a type
+that cannot be cloned panics then, with `DataCloneError: <type> could not
+be cloned.`, as JavaScript throws.
 A class with only fields is copied as an instance of the same class (an
 instance of a subclass as one of the subclass), where JavaScript makes a
 plain object.
@@ -1245,6 +1248,84 @@ event is only ever at its target:
   signal as an instance of its class. The classes are of the runtime
   written in Ore (`runtime/core/events.ore`), global names as in
   JavaScript.
+
+## Messages
+
+```ts
+const channel = new MessageChannel<string[]>()
+channel.port1.onmessage = (event) => {
+  console.log(event.data)                           // [ 'hello' ]
+  channel.port1.close()
+}
+channel.port2.postMessage(["hello"])
+
+const a = new BroadcastChannel("jobs")              // BroadcastChannel<unknown>
+const b = new BroadcastChannel("jobs")
+b.onmessage = (event) => {
+  if (typeof event.data === "number") console.log(event.data + 1)  // 42
+  a.close()
+  b.close()
+}
+a.postMessage(41)
+```
+
+`MessageChannel`, `MessagePort`, `MessageEvent` and `BroadcastChannel` are
+JavaScript's, after the HTML Standard, with Node's `ref` and `unref`:
+
+- `new MessageChannel<T>()` makes two entangled ports, `port1` and `port2`,
+  `MessagePort<T>`s: what one posts with `postMessage(message)`, the other
+  receives. A message is a structured clone of the value
+  ([`structuredClone`](#running-programs)), made when it is posted, so changing the
+  value after changes nothing received; it is dispatched as a `message`
+  event, a `MessageEvent<T>` whose `data` is the clone, on the event loop,
+  a task of its own (an immediate, with the microtasks after it), in the
+  order posted. A port keeps the messages it receives until it starts: by
+  `start()`, by setting `onmessage` or, as in Node, by adding a `message`
+  listener. `close()` closes both ports, the other after the messages on
+  their way to it: neither posts nor receives more, and each gets a `close`
+  event. `onmessage` and `onmessageerror` receive the `MessageEvent<T>`s of
+  their type, as listeners added where they were first set (null removes
+  them); `messageerror`, a message that could not be read, never happens,
+  as a message has the type of the port.
+- `T` is `unknown` by default, as JavaScript's messages are `any`: such a
+  port posts any value, cloned by the type it has at run time, and the
+  receiver narrows `data` (`typeof`, `instanceof`). A type that cannot be
+  cloned (a function, a class with methods) is an error where the port's
+  type is instantiated, `MessageChannel<() => void>`; held by an `unknown`,
+  the clone panics with `DataCloneError: <type> could not be cloned.`, as
+  JavaScript throws.
+- `new BroadcastChannel<T>(name)` reaches the other open
+  `BroadcastChannel<T>`s of the same `name` in the program: each receives
+  its own clone of what one posts, as a `message` event, but the one that
+  posts. `name` is the name, `close()` closes it (again does nothing), and
+  `postMessage` on a closed channel panics with `InvalidStateError:
+  BroadcastChannel is closed.`, as JavaScript throws. Channels with the
+  same name and other types of messages do not receive each other's.
+- `new MessageEvent<T>(type, { data, origin, lastEventId, source, ports,
+  ...options })` is an `Event` with those fields; `data` is required, the
+  others default to `""`, `null` and `[]`, which a port's events have, as
+  in Node. A listener added with `addEventListener` gets an `Event`, as
+  every listener: it reads `data` after `event instanceof MessageEvent<T>`.
+- A port keeps the program running while it has a `message` listener
+  (`onmessage` too), and a broadcast channel from its creation, until
+  closed, as in Node: the loop waits for their messages after its timers.
+  `unref()` lets the program end while it is open, `ref()` has it keep the
+  program running again (a port with no listener too), and a port's
+  `hasRef()` tells which; adding a port's first `message` listener refs it,
+  removing its last unrefs it. A broadcast channel's `ref` and `unref`
+  return it.
+- Ports and channels are used from any task: what a task does with them
+  (posting, starting, closing, adding listeners) is posted to the event
+  loop's inbox, where the messages a task posts arrive in the order it
+  posted them, and listeners and handlers run on the loop. The program's
+  one event loop receives all messages; a task has no loop of its own.
+- Differences from JavaScript: messages have a type; `postMessage` takes
+  no transfer list and ports cannot be posted (`ports` is always empty);
+  a clone of an instance of a class with only fields is an instance of the
+  class ([`structuredClone`](#running-programs)); `new MessagePort()` is an error
+  (its constructor takes what only `MessageChannel` has).
+  The classes are of the runtime written in Ore
+  (`runtime/core/messaging.ore`), global names as in JavaScript.
 
 ## Arrays
 

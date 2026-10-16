@@ -12,7 +12,9 @@
 // The loop runs when the top-level code awaits, until what it awaits is
 // settled, and when the top-level code ends, until nothing is left that can
 // run: no microtask, immediate or timer, other than those unref'd, which
-// run only while something else keeps the loop running, as in Node. A
+// run only while something else keeps the loop running, as in Node, and no
+// handle held (`holdLoop`): a message port that listens, until it closes or
+// is unref'd, waits for messages from other tasks. A
 // promise that nobody settles does not keep the program running, and tasks
 // still running are stopped then, as when main returns in Go.
 
@@ -127,6 +129,8 @@ class Loop {
     seq = 0
     /** Whether a timer was ever unref'd: until then, every timer keeps the program running. */
     unrefs = false
+    /** The handles that keep the program running, as ports that listen (messaging.ore). */
+    handles = 0
     /** What other tasks posted, under `inboxLock`. */
     inbox: (() => void)[] = []
     inboxLock = permanentMutex()
@@ -294,9 +298,24 @@ function firstTimer(): Timer | null {
     return heap.length > 0 ? heap[0] : null
 }
 
-/** Whether an immediate or a timer is left that keeps the program running: one not unref'd. */
+/**
+ * Counts a handle that keeps the program running until `releaseLoop`, as
+ * a port that listens for messages; on the loop. While one is held, the
+ * loop waits for posts from other tasks after its timers, as Node waits.
+ */
+export function holdLoop(): void {
+    loop().handles++
+}
+
+/** No longer counts a handle of `holdLoop`; on the loop. */
+export function releaseLoop(): void {
+    loop().handles--
+}
+
+/** Whether an immediate, a timer or a handle is left that keeps the program running: one not unref'd. */
 function kept(): bool {
     const l = loop()
+    if (l.handles > 0) return true
     if (!l.unrefs) return l.immediates.length > 0 || firstTimer() !== null
     for (const t of l.immediates) if (!t.cancelled && t.refed) return true
     for (const t of l.timers) if (!t.cancelled && t.refed) return true
@@ -480,9 +499,9 @@ export function drive(done: (() => bool) | null): void {
         }
         if (ran) continue
         const next = firstTimer()
-        // Without timers, only a task could still post to the loop.
-        if (next === null && done === null) return
-        if (!sleep(next !== null ? next.deadline : -1, next === null)) unsettled()
+        // Without timers and handles, only a task could still post to the loop.
+        if (next === null && done === null && l.handles === 0) return
+        if (!sleep(next !== null ? next.deadline : -1, next === null && l.handles === 0)) unsettled()
     }
 }
 

@@ -1,0 +1,46 @@
+// reference: none, tasks are Ore's
+// threads: 4
+
+// Ports and broadcast channels used from other tasks: what a task does is
+// posted to the event loop, where the messages are dispatched in the order
+// each task posted them. A listening port keeps the program running after
+// its top-level code ends, until a task's message closes it.
+
+const channel = new MessageChannel<int[]>()
+const done = new BroadcastChannel<string>("done")
+const ready = new Chan<bool>(1)
+let sum = 0
+let next = 1
+channel.port1.onmessage = (event) => {
+    const data = event.data
+    if (data[0] !== next) console.log("out of order", data[0], next)
+    next++
+    sum += data[0]
+    if (data[0] === 100) {
+        console.log("in order up to", data[0], "sum", sum)
+        channel.port1.close()
+        done.postMessage("ports closed")
+    }
+}
+task.spawn(() => {
+    // The listener below is registered before these messages: posted earlier.
+    ready.receive()
+    const message = [0]
+    for (let i = 1; i <= 100; i++) {
+        message[0] = i
+        // A clone made now: the task changes the array after.
+        channel.port2.postMessage(message)
+    }
+})
+
+// A channel made and listened to in a task, its handler run on the loop.
+task.spawn(() => {
+    const listener = new BroadcastChannel<string>("done")
+    listener.onmessage = (event) => {
+        console.log("listener got", event.data)
+        listener.close()
+        done.close()
+    }
+    ready.send(true)
+})
+console.log("top-level code ends")
