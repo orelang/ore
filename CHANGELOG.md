@@ -110,7 +110,8 @@ before 1.0, a minor version may change the language.
   any array of `[K, V]` tuples or another map, and `map.entries()`.
 - Spread arguments: arrays among the rest arguments (`f(1, ...xs, 2)`) and
   into `push`, `console.log`, `Math.min` and `Math.max`, which take any number
-  of values; tuples into any parameters, array literals and tuples.
+  of values; tuples into any parameters (of built-in functions, methods and
+  conversions too: `m.set(...entry)`), array literals and tuples.
 - Object spread `{ ...o, x: 1 }`.
 - `**` and `**=`, and `satisfies`.
 - Static members of classes: `C.count`, `C.make()`.

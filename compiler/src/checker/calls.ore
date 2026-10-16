@@ -68,7 +68,7 @@ import {
     types,
     typeToString,
 } from "../ir/types"
-import { type Node } from "../syntax/ast"
+import { Node } from "../syntax/ast"
 import {
     argumentExpression,
     args as argsOf,
@@ -198,10 +198,17 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
         c.info.definitions.set(callee, symbol.decl)
     }
     const found = symbol
-    // Functions, `console`, `Math.min` and `Math.max` check spread arguments themselves.
-    if (found.k !== "func" && !(found.k === "builtin" && spreadable(found.name)))
-        for (const arg of args)
-            if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
+    // Functions, `console`, `Math.min` and `Math.max` check spread arguments
+    // themselves; other built-ins and conversions take spread tuples apart.
+    const spreads = args.filter((arg) => arg.kind === "SpreadElement")
+    if (spreads.length > 0 && found.k !== "func" && !(found.k === "builtin" && spreadable(found.name))) {
+        if (found.k === "builtin" || found.k === "conversion") {
+            const spread = spreadBuiltin(c, node, scope, null, null)
+            if (spread === null) return errorOperand
+            return bindAround(spread.locals, checkCall(c, spread.node, scope, expected))
+        }
+        return c.fail(spreads[0], "Spread arguments are not supported yet.")
+    }
 
     switch (found.k) {
         case "conversion": {
@@ -958,6 +965,89 @@ export function expandArgs(
             out.nodes.push(inner)
             out.operands.push(typed(new FieldGet(f.type, held, f.name)))
         }
+    }
+    return out
+}
+
+/**
+ * A built-in call with spread tuples taken apart: `node` is a copy of the call
+ * whose arguments up to the last spread are `SpreadPart` nodes for operands
+ * already checked, held in `locals` in order after the receiver.
+ */
+class SpreadBuiltin {
+    readonly locals: BindLocal[] = []
+    receiver: Expr | null = null
+
+    constructor(readonly node: Node) {}
+}
+
+/**
+ * Takes apart the spread tuples among the arguments of a built-in call, which
+ * then checks the call in `node` as written with each value. Spread arrays are
+ * kept as spreads into `array` (for `push`, which gives it), and are an error
+ * otherwise.
+ * Constants are not held: the call gives them their type.
+ */
+function spreadBuiltin(
+    c: Checker,
+    node: Node,
+    scope: Scope,
+    receiver: Expr | null,
+    array: Type | null,
+): SpreadBuiltin | null {
+    const source = c.sourceOf(node)
+    const call = new Node(node.kind, node.start, node.end)
+    c.sources.set(call, source)
+    for (let i = 0; i < node.children.length; i++)
+        if (node.roles[i] !== "arguments") call.add(node.children[i], node.roles[i])
+    const out = new SpreadBuiltin(call)
+    const hold = (value: Expr): Expr => {
+        const local = c.newLocal("arg", value.type, false)
+        out.locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    const part = (at: Node, value: Operand): Node => {
+        const made = new Node("SpreadPart", at.start, at.end)
+        c.sources.set(made, source)
+        c.presets.set(made, value)
+        return made
+    }
+    if (receiver !== null) out.receiver = hold(receiver)
+    const args = argsOf(node)
+    let last = -1
+    for (let i = 0; i < args.length; i++) if (args[i].kind === "SpreadElement") last = i
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+        if (i > last) {
+            call.add(arg, "arguments")
+            continue
+        }
+        const inner = arg.kind === "SpreadElement" ? expression(arg) : arg
+        const value = checkExpr(c, inner, scope, arg.kind === "SpreadElement" ? array : null)
+        if (value.k === "error") return null
+        if (arg.kind !== "SpreadElement") {
+            call.add(part(arg, value.k === "typed" ? typed(hold(value.expr)) : value), "arguments")
+            continue
+        }
+        const expr = c.toDefault(value, inner)
+        const type = expr.type
+        if (type.kind === "struct" && type.tuple) {
+            const tuple = hold(expr)
+            for (const f of type.fields) call.add(part(inner, typed(new FieldGet(f.type, tuple, f.name))), "arguments")
+            continue
+        }
+        if (array === null) {
+            c.error(
+                arg,
+                type.kind === "array"
+                    ? "A spread argument must be a tuple, or be passed to a rest parameter."
+                    : "Only an array or a tuple can be spread into arguments.",
+            )
+            return null
+        }
+        const spread = new Node("SpreadElement", arg.start, arg.end)
+        c.sources.set(spread, source)
+        call.add(spread.add(part(inner, typed(hold(expr))), "expression"), "arguments")
     }
     return out
 }
@@ -1843,6 +1933,13 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             if (m.type.kind === "func") return callValue(c, member(c, value, nameId, name), node, scope)
             return c.fail(nameId, `Field '${name}' is not a method.`)
         }
+    }
+    // Built-in methods take spread tuples apart; `push` keeps spread arrays, already checked.
+    if (args.some((arg) => arg.kind === "SpreadElement" && expression(arg).kind !== "SpreadPart")) {
+        const array = type.kind === "array" && name === "push" ? type : null
+        const spread = spreadBuiltin(c, node, scope, value, array)
+        if (spread === null) return errorOperand
+        return bindAround(spread.locals, methodCall(c, spread.receiver!, spread.node, callee, scope))
     }
     if (type.kind === "chan") {
         const count = chanArity(name)

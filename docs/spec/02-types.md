@@ -465,6 +465,9 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   both are clamped to the array, as in JavaScript. Arrays spread in add all
   their elements, as with `push`; every reference to the array sees the
   change.
+- `a.push(...values)` appends and returns the new length; arrays and tuples
+  spread in (`a.push(...b)`) append all their elements. `a.pop()` removes
+  and returns the last element and panics on an empty array.
   `a.slice(start?, end?)` returns a copy with JavaScript offsets.
 - `let a: T[]` without an initializer is a new empty array.
 - `for (const x of a)` iterates elements; the length is re-read on every
@@ -483,6 +486,7 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   the tuple. `t.length` is a constant.
 - Tuples are the entries of maps: `new Map(entries)` takes an array of
   `[K, V]` tuples (or another map), and `map.entries()` returns them.
-- `...t` spreads a tuple's elements into the arguments of any call and into
+- `...t` spreads a tuple's elements into the arguments of any call, built-in
+  functions, methods and conversions too (`m.set(...entry)`), and into
   array literals. JSON encodes a tuple as an array and decodes an array of
   exactly its length.

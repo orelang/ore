@@ -30,6 +30,8 @@
   receives the extra arguments as an array, where `...array` spreads in an
   array's elements (`f(1, ...xs, 2)`; `f(...xs)` alone passes `xs` itself).
   A [tuple](02-types.md#tuples) spreads into any parameters: `f(...t)`.
+  An array spreads only into a rest parameter, `push`, `console` and
+  `Math.min`/`Math.max`: its length is not known.
 - A top-level function may have overload signatures, declarations without a
   body before its implementation: `function parse(s: string): int`,
   `function parse(s: string[]): int[]`, then

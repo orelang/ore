@@ -92,3 +92,42 @@ console.log(...xy, ...[2.5])
 console.log(Math.max(...xy), Math.min(4, ...a, 9), Math.max(1, 5, 3))
 const floats: f64[] = []
 console.log(Math.max(...floats), Math.min(...floats), Math.max(...none))
+
+// A tuple spreads into built-in functions and methods, and conversions;
+// `push` takes tuples and arrays.
+const kv: [string, i32] = ["a", 1]
+const m = new Map<string, i32>()
+m.set(...kv)
+const two: [i32] = [2]
+m.set("b", ...two)
+const key: [string] = ["a"]
+console.log(m.get("a"), m.get("b"), m.has(...key))
+const range: [int, int] = [1, 3]
+console.log("hello".slice(...range), [10, 20, 30, 40].slice(...range).join(","))
+const dash: [string, string] = ["-", "+"]
+console.log("a-b-c".replaceAll(...dash))
+const pw: [f64, f64] = [2.0, 10.0]
+const one: [f64] = [2.7]
+console.log(Math.pow(...pw), i32(...one))
+const small: i32[] = [1]
+const t: [i32, i32] = [2, 3]
+const more: i32[] = [4]
+small.push(...t, 9, ...more)
+small.push(...[])
+console.log(small.join(","))
+
+// The receiver and the arguments are evaluated once, in order.
+order = ""
+const pairs = new Map<string, string>()
+function pairOf(): [string, string] {
+    order += "p"
+    return ["k", "v"]
+}
+pairs.set(...pairOf())
+const out: string[] = []
+function target(): string[] {
+    order += "t"
+    return out
+}
+target().push(mark("a"), ...pairOf(), mark("b"))
+console.log(order, out.join(""), pairs.get("k"))
