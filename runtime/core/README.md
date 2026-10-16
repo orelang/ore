@@ -43,7 +43,7 @@ Rules for this code:
 | `fs.ore` | The namespace `fs` in Ore: directories, `stat`, `remove`, `rename`, `realpath`, temporary directories, with the `stat` and `dirent` layouts of each platform |
 | `regexp-syntax.ore` | Regular expressions parsed and compiled into programs for the matcher, with JavaScript's syntax and errors; also imported by the compiler, which checks literals with it, so it uses only what stage 0 of the bootstrap compiles |
 | `regexp.ore` | The global classes `RegExp` and `RegExpMatch`: the backtracking matcher over UTF-8, `exec`, `test`, `lastIndex`, and the string methods that take a regular expression (`s.match(re)` calls `re`'s private `stringMatch`) |
-| `date.ore` | The global class `Date`: the calendar arithmetic of ECMAScript, the local time zone from `TZ` or `/etc/localtime` (TZif files and POSIX rules), `Date.parse`, the string forms, and how `console.log` prints a date |
+| `date.ore` | The global class `Date`: the calendar arithmetic of ECMAScript, the local time zone from `TZ` or `/etc/localtime` (TZif files and POSIX rules), `Date.parse`, the string forms, and how `console.log` and `JSON.stringify` write a date |
 | `spawn.ore` | Starting programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller: for `process` and `process.command` |
 | `process.ore` | The namespace `process` in Ore: `run`, `output` and `spawn` without options, `Child`, `Output`, `CommandOptions`, the environment |
 | `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |
