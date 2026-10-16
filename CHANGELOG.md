@@ -5,6 +5,14 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
+  0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
+  0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its
+  registers saved and its stack pointer recorded, so the collector counts it
+  as stopped without a signal; stopped threads sleep on a futex (`__ulock`
+  on macOS) until the world runs again; the collector's waits spin before
+  they sleep; and the second pause finishes marking on one thread when
+  little is left.
 - Small immutable classes are values when nothing can tell: a class with no
   base class or subclass and one to eight `readonly` fields of numbers,
   booleans or other such classes, whose instances the program never

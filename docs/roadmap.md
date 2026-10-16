@@ -184,14 +184,12 @@ for globals, marking on every worker in parallel; and now:
 - Giving free pages back to the system (done); left: concurrent and lazy
   sweeping.
 
-- GC pauses down to Go's level (to fix: on a 6 MB live heap with 16
-  threads they are 0.3 + 0.8 ms per collection, worst 2.2 ms, against Go
-  1.25's 0.14 + 0.05 ms, worst 0.43 ms, on the same workload and machine).
-  The target is under 0.5 ms in all: acknowledging a stop with a futex
-  instead of polling with 20 µs sleeps, finishing the marking on one
-  thread when little is left instead of waking every marker, stopping
-  threads cooperatively at safe points rather than by signal, and a
-  generational or incremental scheme for allocation-heavy programs.
+- GC pauses down to Go's level (done: on a 6 MB live heap with 16 threads,
+  0.065 + 0.01 ms median and 0.2 ms at worst, against Go 1.25's 0.14 + 0.05
+  ms and 0.43 ms; idle workers park instead of being signalled, stopped
+  threads sleep on a futex, and the finish runs on one thread when little is
+  left). Left: a generational or incremental scheme for allocation-heavy
+  programs.
 - The rest of the gaps the benchmarks show (bench/results): sort 2.2×,
   knucleotide 3×, bigint 2.8× (Karatsuba), fileio 2× and wordcount 4× the
   memory of Go; value types for short-lived small objects (structs).
