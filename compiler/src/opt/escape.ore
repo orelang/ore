@@ -457,17 +457,31 @@ class FuncAnalysis {
                 this.expr(e.callee, safe)
                 for (const a of e.args) this.expr(a, escapes)
                 return
-            case "array-method":
-                // The values that unshift and splice add are stored in the array, and those they take out come back.
-                if (e.method === "shift" || e.method === "unshift" || e.method === "splice") {
+            case "array-method": {
+                const m = e.method
+                // The values that unshift, splice, fill and with add are stored in an array, and those taken out come back.
+                if (
+                    m === "shift" ||
+                    m === "unshift" ||
+                    m === "splice" ||
+                    m === "toSpliced" ||
+                    m === "fill" ||
+                    m === "with"
+                ) {
                     for (const child of children(e)) this.expr(child, escapes)
                     return
                 }
-                // The runtime keeps neither the callbacks nor the values searched for; the initial value of reduce is returned.
-                this.expr(e.array, safe)
-                for (let i = 0; i < e.args.length; i++)
-                    this.expr(e.args[i], e.method === "reduce" && i === 1 ? escapes : safe)
+                // The runtime keeps neither the callbacks nor the values searched for; the initial value of reduce is
+                // returned. A callback that takes the array too can keep it, and the methods that return the array
+                // itself give it the fate of their result.
+                const reduce = m === "reduce" || m === "reduceRight"
+                const arity = e.arity ?? 0
+                const kept = arity >= (reduce ? 4 : 3)
+                const self = m === "reverse" || m === "sort" || m === "copyWithin"
+                this.expr(e.array, kept ? escapes : self ? to : safe)
+                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], reduce && i === 1 ? escapes : safe)
                 return
+            }
             case "object": {
                 // Objects stored in a new object share its fate.
                 const id = this.id(e)

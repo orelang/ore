@@ -1,0 +1,78 @@
+// Elements of other types, and arrays changed by their callbacks.
+type Point = { x: int; y: int }
+
+const points: Point[] = [
+    { x: 1, y: 2 },
+    { x: 3, y: 4 },
+    { x: 5, y: 6 },
+]
+console.log(JSON.stringify(points.at(-1)), JSON.stringify(points.findLast((p) => p.x < 4)))
+console.log(JSON.stringify(points.with(1, { x: 0, y: 0 })), JSON.stringify(points.toReversed()))
+console.log(JSON.stringify(points.toSorted((a, b) => b.y - a.y).map((p) => p.x)))
+console.log(JSON.stringify([...points.entries()].map(([i, p]) => i + p.y)))
+
+const words = ["pear", "fig", "apple"]
+console.log(words.at(-2), words.toSorted().join(), words.join(), words.lastIndexOf("fig"), words.includes("figs"))
+console.log(
+    JSON.stringify(words.flatMap((w) => w.split(""))),
+    words.reduce((a, b) => a + b.length, 0),
+)
+console.log(words.reduceRight((a, b) => `${a}+${b}`))
+console.log(JSON.stringify(words.fill("x", 1)), JSON.stringify(words.copyWithin(0, 2)))
+
+const small: f32[] = [1.5, 2.5, -1]
+console.log(
+    small.at(1),
+    small.indexOf(2.5),
+    small.findLastIndex((f) => f > 0),
+    small.reduce((a, b) => a + b),
+)
+
+const mixed: (int | string | null)[] = [1, "a", null]
+console.log(
+    mixed.at(1),
+    mixed.at(2),
+    mixed.at(-4),
+    mixed.findLast((m) => m !== null),
+)
+
+// Elements removed by a callback are not visited; elements added are not either.
+const shrink = [1, 2, 3, 4, 5]
+const seen: int[] = []
+shrink.findLast((x, i, a) => {
+    seen.push(x)
+    if (i === 4) a.pop()
+    if (i === 3) a.pop()
+    return false
+})
+console.log(JSON.stringify(seen))
+const grow = [1, 2, 3]
+console.log(
+    grow.reduceRight((acc, x, i, a) => {
+        a.push(x)
+        return acc + x
+    }, 0),
+    JSON.stringify(grow),
+)
+const grow2 = [1, 2, 3]
+console.log(
+    grow2.reduce((acc, x, i, a) => {
+        if (i === 0) a.shift()
+        return acc + x
+    }),
+    JSON.stringify(grow2),
+)
+
+function triple(x: int, i: int, a: int[]): int {
+    return x * 3 + a.length
+}
+console.log(JSON.stringify([1, 2].map(triple)), JSON.stringify([1, 2].flatMap(triple)))
+
+const big = Array.from({ length: 100 }, (_, i) => i)
+console.log(
+    big.reduce((a, b) => a + b),
+    big.lastIndexOf(50, -50),
+    big.at(-100),
+    JSON.stringify(big.slice(95).with(-1, 0)),
+)
+console.log(JSON.stringify([[1], [2]].concat([[3]], [[4], [5]])))

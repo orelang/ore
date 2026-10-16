@@ -15,6 +15,7 @@ import {
     Bind,
     BindLocal,
     BoolLit,
+    Conditional,
     FieldGet,
     Block,
     BuiltinCall,
@@ -31,6 +32,7 @@ import {
     IfaceCall,
     Index,
     IntLit,
+    Is,
     LetStmt,
     LocalRef,
     MapOp,
@@ -80,17 +82,19 @@ import {
     members,
     nameNode,
     parameters,
+    properties,
     questionDotToken,
     questionToken,
     typeArguments,
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
-import { bigFromF64, bigText } from "./bigint"
+import { bigFromF64, bigText, bigToI64 } from "./bigint"
 import { type Checker } from "./base"
 import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
 import { closureCallee, genericCall, instantiate, isInternal } from "./declarations"
 import {
+    checkArrayElements,
     checkExpr,
     checkSpreadArray,
     checkIndex,
@@ -105,6 +109,7 @@ import {
 } from "./expressions"
 import {
     arrayMethods,
+    hasZeroValue,
     numericType,
     isSymbolDispose,
     jsonProblem,
@@ -112,6 +117,8 @@ import {
     typed,
     typeOf,
     unknownName,
+    zeroNeedsInit,
+    zeroValue,
 } from "./helpers"
 import { type Operand, errorOperand, UntypedInt } from "./operand"
 import { capture, checkClosure, disposeCall } from "./statements"
@@ -382,49 +389,141 @@ export function arrayMethod(
             `'${name}' expects ${arity.min === arity.max ? `${arity.min}` : `${arity.min} to ${arity.max}`} argument(s), got ${args.length}.`,
         )
     }
+    // The callbacks of the methods that visit the elements take (element, index, array).
+    const each: Type[] = [T, types.i64, type]
     switch (name) {
         case "forEach": {
-            const cb = callback(c, args[0], scope, [T, types.i64], types.void, true)
+            const cb = callback(c, args[0], scope, each, types.void, true)
             return cb !== null ? typed(new ArrayMethod(name, types.void, array, [cb.expr], cb.arity)) : errorOperand
         }
-        case "map": {
-            const cb = callback(c, args[0], scope, [T, types.i64], null)
+        case "map":
+        case "flatMap": {
+            const cb = callback(c, args[0], scope, each, null)
             if (cb === null) return errorOperand
             if (cb.result.kind === "void" || cb.result.kind === "never")
-                return c.fail(args[0], "The callback of 'map' must return a value.")
-            return typed(new ArrayMethod(name, arrayOf(cb.result), array, [cb.expr], cb.arity))
+                return c.fail(args[0], `The callback of '${name}' must return a value.`)
+            // flatMap flattens a callback's array result one level.
+            const r = cb.result
+            const result: Type = name === "flatMap" && r.kind === "array" ? r : arrayOf(r)
+            return typed(new ArrayMethod(name, result, array, [cb.expr], cb.arity))
         }
         case "filter":
         case "find":
         case "findIndex":
+        case "findLast":
+        case "findLastIndex":
         case "some":
         case "every": {
-            const cb = callback(c, args[0], scope, [T, types.i64], types.bool)
+            const cb = callback(c, args[0], scope, each, types.bool)
             if (cb === null) return errorOperand
             const result: Type =
                 name === "filter"
                     ? type
-                    : name === "find"
+                    : name === "find" || name === "findLast"
                       ? c.unionOf([T, types.null])
-                      : name === "findIndex"
+                      : name === "findIndex" || name === "findLastIndex"
                         ? types.i64
                         : types.bool
             return typed(new ArrayMethod(name, result, array, [cb.expr], cb.arity))
         }
-        case "reduce": {
+        case "reduce":
+        case "reduceRight": {
+            // Without an initial value the accumulator starts as the first element (the last for reduceRight).
+            if (args.length === 1) {
+                const cb = callback(c, args[0], scope, [T, T, types.i64, type], T)
+                return cb !== null ? typed(new ArrayMethod(name, T, array, [cb.expr], cb.arity)) : errorOperand
+            }
             // The accumulator has the type of the initial value.
             const initial = checkExpr(c, args[1], scope)
             if (initial.k === "error") return errorOperand
             const init = c.toDefault(initial, args[1])
-            const cb = callback(c, args[0], scope, [init.type, T, types.i64], init.type)
+            const cb = callback(c, args[0], scope, [init.type, T, types.i64, type], init.type)
             return cb !== null
                 ? typed(new ArrayMethod(name, init.type, array, [cb.expr, init], cb.arity))
                 : errorOperand
         }
         case "includes":
-        case "indexOf": {
-            const x = c.coerce(checkExpr(c, args[0], scope, T), T, args[0])
-            return typed(new ArrayMethod(name, name === "includes" ? types.bool : types.i64, array, [x]))
+        case "indexOf":
+        case "lastIndexOf": {
+            const values: Expr[] = [c.coerce(checkExpr(c, args[0], scope, T), T, args[0])]
+            if (args.length > 1) {
+                const from = checkIndex(c, args[1], scope, true)
+                if (from === null) return errorOperand
+                values.push(from)
+            }
+            return typed(new ArrayMethod(name, name === "includes" ? types.bool : types.i64, array, values))
+        }
+        case "at": {
+            const index = checkIndex(c, args[0], scope, true)
+            if (index === null) return errorOperand
+            return typed(new ArrayMethod(name, c.unionOf([T, types.null]), array, [index]))
+        }
+        case "with": {
+            const index = checkIndex(c, args[0], scope, true)
+            const value = c.coerce(checkExpr(c, args[1], scope, T), T, args[1])
+            if (index === null) return errorOperand
+            return typed(new ArrayMethod(name, type, array, [index, value]))
+        }
+        case "fill":
+        case "copyWithin": {
+            // fill(value, start = 0, end = length), copyWithin(target, start = 0, end = length).
+            const values: Expr[] = []
+            if (name === "fill") values.push(c.coerce(checkExpr(c, args[0], scope, T), T, args[0]))
+            for (let i = name === "fill" ? 1 : 0; i < 3; i++) {
+                if (i >= args.length) {
+                    values.push(new IntLit(types.i64, i === 2 ? 9007199254740991 : 0))
+                    continue
+                }
+                const offset = checkIndex(c, args[i], scope, true)
+                if (offset === null) return errorOperand
+                values.push(offset)
+            }
+            return typed(new ArrayMethod(name, type, array, values))
+        }
+        case "concat": {
+            // An array of the same type adds its elements, anything else is one element, as in JavaScript.
+            const values: Expr[] = [array]
+            const spread: bool[] = [true]
+            for (const arg of args) {
+                const value = checkExpr(c, arg, scope, type)
+                if (value.k === "error") return errorOperand
+                if (value.k === "typed" && sameType(value.expr.type, type)) {
+                    values.push(value.expr)
+                    spread.push(true)
+                    continue
+                }
+                values.push(c.coerce(value, T, arg))
+                spread.push(false)
+            }
+            return typed(new ArrayLit(type, values, spread))
+        }
+        case "entries":
+            return typed(new ArrayMethod(name, arrayOf(c.tupleOf([types.i64, T])), array, []))
+        case "keys":
+            return typed(new ArrayMethod(name, arrayOf(types.i64), array, []))
+        case "values":
+            return typed(new Slice(type, array, null, null))
+        case "flat": {
+            // The depth must be known to type the result: a constant, or Infinity for all the levels.
+            let depth = 1
+            if (args.length > 0) {
+                const d = args[0]
+                if (isIdentifier(d) && d.text === "Infinity" && scope.lookupValue("Infinity") === null) depth = 1000000
+                else {
+                    const value = checkExpr(c, d, scope)
+                    if (value.k === "error") return errorOperand
+                    if (value.k !== "untyped-int")
+                        return c.fail(d, "The depth of 'flat' must be an integer constant or 'Infinity'.")
+                    depth = bigToI64(value.value)
+                }
+            }
+            let result: Type = T
+            for (let level = 0; level < depth; level++) {
+                const inner = result
+                if (inner.kind !== "array") break
+                result = inner.elem
+            }
+            return typed(new ArrayMethod(name, arrayOf(result), array, []))
         }
         case "join": {
             const joinable = (m: Type): bool =>
@@ -438,6 +537,7 @@ export function arrayMethod(
             return typed(new ArrayMethod(name, types.string, array, values))
         }
         case "reverse":
+        case "toReversed":
             return typed(new ArrayMethod(name, type, array, []))
         case "shift":
             return typed(new ArrayMethod(name, T, array, []))
@@ -445,17 +545,20 @@ export function arrayMethod(
             const items = arrayItems(c, args, 0, scope, type)
             return items !== null ? typed(new ArrayMethod(name, types.i64, array, [items])) : errorOperand
         }
-        case "splice": {
-            // Without a count, everything from the start is removed.
-            const start = checkIndex(c, args[0], scope, true)
+        case "splice":
+        case "toSpliced": {
+            // Without a count, everything from the start is removed; with no arguments, nothing.
+            const start: Expr | null = args.length > 0 ? checkIndex(c, args[0], scope, true) : new IntLit(types.i64, 0)
             const count: Expr | null =
-                args.length > 1 ? checkIndex(c, args[1], scope, true) : new IntLit(types.i64, 9007199254740991)
+                args.length > 1
+                    ? checkIndex(c, args[1], scope, true)
+                    : new IntLit(types.i64, args.length > 0 ? 9007199254740991 : 0)
             const items = arrayItems(c, args, 2, scope, type)
             if (start === null || count === null || items === null) return errorOperand
             return typed(new ArrayMethod(name, type, array, [start, count, items]))
         }
         default: {
-            // sort: by a comparator returning a number, or in natural order for numbers and strings.
+            // sort and toSorted: by a comparator returning a number, or in natural order for numbers and strings.
             if (args.length === 0) {
                 if (!(isNumeric(T) || T.kind === "bigint" || isStringLike(T)))
                     return c.fail(
@@ -466,7 +569,7 @@ export function arrayMethod(
             }
             const cb = callback(c, args[0], scope, [T, T], null)
             if (cb === null) return errorOperand
-            if (!isNumeric(cb.result)) return c.fail(args[0], "The comparator of 'sort' must return a number.")
+            if (!isNumeric(cb.result)) return c.fail(args[0], `The comparator of '${name}' must return a number.`)
             return typed(new ArrayMethod(name, type, array, [cb.expr], cb.arity))
         }
     }
@@ -508,6 +611,137 @@ function arrayItems(c: Checker, args: Node[], from: int, scope: Scope, type: Arr
         spreads = true
     }
     return new ArrayLit(type, values, spreads ? spread : null)
+}
+
+/**
+ * `new Array<T>(length)`, an array of `length` zero values (see
+ * `zeroValue`), or `new Array<T>(...elements)` of other values, as in
+ * JavaScript; without a type argument the type comes from the context.
+ */
+function newArray(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    let type: ArrayType | null = null
+    if (typeArgs.length > 0) {
+        const resolved = builtinGeneric(c, "Array", typeArgs, node, scope)
+        if (resolved === null || resolved.kind !== "array") return errorOperand
+        type = resolved
+    } else if (expected !== null && expected.kind === "array") {
+        type = expected
+    }
+    if (type === null)
+        return c.fail(
+            node,
+            "Cannot infer the type of the array. Write 'new Array<T>(length)' or annotate the variable.",
+        )
+    const T = type.elem
+    if (args.length !== 1) return checkElements(c, args, scope, type)
+    // One integer argument is the length; a number of another type is one when the elements are not numbers.
+    const length = checkExpr(c, args[0], scope, isNumeric(T) ? null : T)
+    if (length.k === "error") return errorOperand
+    const integer = length.k === "untyped-int" || (length.k === "typed" && length.expr.type.kind === "int")
+    if (!integer) return typed(new ArrayLit(type, [c.coerce(length, T, args[0])]))
+    const n = length.k === "typed" ? length.expr : c.coerce(length, types.i64, args[0])
+    if (!hasZeroValue(T))
+        return c.fail(
+            node,
+            `'new Array(length)' needs elements with a zero value, and '${typeToString(T)}' has none. Use 'Array.from({ length }, (_, i) => ...)'.`,
+        )
+    // Elements whose zero value is not all zero bits are made one by one.
+    const values: Expr[] = [n]
+    if (zeroNeedsInit(T)) values.push(zeroValue(T))
+    return typed(new BuiltinCall(type, "Array.new", values))
+}
+
+/** An array of the values of `args`, checked as the elements of `type`. */
+function checkElements(c: Checker, args: Node[], scope: Scope, type: ArrayType): Operand {
+    const values: Expr[] = []
+    for (const arg of args) {
+        if (arg.kind === "SpreadElement") return c.fail(arg, "Spread arguments are not supported yet.")
+        values.push(c.coerce(checkExpr(c, arg, scope, type.elem), type.elem, arg))
+    }
+    return typed(new ArrayLit(type, values))
+}
+
+/** `Array.from`, `Array.of` and `Array.isArray`. */
+function arrayStatic(c: Checker, name: string, node: Node, scope: Scope, expected: Type | null): Operand {
+    const args = argsOf(node)
+    const typeArgs = typeArguments(node)
+    if (name === "Array.of") {
+        if (typeArgs.length > 0) {
+            const resolved = builtinGeneric(c, "Array", typeArgs, node, scope)
+            if (resolved === null || resolved.kind !== "array") return errorOperand
+            return checkElements(c, args, scope, resolved)
+        }
+        return checkArrayElements(c, node, args, scope, expected)
+    }
+    if (name === "Array.isArray") {
+        if (args.length !== 1) return c.fail(node, `'${name}' expects 1 argument(s), got ${args.length}.`)
+        const value = checkExpr(c, args[0], scope)
+        if (value.k === "error") return errorOperand
+        const v = c.toDefault(value, args[0])
+        const t = v.type
+        if (t.kind === "unknown") return c.fail(args[0], "'Array.isArray' cannot test an 'unknown' yet.")
+        if (t.kind !== "union") return typed(new Seq(types.bool, [v, new BoolLit(types.bool, t.kind === "array")]))
+        // A union holds an array when it holds one of its array members.
+        const local = c.newLocal("value", t, false)
+        const ref = new LocalRef(t, local)
+        let result: Expr = new BoolLit(types.bool, false)
+        for (const m of t.members) {
+            if (m.kind !== "array") continue
+            result = new Conditional(types.bool, new Is(types.bool, ref, m), new BoolLit(types.bool, true), result)
+        }
+        return typed(new Bind(types.bool, [new BindLocal(local, v)], result))
+    }
+    if (args.length < 1 || args.length > 2)
+        return c.fail(node, `'${name}' expects 1 to 2 argument(s), got ${args.length}.`)
+    const source = args[0]
+    if (source.kind === "ObjectLiteralExpression") return arrayFromLength(c, node, source, scope)
+    // Without a function the context gives the element type, as to an array literal.
+    const context = args.length === 1 && expected !== null && expected.kind === "array" ? expected : null
+    const operand = checkExpr(c, source, scope, context)
+    if (operand.k === "error") return errorOperand
+    const value = c.toDefault(operand, source)
+    const t = value.type
+    let items: Expr
+    if (t.kind === "array") items = args.length === 1 ? new Slice(t, value, null, null) : value
+    else if (isStringLike(t)) {
+        // The characters, as for...of gives them in JavaScript.
+        const str: Expr = sameType(t, types.string) ? value : new Recast(types.string, value)
+        items = new StringMethod("split", arrayOf(types.string), str, [new StringLit(types.string, "")])
+    } else if (t.kind === "set") items = new SetOp("values", arrayOf(t.elem), t, value)
+    else if (t.kind === "map") items = new MapOp("entries", arrayOf(c.tupleOf([t.key, t.value])), t, value)
+    else
+        return c.fail(
+            source,
+            `'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '${typeToString(t)}'.`,
+        )
+    if (args.length === 1) return typed(items)
+    const itemsType = items.type
+    if (itemsType.kind !== "array") return errorOperand
+    const cb = callback(c, args[1], scope, [itemsType.elem, types.i64], null)
+    if (cb === null) return errorOperand
+    if (cb.result.kind === "void" || cb.result.kind === "never")
+        return c.fail(args[1], "The callback of 'Array.from' must return a value.")
+    return typed(new ArrayMethod("map", arrayOf(cb.result), items, [cb.expr], cb.arity))
+}
+
+/** `Array.from({ length: n }, (_, i) => ...)`: the function makes each element, given null and the index. */
+function arrayFromLength(c: Checker, node: Node, source: Node, scope: Scope): Operand {
+    const props = properties(source)
+    const prop = props.length === 1 && props[0].kind === "PropertyAssignment" ? props[0] : null
+    if (prop === null || c.text(nameNode(prop)) !== "length")
+        return c.fail(source, "'Array.from' takes an object only as '{ length: n }'.")
+    const args = argsOf(node)
+    if (args.length < 2)
+        return c.fail(node, "'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'.")
+    const n = checkIndex(c, initializer(prop)!, scope, true)
+    if (n === null) return errorOperand
+    const cb = callback(c, args[1], scope, [types.null, types.i64], null)
+    if (cb === null) return errorOperand
+    if (cb.result.kind === "void" || cb.result.kind === "never")
+        return c.fail(args[1], "The callback of 'Array.from' must return a value.")
+    return typed(new BuiltinCall(arrayOf(cb.result), "Array.fromLength", [n, cb.expr]))
 }
 
 /**
@@ -664,6 +898,8 @@ export function builtinCall(
     if (name === "JSON.stringify" || name === "JSON.parse") return jsonCall(c, name, node, scope)
     if (name === "Math.min" || name === "Math.max") return minMax(c, name, node, scope, expected)
     if (name === "internal.inspect") return inspectCall(c, name, node, scope)
+    if (name === "Array.from" || name === "Array.of" || name === "Array.isArray")
+        return arrayStatic(c, name, node, scope, expected)
     const generic = typeParameters(decl).length > 0
     if (name.startsWith("unsafe.") && generic) return unsafeCall(c, name, node, scope)
     const args = argsOf(node)
@@ -1163,6 +1399,14 @@ export function callValue(
 
 /** `Chan<T>` or `Map<K, V>` from the type arguments of `new`, as the type reference would resolve them. */
 function builtinGeneric(c: Checker, name: string, typeArgs: Node[], node: Node, scope: Scope): Type | null {
+    if (name === "Array") {
+        if (typeArgs.length !== 1) {
+            c.error(node, "'Array' expects exactly 1 type argument.")
+            return null
+        }
+        const elem = c.resolveValueType(typeArgs[0], scope)
+        return elem === null ? null : arrayOf(elem)
+    }
     if (name === "Chan") {
         if (typeArgs.length !== 1) {
             c.error(node, "'Chan' expects exactly 1 type argument.")
@@ -1352,6 +1596,7 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
         if (type === null || type.kind !== "chan") return errorOperand
         return typed(new ChanOp("new", type, type, null, capacity))
     }
+    if (name === "Array" && symbol === null) return newArray(c, node, scope, expected)
     if (name === "Map" && symbol === null) return newMap(c, node, scope, expected)
     if (name === "Set" && symbol === null) return newSet(c, node, scope, expected)
     const errorType = c.errorType

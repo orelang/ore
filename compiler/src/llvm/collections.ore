@@ -1,7 +1,15 @@
 // Arrays, maps, channels and interface tables.
 
 import { elementData, entryData } from "./gcdata"
-import { type ArrayMethod, type ChanOp, type Itab, type ItabAccessor, type MapOp, type SetOp } from "../ir/nodes"
+import {
+    type ArrayMethod,
+    type BuiltinCall,
+    type ChanOp,
+    type Itab,
+    type ItabAccessor,
+    type MapOp,
+    type SetOp,
+} from "../ir/nodes"
 import {
     findField,
     findMethod,
@@ -60,12 +68,15 @@ class ArrayLoop {
         public type: Type,
     ) {}
 
-    /** Elements present when the call starts, as in JavaScript, while they still exist. */
-    run(body: (at: V, i: V, exit: string) => void, exitLabel: string | null = null) {
+    /**
+     * Elements present when the call starts, as in JavaScript, while they
+     * still exist, from index `from` (0 when null) up.
+     */
+    run(body: (at: V, i: V, exit: string) => void, exitLabel: string | null = null, from: V | null = null) {
         const g = this.g
         const n = g.b.value("i64", `load i64, ptr ${g.field(this.array.v, ARRAY, 1)}`)
         const i = g.b.alloca("i64")
-        g.b.emit(`store i64 0, ptr ${i}`)
+        g.b.emit(`store i64 ${from !== null ? from.v : "0"}, ptr ${i}`)
         const head = g.b.label("ahead")
         const bodyLabel = g.b.label("abody")
         const end = exitLabel ?? g.b.label("aend")
@@ -76,109 +87,248 @@ class ArrayLoop {
         const inLen = g.b.value("i1", `icmp slt i64 ${at.v}, ${len.v}`)
         g.b.condBr(g.b.value("i1", `and i1 ${inN.v}, ${inLen.v}`), bodyLabel, end)
         g.b.start(bodyLabel)
-        const data = g.b.value("ptr", `load ptr, ptr ${g.field(this.array.v, ARRAY, 0)}`)
-        const value = g.load(g.b.value("ptr", `getelementptr ${this.elem}, ptr ${data.v}, i64 ${at.v}`).v, this.type)
-        body(value, at, end)
+        body(this.element(at), at, end)
         g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${at.v}, 1`).v}, ptr ${i}`)
         g.b.br(head)
         if (exitLabel === null) g.b.start(end)
     }
+
+    /**
+     * The elements from index `from` down to the first, skipping those past
+     * the end of an array that shrinks meanwhile.
+     */
+    back(body: (at: V, i: V, exit: string) => void, exitLabel: string | null, from: V) {
+        const g = this.g
+        const i = g.b.alloca("i64")
+        g.b.emit(`store i64 ${from.v}, ptr ${i}`)
+        const head = g.b.label("bhead")
+        const check = g.b.label("bcheck")
+        const bodyLabel = g.b.label("bbody")
+        const next = g.b.label("bnext")
+        const end = exitLabel ?? g.b.label("bend")
+        g.b.start(head)
+        const at = g.b.value("i64", `load i64, ptr ${i}`)
+        g.b.condBr(g.b.value("i1", `icmp sge i64 ${at.v}, 0`), check, end)
+        g.b.start(check)
+        const len = g.b.value("i64", `load i64, ptr ${g.field(this.array.v, ARRAY, 1)}`)
+        g.b.condBr(g.b.value("i1", `icmp slt i64 ${at.v}, ${len.v}`), bodyLabel, next)
+        g.b.start(bodyLabel)
+        body(this.element(at), at, end)
+        g.b.br(next)
+        g.b.start(next)
+        g.b.emit(`store i64 ${g.b.value("i64", `sub i64 ${at.v}, 1`).v}, ptr ${i}`)
+        g.b.br(head)
+        if (exitLabel === null) g.b.start(end)
+    }
+
+    /** The element at index `at`, which is in range. */
+    element(at: V): V {
+        return this.g.load(elementPtr(this.g, this.array, this.elem, at), this.type)
+    }
 }
+
+/** The address of element `i` of an array of LLVM element type `elem`, unchecked. */
+function elementPtr(g: Emitter, array: V, elem: string, i: V): string {
+    const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
+    return g.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${i.v}`).v
+}
+
+/** The length of an array. */
+function lengthOf(g: Emitter, array: V): V {
+    return g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
+}
+
+/** A new array of `len` zeroed elements of LLVM type `elem`. */
+function newArray(g: Emitter, elem: string, len: V): V {
+    return g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, len, elementData(g, elem)])
+}
+
+/** A copy of an array, for the methods that change a copy. */
+function copyArray(g: Emitter, array: V, size: V): V {
+    return g.rt("ore_rt_array_slice", [array, size, g.i64(0), g.i64(9007199254740991)])
+}
+
+/** How many arrays a type is nested in: 2 for `int[][]`. */
+function nesting(t: Type): int {
+    let n = 0
+    let at = t
+    while (true) {
+        const a = at
+        if (a.kind !== "array") return n
+        n++
+        at = a.elem
+    }
+}
+
+/** Runs `body` for each index in [from, to). */
+function range(g: Emitter, from: V, to: V, body: (i: V) => void) {
+    const i = g.b.alloca("i64")
+    g.b.emit(`store i64 ${from.v}, ptr ${i}`)
+    const head = g.b.label("rhead")
+    const loop = g.b.label("rbody")
+    const end = g.b.label("rend")
+    g.b.start(head)
+    const at = g.b.value("i64", `load i64, ptr ${i}`)
+    g.b.condBr(g.b.value("i1", `icmp slt i64 ${at.v}, ${to.v}`), loop, end)
+    g.b.start(loop)
+    body(at)
+    g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${at.v}, 1`).v}, ptr ${i}`)
+    g.b.br(head)
+    g.b.start(end)
+}
+
+/** The methods whose first argument is a callback. */
+const callbackMethods = [
+    "forEach",
+    "map",
+    "flatMap",
+    "filter",
+    "find",
+    "findIndex",
+    "findLast",
+    "findLastIndex",
+    "some",
+    "every",
+    "reduce",
+    "reduceRight",
+    "sort",
+    "toSorted",
+]
 
 export function arrayMethod(g: Emitter, e: ArrayMethod): V {
     const T = elemOf(e.array.type)
     const elem = g.mt(T)
+    const size: V = { ty: "i64", v: sizeOf(elem) }
     const array = expr(g, e.array)
-    const callback = e.args.length > 0 ? e.args[0] : null
+    const m = e.method
+    const callback = callbackMethods.includes(m) && e.args.length > 0 ? e.args[0] : null
     const ft = funcTypeOf(callback !== null ? callback.type : null)
     let f: V | null = null
-    const m = e.method
-    if (callback !== null && m !== "includes" && m !== "indexOf" && m !== "join" && m !== "unshift" && m !== "splice")
-        f = expr(g, callback)
+    if (callback !== null) f = expr(g, callback)
     const fn = f
+    // Callbacks are given (element, index, array), or the accumulator first; extra arguments are dropped.
     const call = (args: V[]): V => callClosure(g, fn ?? voidValue, ft, args)
     const loop = new ArrayLoop(g, array, elem, T)
-    switch (e.method) {
+    const intArg = (i: int): V => g.intToI64(expr(g, e.args[i]), e.args[i].type)
+    switch (m) {
         case "forEach":
             loop.run((x, i) => {
-                call([x, i])
+                call([x, i, array])
             })
             return voidValue
         case "map": {
             const U = elemOf(e.type)
-            const len = g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
-            const out = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(g.mt(U)) }, len, elementData(g, g.mt(U))])
+            const out = newArray(g, g.mt(U), lengthOf(g, array))
             loop.run((x, i) => {
-                const data = g.b.value("ptr", `load ptr, ptr ${g.field(out.v, ARRAY, 0)}`)
-                const r = call([x, i])
-                g.store(r, g.b.value("ptr", `getelementptr ${g.mt(U)}, ptr ${data.v}, i64 ${i.v}`).v, U)
+                const r = call([x, i, array])
+                g.store(r, elementPtr(g, out, g.mt(U), i), U)
+            })
+            return out
+        }
+        case "flatMap": {
+            // An array result adds its elements, anything else itself.
+            const U = elemOf(e.type)
+            const ut = g.mt(U)
+            const out = newArray(g, ut, g.i64(0))
+            loop.run((x, i) => {
+                const r = call([x, i, array])
+                if (ft.result.kind === "array") g.rt("ore_rt_array_append", [out, r, { ty: "i64", v: sizeOf(ut) }])
+                else g.store(r, g.rt("ore_rt_array_push", [out, { ty: "i64", v: sizeOf(ut) }]).v, U)
             })
             return out
         }
         case "filter": {
-            const out = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, g.i64(0), elementData(g, elem)])
+            const out = newArray(g, elem, g.i64(0))
             loop.run((x, i) => {
                 const keep = g.b.label("keep")
                 const skip = g.b.label("skip")
-                g.b.condBr(call([x, i]), keep, skip)
+                g.b.condBr(call([x, i, array]), keep, skip)
                 g.b.start(keep)
-                g.store(x, g.rt("ore_rt_array_push", [out, { ty: "i64", v: sizeOf(elem) }]).v, T)
+                g.store(x, g.rt("ore_rt_array_push", [out, size]).v, T)
                 g.b.start(skip)
             })
             return out
         }
         case "find":
         case "findIndex":
+        case "findLast":
+        case "findLastIndex":
         case "some":
         case "every": {
             const ty = g.lt(e.type)
             const result = g.b.alloca(ty)
-            const method = e.method
+            const value = m === "find" || m === "findLast"
+            const index = m === "findIndex" || m === "findLastIndex"
             let initial: V
-            if (method === "find") {
+            if (value) {
                 const u = unionOf(e.type)
                 initial = inject(g, u, nullIndex(u), null)
-            } else if (method === "findIndex") initial = g.i64(-1)
-            else initial = { ty: "i1", v: method === "every" ? "true" : "false" }
+            } else if (index) initial = g.i64(-1)
+            else initial = { ty: "i1", v: m === "every" ? "true" : "false" }
             g.b.emit(`store ${ty} ${initial.v}, ptr ${result}`)
             const done = g.b.label("found")
-            loop.run((x, i, exit) => {
+            const visit = (x: V, i: V, exit: string) => {
                 const hit = g.b.label("hit")
                 const miss = g.b.label("miss")
-                const test = call([x, i])
-                g.b.condBr(test, method === "every" ? miss : hit, method === "every" ? hit : miss)
+                const test = call([x, i, array])
+                g.b.condBr(test, m === "every" ? miss : hit, m === "every" ? hit : miss)
                 g.b.start(hit)
-                let value: V
-                if (method === "find") value = recast(g, x, T, e.type)
-                else if (method === "findIndex") value = i
-                else value = { ty: "i1", v: method === "every" ? "false" : "true" }
-                g.b.emit(`store ${ty} ${value.v}, ptr ${result}`)
+                let found: V
+                if (value) found = recast(g, x, T, e.type)
+                else if (index) found = i
+                else found = { ty: "i1", v: m === "every" ? "false" : "true" }
+                g.b.emit(`store ${ty} ${found.v}, ptr ${result}`)
                 g.b.br(exit)
                 g.b.start(miss)
-            }, done)
+            }
+            if (m === "findLast" || m === "findLastIndex")
+                loop.back(visit, done, g.b.value("i64", `sub i64 ${lengthOf(g, array).v}, 1`))
+            else loop.run(visit, done)
             g.b.start(done)
             return g.b.value(ty, `load ${ty}, ptr ${result}`)
         }
-        case "reduce": {
+        case "reduce":
+        case "reduceRight": {
             const ty = g.lt(e.type)
             const acc = g.b.alloca(ty)
-            g.b.emit(`store ${ty} ${expr(g, e.args[1]).v}, ptr ${acc}`)
-            loop.run((x, i) => {
+            const right = m === "reduceRight"
+            const visit = (x: V, i: V, exit: string) => {
                 const current = g.b.value(ty, `load ${ty}, ptr ${acc}`)
-                g.b.emit(`store ${ty} ${call([current, x, i]).v}, ptr ${acc}`)
-            })
+                g.b.emit(`store ${ty} ${call([current, x, i, array]).v}, ptr ${acc}`)
+            }
+            if (e.args.length > 1) {
+                g.b.emit(`store ${ty} ${expr(g, e.args[1]).v}, ptr ${acc}`)
+                if (right) loop.back(visit, null, g.b.value("i64", `sub i64 ${lengthOf(g, array).v}, 1`))
+                else loop.run(visit)
+                return g.b.value(ty, `load ${ty}, ptr ${acc}`)
+            }
+            // Without an initial value: the first element (the last for reduceRight), which an empty array lacks.
+            const n = lengthOf(g, array)
+            const empty = g.b.label("rempty")
+            const start = g.b.label("rstart")
+            g.b.condBr(g.b.value("i1", `icmp eq i64 ${n.v}, 0`), empty, start)
+            g.b.start(empty)
+            g.rt("ore_rt_array_reduce_empty", [])
+            g.b.terminate("unreachable")
+            g.b.start(start)
+            const first = right ? g.b.value("i64", `sub i64 ${n.v}, 1`) : g.i64(0)
+            g.b.emit(`store ${ty} ${loop.element(first).v}, ptr ${acc}`)
+            if (right) loop.back(visit, null, g.b.value("i64", `sub i64 ${n.v}, 2`))
+            else loop.run(visit, null, g.i64(1))
             return g.b.value(ty, `load ${ty}, ptr ${acc}`)
         }
         case "includes":
-        case "indexOf": {
-            // includes finds NaN (SameValueZero); indexOf does not (===).
+        case "indexOf":
+        case "lastIndexOf": {
+            // includes finds NaN (SameValueZero); indexOf and lastIndexOf do not (===).
             const target = expr(g, e.args[0])
-            const isIncludes = e.method === "includes"
+            const offset = e.args.length > 1 ? intArg(1) : null
+            const isIncludes = m === "includes"
             const ty = isIncludes ? "i1" : "i64"
             const result = g.b.alloca(ty)
             g.b.emit(`store ${ty} ${isIncludes ? "false" : "-1"}, ptr ${result}`)
             const done = g.b.label("found")
-            loop.run((x, i, exit) => {
+            const visit = (x: V, i: V, exit: string) => {
                 let same: V
                 if (isIncludes && T.kind === "float") {
                     const a = convert(g, x, T, types.f64)
@@ -192,57 +342,167 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
                 g.b.emit(`store ${ty} ${isIncludes ? "true" : i.v}, ptr ${result}`)
                 g.b.br(exit)
                 g.b.start(miss)
-            }, done)
+            }
+            const n = lengthOf(g, array)
+            if (m === "lastIndexOf") {
+                const from = offset !== null ? g.rt("ore_rt_last_offset", [offset, n]) : null
+                loop.back(visit, done, from ?? g.b.value("i64", `sub i64 ${n.v}, 1`))
+            } else loop.run(visit, done, offset !== null ? g.rt("ore_rt_slice_offset", [offset, n]) : null)
             g.b.start(done)
             return g.b.value(ty, `load ${ty}, ptr ${result}`)
         }
+        case "at": {
+            const ty = g.lt(e.type)
+            const result = g.b.alloca(ty)
+            const u = unionOf(e.type)
+            g.b.emit(`store ${ty} ${inject(g, u, nullIndex(u), null).v}, ptr ${result}`)
+            const at = g.rt("ore_rt_array_relative", [array, intArg(0)])
+            const hit = g.b.label("athit")
+            const end = g.b.label("atend")
+            g.b.condBr(g.b.value("i1", `icmp sge i64 ${at.v}, 0`), hit, end)
+            g.b.start(hit)
+            g.b.emit(`store ${ty} ${recast(g, loop.element(at), T, e.type).v}, ptr ${result}`)
+            g.b.br(end)
+            g.b.start(end)
+            return g.b.value(ty, `load ${ty}, ptr ${result}`)
+        }
+        case "with": {
+            const index = intArg(0)
+            const value = expr(g, e.args[1])
+            const at = g.rt("ore_rt_array_with_index", [array, index])
+            const out = copyArray(g, array, size)
+            g.store(value, elementPtr(g, out, elem, at), T)
+            return out
+        }
+        case "fill": {
+            const value = expr(g, e.args[0])
+            const start = intArg(1)
+            const end = intArg(2)
+            const n = lengthOf(g, array)
+            const from = g.rt("ore_rt_slice_offset", [start, n])
+            const to = g.rt("ore_rt_slice_offset", [end, n])
+            range(g, from, to, (i) => {
+                g.store(value, elementPtr(g, array, elem, i), T)
+            })
+            return array
+        }
+        case "copyWithin":
+            g.rt("ore_rt_array_copy_within", [array, size, intArg(0), intArg(1), intArg(2)])
+            return array
+        case "entries": {
+            const pair = elemOf(e.type)
+            if (pair.kind !== "struct") process.panic("entries: not tuples")
+            const out = newArray(g, "ptr", lengthOf(g, array))
+            const s = g.structType(pair)
+            loop.run((x, i) => {
+                const entry = g.alloc(s)
+                g.store(i, fieldPtr(g, entry.v, pair, "0"), types.i64)
+                g.store(x, fieldPtr(g, entry.v, pair, "1"), T)
+                g.store(entry, elementPtr(g, out, "ptr", i), pair)
+            })
+            return out
+        }
+        case "keys": {
+            const n = lengthOf(g, array)
+            const out = newArray(g, "i64", n)
+            counted(g, n, (i) => {
+                g.b.emit(`store i64 ${i.v}, ptr ${elementPtr(g, out, "i64", i)}`)
+            })
+            return out
+        }
+        case "flat": {
+            // One level at a time, each a new array of the elements of the arrays in the last.
+            const levels = nesting(T) - nesting(elemOf(e.type))
+            if (levels === 0) return copyArray(g, array, size)
+            let current = array
+            let type = e.array.type
+            for (let level = 0; level < levels; level++) {
+                const outer = elemOf(type)
+                const inner = g.mt(elemOf(outer))
+                const out = newArray(g, inner, g.i64(0))
+                new ArrayLoop(g, current, g.mt(outer), outer).run((x) => {
+                    g.rt("ore_rt_array_append", [out, x, { ty: "i64", v: sizeOf(inner) }])
+                })
+                current = out
+                type = outer
+            }
+            return current
+        }
         case "join": {
             const sep = e.args.length > 0 ? expr(g, e.args[0]) : g.str(",")
-            const len = g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
-            const strings = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(STR) }, len, elementData(g, STR)])
+            const strings = newArray(g, STR, lengthOf(g, array))
             loop.run((x, i) => {
-                const data = g.b.value("ptr", `load ptr, ptr ${g.field(strings.v, ARRAY, 0)}`)
                 const text = toStr(g, x, T)
-                g.b.emit(
-                    `store ${STR} ${text.v}, ptr ${g.b.value("ptr", `getelementptr ${STR}, ptr ${data.v}, i64 ${i.v}`).v}`,
-                )
+                g.b.emit(`store ${STR} ${text.v}, ptr ${elementPtr(g, strings, STR, i)}`)
             })
             return g.rt("ore_rt_str_join", [strings, sep])
         }
         case "reverse":
-            g.rt("ore_rt_array_reverse", [array, { ty: "i64", v: sizeOf(elem) }])
+            g.rt("ore_rt_array_reverse", [array, size])
             return array
+        case "toReversed": {
+            const out = copyArray(g, array, size)
+            g.rt("ore_rt_array_reverse", [out, size])
+            return out
+        }
         case "shift":
-            return g.load(g.rt("ore_rt_array_shift", [array, { ty: "i64", v: sizeOf(elem) }]).v, T)
+            return g.load(g.rt("ore_rt_array_shift", [array, size]).v, T)
         case "unshift":
-            return g.rt("ore_rt_array_unshift", [array, { ty: "i64", v: sizeOf(elem) }, expr(g, e.args[0])])
-        case "splice": {
+            return g.rt("ore_rt_array_unshift", [array, size, expr(g, e.args[0])])
+        case "splice":
+        case "toSpliced": {
             // The arguments are evaluated in order, before any change to the array.
-            const start = g.intToI64(expr(g, e.args[0]), e.args[0].type)
-            const count = g.intToI64(expr(g, e.args[1]), e.args[1].type)
+            const start = intArg(0)
+            const count = intArg(1)
             const items = expr(g, e.args[2])
-            return g.rt("ore_rt_array_splice", [array, { ty: "i64", v: sizeOf(elem) }, start, count, items])
+            if (m === "splice") return g.rt("ore_rt_array_splice", [array, size, start, count, items])
+            const out = copyArray(g, array, size)
+            g.rt("ore_rt_array_splice", [out, size, start, count, items])
+            return out
         }
         default: {
+            // sort, in place, and toSorted, of a copy.
+            const target = m === "toSorted" ? copyArray(g, array, size) : array
             if (fn === null) {
                 g.rt("ore_rt_array_sort", [
-                    array,
-                    { ty: "i64", v: sizeOf(elem) },
+                    target,
+                    size,
                     { ty: "ptr", v: naturalOrder(g, T) },
                     { ty: "ptr", v: "null" },
                 ])
-                return array
+                return target
             }
             const ctx = g.spill(fn)
-            g.rt("ore_rt_array_sort", [
-                array,
-                { ty: "i64", v: sizeOf(elem) },
-                { ty: "ptr", v: comparator(g, ft) },
-                { ty: "ptr", v: ctx },
-            ])
-            return array
+            g.rt("ore_rt_array_sort", [target, size, { ty: "ptr", v: comparator(g, ft) }, { ty: "ptr", v: ctx }])
+            return target
         }
     }
+}
+
+/**
+ * `new Array<T>(n)`, with the zero value to give each element when it is
+ * not all zero bits, and `Array.from({ length: n }, f)`.
+ */
+export function arrayBuiltin(g: Emitter, e: BuiltinCall): V {
+    const T = elemOf(e.type)
+    const elem = g.mt(T)
+    const n = g.intToI64(expr(g, e.args[0]), e.args[0].type)
+    if (e.name === "Array.new") {
+        const out = g.rt("ore_rt_array_make", [{ ty: "i64", v: sizeOf(elem) }, n, elementData(g, elem)])
+        if (e.args.length > 1)
+            counted(g, n, (i) => {
+                g.store(expr(g, e.args[1]), elementPtr(g, out, elem, i), T)
+            })
+        return out
+    }
+    const f = expr(g, e.args[1])
+    const ft = funcTypeOf(e.args[1].type)
+    const out = g.rt("ore_rt_array_make", [{ ty: "i64", v: sizeOf(elem) }, n, elementData(g, elem)])
+    counted(g, n, (i) => {
+        const r = callClosure(g, f, ft, [g.zero(types.null), i])
+        g.store(r, elementPtr(g, out, elem, i), T)
+    })
+    return out
 }
 
 /** A C sort comparison calling a comparator closure, whose number result gives the order. */

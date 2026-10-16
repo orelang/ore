@@ -76,6 +76,17 @@ before 1.0, a minor version may change the language.
   no longer split a character. The Unicode 17.0 data is generated from
   node by `ci/unicode-tables.js` into `runtime/core/unicode-tables.ore`
   (33 KB).
+- Arrays have the whole `Array.prototype` of JavaScript: `at`, `concat`,
+  `copyWithin`, `entries`, `fill`, `findLast`, `findLastIndex`, `flat`,
+  `flatMap`, `keys`, `lastIndexOf`, `reduceRight`, `toReversed`,
+  `toSorted`, `toSpliced`, `values` and `with` are new; callbacks get the
+  array as a third argument, `reduce` works without an initial value
+  (panicking on an empty array as JavaScript throws), `includes` and
+  `indexOf` take a `fromIndex`, and `splice()` takes no arguments. Also
+  `Array.from` (arrays, strings, sets, maps and `{ length: n }`, with a
+  map function), `Array.of`, `Array.isArray` and `new Array<T>(n)` of zero
+  values. `entries`, `keys` and `values` return arrays until there are
+  iterators.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with

@@ -233,10 +233,10 @@ The codes are grouped by the part of the language they concern:
 | [ORE4011](ORE4011.md) | Class '…' must be instantiated with 'new …(...)'. |
 | [ORE4012](ORE4012.md) | '…' is not a function. |
 | [ORE4013](ORE4013.md) | No overload of '…' takes these arguments. Its signatures: …. |
-| [ORE4014](ORE4014.md) | The callback of 'map' must return a value. |
+| [ORE4014](ORE4014.md) | The callback of '…' must return a value. |
 | [ORE4015](ORE4015.md) | Cannot join elements of type '…'. |
 | [ORE4016](ORE4016.md) | Sorting '…' needs a comparator: 'sort((a, b) => ...)'. |
-| [ORE4017](ORE4017.md) | The comparator of 'sort' must return a number. |
+| [ORE4017](ORE4017.md) | The comparator of '…' must return a number. |
 | [ORE4018](ORE4018.md) | Expected a function of type '…', got '…'. |
 | [ORE4019](ORE4019.md) | '…' expects at least 1 argument(s), got 0. |
 | [ORE4020](ORE4020.md) | '…' needs numbers, got '…'. |
@@ -297,6 +297,13 @@ The codes are grouped by the part of the language they concern:
 | [ORE4075](ORE4075.md) | 'slice' expects at most 2 arguments, got …. |
 | [ORE4076](ORE4076.md) | 'internal' is only for the standard library. Add '//ore:internal' at the top of the file to use it here. |
 | [ORE4077](ORE4077.md) | '…' may be null: call it with '…?.(...)'. |
+| [ORE4078](ORE4078.md) | The depth of 'flat' must be an integer constant or 'Infinity'. |
+| [ORE4079](ORE4079.md) | Cannot infer the type of the array. Write 'new Array<T>(length)' or annotate the variable. |
+| [ORE4080](ORE4080.md) | 'new Array(length)' needs elements with a zero value, and '…' has none. Use 'Array.from({ length }, (_, i) => ...)'. |
+| [ORE4081](ORE4081.md) | 'Array.isArray' cannot test an 'unknown' yet. |
+| [ORE4082](ORE4082.md) | 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '…'. |
+| [ORE4083](ORE4083.md) | 'Array.from' takes an object only as '{ length: n }'. |
+| [ORE4084](ORE4084.md) | 'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'. |
 
 ## ORE5xxx: Classes and interfaces
 
