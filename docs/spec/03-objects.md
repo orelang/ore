@@ -406,6 +406,8 @@ must panic or exit on the other paths ([ORE6078](../errors/ORE6078.md)).
   whose arguments do not bind it, takes the default.
 - Functions, classes, interfaces and type aliases may have type parameters,
   optionally constrained: `function longest<T extends Named>(items: T[]): T`.
+  The constraint `object` takes the types whose values are not primitives:
+  classes, interfaces, object types, arrays, maps, sets and functions.
   So may nested functions and function literals assigned to a `const`,
   whose instances are closures ([generic closures](04-functions.md#functions-and-closures)).
 - Type arguments are written (`id<int>(5)`, `new Box<string>()`) or inferred
@@ -463,7 +465,9 @@ names them is:
   distributed over the members (`Exclude<"a" | "b", "a">` is `"b"`).
   `infer X` in the `extends` clause binds X to the matching part of T, in
   array, tuple, object, function, Map, Set and generic class types:
-  `T extends (infer E)[] ? E : never`.
+  `T extends (infer E)[] ? E : never`. A generic class in the clause also
+  matches its subclasses, through their base class: `T extends Box<infer
+  V> ? V : never` of a `class Crate extends Box<string>` is `string`.
 - A mapped type `{ [K in Keys]: X }` has a field for each string literal type
   of Keys, of type X with K bound to it; `readonly`, `?`, and `-readonly`,
   `-?` add or remove the modifiers, which a mapped type over `keyof T` takes

@@ -578,14 +578,27 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
                 matches(c, args[1], type.value, scope, bindings)
             )
         }
-        // An instance of a generic class or interface: `Box<infer T>`.
-        const instance = type.kind === "struct" || type.kind === "interface" ? c.instanceOf.get(type) : null
-        if (instance === null || instance.generic.name !== text || instance.args.length !== args.length) return false
-        for (let i = 0; i < args.length; i++) if (!matches(c, args[i], instance.args[i], scope, bindings)) return false
-        return true
+        // An instance of a generic class or interface, `Box<infer T>`, also as the base class of a class.
+        let t: Type | null = type
+        while (t !== null) {
+            const instance = t.kind === "struct" || t.kind === "interface" ? c.instanceOf.get(t) : null
+            if (instance !== null && instance.generic.name === text && instance.args.length === args.length) {
+                for (let i = 0; i < args.length; i++)
+                    if (!matches(c, args[i], instance.args[i], scope, bindings)) return false
+                return true
+            }
+            t = t.kind === "struct" ? t.base : null
+        }
+        return false
     }
     c.error(pattern, "'infer' is supported in array, tuple, object, function, Map, Set and generic class types.")
     return false
+}
+
+/** Whether the values of a type are objects, as `object` names them: not primitives. */
+export function isObjectKind(type: Type): bool {
+    const k = type.kind
+    return k === "struct" || k === "interface" || k === "array" || k === "map" || k === "set" || k === "func"
 }
 
 /**
@@ -596,10 +609,7 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
  */
 function matchesKind(c: Checker, pattern: Node, type: Type, scope: Scope): bool | null {
     if (pattern.kind === "UnknownKeyword") return true
-    if (pattern.kind === "ObjectKeyword") {
-        const k = type.kind
-        return k === "struct" || k === "interface" || k === "array" || k === "map" || k === "set" || k === "func"
-    }
+    if (pattern.kind === "ObjectKeyword") return isObjectKind(type)
     if (pattern.kind === "TypeReference" && c.text(pattern) === "Function" && scope.lookupType("Function") === null)
         return type.kind === "func"
     if (pattern.kind === "TypeOperator" && c.text(pattern).startsWith("readonly"))

@@ -105,7 +105,7 @@ import {
     JsonImport,
     Signature,
 } from "./context"
-import { intrinsicType } from "./computed"
+import { intrinsicType, isObjectKind } from "./computed"
 import { checkExpr } from "./expressions"
 import {
     cIdent,
@@ -1364,6 +1364,15 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
     for (let i = 0; i < generic.params.length; i++) {
         const p = generic.params[i]
         const bound = constraint(p)
+        // `T extends object`: a type whose values are not primitives.
+        if (bound !== null && bound.kind === "ObjectKeyword") {
+            if (args[i].kind === "never" || membersOf(args[i]).every(isObjectKind)) continue
+            c.error(
+                node,
+                `Type '${typeToString(args[i])}' does not satisfy the constraint 'object' of '${nameNode(p).text}'.`,
+            )
+            return null
+        }
         const resolved = bound !== null ? c.resolveType(bound, scope) : null
         if (resolved !== null && !satisfiesConstraint(c, args[i], resolved)) {
             c.error(
