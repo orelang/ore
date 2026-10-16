@@ -305,8 +305,10 @@ names them is:
   types of both. `T[number]` is the element type of an array, or the union of
   the element types of a tuple; `T[0]` an element of a tuple.
 - `typeof x` is the type of a variable or a function, and `typeof x.y` that of
-  a field of one. A top-level variable used this way before its declaration
-  needs a type annotation, since its value is checked later than the types.
+  a field of one. Types are resolved before the values of top-level variables
+  are checked: a top-level `const` initialized with literals only
+  (`const obj = { a: 1, b: "s" }`) has the type of its value there, and any
+  other top-level variable used this way needs a type annotation.
 - `readonly T[]` is accepted and is `T[]`: arrays are not read-only yet.
 - `T extends U ? X : Y` is X when T is assignable to U, else Y. When T is a
   type parameter of a generic alias and its argument a union, it is
