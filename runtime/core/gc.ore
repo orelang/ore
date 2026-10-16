@@ -180,6 +180,10 @@ let extraRootCap: int
 let trace: int
 /** 1 to mark alongside the program (the default), 0 with the world stopped throughout (ORE_GCSTW set). */
 let concurrentMarking: int
+/** ORE_GOGC: how much the heap grows between collections, in percent of the live heap (100 by default); -1 for `off`. */
+let gcPercent: int
+/** ORE_MEMLIMIT: a soft limit of the heap in bytes, 0 for none: collections come sooner as the live heap nears it. */
+let memoryLimit: int
 let clock: ptr
 
 /**
@@ -342,6 +346,9 @@ export function registerThread(): void {
     if (threadCount === 1) {
         trace = isNil(getenv("ORE_GCTRACE")) ? 0 : 1
         concurrentMarking = isNil(getenv("ORE_GCSTW")) ? 1 : 0
+        gcPercent = envNumber("ORE_GOGC", 100)
+        memoryLimit = envNumber("ORE_MEMLIMIT", 0)
+        nextCollection = budget(0)
         startMarkers()
     }
 }
@@ -1397,7 +1404,49 @@ function sweep(): void {
     }
     spanCount = kept
     unsafe.atomicStore<i64>(allocatedCell, 0)
-    nextCollection = liveBytes > minHeap / 2 ? liveBytes * 2 : minHeap
+    nextCollection = budget(liveBytes)
+}
+
+/**
+ * The pacer: how many bytes the program may allocate before the next
+ * collection, given the live heap after this one. `ORE_GOGC` percent of the
+ * live heap (at least `minHeap`), and less as the live heap nears
+ * `ORE_MEMLIMIT`, down to a quarter of `minHeap`.
+ */
+function budget(live: int): int {
+    let allowed = gcPercent < 0 ? 1 << 62 : (live * gcPercent) / 100
+    if (allowed < minHeap) allowed = minHeap
+    if (memoryLimit > 0) {
+        const room = memoryLimit - live
+        if (room < allowed) allowed = room > minHeap / 4 ? room : minHeap / 4
+    }
+    return allowed
+}
+
+/**
+ * A number from the environment: digits with an optional K, M or G suffix
+ * (powers of 1024), or `off` for -1; `fallback` when unset or unreadable.
+ */
+function envNumber(name: string, fallback: int): int {
+    const p = getenv(name)
+    if (isNil(p)) return fallback
+    if (unsafe.load<u8>(p) === 0x6f) return -1
+    let n = 0
+    let i = 0
+    let digits = 0
+    while (true) {
+        const c = unsafe.load<u8>(unsafe.add(p, i))
+        if (c < 0x30 || c > 0x39) break
+        n = n * 10 + i64(c - 0x30)
+        digits++
+        i++
+    }
+    if (digits === 0) return fallback
+    const unit = unsafe.load<u8>(unsafe.add(p, i))
+    if (unit === 0x4b || unit === 0x6b) return n << 10
+    if (unit === 0x4d || unit === 0x6d) return n << 20
+    if (unit === 0x47 || unit === 0x67) return n << 30
+    return n
 }
 
 // ---------------------------------------------------------------------------
