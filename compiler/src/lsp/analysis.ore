@@ -14,13 +14,11 @@ import { typeToString, type Type } from "../ir/types"
 import { LoadOptions, loadProgram } from "../project/load"
 import { stdModules } from "../project/resolve"
 import { type Node } from "../syntax/ast"
+import { type Diagnostic as SourceDiagnostic } from "../syntax/diagnostic"
 import { parse as parseFile, type ParseResult } from "../syntax/parse"
 import { parse } from "../syntax/parser"
 import { type Source } from "../syntax/source"
 import { offsetAt, positionAt, rangeOf, type Position, type Range } from "./text"
-
-/** A problem in the document, with its span in bytes. */
-export type Diagnostic = { message: string; severity: "error" | "warning"; start: int; end: int; code: string }
 
 /** A location in the analyzed file, or in a file such as `runtime/std/builtin.d.ore`. */
 export type Location = {
@@ -28,6 +26,19 @@ export type Location = {
     /** Text of the target file, for files that are not on disk. */
     text: string | null
     range: Range
+}
+
+/** A place related to a diagnostic, with a short message: `'x' is declared here.` */
+export type RelatedPlace = { location: Location; message: string }
+
+/** A problem in the document, with its span in bytes and the places related to it. */
+export type Diagnostic = {
+    message: string
+    severity: "error" | "warning"
+    start: int
+    end: int
+    code: string
+    related: RelatedPlace[]
 }
 
 /** A use or the declaration of a symbol, with how to rename it there. */
@@ -208,6 +219,7 @@ class CheckedAnalysis {
                     start: d.start,
                     end: d.start + d.length,
                     code: d.code,
+                    related: [],
                 })
             return
         }
@@ -232,21 +244,20 @@ class CheckedAnalysis {
         if (loaded instanceof Error) {
             const parser = parse(text)
             for (const e of parser.diagnostics)
-                this.errors.push({ message: e.message, severity: "error", start: e.start, end: e.end, code: "" })
+                this.errors.push({
+                    message: e.message,
+                    severity: "error",
+                    start: e.start,
+                    end: e.end,
+                    code: "",
+                    related: [],
+                })
             return
         }
         let entry = loaded.entry
         if (module !== "") for (const m of loaded.modules) if (m.path === module) entry = m
         this.source = entry
-        for (const d of loaded.diagnostics)
-            if (d.source === entry)
-                this.errors.push({
-                    message: d.message,
-                    severity: d.severity,
-                    start: d.start,
-                    end: d.start + d.length,
-                    code: d.code,
-                })
+        for (const d of loaded.diagnostics) if (d.source === entry) this.errors.push(this.diagnosticOf(d))
         if (loaded.syntaxErrors) return
         // The runtime and the standard library are checked by their tests:
         // only their declarations matter here, unless one is the document.
@@ -254,15 +265,31 @@ class CheckedAnalysis {
         for (const m of loaded.modules) if (m !== entry && m.path.startsWith("ore:")) signaturesOnly.add(m)
         const result = check(loaded, signaturesOnly)
         this.info = result.info
-        for (const d of result.diagnostics)
-            if (d.source === entry)
-                this.errors.push({
-                    message: d.message,
-                    severity: d.severity,
-                    start: d.start,
-                    end: d.start + d.length,
-                    code: d.code,
-                })
+        for (const d of result.diagnostics) if (d.source === entry) this.errors.push(this.diagnosticOf(d))
+    }
+
+    /** A diagnostic of the document's module, with its related places in any module. */
+    private diagnosticOf(d: SourceDiagnostic): Diagnostic {
+        const related: RelatedPlace[] = []
+        for (const r of d.related) {
+            const path = this.pathOf(r.source)
+            related.push({
+                location: {
+                    path,
+                    text: isAbsolute(path) ? null : r.source.text,
+                    range: rangeOf(r.source.text, r.start, r.start + r.length),
+                },
+                message: r.message,
+            })
+        }
+        return {
+            message: d.message,
+            severity: d.severity,
+            start: d.start,
+            end: d.start + d.length,
+            code: d.code,
+            related,
+        }
     }
 
     diagnostics(): Diagnostic[] {

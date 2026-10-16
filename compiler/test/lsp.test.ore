@@ -47,11 +47,13 @@ function within<T>(ch: Chan<T>, what: string): T {
 
 type Position = { line: int; character: int }
 type Range = { start: Position; end: Position }
+type Related = { location: { range: Range; uri: string }; message: string }
 type Diagnostic = {
     code: string | null
     codeDescription: { href: string } | null
     message: string
     range: Range
+    relatedInformation: Related[]
     severity: int
     source: string
 }
@@ -286,7 +288,7 @@ test("syntax diagnostics with UTF-16 ranges, through full and incremental change
     const opened = client.diagnostics(uri)
     expect(opened.length > 0).toBe(true)
     expect(JSON.stringify(opened[0])).toBe(
-        `{"code":"ORE1001","codeDescription":{"href":"${docs("ORE1001")}"},"message":"Identifier expected.","range":${range(1, 17, 1, 18)},"severity":1,"source":"ore"}`,
+        `{"code":"ORE1001","codeDescription":{"href":"${docs("ORE1001")}"},"message":"Identifier expected.","range":${range(1, 17, 1, 18)},"relatedInformation":[],"severity":1,"source":"ore"}`,
     )
 
     // Replace `)` with `1`: ranges after the emoji are in UTF-16 units.
@@ -342,7 +344,7 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     const errors = client.diagnostics(uri)
     expect(errors.length).toBe(1)
     expect(JSON.stringify(errors[0])).toBe(
-        `{"code":"ORE2033","codeDescription":{"href":"${docs("ORE2033")}"},"message":"Type 'string' is not assignable to type 'i64'.","range":${range(8, 17, 8, 20)},"severity":1,"source":"ore"}`,
+        `{"code":"ORE2033","codeDescription":{"href":"${docs("ORE2033")}"},"message":"Type 'string' is not assignable to type 'i64'.","range":${range(8, 17, 8, 20)},"relatedInformation":[],"severity":1,"source":"ore"}`,
     )
     const at = (line: int, character: int) =>
         `{"textDocument":{"uri":${JSON.stringify(uri)}},"position":{"line":${line},"character":${character}}}`
@@ -442,6 +444,31 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     const commands = client.request("13", "textDocument/completion", at(0, 16))
     expect(commands.includes(`"label":"spawn"`)).toBe(true)
     expect(commands.includes(`"label":"getenv"`)).toBe(false)
+    expect(client.close()).toBe(1)
+})
+
+test("the places related to a diagnostic: the declaration of a name declared twice, a parameter", () => {
+    const client = new Client()
+    client.initialize()
+    const text = [
+        "let count = 1",
+        "let count = 2",
+        "function twice(n: int): int {",
+        "    return n * 2",
+        "}",
+        'twice("a")',
+        "",
+    ]
+    client.send(didOpen(text.join("\n")))
+    const errors = client.diagnostics(uri)
+    expect(errors.length).toBe(2)
+    expect(errors[0].message).toBe("Cannot redeclare 'count' in the same scope.")
+    expect(JSON.stringify(errors[0].relatedInformation)).toBe(
+        `[{"location":{"range":${range(0, 4, 0, 9)},"uri":${JSON.stringify(uri)}},"message":"'count' is declared here."}]`,
+    )
+    expect(JSON.stringify(errors[1].relatedInformation)).toBe(
+        `[{"location":{"range":${range(2, 15, 2, 16)},"uri":${JSON.stringify(uri)}},"message":"'n' is declared here."}]`,
+    )
     expect(client.close()).toBe(1)
 })
 

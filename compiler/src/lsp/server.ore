@@ -64,6 +64,8 @@ type ReferenceParams = {
 }
 type RenameParams = { textDocument: TextDocumentIdentifier; position: Position; newName: string }
 
+type LspLocation = { uri: string; range: Range }
+type LspRelated = { location: LspLocation; message: string }
 type LspDiagnostic = {
     range: Range
     severity: int
@@ -72,8 +74,9 @@ type LspDiagnostic = {
     /** The code of the message, and the address of its page. */
     code: string | null
     codeDescription: { href: string } | null
+    /** The places related to the message, as the declaration of a name declared twice. */
+    relatedInformation: LspRelated[]
 }
-type LspLocation = { uri: string; range: Range }
 type TextEdit = { range: Range; newText: string }
 /** A diagnostic as a client sends it back in a code action request. */
 type ClientDiagnostic = { range: Range; message: string; code: string | null }
@@ -419,6 +422,12 @@ export class Server {
         const diagnostics: LspDiagnostic[] = []
         for (const d of analysis.diagnostics()) {
             const coded = d.code !== ""
+            const related: LspRelated[] = []
+            for (const r of d.related)
+                related.push({
+                    location: { uri: locationUri(r.location, document.uri), range: r.location.range },
+                    message: r.message,
+                })
             diagnostics.push({
                 range: analysis.range(d.start, d.end),
                 severity: d.severity === "error" ? severityError : severityWarning,
@@ -426,6 +435,7 @@ export class Server {
                 message: d.message,
                 code: coded ? d.code : null,
                 codeDescription: coded ? { href: docsUrl(d.code) } : null,
+                relatedInformation: related,
             })
         }
         this.publish(document.uri, diagnostics)
