@@ -96,7 +96,9 @@ const spanGrowBits = 88
 const spanTypes = 96
 /** For a free run: 1 once its pages were given back to the system (see `scavenge`). */
 const spanReleased = 104
-const spanRecordSize = 112
+/** For a free run: the number of the collection that freed it, so that only runs free for a while are given back. */
+const spanFreedAt = 112
+const spanRecordSize = 120
 /** The most objects a span holds; a span of more would have room for more, unused. */
 const maxElems = 512
 
@@ -511,6 +513,7 @@ function releaseSpan(span: ptr): void {
     const first = unsafe.diff(pointerAt(span, spanStart), heapBase) >> pageShift
     for (let i = 0; i < field(span, spanPages); i++) setPointer(pageTable, (first + i) * 8, nil())
     setField(span, spanReleased, 0)
+    setField(span, spanFreedAt, collections)
     setPointer(span, spanNext, freeRuns)
     freeRuns = span
 }
@@ -1405,6 +1408,7 @@ export function collect(): void {
     sweep()
     startWorld()
     const end = nowNs(clock)
+    scavenge()
     const number = collections
     unlock(gcLock)
     if (trace !== 0) {
@@ -1481,25 +1485,35 @@ function sweep(): void {
     spanCount = kept
     unsafe.atomicStore<i64>(allocatedCell, 0)
     nextCollection = budget(liveBytes)
-    scavenge()
 }
 
 /** Bytes of the heap's pages given back to the system and not used since. */
 let releasedBytes: int
 
+/** How many collections a run must stay free before its pages are given back. */
+const scavengeAge = 2
+
 /**
  * Gives the pages of free runs back to the system once more than half of the
- * heap's pages are free: they stay reserved, and come back (zeroed) when a
- * span uses them again.
+ * heap's pages are free: those of runs that stayed free for `scavengeAge`
+ * collections, since the others are likely taken again soon. The pages stay
+ * reserved, and come back (zeroed) when a span uses them again. Runs after
+ * the world is started again, under `heapLock`.
  */
 function scavenge(): void {
+    lock(heapLock)
+    scavengeLocked()
+    unlock(heapLock)
+}
+
+function scavengeLocked(): void {
     let free = 0
     for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) free += field(run, spanPages)
     if (free * 2 < nextPage) return
     // MADV_FREE_REUSABLE on macOS, which the kernel counts out of the footprint at once; MADV_DONTNEED on Linux.
     const advice: i32 = target.os === "darwin" ? 7 : 4
     for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) {
-        if (field(run, spanReleased) !== 0) continue
+        if (field(run, spanReleased) !== 0 || collections - field(run, spanFreedAt) < scavengeAge) continue
         const bytes = field(run, spanPages) * pageSize
         if (madvise(pointerAt(run, spanStart), u64(bytes), advice) === 0) releasedBytes += bytes
         setField(run, spanReleased, 1)
