@@ -45,19 +45,70 @@ declare function uint(x: numeric): uint
 declare function byte(x: numeric): byte
 
 /**
- * Console output. Values of any type but channels and pointers are printed
- * as Node's util.inspect formats them: strings as they are, and inside other
- * values quoted; `[ 1, 2 ]`, `{ x: 1 }`, `Point { x: 1 }`, `Map(1) { 'a' => 1 }`.
+ * Console output, as Node's console. Values of any type but channels and
+ * pointers are printed as Node's util.inspect formats them: strings as they
+ * are, and inside other values quoted; `[ 1, 2 ]`, `{ x: 1 }`,
+ * `Point { x: 1 }`, `Map(1) { 'a' => 1 }`. A first string followed by more
+ * values is a format, as util.format reads it: `%s` (a string; an object 1
+ * level deep), `%d` (a number: a string converted as Number() does),
+ * `%i` (parseInt), `%f` (parseFloat), `%j` (JSON), `%O` (util.inspect),
+ * `%o` (4 levels deep), `%c` (a CSS style, ignored) and `%%` take the
+ * values in order; the values left over follow, separated by spaces.
+ * Inside `group`, every line printed is indented by two spaces a level.
+ *
+ * `count`, `countReset`, `time`, `timeEnd` and `groupEnd` are written in
+ * Ore, in runtime/core/console.ore, whose exports are members of the
+ * namespace: these declarations document them.
  */
 declare namespace console {
     /** Writes values separated by spaces, followed by a newline, to stdout. */
-    function log(...values: any[]): void
-
-    /** Writes values separated by spaces to stdout, without a newline. */
-    function write(...values: any[]): void
+    function log(...data: any[]): void
+    /** `log`. */
+    function info(...data: any[]): void
+    /** `log`. */
+    function debug(...data: any[]): void
 
     /** Writes values separated by spaces, followed by a newline, to stderr. */
-    function error(...values: any[]): void
+    function error(...data: any[]): void
+    /** `error`. */
+    function warn(...data: any[]): void
+    /** Writes "Trace: " and the values to stderr, followed by the stack of the call. */
+    function trace(...data: any[]): void
+
+    /** Writes values separated by spaces to stdout, without a newline. */
+    function write(...data: any[]): void
+
+    /** Unless `condition` holds, writes "Assertion failed", or "Assertion failed: " before a first string, and the values to stderr. */
+    function assert(condition: bool, ...data: any[]): void
+
+    /** Writes a value as util.inspect formats it, strings quoted. */
+    function dir(item: any): void
+
+    /**
+     * Writes an array, a map, a set or an object as a table with a row for
+     * each entry and a column for each property of the entries, as Node does;
+     * only the `properties` columns when given. Other values are logged.
+     */
+    function table(tabularData: any, properties?: string[]): void
+
+    /** Writes the label, if any, as `log` does, then indents what is printed after it by two more spaces. */
+    function group(...label: any[]): void
+    /** `group`. */
+    function groupCollapsed(...label: any[]): void
+    /** Ends a level of indentation of `group`. */
+    function groupEnd(): void
+
+    /** Writes how many times `count` was called with the label, as "label: 3". */
+    function count(label?: string): void
+    /** Resets the count of a label. */
+    function countReset(label?: string): void
+
+    /** Starts a timer with a label. */
+    function time(label?: string): void
+    /** Writes the time since `time` with the label, as "label: 1.234ms", and the values after it. */
+    function timeLog(label?: string, ...data: any[]): void
+    /** Writes the time since `time` with the label, as `timeLog`, and stops the timer. */
+    function timeEnd(label?: string): void
 }
 
 /** Mathematical constants and functions, as in JavaScript. */

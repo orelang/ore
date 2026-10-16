@@ -5,7 +5,7 @@ import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func,
 import { intRange, isNumberLiterals, type FuncType, type Type, type UnionType } from "../ir/types"
 import { arrayBuiltin } from "./collections"
 import { counted, json } from "./json"
-import { inspectAt, inspectTop, printYellow } from "./inspect"
+import { inspectAt, inspectTop, inspectTopWith, inspectWith, printYellow, table } from "./inspect"
 import { ARRAY, FN, IFACE, STR } from "./context"
 import { Emitter } from "./base"
 import { choose, expr, inject, payload, slotTest, unionOf } from "./expressions"
@@ -335,53 +335,113 @@ function identity(max: bool, t: Type): string {
     return max ? "0" : "-1"
 }
 
+/** `console.log`, `console.error` (on standard error) and `console.write` (without a newline): values separated by spaces. */
+function printLine(g: Emitter, e: BuiltinCall): V {
+    const name = e.name
+    const values: V[] = []
+    for (const a of e.args) values.push(expr(g, a))
+    if (name === "console.error") g.rt("ore_rt_print_to", [g.i64(2)])
+    const spread = e.spread
+    if (spread === null) {
+        for (let i = 0; i < values.length; i++) {
+            if (i > 0) g.rt("ore_rt_print_space", [])
+            print(g, values[i], e.args[i].type)
+        }
+    } else {
+        // A space before every value but the first printed, which a spread empty array leaves unknown until run time.
+        const first = g.b.alloca("i1")
+        g.b.emit(`store i1 true, ptr ${first}`)
+        const one = (v: V, type: Type) => {
+            const space = g.b.label("space")
+            const after = g.b.label("printed")
+            g.b.condBr(g.b.value("i1", `load i1, ptr ${first}`), after, space)
+            g.b.start(space)
+            g.rt("ore_rt_print_space", [])
+            g.b.br(after)
+            g.b.start(after)
+            g.b.emit(`store i1 false, ptr ${first}`)
+            print(g, v, type)
+        }
+        for (let i = 0; i < values.length; i++) {
+            const at = e.args[i].type
+            if (!spread[i] || at.kind !== "array") {
+                one(values[i], at)
+                continue
+            }
+            const elem = at.elem
+            const array = values[i]
+            const n = g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
+            counted(g, n, (k) => {
+                const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
+                const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${k.v}`)
+                one(g.load(place.v, elem), elem)
+            })
+        }
+    }
+    if (name !== "console.write") g.rt("ore_rt_print_newline", [])
+    if (name === "console.error") g.rt("ore_rt_print_to", [g.i64(1)])
+    return voidValue
+}
+
+/** The constant of an integer argument of a built-in, as `console.inspect`'s options. */
+function constantArg(e: BuiltinCall, i: int): int {
+    const a = e.args[i]
+    return a.k === "int" ? a.value : 0
+}
+
+/** The parts of `console` that checker/console.ore lowers its calls to, and the printing of lines. */
+function consoleBuiltin(g: Emitter, e: BuiltinCall): V {
+    switch (e.name) {
+        case "console.inspect": {
+            // A value as util.inspect formats it with options; strings as they are at the top when asked.
+            const t = e.args[0].type
+            const v = expr(g, e.args[0])
+            if (constantArg(e, 3) === 1) return inspectTopWith(g, v, t, constantArg(e, 2), constantArg(e, 1))
+            return inspectWith(g, v, t, constantArg(e, 2), constantArg(e, 1))
+        }
+        case "console.format":
+            return g.rt("ore_rt_console_format", [expr(g, e.args[0]), expr(g, e.args[1])])
+        case "console.timeText":
+            return g.rt("ore_rt_console_time_text", [expr(g, e.args[0])])
+        case "console.stack":
+            return g.rt("ore_rt_console_stack", [])
+        case "console.nonempty": {
+            const s = expr(g, e.args[0])
+            return g.b.value("i1", `icmp ne i64 ${g.extract(s, 1, "i64").v}, 0`)
+        }
+        case "console.if": {
+            // The body only when the condition holds, else the other one if any: the line of a failed
+            // assert, of a known timer, or of a format that has a `%`.
+            const yes = g.b.label("console")
+            const no = g.b.label("consoleelse")
+            const after = g.b.label("consoled")
+            g.b.condBr(expr(g, e.args[0]), yes, no)
+            g.b.start(yes)
+            expr(g, e.args[1])
+            g.b.br(after)
+            g.b.start(no)
+            if (e.args.length > 2) expr(g, e.args[2])
+            g.b.br(after)
+            g.b.start(after)
+            return voidValue
+        }
+        case "console.percent":
+            return g.rtBool("ore_rt_console_has_percent", [expr(g, e.args[0])])
+        case "console.group":
+            for (const a of e.args) expr(g, a)
+            g.rt("ore_rt_console_group", [])
+            return voidValue
+        case "console.table":
+            table(g, expr(g, e.args[0]), e.args[0].type, e.args.length > 1 ? expr(g, e.args[1]) : null)
+            return voidValue
+        default:
+            return printLine(g, e)
+    }
+}
+
 export function builtin(g: Emitter, e: BuiltinCall): V {
     const name = e.name
-    if (name === "console.log" || name === "console.error" || name === "console.write") {
-        const values: V[] = []
-        for (const a of e.args) values.push(expr(g, a))
-        if (name === "console.error") g.rt("ore_rt_print_to", [g.i64(2)])
-        const spread = e.spread
-        if (spread === null) {
-            for (let i = 0; i < values.length; i++) {
-                if (i > 0) g.rt("ore_rt_print_space", [])
-                print(g, values[i], e.args[i].type)
-            }
-        } else {
-            // A space before every value but the first printed, which a spread empty array leaves unknown until run time.
-            const first = g.b.alloca("i1")
-            g.b.emit(`store i1 true, ptr ${first}`)
-            const one = (v: V, type: Type) => {
-                const space = g.b.label("space")
-                const after = g.b.label("printed")
-                g.b.condBr(g.b.value("i1", `load i1, ptr ${first}`), after, space)
-                g.b.start(space)
-                g.rt("ore_rt_print_space", [])
-                g.b.br(after)
-                g.b.start(after)
-                g.b.emit(`store i1 false, ptr ${first}`)
-                print(g, v, type)
-            }
-            for (let i = 0; i < values.length; i++) {
-                const at = e.args[i].type
-                if (!spread[i] || at.kind !== "array") {
-                    one(values[i], at)
-                    continue
-                }
-                const elem = at.elem
-                const array = values[i]
-                const n = g.b.value("i64", `load i64, ptr ${g.field(array.v, ARRAY, 1)}`)
-                counted(g, n, (k) => {
-                    const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
-                    const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${k.v}`)
-                    one(g.load(place.v, elem), elem)
-                })
-            }
-        }
-        if (name !== "console.write") g.rt("ore_rt_print_newline", [])
-        if (name === "console.error") g.rt("ore_rt_print_to", [g.i64(1)])
-        return voidValue
-    }
+    if (name.startsWith("console.")) return consoleBuiltin(g, e)
     if (name === "JSON.stringify" || name === "JSON.parse") return json(g, e)
     if (name === "Array.new" || name === "Array.fromLength") return arrayBuiltin(g, e)
     if (name.startsWith("unsafe.")) return unsafeCall(g, e)

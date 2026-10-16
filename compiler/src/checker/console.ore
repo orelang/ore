@@ -1,0 +1,389 @@
+// The calls of `console` that take values of any type, as Node's console has
+// them: `log` and the others print their arguments as util.format does, with
+// format specifiers in a first string argument; `assert`, `group`, `dir`,
+// `table`, `timeLog` and `trace` print through the same code. The members
+// that take only labels (`count`, `time`, `groupEnd`...) are written in Ore,
+// in runtime/core/console.ore.
+
+import {
+    type Expr,
+    ArrayLit,
+    BindLocal,
+    BuiltinCall,
+    Concat,
+    IntLit,
+    LocalRef,
+    Not,
+    StringLit,
+    FieldGet,
+    Index,
+} from "../ir/nodes"
+import { type Type, arrayOf, isNumeric, isStringLike, types } from "../ir/types"
+import { Node } from "../syntax/ast"
+import { args as argsOf, expression } from "../syntax/nodes"
+import { type Checker } from "./base"
+import { bindAround } from "./calls"
+import { checkExpr, inspectable } from "./expressions"
+import { jsonProblem, typed } from "./helpers"
+import { type Operand, errorOperand } from "./operand"
+import { Scope } from "./symbols"
+
+/** The arguments of a console call, checked: each value, whether it is a spread array, and the locals holding them. */
+class ConsoleArgs {
+    values: Expr[] = []
+    nodes: Node[] = []
+    spread: bool[] = []
+    spreads = false
+    locals: BindLocal[] = []
+    ok = true
+}
+
+/** Checks the arguments; spread tuples give their elements, spread arrays print theirs. All are held in locals when `hold`. */
+function consoleArgs(c: Checker, args: Node[], scope: Scope, hold: bool): ConsoleArgs {
+    const out = new ConsoleArgs()
+    const spreading = hold || args.some((arg) => arg.kind === "SpreadElement")
+    const held = (value: Expr): Expr => {
+        if (!spreading) return value
+        const local = c.newLocal("arg", value.type, false)
+        out.locals.push(new BindLocal(local, value))
+        return new LocalRef(value.type, local)
+    }
+    for (const arg of args) {
+        const inner = arg.kind === "SpreadElement" ? expression(arg) : arg
+        const value = checkExpr(c, inner, scope)
+        if (value.k === "error") {
+            out.ok = false
+            continue
+        }
+        const expr = c.toDefault(value, inner)
+        const type = expr.type
+        if (arg.kind === "SpreadElement" && type.kind === "struct" && type.tuple) {
+            const tuple = held(expr)
+            for (const f of type.fields) {
+                const part = new FieldGet(f.type, tuple, f.name)
+                if (inspectable(c, part, inner)) {
+                    out.values.push(part)
+                    out.nodes.push(inner)
+                    out.spread.push(false)
+                } else out.ok = false
+            }
+            continue
+        }
+        if (arg.kind === "SpreadElement") {
+            if (type.kind !== "array") {
+                c.error(inner, "Only an array or a tuple can be spread into arguments.")
+                out.ok = false
+                continue
+            }
+            if (inspectable(c, new Index(type.elem, expr, new IntLit(types.i64, 0)), inner)) {
+                out.values.push(held(expr))
+                out.nodes.push(inner)
+                out.spread.push(true)
+                out.spreads = true
+            } else out.ok = false
+            continue
+        }
+        if (inspectable(c, expr, inner)) {
+            out.values.push(held(expr))
+            out.nodes.push(inner)
+            out.spread.push(false)
+        } else out.ok = false
+    }
+    return out
+}
+
+/** A value formatted as util.inspect does with options: `depth` levels, colored as `fd` is (none for 0); `top` prints strings as they are. */
+function inspected(value: Expr, depth: int, fd: int, top: bool): Expr {
+    return new BuiltinCall(types.string, "console.inspect", [
+        value,
+        new IntLit(types.i64, depth),
+        new IntLit(types.i64, fd),
+        new IntLit(types.i64, top ? 1 : 0),
+    ])
+}
+
+/** What util.format does with a value: "s" a string, "n" a number, "b" a bigint, "t" a boolean, "o" anything else. */
+function kindOf(t: Type): string {
+    if (isStringLike(t)) return "s"
+    if (t.kind === "union" && t.members.every((m) => isStringLike(m))) return "s"
+    if (isNumeric(t) || t.kind === "number-literal") return "n"
+    if (t.kind === "union" && t.members.every((m) => m.kind === "number-literal")) return "n"
+    if (t.kind === "bigint") return "b"
+    if (t.kind === "bool") return "t"
+    return "o"
+}
+
+/**
+ * The specifier that consumes each argument after the format, as util.format
+ * reads a constant format: "" for the arguments printed after it. Null when
+ * the format has nothing to replace, neither a specifier nor `%%`.
+ */
+function specifiers(format: string, count: int): string[] | null {
+    const out: string[] = []
+    let a = 0
+    let replaced = false
+    for (let i = 0; i < format.length - 1; i++) {
+        if (format.slice(i, i + 1) !== "%") continue
+        i++
+        const next = format.slice(i, i + 1)
+        if (a < count) {
+            if (next === "%") {
+                replaced = true
+                continue
+            }
+            if ("sjdOoifc".includes(next)) {
+                out.push(next)
+                a++
+                replaced = true
+            }
+        } else if (next === "%") replaced = true
+    }
+    if (!replaced) return null
+    while (out.length < count) out.push("")
+    return out
+}
+
+/**
+ * The renderings of a value that util.format may need, for
+ * runtime/core/console.ore: its kind, as console.log prints it, as `%s`,
+ * `%j`, `%O` and `%o` print it; only those of `spec` when it is known.
+ */
+function renderings(c: Checker, value: Expr, node: Node, fd: int, spec: string | null): Expr[] | null {
+    const t = value.type
+    const kind = kindOf(t)
+    const none = new StringLit(types.string, "")
+    const all = spec === null
+    const string = isStringLike(t)
+    const text = all ? (string ? value : inspected(value, 2, fd, true)) : none
+    const plain =
+        all || spec === "s" || spec === "d" || spec === "i" || spec === "f"
+            ? string
+                ? value
+                : inspected(value, 0, 0, true)
+            : none
+    let json: Expr = none
+    if (all || spec === "j") {
+        const problem = jsonProblem(t)
+        if (problem === null) json = new BuiltinCall(types.string, "JSON.stringify", [value])
+        else if (!all) {
+            c.error(node, problem)
+            return null
+        } else json = new StringLit(types.string, "undefined")
+    }
+    const deep = all || spec === "O" ? inspected(value, 2, fd, false) : none
+    const deeper = all || spec === "o" ? inspected(value, 4, fd, false) : none
+    return [new StringLit(types.string, kind), text, plain, json, deep, deeper]
+}
+
+/**
+ * The values to print for a console call, as util.format formats them: a
+ * first string with more values after it is a format, whose specifiers
+ * (`%s`, `%d`, `%i`, `%f`, `%j`, `%o`, `%O`, `%c`, and `%%`) take values
+ * in order. The format becomes one string, of runtime/core/console.ore,
+ * followed by the values it does not take.
+ */
+function formatted(c: Checker, a: ConsoleArgs, fd: int): Expr[] | null {
+    const values = a.values
+    if (values.length < 2 || a.spreads || kindOf(values[0].type) !== "s") return values
+    // A union of string literals is a string.
+    const first: Expr = isStringLike(values[0].type) ? values[0] : new Concat(types.string, [values[0]])
+    let specs: string[] | null = null
+    if (first.k === "string") {
+        // A constant format: only the renderings its specifiers use.
+        specs = specifiers(first.value, values.length - 1)
+        if (specs === null) return values
+    }
+    const parts: Expr[] = []
+    const rest: Expr[] = []
+    for (let i = 1; i < values.length; i++) {
+        const spec = specs !== null ? specs[i - 1] : null
+        if (spec === "") {
+            rest.push(values[i])
+            continue
+        }
+        const r = renderings(c, values[i], a.nodes[i], fd, spec)
+        if (r === null) return null
+        for (const x of r) parts.push(x)
+    }
+    const out: Expr[] = [
+        new BuiltinCall(types.string, "console.format", [first, new ArrayLit(arrayOf(types.string), parts)]),
+    ]
+    for (const x of rest) out.push(x)
+    return out
+}
+
+/** The values joined into one string by spaces, as console.log prints them. */
+function joined(values: Expr[], fd: int): Expr[] {
+    const parts: Expr[] = []
+    for (let i = 0; i < values.length; i++) {
+        if (i > 0) parts.push(new StringLit(types.string, " "))
+        const v = values[i]
+        parts.push(isStringLike(v.type) ? v : inspected(v, 2, fd, true))
+    }
+    return parts
+}
+
+/** A call printing a line of values to standard output (fd 1) or standard error (2). */
+function line(values: Expr[], fd: int, spread: bool[] | null): Expr {
+    return new BuiltinCall(types.void, fd === 2 ? "console.error" : "console.log", values, null, null, spread)
+}
+
+/**
+ * Checks a call of a member of `console` that the compiler implements:
+ * `log`, `info`, `debug` (standard output), `warn`, `error`, `trace`
+ * (standard error), `write`, `assert`, `dir`, `table`, `group`,
+ * `groupCollapsed` and `timeLog`.
+ */
+export function consoleCall(c: Checker, name: string, node: Node, scope: Scope): Operand {
+    const method = name.slice("console.".length)
+    const args = argsOf(node)
+    if (method === "write") {
+        const a = consoleArgs(c, args, scope, false)
+        if (!a.ok) return errorOperand
+        return bindAround(
+            a.locals,
+            typed(new BuiltinCall(types.void, name, a.values, null, null, a.spreads ? a.spread : null)),
+        )
+    }
+    if (method === "assert") {
+        if (args.length === 0) return c.fail(node, "'console.assert' expects at least 1 argument(s), got 0.")
+        const cond = c.coerce(checkExpr(c, args[0], scope, types.bool), types.bool, args[0])
+        const a = consoleArgs(c, args.slice(1), scope, true)
+        if (!a.ok) return errorOperand
+        // As Node: "Assertion failed", before a first string, which stays a format.
+        const values: Expr[] = []
+        if (a.values.length > 0 && kindOf(a.values[0].type) === "s" && !a.spread[0]) {
+            const prefix: Expr = new StringLit(types.string, "Assertion failed: ")
+            values.push(new Concat(types.string, [prefix, a.values[0]]))
+            for (let i = 1; i < a.values.length; i++) values.push(a.values[i])
+        } else {
+            values.push(new StringLit(types.string, "Assertion failed"))
+            for (const v of a.values) values.push(v)
+            const nodes: Node[] = [node]
+            const spread: bool[] = [false]
+            for (const n of a.nodes) nodes.push(n)
+            for (const x of a.spread) spread.push(x)
+            a.nodes = nodes
+            a.spread = spread
+        }
+        a.values = values
+        const shown = formatted(c, a, 2)
+        if (shown === null) return errorOperand
+        const check = new BindLocal(c.newLocal("cond", types.bool, false), cond)
+        const locals: BindLocal[] = [check]
+        for (const l of a.locals) locals.push(l)
+        const failed = new Not(types.bool, new LocalRef(types.bool, check.local))
+        const call = new BuiltinCall(types.void, "console.if", [failed, line(shown, 2, a.spreads ? a.spread : null)])
+        return bindAround(locals, typed(call))
+    }
+    if (method === "dir") {
+        if (args.length !== 1) return c.fail(node, `'console.dir' expects 1 argument(s), got ${args.length}.`)
+        const a = consoleArgs(c, args, scope, false)
+        if (!a.ok) return errorOperand
+        if (a.spreads) return c.fail(args[0], "Spread arguments are not supported yet.")
+        return typed(line([inspected(a.values[0], 2, 1, false)], 1, null))
+    }
+    if (method === "table") return tableCall(c, args, node, scope)
+    if (method === "timeLog") {
+        // The label, then the values printed after the time, not a format.
+        let label: Expr = new StringLit(types.string, "default")
+        if (args.length > 0) {
+            if (args[0].kind === "SpreadElement") return c.fail(args[0], "Spread arguments are not supported yet.")
+            label = c.coerce(checkExpr(c, args[0], scope, types.string), types.string, args[0])
+        }
+        const labelLocal = new BindLocal(c.newLocal("label", types.string, false), label)
+        const a = consoleArgs(c, args.slice(1), scope, true)
+        if (!a.ok) return errorOperand
+        const text = new BindLocal(
+            c.newLocal("time", types.string, false),
+            new BuiltinCall(types.string, "console.timeText", [new LocalRef(types.string, labelLocal.local)]),
+        )
+        const ref = new LocalRef(types.string, text.local)
+        const refExpr: Expr = ref
+        const values: Expr[] = [refExpr]
+        const spread: bool[] = [false]
+        for (let i = 0; i < a.values.length; i++) {
+            values.push(a.values[i])
+            spread.push(a.spread[i])
+        }
+        const known = new BuiltinCall(types.bool, "console.nonempty", [ref])
+        const call = new BuiltinCall(types.void, "console.if", [known, line(values, 1, a.spreads ? spread : null)])
+        const locals: BindLocal[] = [labelLocal]
+        for (const l of a.locals) locals.push(l)
+        locals.push(text)
+        return bindAround(locals, typed(call))
+    }
+    const fd = method === "warn" || method === "error" || method === "trace" ? 2 : 1
+    const a = consoleArgs(c, args, scope, false)
+    if (!a.ok) return errorOperand
+    // A format holds its values in locals, in order: each may be formatted several ways.
+    let b = a
+    if (!a.spreads && a.values.length >= 2 && kindOf(a.values[0].type) === "s") {
+        b = consoleArgs(c, [], scope, true)
+        for (const l of a.locals) b.locals.push(l)
+        for (let i = 0; i < a.values.length; i++) {
+            const v = a.values[i]
+            if (i === 0 && v.k === "string") {
+                b.values.push(v)
+                b.nodes.push(a.nodes[i])
+                b.spread.push(false)
+                continue
+            }
+            const local = c.newLocal("arg", v.type, false)
+            b.locals.push(new BindLocal(local, v))
+            b.values.push(new LocalRef(v.type, local))
+            b.nodes.push(a.nodes[i])
+            b.spread.push(false)
+        }
+    }
+    const shown = formatted(c, b, fd)
+    if (shown === null) return errorOperand
+    const spread = b.spreads ? b.spread : null
+    if (method === "trace") {
+        // "Trace: " and the message, then the stack, as Node prints an Error named Trace.
+        if (b.spreads) return c.fail(node, "Spread arguments are not supported yet.")
+        const parts: Expr[] = [new StringLit(types.string, shown.length > 0 ? "Trace: " : "Trace")]
+        for (const x of joined(shown, 2)) parts.push(x)
+        parts.push(new BuiltinCall(types.string, "console.stack", []))
+        return bindAround(b.locals, typed(line([new Concat(types.string, parts)], 2, null)))
+    }
+    const out = fd === 2 || method === "group" || method === "groupCollapsed" ? fd : 1
+    const printed = printLine(b, shown, out, spread)
+    if (method === "group" || method === "groupCollapsed") {
+        const label: Expr[] = shown.length > 0 ? [printed] : []
+        return bindAround(b.locals, typed(new BuiltinCall(types.void, "console.group", label)))
+    }
+    return bindAround(b.locals, typed(printed))
+}
+
+/**
+ * The line of a console call. A format that is not a constant is looked at
+ * when the program runs: without a `%` it changes nothing, and the values
+ * print as they are, without the work of formatting each.
+ */
+function printLine(b: ConsoleArgs, shown: Expr[], fd: int, spread: bool[] | null): Expr {
+    const formatted = line(shown, fd, spread)
+    if (shown.length === b.values.length || b.values[0].k === "string") return formatted
+    const plain = line(b.values, fd, spread)
+    const percent = new BuiltinCall(types.bool, "console.percent", [b.values[0]])
+    return new BuiltinCall(types.void, "console.if", [percent, formatted, plain])
+}
+
+/**
+ * `console.table(data, properties?)`: an array, a map, a set or an object
+ * as a table of its entries, by Node's rules; other values as console.log
+ * prints them. The table is made by code generated per type.
+ */
+function tableCall(c: Checker, args: Node[], node: Node, scope: Scope): Operand {
+    if (args.length < 1 || args.length > 2)
+        return c.fail(node, `'console.table' expects 1 to 2 argument(s), got ${args.length}.`)
+    const a = consoleArgs(c, [args[0]], scope, false)
+    if (!a.ok) return errorOperand
+    if (a.spreads) return c.fail(args[0], "Spread arguments are not supported yet.")
+    const values: Expr[] = [a.values[0]]
+    if (args.length === 2) {
+        const columns = arrayOf(types.string)
+        values.push(c.coerce(checkExpr(c, args[1], scope, columns), columns, args[1]))
+    }
+    return typed(new BuiltinCall(types.void, "console.table", values))
+}

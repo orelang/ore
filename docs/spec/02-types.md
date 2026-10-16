@@ -196,9 +196,16 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 
 | Function | Meaning |
 |---|---|
-| `console.log(...values)` | any values separated by spaces and a newline, to stdout, as Node prints them |
+| `console.log(...values)`, `console.info`, `console.debug` | any values separated by spaces and a newline, to stdout, as Node prints them; a first string is a format (below) |
+| `console.error(...values)`, `console.warn` | the same, to stderr |
 | `console.write(...values)` | values separated by spaces, to stdout, without a newline |
-| `console.error(...values)` | values separated by spaces and a newline, to stderr |
+| `console.trace(...values)` | `Trace: ` and the values to stderr, then the stack of debug frames (`    at f (file:line)`) |
+| `console.assert(condition, ...values)` | unless `condition` (a `bool`) holds, `Assertion failed` to stderr, with `: ` before a first string and the values |
+| `console.dir(value)` | a value as `util.inspect` formats it, strings quoted |
+| `console.table(data, properties?)` | an array, a map, a set or an object as Node's box-drawn table, with an index column; only the `properties` columns when given; other values as `log` prints them |
+| `console.group(...label)`, `console.groupCollapsed`, `console.groupEnd()` | the label, as `log` prints it, then every line printed is indented by two more spaces, until `groupEnd` |
+| `console.count(label?)`, `console.countReset(label?)` | `label: 3`, the times `count` was called with the label (default `"default"`) |
+| `console.time(label?)`, `console.timeLog(label?, ...values)`, `console.timeEnd(label?)` | the time since `time`, as Node writes it: `label: 1.234ms`, `1.234s`, `1:02.345 (m:ss.mmm)`; `timeEnd` stops the timer |
 | `process.panic(message)` | aborts with the message and a stack trace (status 2) |
 | `process.exit(code)` | exits with a status code |
 | `process.args` | the command-line arguments after the program name |
@@ -405,6 +412,25 @@ things differ from Node: the properties of object types are printed in
 alphabetical order (the order of their fields), and optional properties that
 are `null` are left out, as JavaScript leaves out those not set. Channels
 and C pointers cannot be printed.
+
+A first string followed by more values is a format, as Node's
+`util.format` reads it: `%s` takes the next value as a string (a string as
+it is, a number or a bigint as printed, an object one level deep), `%d` as
+a number (a string converted as `Number(s)` does, `true` as 1, other
+objects as `NaN`), `%i` as `parseInt` and `%f` as `parseFloat` give it,
+`%j` as JSON (an error when the type cannot be JSON), `%O` as `util.inspect`
+formats it, `%o` four levels deep, `%c` takes a CSS style and prints
+nothing, and `%%` is `%`; any other `%` stays. Values that the format does
+not take follow it, separated by spaces, as without a format. The warnings
+of `count`, `time` and the others (`Warning: No such label 'x' for
+console.timeEnd()`) go to stderr. `console.table` formats each cell as
+Node does: an object with more than two properties as `[Object]`, three
+entries of an array, on one line.
+
+An object literal's accessors print as Node prints accessor properties,
+`{ a: 1, b: [Getter], c: [Getter/Setter] }`, and a `RegExpMatch` as Node
+prints a match array: `[ '12', '1', index: 3, input: 'a 12', groups:
+undefined ]`, with `undefined` for a group that took no part.
 
 When the output shows colors, values are colored as Node colors them, with
 the same codes: numbers, bigints and booleans yellow, strings inside values

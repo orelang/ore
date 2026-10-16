@@ -90,7 +90,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2024](ORE2024.md) | Duplicate property '…'. |
 | [ORE2025](ORE2025.md) | Type '…' cannot be a Map key. |
 | [ORE2026](ORE2026.md) | Type '…' cannot be an element of a Set. |
-| [ORE2027](ORE2027.md) | '#' private names are not supported. Use the 'private' modifier. |
+| [ORE2027](ORE2027.md) | '#' private names are forbidden in Ore. Use the 'private' modifier. |
 | [ORE2028](ORE2028.md) | Computed property names are not supported. |
 | [ORE2029](ORE2029.md) | A value cannot have type '…'. |
 | [ORE2030](ORE2030.md) | Type 'null' is not assignable to type '…'. |

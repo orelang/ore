@@ -117,7 +117,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   kept and built upon).
 - `console.log` of any value, as Node prints it: objects, class instances
   (`Point { x: 1, y: 2 }`), arrays, maps, sets, nested; strings inside them
-  quoted, with Node's colors on a terminal (done).
+  quoted, with Node's colors on a terminal (done); the rest of Node's
+  `console`, format specifiers, `table`, `group`, `time`, `count` (done).
 - A designed command line: the output of `ore` (diagnostics, build and test
   progress, `help`) colored in the Ore brand's colors on terminals that have
   true color, the terminal's default colors otherwise, none when the output

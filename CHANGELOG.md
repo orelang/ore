@@ -106,6 +106,24 @@ before 1.0, a minor version may change the language.
   map function), `Array.of`, `Array.isArray` and `new Array<T>(n)` of zero
   values. `entries`, `keys` and `values` return arrays until there are
   iterators.
+- `console` has the rest of Node's API: `info` and `debug` (stdout),
+  `warn` and `trace` (stderr, with the stack), `assert`, `count` and
+  `countReset`, `time`, `timeLog` and `timeEnd` (`label: 1.234ms`),
+  `group`, `groupCollapsed` and `groupEnd` (every line printed indented by
+  two spaces a level), `table` (Node's box-drawn table of an array, a map,
+  a set or an object) and `dir`. A first string with more values after it
+  is a format, as in Node: `%s`, `%d`, `%i`, `%f`, `%j`, `%o`, `%O`, `%c`
+  and `%%`.
+- `console.log` prints an object literal's accessors as Node does
+  (`b: [Getter]`, `c: [Getter/Setter]`), and a `RegExpMatch` as Node prints
+  a match array (`[ '12', index: 3, input: 'a 12', groups: undefined ]`).
+- `array.length = n` truncates an array, as in JavaScript; a negative or
+  larger length panics, since an array has no holes.
+- An unknown member of a built-in namespace, as `Math.LN2` or
+  `process.argv`, is reported as such ("'Math' has no member 'LN2'")
+  instead of suggesting to call a function of the namespace. The errors for
+  `async` and `#private` names say `task.spawn()` and that `#` names are
+  forbidden in Ore.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with

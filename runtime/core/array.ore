@@ -151,6 +151,22 @@ function arraySplice(a: ptr, size: int, start: int, count: int, items: ptr): ptr
     return r
 }
 
+/**
+ * `a.length = n`: truncates to `n` elements, as JavaScript does. A negative
+ * length panics as JavaScript throws; so does a longer one, as an array has
+ * no holes to grow by.
+ */
+//ore:runtime ore_rt_array_set_length
+function arraySetLength(a: ptr, size: int, n: int): void {
+    const len = length(a)
+    if (n < 0) process.panic("Invalid array length")
+    if (n > len)
+        process.panic(
+            `Cannot grow an array from ${len} to ${n} elements by its length: arrays have no holes; use push()`,
+        )
+    if (n < len) replace(a, size, n, len - n, arrayNew(size, 0, elements(a)))
+}
+
 /** A copy of the elements in [start, end), with JavaScript `slice` offsets. */
 //ore:runtime ore_rt_array_slice
 function arraySlice(a: ptr, size: int, start: int, end: int): ptr {
