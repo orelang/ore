@@ -50,6 +50,10 @@ before 1.0, a minor version may change the language.
   24-bit with `COLORTERM=truecolor`, the nearest of 256 with a `256color`
   TERM, the 16 basic colors otherwise. Piped output is unchanged.
 - `process.isatty(fd)`: whether a file descriptor is a terminal.
+  `fib`, `binary-trees` and `nbody` to start with. The script also prints a
+  table of peak memory (from `/usr/bin/time`), skips a benchmark that has a
+  `SKIP` file unless `ALL=1` or it is named exactly (`strings` for now), and
+  there are `channels`, `tasks` and `regex` benchmarks.
 - `ore run --watch` builds and runs the program again whenever one of its
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change

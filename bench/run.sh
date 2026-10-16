@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # Runs the benchmarks in bench/<name>/ with Ore, Bun, Node and Go, checks that
-# every runtime prints the same output, and prints a markdown table of times.
+# every runtime prints the same output, and prints a markdown table of times
+# and one of peak memory.
 #
 # Usage: bench/run.sh [filter...]
 #   filter      run only the benchmarks whose name contains one of the filters
 #   ORE=path    the Ore compiler (default: ore on the PATH)
 #   RUNS=n      timed runs per benchmark and runtime (default: 5)
 #   RUNTIMES    the runtimes to try (default: "ore bun node go")
+#   ALL=1       also run the benchmarks that have a SKIP file
 #
 # Times are the best of RUNS runs in milliseconds, measured with hyperfine when
-# it is installed and with the shell's clock otherwise. A runtime that is not
+# it is installed and with the shell's clock otherwise. Memory is the maximum
+# resident set size of the run that checks the output, in megabytes, read from
+# /usr/bin/time (`-l` on macOS, `-v` on Linux). A runtime that is not
 # installed is skipped; a runtime whose output differs from the others is
-# reported and left out of the table.
+# reported and left out of the table. A benchmark whose directory has a SKIP
+# file (its first line says why) runs only with ALL=1 or when a filter is its
+# exact name.
 set -u
 
 root=$(cd "$(dirname "$0")" && pwd)
@@ -72,6 +78,35 @@ measure() {
     awk -v us="$best" 'BEGIN { printf "%.1f\n", us / 1000 }'
 }
 
+# The flag that makes /usr/bin/time print the maximum resident set size:
+# -l on macOS and the BSDs (in bytes), -v with GNU time (in kilobytes).
+timeflag=""
+if [ -x /usr/bin/time ]; then
+    if /usr/bin/time -l true >/dev/null 2>&1; then
+        timeflag=-l
+    elif /usr/bin/time -v true >/dev/null 2>&1; then
+        timeflag=-v
+    fi
+fi
+[ -n "$timeflag" ] || say "not measuring memory: no /usr/bin/time with -l or -v"
+
+# Runs a command once with its output in $work/out-$2, its errors and the
+# report of /usr/bin/time in $work/err, and prints its peak memory in
+# megabytes, or "-" when it cannot be measured. Fails when the command fails.
+run_once() {
+    if [ -z "$timeflag" ]; then
+        sh -c "$1" >"$work/out-$2" 2>"$work/err" || return 1
+        echo "-"
+        return
+    fi
+    # Without sh -c in between, so that the memory is the program's own.
+    eval "/usr/bin/time $timeflag $1" >"$work/out-$2" 2>"$work/err" || return 1
+    awk -v flag="$timeflag" '
+        flag == "-l" && /maximum resident set size/ { mb = $1 / 1048576 }
+        flag == "-v" && /Maximum resident set size/ { mb = $NF / 1024 }
+        END { if (mb == "") print "-"; else printf "%.1f\n", mb }' "$work/err"
+}
+
 # Quotes a string for sh -c.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
@@ -81,24 +116,50 @@ else
     say "timing without hyperfine, best of $runs runs"
 fi
 
+# Prints the cells of a table row: each number with a unit and its ratio to
+# the smallest number of the row, anything else as it is.
+cells() {
+    unit=$1
+    format=$2
+    shift 2
+    printf '%s\n' "$@" | awk -v unit="$unit" -v format="$format" '
+        { t[NR] = $1; if ($1 ~ /^[0-9.]+$/ && (best == "" || $1 + 0 < best)) best = $1 + 0 }
+        END {
+            for (i = 1; i <= NR; i++) {
+                if (t[i] ~ /^[0-9.]+$/) {
+                    printf " " format " %s", t[i], unit
+                    if (best > 0) printf " (%.2fx)", t[i] / best
+                    printf " |"
+                } else printf " %s |", t[i]
+            }
+        }'
+}
+
 table=""
+memtable=""
 failed=0
 for dir in "$root"/*/; do
     name=$(basename "$dir")
     [ -f "$dir/size" ] || continue
+    exact=0
     if [ $# -gt 0 ]; then
         match=0
         for filter in "$@"; do
             case $name in *"$filter"*) match=1 ;; esac
+            [ "$name" = "$filter" ] && exact=1
         done
         [ "$match" = 1 ] || continue
+    fi
+    if [ -f "$dir/SKIP" ] && [ "${ALL:-0}" != 1 ] && [ "$exact" = 0 ]; then
+        say "== $name: skipped, $(head -n 1 "$dir/SKIP") (run it with ALL=1 or bench/run.sh $name)"
+        continue
     fi
     size=$(tr -d ' \n' <"$dir/size")
     say "== $name ($size)"
 
     reference=""
-    row="| $name |"
     times=""
+    memories=""
     for runtime in $available; do
         command=""
         case $runtime in
@@ -123,12 +184,13 @@ for dir in "$root"/*/; do
         esac
 
         time="-"
+        memory="-"
         if [ -n "$command" ]; then
-            if sh -c "$command" >"$work/out-$runtime" 2>"$work/err"; then
+            if memory=$(run_once "$command" "$runtime"); then
                 if [ -z "$reference" ]; then reference=$runtime; fi
                 if cmp -s "$work/out-$reference" "$work/out-$runtime"; then
                     if time=$(measure "$command"); then
-                        say "  $runtime: $time ms"
+                        say "  $runtime: $time ms, $memory MB"
                     else
                         say "  $runtime: failed while timing"
                         time="-"
@@ -138,28 +200,28 @@ for dir in "$root"/*/; do
                     say "  $runtime: output differs from $reference"
                     diff "$work/out-$reference" "$work/out-$runtime" | sed 's/^/    /' >&2
                     time="wrong"
+                    memory="wrong"
                     failed=1
                 fi
             else
                 say "  $runtime: failed"
                 sed 's/^/    /' "$work/err" >&2
                 time="failed"
+                memory="failed"
                 failed=1
             fi
         fi
         times="$times $time"
+        memories="$memories $memory"
     done
 
-    # Each cell is the time and its ratio to the fastest runtime of the row.
-    row=$row$(printf '%s\n' $times | awk '
-        { t[NR] = $1; if ($1 ~ /^[0-9.]+$/ && (best == "" || $1 + 0 < best)) best = $1 + 0 }
-        END {
-            for (i = 1; i <= NR; i++) {
-                if (t[i] ~ /^[0-9.]+$/) printf " %.0f ms (%.2fx) |", t[i], t[i] / best
-                else printf " %s |", t[i]
-            }
-        }')
-    table="$table$row
+    # Each cell is the time and its ratio to the fastest runtime of the row,
+    # and the memory and its ratio to the smallest.
+    # shellcheck disable=SC2086
+    table="$table| $name |$(cells ms "%.0f" $times)
+"
+    # shellcheck disable=SC2086
+    memtable="$memtable| $name |$(cells MB "%.1f" $memories)
 "
 done
 
@@ -172,7 +234,15 @@ for runtime in $available; do
     rule="$rule---:|"
 done
 echo
+echo "Time (best of $runs runs):"
+echo
 echo "$header"
 echo "$rule"
 printf '%s' "$table"
+echo
+echo "Peak memory (maximum resident set size):"
+echo
+echo "$header"
+echo "$rule"
+printf '%s' "$memtable"
 exit $failed

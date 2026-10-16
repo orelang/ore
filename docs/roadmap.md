@@ -108,7 +108,9 @@ exports, type assertions (Ore converts: `i32(x)`).
   strings, maps, allocation, JSON, channels and tasks against goroutines and
   promises, regular expressions), run by one script that prints a table of
   times and memory, kept in the repository with their results (started:
-  `bench/run.sh` with `fib`, `binary-trees` and `nbody`, timing only).
+  `bench/run.sh` times and measures peak memory of numbers, strings, maps,
+  allocation, JSON, channels, tasks and regular expressions; the results are
+  not kept yet).
 - Modules from GitHub: `import { x } from "https://github.com/owner/repo/..."`
   resolves a module of a repository by its URL, without vendoring it into
   the project: it is downloaded into the cache (`~/.cache/ore`), and
