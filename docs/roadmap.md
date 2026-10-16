@@ -96,8 +96,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   declarations needs a checker whose state for a group of modules can be
   kept and built upon).
 - `console.log` of any value, as Node prints it: objects, class instances
-  (`Point { x: 1, y: 2 }`), arrays, maps, sets, nested and with colors on a
-  terminal; strings inside them quoted.
+  (`Point { x: 1, y: 2 }`), arrays, maps, sets, nested; strings inside them
+  quoted (done); colors on a terminal.
 - A designed command line: the output of `ore` (diagnostics, build and test
   progress, `help`) colored in the Ore brand's colors on terminals that have
   true color, the terminal's default colors otherwise, none when the output

@@ -26,6 +26,16 @@ before 1.0, a minor version may change the language.
   its branch has a new commit; offline, the cached commit is used with a
   warning. `ore cache` counts the downloaded modules, `ore cache clean`
   removes them.
+- `console.log` prints any value as Node's `util.inspect` does: arrays
+  `[ 1, 2, 3 ]`, objects `{ x: 1, y: 'a' }`, class instances
+  `Point { x: 1, y: 2 }` (by the class of the instance, also behind an
+  interface), `Map(2) { 'a' => 1, 'b' => 2 }`, `Set(1) { 1 }`, tuples,
+  functions `[Function: name]`, errors `Error: message`; strings inside
+  values quoted, objects deeper than two levels as `[Object]`, at most 100
+  entries, cycles as `[Circular *1]`, and Node's line breaking at 80
+  columns with arrays of short entries grouped in columns. The code that
+  formats a type is generated for it. `-0` prints as `-0`.
+
 - `ore run --watch` builds and runs the program again whenever one of its
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change

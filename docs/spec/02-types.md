@@ -105,7 +105,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 
 | Function | Meaning |
 |---|---|
-| `console.log(...values)` | values separated by spaces and a newline, to stdout |
+| `console.log(...values)` | any values separated by spaces and a newline, to stdout, as Node prints them |
 | `console.write(...values)` | values separated by spaces, to stdout, without a newline |
 | `console.error(...values)` | values separated by spaces and a newline, to stderr |
 | `process.panic(message)` | aborts with the message and a stack trace (status 2) |
@@ -232,9 +232,36 @@ const code = process.command.run("cc", ["-c", "main.c"], { cwd: "build", env: ne
   fills one while this program reads the other cannot deadlock. Many tasks
   can run programs at the same time.
 
-Printed values are numbers, `bool`, strings and unions of them (`null` prints
-as `null`). Floats are printed in the shortest form that round-trips, like
-JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`.
+`console.log` prints any value as Node's `util.inspect` does without colors;
+the code that formats a type is generated for it. Strings among the
+arguments are printed as they are, and the arguments are separated by
+spaces. Floats are printed in the shortest form that round-trips, like
+JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`, `-0`. Inside
+other values strings are quoted (`'a'`, or `"it's"`, with escapes such as
+`\n`), and:
+
+| Value | Printed |
+|---|---|
+| `null` | `null` |
+| array, tuple | `[ 1, 2, 3 ]`, `[]` |
+| object type | `{ x: 1, y: 'a' }`, `{}`; a property that is not an identifier quoted, `{ 'a-b': 1 }` |
+| class instance | `Point { x: 1, y: 2 }`, by the class of the instance (a subclass, or the class behind an interface) |
+| `Map`, `Set` | `Map(2) { 'a' => 1, 'b' => 2 }`, `Set(1) { 1 }` |
+| function | `[Function: name]`, `[Function (anonymous)]` for an arrow function |
+| `Error` | `Error: message`, the first line of what Node prints |
+| string literal union | its value, `'circle'` |
+
+As in Node, objects nested more than two levels deep print as `[Object]`
+(`[Array]`, `[Point]`, `[Map]`), at most 100 entries of an array, a map or
+a set are printed and then `... 20 more items`, and an object inside
+itself is `[Circular *1]`, the outer one marked `<ref *1>`. A value wider
+than 80 columns, counting its indentation, or with more than three levels
+nested in it, is broken into lines indented by 2 spaces, an entry per line;
+arrays of more than 6 short entries are grouped in aligned columns. Two
+things differ from Node: the properties of object types are printed in
+alphabetical order (the order of their fields), and optional properties that
+are `null` are left out, as JavaScript leaves out those not set. Channels
+and C pointers cannot be printed.
 
 JSON is typed, as in Go: the code that writes and reads a type is generated
 for it. Numbers, `bool`, strings, string literal types, `null`, arrays,
