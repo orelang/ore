@@ -233,7 +233,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
     }
 
     for (const member of members(decl)) {
-        if (member.kind === "SemicolonClassElement") continue
+        if (member.kind === "SemicolonClassElement" || member.kind === "ClassStaticBlockDeclaration") continue
         const flags = memberModifiers(c, member)
         if (flags.isStatic) {
             declareStatic(c, info, member, flags, scope)
@@ -712,24 +712,38 @@ export function genericStaticField(c: Checker, member: Node, generic: Generic): 
     return local
 }
 
-/** The top-level code of a class declaration: its static fields, initialized in order. */
+/**
+ * The top-level code of a class declaration: its static fields, initialized
+ * in order, and its `static { ... }` blocks, run in order with them.
+ */
 export function initStatics(c: Checker, decl: Node, scope: Scope, out: Stmt[]) {
     const generic = c.genericsByDecl.get(decl)
-    if (generic !== null) {
-        for (const member of members(decl)) {
-            if (member.kind !== "PropertyDeclaration" || !hasModifier(member, "StaticKeyword")) continue
-            const nameAt = member.child("name")
-            if (nameAt === null || !isIdentifier(nameAt)) continue
-            initStatic(c, genericStaticField(c, member, generic), member, nameAt.text, scope, out)
-        }
-        return
-    }
     let info: ClassInfo | null = null
-    for (const i of c.classes) if (i.decl === decl) info = i
-    if (info === null) return
-    for (const [_, member] of info.statics) {
-        const local = member.local
-        if (local !== null) initStatic(c, local, member.decl, member.name, scope, out)
+    if (generic === null) for (const i of c.classes) if (i.decl === decl) info = i
+    if (generic === null && info === null) return
+    const statics: StaticMember[] = []
+    if (info !== null) for (const [_, entry] of info.statics) statics.push(entry)
+    const className = nameNode(decl).text
+    for (const member of members(decl)) {
+        if (member.kind === "ClassStaticBlockDeclaration") {
+            // Like a static method, a block has no `this`.
+            c.staticClass = className
+            out.push(checkBlock(c, body(member)!, scope))
+            c.staticClass = null
+            continue
+        }
+        if (member.kind !== "PropertyDeclaration" || !hasModifier(member, "StaticKeyword")) continue
+        const nameAt = member.child("name")
+        if (nameAt === null) continue
+        if (generic !== null) {
+            if (isIdentifier(nameAt))
+                initStatic(c, genericStaticField(c, member, generic), member, nameAt.text, scope, out)
+            continue
+        }
+        for (const entry of statics) {
+            const local = entry.local
+            if (entry.decl === member && local !== null) initStatic(c, local, entry.decl, entry.name, scope, out)
+        }
     }
 }
 

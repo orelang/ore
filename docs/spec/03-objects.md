@@ -63,6 +63,10 @@
   may have type parameters of its own (`static of<T>(x: T): T[]`), inferred
   from each call's arguments or written (`List.of<string>("a")`).
   `private` static members are used only inside the class declaration.
+- A `static { ... }` block runs where the class is declared, in order with
+  the initializers of the static fields around it. Its variables are local
+  to it, and like a static method it has no `this`
+  ([ORE3002](../errors/ORE3002.md)): it names the class.
 - A generic class can have static fields and methods, generic methods too
   (`Box.of<U>(v)`), as in TypeScript: one field or function shared by every
   instance of the class, which cannot name the class's type parameters

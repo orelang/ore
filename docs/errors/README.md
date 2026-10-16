@@ -139,7 +139,7 @@ The codes are grouped by the part of the language they concern:
 | Code | Message |
 |---|---|
 | [ORE3001](ORE3001.md) | Field initializers cannot use 'this'. |
-| [ORE3002](ORE3002.md) | A static method has no 'this'; name the class: '….name'. |
+| [ORE3002](ORE3002.md) | A static method or block has no 'this'; name the class: '….name'. |
 | [ORE3003](ORE3003.md) | 'this' can only be used inside a class. |
 | [ORE3004](ORE3004.md) | 'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'. |
 | [ORE3005](ORE3005.md) | Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'. |

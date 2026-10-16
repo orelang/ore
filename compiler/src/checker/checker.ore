@@ -220,10 +220,13 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
     return new CheckResult(hasErrors ? null : c.module, c.diagnostics, c.info)
 }
 
-/** Whether a class declaration has static fields, which its top-level code initializes. */
+/** Whether a class declaration has static fields or blocks, which its top-level code initializes and runs. */
 function hasStaticFields(stmt: Node): bool {
     if (stmt.kind !== "ClassDeclaration") return false
-    for (const m of members(stmt)) if (m.kind === "PropertyDeclaration" && hasModifier(m, "StaticKeyword")) return true
+    for (const m of members(stmt)) {
+        if (m.kind === "PropertyDeclaration" && hasModifier(m, "StaticKeyword")) return true
+        if (m.kind === "ClassStaticBlockDeclaration") return true
+    }
     return false
 }
 

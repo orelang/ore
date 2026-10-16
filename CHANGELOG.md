@@ -5,6 +5,8 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `static { ... }` blocks in classes, run where the class is declared, in
+  order with the static field initializers.
 - Methods can be called on a union of classes when every class has the
   method with the same type: `(a: Cat | Dog) => a.speak()` runs the method
   of the class the value holds, instead of reporting ORE4071.
