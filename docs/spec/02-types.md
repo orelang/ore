@@ -9,6 +9,7 @@
 | `f32` `f64` | IEEE 754 floating point |
 | `bool` | `true` / `false` |
 | `string` | immutable UTF-8 byte sequence |
+| `bigint` | integer of any size, immutable (see [BigInt](#bigint)) |
 | `void` | no value |
 
 Aliases: `int = i64`, `uint = u64`, `byte = u8`, `number = f64`,
@@ -71,6 +72,72 @@ const d: u8 = u8(c)        // float -> int truncates toward zero
   exponent gives a float (`2 ** -1` is `0.5`). `**=` assigns it.
 - Comparison uses `===` / `!==`. `==` and `!=` are rejected.
 
+## BigInt
+
+`bigint` is JavaScript's: an integer of any size.
+
+```ts
+let factorial = 1n
+for (let i = 1n; i <= 25n; i++) factorial *= i
+console.log(factorial, `${factorial % 1000n}`, factorial.toString(16))   // 15511210043330985984000000n 0 cd4a0619fb0907bc00000
+```
+
+- Literals end in `n`: `123n`, `0x1fn`, `0o17n`, `0b101n`, `1_000n`.
+- `+ - * / % **`, unary `-`, `& | ^ ~ << >>`, the comparisons and the
+  compound assignments, `++` and `--` work on two bigints. `/` truncates
+  toward zero and `%` has the sign of the dividend; dividing by `0n` panics
+  (`Division by zero`), and so does a negative exponent. The bitwise
+  operators work on two's complement with infinitely many sign bits, as in
+  JavaScript: `-12n & 10n` is `0n`, `~5n` is `-6n`. `>>` rounds toward
+  negative infinity, the count of a shift is a bigint, and a negative count
+  shifts the other way. `>>>` and unary `+` are rejected.
+- A bigint and a number never mix, as in JavaScript (where `1n + 1` throws a
+  `TypeError`): `big + 1` is a compile error that asks for `1n`, and an
+  operation or comparison of a `bigint` with an `int` asks for an explicit
+  conversion. An integer constant is not a bigint: `let b: bigint = 5` is an
+  error.
+- Values have at most 2^30 bits, as in V8; a larger result panics
+  (`Maximum BigInt size exceeded`).
+- `===` compares values, as do the keys of a `Map` and the elements of a
+  `Set`. `typeof b` is `"bigint"`, which narrows unions. A `switch` can test
+  bigints. `sort()` without a comparator orders an array of bigints by value
+  (JavaScript compares their text).
+- The zero value is `0n`.
+
+Conversions:
+
+- `BigInt(x)` of an integer type is its value. Of `f32` or `f64` it is the
+  value of an integral float, and a float with a fraction, NaN or an
+  infinity panics, as JavaScript's `RangeError`: `The number 1.5 cannot be
+  converted to a BigInt because it is not an integer`. Of an untyped
+  constant it is a constant, exact: `BigInt(2 ** 70)`, `BigInt(1e3)`
+  (JavaScript rounds `9007199254740993` to a double first); `BigInt(1.5)`
+  is a compile error.
+- `BigInt(s)` of a string reads it as JavaScript does: white space around,
+  then digits with a `0x`, `0o` or `0b` prefix, or decimal digits after a
+  sign; only white space is `0n`. Other text panics, as JavaScript's
+  `SyntaxError`: `Cannot convert 12x to a BigInt`. `BigInt.parse(s)` reads
+  the same and returns `null` instead; `BigInt.parse(s, radix)` reads a sign
+  and digits in a radix from 2 to 36.
+- `i64(b)`, `u8(b)` and the other integer conversions keep the low bits of
+  the value in two's complement, as `BigInt.asIntN` and `BigInt.asUintN`
+  do: `u8(300n)` is `44`, `u64(-1n)` is `18446744073709551615`. `f64(b)` and
+  `f32(b)` are the nearest float, ties to even, and an infinity beyond the
+  range.
+- `BigInt.asIntN(bits, b)` and `BigInt.asUintN(bits, b)` are `b` modulo
+  2^bits, from -2^(bits-1) or from 0.
+- `b.toString(radix = 10)` and template literals write the digits:
+  `` `${-5n}` `` is `-5`. `console.log` writes the suffix too, as Node does:
+  `console.log(5n)` prints `5n`. A radix outside 2 to 36 panics.
+- JSON has no bigints: `JSON.stringify` of a type with a `bigint` is a
+  compile error (JavaScript throws a `TypeError`).
+
+A bigint is a reference to an immutable value of the runtime
+(`runtime/core/bigint.ore`): the number of 32-bit limbs and its sign, then
+the limbs. `0n` is the null reference, so zeroed memory holds `0n`; a
+`bigint | null` is a tagged union. Constants are in the program's read-only
+data. Division is Knuth's algorithm D, multiplication schoolbook.
+
 ## Variables
 
 - `let` declares a mutable variable, `const` an immutable one.
@@ -123,6 +190,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
 | `Number.NaN`, `Number.POSITIVE_INFINITY`, `Number.NEGATIVE_INFINITY`, `Number.MAX_VALUE`, `Number.MIN_VALUE`, `Number.EPSILON`, `Number.MAX_SAFE_INTEGER`, `Number.MIN_SAFE_INTEGER` | `f64` constants, as in JavaScript (no global `NaN` and `Infinity`) |
 | `Number.isNaN(x)`, `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)` | predicates on an `f64`, as in JavaScript |
+| `BigInt(x)`, `BigInt.parse(s, radix?)`, `BigInt.asIntN(bits, b)`, `BigInt.asUintN(bits, b)` | bigints from numbers and text, and modulo a power of two (see [BigInt](#bigint)) |
 | `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
@@ -141,9 +209,10 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 
 Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
 
-`String`, `fs` and `process` are partly written in Ore
-(`runtime/core/string.ore`, `runtime/core/fs.ore` and
-`runtime/core/process.ore`): the exports of these modules are members of
+`String`, `fs`, `process`, `Number` and `BigInt` are partly written in Ore
+(`runtime/core/string.ore`, `runtime/core/fs.ore`,
+`runtime/core/process.ore`, `runtime/core/number.ore` and
+`runtime/core/bigint.ore`): the exports of these modules are members of
 the namespaces, classes and types included, so `fs.FileInfo`,
 `process.Child` and `process.CommandOptions` are types.
 
@@ -243,6 +312,7 @@ other values strings are quoted (`'a'`, or `"it's"`, with escapes such as
 | Value | Printed |
 |---|---|
 | `null` | `null` |
+| bigint | `10n` |
 | array, tuple | `[ 1, 2, 3 ]`, `[]` |
 | object type | `{ x: 1, y: 'a' }`, `{}`; a property that is not an identifier quoted, `{ 'a-b': 1 }` |
 | class instance | `Point { x: 1, y: 2 }`, by the class of the instance (a subclass, or the class behind an interface) |

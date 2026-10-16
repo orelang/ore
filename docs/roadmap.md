@@ -55,7 +55,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   - default values in destructuring, and `...rest` in object destructuring
     (done), optional properties of object types (done);
   - optional, default and rest parameters of closures (done);
-  - `**` and `satisfies` (done), `bigint` literals (`10n`);
+  - `**` and `satisfies` (done), `bigint` with its literals (`10n`),
+    operators, conversions and the namespace `BigInt` (done);
   - overloads (several signatures of one function; done for top-level
     functions);
   - generic closures, nested generic functions; default type arguments

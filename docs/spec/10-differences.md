@@ -30,4 +30,8 @@ Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
 | `map.get(missing)` | `undefined` | `null` |
 | `map.keys()` | iterator | array |
 | `[10, 9, 1].sort()` | `[1, 10, 9]` (as strings) | `[1, 9, 10]` |
+| `[10n, 9n, 1n].sort()` | `[1n, 10n, 9n]` (as strings) | `[1n, 9n, 10n]` |
+| `1n < 2`, `1n == 1` | compare the values | compile error: no mixing of bigints and numbers |
+| `BigInt(9007199254740993)` | `9007199254740992n` (the double) | `9007199254740993n` (constants are exact) |
+| `BigInt(x)` of a fraction or bad text, `1n / 0n` | throw | panic (`BigInt(1.5)` of a constant is a compile error) |
 | generic bodies | checked once | checked per instance |

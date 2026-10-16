@@ -36,6 +36,14 @@ before 1.0, a minor version may change the language.
   columns with arrays of short entries grouped in columns. The code that
   formats a type is generated for it. `-0` prints as `-0`.
 
+- `bigint`, as in JavaScript: literals (`10n`, `0x1fn`), arithmetic with
+  truncating division, `**`, shifts and bitwise operations in two's
+  complement, comparison by value (also as `Map` keys and `Set` elements),
+  `BigInt(x)` from integers, integral floats and text, `i64(b)`, `f64(b)` and
+  the other conversions back, `toString(radix)`, `BigInt.parse`,
+  `BigInt.asIntN` and `BigInt.asUintN`. Bigints and numbers do not mix:
+  `1n + 1` is a compile error (`ORE2065`). `console.log` prints `10n`, as
+  Node does.
 - `ore run --watch` builds and runs the program again whenever one of its
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change
