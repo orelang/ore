@@ -1,0 +1,37 @@
+// Mandelbrot from the Computer Language Benchmarks Game: computes the n×n
+// bitmap of the set, one bit per pixel, and prints its FNV-1a hash instead of
+// the PBM file.
+
+const n = (process.args.length > 0 ? Number.parseInt(process.args[0]) : null) ?? 4000
+
+const bitmap: u8[] = []
+for (let y = 0; y < n; y++) {
+    const ci = (2.0 * f64(y)) / f64(n) - 1.0
+    let bits = 0
+    for (let x = 0; x < n; x++) {
+        const cr = (2.0 * f64(x)) / f64(n) - 1.5
+        let zr = 0.0
+        let zi = 0.0
+        let tr = 0.0
+        let ti = 0.0
+        let i = 0
+        while (i < 50 && tr + ti <= 4.0) {
+            zi = 2.0 * zr * zi + ci
+            zr = tr - ti + cr
+            tr = zr * zr
+            ti = zi * zi
+            i++
+        }
+        bits = bits << 1
+        if (tr + ti <= 4.0) bits = bits | 1
+        if (x % 8 === 7) {
+            bitmap.push(u8(bits))
+            bits = 0
+        }
+    }
+    if (n % 8 !== 0) bitmap.push(u8(bits << (8 - (n % 8))))
+}
+
+let hash: u32 = 2166136261
+for (const b of bitmap) hash = (hash ^ u32(b)) * 16777619
+console.log(n, bitmap.length, hash)
