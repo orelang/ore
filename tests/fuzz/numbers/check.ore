@@ -1,0 +1,29 @@
+// Reads lines of tests/fuzz/numbers/gen.mjs: the bits of a double, then what
+// Node printed for it; prints the lines where Ore prints otherwise, or parses
+// Node's text back to other bits.
+const text = fs.readFile(process.args[0])
+if (text instanceof Error) process.panic(text.message)
+let checked = 0
+let wrong = 0
+for (const line of text.split("\n")) {
+    if (line === "") continue
+    const parts = line.split(" ")
+    let raw: u64 = 0
+    for (const c of parts[0]) raw = raw * 16 + u64(c >= 0x61 ? c - 0x61 + 10 : c - 0x30)
+    const x = unsafe.bitcast<f64>(raw)
+    const shown = `${x}`
+    const json = JSON.stringify(x)
+    const fixed = x.toFixed(3)
+    const back = Number.parseFloat(parts[1])
+    // Number.parseFloat gives null where JavaScript gives NaN.
+    const same = Number.isNaN(x) ? back === null : back !== null && unsafe.bitcast<u64>(back) === raw
+    checked++
+    if (shown !== parts[1] || json !== parts[2] || fixed !== parts[3] || !same) {
+        wrong++
+        if (wrong <= 20)
+            console.log(
+                `${parts[0]}: node ${parts[1]} ${parts[2]} ${parts[3]}, ore ${shown} ${json} ${fixed}, parsed back ${back}`,
+            )
+    }
+}
+console.log(`numbers: ${checked} checked, ${wrong} differ`)
