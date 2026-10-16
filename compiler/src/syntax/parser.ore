@@ -1550,6 +1550,7 @@ export class Parser {
 
     type(): Node {
         if (this.at("LessThanToken")) return this.functionType()
+        if (this.at("NewKeyword")) return this.functionType()
         if (this.at("OpenParenToken")) {
             const functionType = this.speculate(() => this.functionType())
             if (functionType !== null) return functionType
@@ -1583,9 +1584,10 @@ export class Parser {
         return type
     }
 
+    /** `(params) => T`, or a constructor type, `new (params) => T`. */
     private functionType(): Node {
         const start = this.token().start
-        const node = new Node("FunctionType", start, start)
+        const node = new Node(this.eat("NewKeyword") ? "ConstructorType" : "FunctionType", start, start)
         if (this.at("LessThanToken")) node.addAll(this.typeParameters(), "typeParameters")
         node.addAll(this.parameters(), "parameters")
         this.expect("EqualsGreaterThanToken")

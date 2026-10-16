@@ -1,0 +1,14 @@
+// A read-only array or tuple cannot be changed through its type.
+const ro: readonly int[] = [1, 2]
+ro.push(3) // error: Property 'push' does not exist on type 'readonly i64[]'.
+ro.pop() // error: Property 'pop' does not exist on type 'readonly i64[]'.
+ro.sort() // error: Property 'sort' does not exist on type 'readonly i64[]'.
+ro.splice(0, 1) // error: Property 'splice' does not exist on type 'readonly i64[]'.
+ro[0] = 5 // error: Index signature in type 'readonly i64[]' only permits reading.
+const m: int[] = ro // error: The type 'readonly i64[]' is 'readonly' and cannot be assigned to the mutable type 'i64[]'.
+const rt: readonly [int, string] = [1, "a"]
+rt[0] = 2 // error: Cannot assign to '0' because it is a read-only property.
+function pick<T>(xs: T[], fallback: NoInfer<T>): T {
+    return xs[0]
+}
+pick([1, 2], "z") // error: Type 'string' is not assignable to type 'i64'.

@@ -352,8 +352,11 @@ names them is:
   is optional in both.
 - The utility types of TypeScript are global names: `Partial`, `Required`,
   `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys; a Map for any
-  string), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and
-  `Parameters`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
+  string), `Exclude`, `Extract`, `NonNullable`, `ReturnType`, `Parameters`,
+  `InstanceType` and `ConstructorParameters` (of `typeof C`, a class's
+  constructor type `new (params) => C`, which exists only in computations on
+  types), `NoInfer` (a generic call does not infer its type arguments from
+  that position) and `ReadonlyArray`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
   `PartialWithExclusion`, `DeepPartial`, `DeepRequired`, `DeepReadonly`,
   `DeepMutable`, `PickByValueType`, `OmitByValueType`, `KeysOfType`,
   `PartialByKeys`, `RequiredByKeys`, `ReadonlyByKeys`, `MutableByKeys`,

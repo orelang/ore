@@ -704,8 +704,9 @@ export class Converter {
             }
             case "ParenthesizedType":
                 return this.req(node.child("type"))
-            case "FunctionType": {
-                const fn = this.make("TSFunctionType", node)
+            case "FunctionType":
+            case "ConstructorType": {
+                const fn = this.make(node.kind === "FunctionType" ? "TSFunctionType" : "TSConstructorType", node)
                 fn.set("typeParameters", this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")))
                 fn.setAll("params", this.params(node.list("parameters")))
                 const type = node.child("type")

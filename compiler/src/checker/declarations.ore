@@ -1684,6 +1684,11 @@ export function inferFrom(
         if (type.kind === "array") inferFrom(c, elementType(n), type.elem, names, bindings, scope)
         return
     }
+    // `readonly T[]`: as `T[]`.
+    if (n.kind === "TypeOperator" && c.text(n).startsWith("readonly")) {
+        inferFrom(c, typeNode(n)!, type, names, bindings, scope)
+        return
+    }
     if (n.kind === "TupleType") {
         const elems = n.list("elements")
         if (type.kind === "struct" && type.tuple && type.fields.length === elems.length)
@@ -1701,7 +1706,9 @@ export function inferFrom(
             if (!bindings.has(name)) bindings.set(name, type)
             return
         }
-        if (name === "Array" && typeArgs.length === 1) {
+        // `NoInfer<T>`: the type arguments come from the other arguments.
+        if (name === "NoInfer" && typeArgs.length === 1) return
+        if ((name === "Array" || name === "ReadonlyArray") && typeArgs.length === 1) {
             if (type.kind === "array") inferFrom(c, typeArgs[0], type.elem, names, bindings, scope)
             return
         }

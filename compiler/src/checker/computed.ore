@@ -4,7 +4,7 @@
 // type that names them is. A generic type alias is resolved for each list of
 // type arguments, so their type parameters are known types here.
 
-import { Field, FuncType, type Type, arrayOf, membersOf, typeToString, types } from "../ir/types"
+import { Field, FuncType, type StructType, type Type, arrayOf, membersOf, readonlyArrayOf, typeToString, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
     constraint,
@@ -20,11 +20,13 @@ import {
     operand,
     parameters,
     properties,
+    questionToken,
     typeArguments,
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
 import { type Checker } from "./base"
+import { resolveBase } from "./classes"
 import { satisfiesConstraint } from "./declarations"
 import { checkExpr } from "./expressions"
 import { typeOf } from "./helpers"
@@ -232,11 +234,63 @@ function knownType(c: Checker, init: Node, scope: Scope, depth: int): Type | nul
 function valueType(c: Checker, symbol: ValueSymbol, at: Node): Type | null {
     if (symbol.k === "local") return c.untyped.has(symbol.local) ? null : symbol.local.type
     if (symbol.k === "func") return symbol.func.type
+    // `typeof C` of a class: its constructor, `new (params) => C`.
+    if (symbol.k === "class") {
+        const cls = symbol.type
+        return cls === null ? null : constructorType(c, cls)
+    }
     if (symbol.k !== "const") return null
     const declared = symbol.type
     if (declared !== null) return declared
     const value = symbol.value
     return value.k === "error" ? null : typeOf(c.toDefault(value, at))
+}
+
+/**
+ * The constructor type of a class, `new (params) => C`. Type aliases are
+ * resolved before the members of classes are declared, so the parameters
+ * come from the constructor's declaration, or the base class's without one.
+ */
+function constructorType(c: Checker, cls: StructType): FuncType | null {
+    const info = c.classInfos.get(cls.id)
+    if (info === null) return null
+    let decl: Node | null = null
+    for (const m of info.decl.list("members")) if (m.kind === "Constructor") decl = m
+    if (decl === null) {
+        resolveBase(c, info)
+        const base = cls.base
+        const inherited = base === null ? null : constructorType(c, base)
+        const params: Type[] = inherited === null ? [] : inherited.params
+        const type = new FuncType(params, cls)
+        if (inherited !== null) {
+            type.required = inherited.required
+            type.rest = inherited.rest
+        }
+        type.construct = true
+        return type
+    }
+    const params: Type[] = []
+    let required = -1
+    let rest = false
+    const list = parameters(decl)
+    for (let i = 0; i < list.length; i++) {
+        const p = list[i]
+        const annotation = typeNode(p)
+        if (annotation === null) return null
+        const t = c.resolveValueType(annotation, info.scope)
+        if (t === null) return null
+        const optional = questionToken(p) !== null || initializer(p) !== null
+        if (optional || dotDotDotToken(p) !== null) {
+            if (required === -1) required = i
+        }
+        if (dotDotDotToken(p) !== null) rest = true
+        params.push(questionToken(p) !== null ? c.unionOf([t, types.null]) : t)
+    }
+    const type = new FuncType(params, cls)
+    type.required = required
+    type.rest = rest
+    type.construct = true
+    return type
 }
 
 /**
@@ -320,10 +374,17 @@ export function typeQuery(c: Checker, node: Node, scope: Scope): Type | null {
 export function typeOperator(c: Checker, node: Node, scope: Scope): Type | null {
     const text = c.text(node)
     if (text.startsWith("keyof")) return keyofType(c, node, scope)
-    // `readonly T[]` is `T[]`: Ore does not have read-only arrays yet.
+    // `readonly T[]` and `readonly [A, B]`: arrays and tuples that cannot be changed through this type.
     if (text.startsWith("readonly")) {
         const inner = typeNode(node)
-        return inner !== null ? c.resolveType(inner, scope) : null
+        const type = inner !== null ? c.resolveType(inner, scope) : null
+        if (type !== null && type.kind === "array" && !type.template) return readonlyArrayOf(type.elem)
+        if (type !== null && type.kind === "struct" && type.tuple)
+            return c.tupleOf(
+                type.fields.map((f) => f.type),
+                true,
+            )
+        return type
     }
     c.error(node, "This type operator is not supported.")
     return null
@@ -388,8 +449,8 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
         }
         return true
     }
-    if (pattern.kind === "FunctionType") {
-        if (type.kind !== "func") return false
+    if (pattern.kind === "FunctionType" || pattern.kind === "ConstructorType") {
+        if (type.kind !== "func" || type.construct !== (pattern.kind === "ConstructorType")) return false
         const params = parameters(pattern)
         // `(...args: infer P) => R`: the parameters as a tuple.
         if (params.length === 1 && dotDotDotToken(params[0]) !== null) {

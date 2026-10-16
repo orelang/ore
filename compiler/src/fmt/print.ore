@@ -1103,11 +1103,12 @@ function printNode(n: ENode, args: Args): Doc {
             return printIntersection(n)
         case "TSUnionType":
             return printUnion(n, args)
-        case "TSFunctionType": {
+        case "TSFunctionType":
+        case "TSConstructorType": {
             let ps = printParams(n, false, true)
             const returnType = printTypeAnnotationProperty(n, "returnType")
             if (shouldGroupParams(n, returnType)) ps = g(ps)
-            return g(c([ps, returnType]))
+            return g(c([t(n.type === "TSConstructorType" ? "new " : ""), ps, returnType]))
         }
         case "TSTypeReference":
             return c([pk(n, "typeName"), pk(n, "typeArguments")])

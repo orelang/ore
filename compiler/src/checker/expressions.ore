@@ -68,6 +68,7 @@ import {
     isSubclass,
     isStringLike,
     membersOf,
+    readonlyTuple,
     sameType,
     types,
     typeToString,
@@ -833,11 +834,19 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         if (at.kind === "struct" && at.tuple) {
             const field = tupleField(c, at, argumentExpression(node), scope)
             if (field === null) return null
+            if (field.readonly) {
+                c.error(node, `Cannot assign to '${field.name}' because it is a read-only property.`)
+                return null
+            }
             c.info.types.set(node, field.type)
             return new AssignTargetClass(field.type, new FieldLValue(array, field.name))
         }
         if (at.kind !== "array") {
             c.error(expression(node), `Type '${typeToString(at)}' cannot be indexed.`)
+            return null
+        }
+        if (at.readOnly) {
+            c.error(node, `Index signature in type '${typeToString(at)}' only permits reading.`)
             return null
         }
         const index = checkIndex(c, argumentExpression(node), scope)
