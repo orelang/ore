@@ -60,7 +60,11 @@
   and can use the parameters before it and any declaration of the module,
   such as a class declared further down (`o = new Options()`, whose type is
   the class's, or `new Box<string>(...)` with the type arguments given or
-  inferred from the arguments). A last rest parameter `...xs: T[]`
+  inferred from the arguments), or a module variable or constant declared
+  further down (`sep = separator`, whose type is the variable's: its
+  annotation's, or its value's, typed ahead of the declaration, which needs
+  an annotation when the value has a function in it or calls a function
+  declared after the parameter's, ORE6086). A last rest parameter `...xs: T[]`
   receives the extra arguments as an array, where `...array` spreads in an
   array's elements (`f(1, ...xs, 2)`; `f(...xs)` alone passes `xs` itself).
   A [tuple](02-types.md#tuples) spreads into any parameters: `f(...t)`.

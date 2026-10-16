@@ -35,7 +35,6 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `obj.method` taken without a call | unbound (`this` is lost) | bound to `obj` |
 | a module variable read, by a function or a field initializer, before its declaration runs | throws a `ReferenceError` | its zero value |
 | a field without an annotation whose initializer uses a module variable declared below, used by top-level code before that declaration | the variable's type | compile error ([ORE5069](../errors/ORE5069.md)): annotate the field |
-| the default value of a parameter without an annotation using a module variable or constant | its type | compile error ("Cannot find name"): annotate the parameter (an annotated one sees every declaration of the module) |
 | integer literal `5` | `number` | `int` |
 | missing value | `undefined` | `null` |
 | `let x: unknown` | `undefined` | `null` |

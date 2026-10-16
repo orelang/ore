@@ -94,6 +94,7 @@ import {
     declareClassMembers,
     fillInterface,
     makeMethod,
+    moduleVariables,
     resolveBase,
 } from "./classes"
 import {
@@ -2230,11 +2231,15 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope, propert
             const saved = c.constructedEarly
             const before = c.diagnostics.length
             c.constructedEarly = false
-            const value = checkDefault(c, init, defaults, null)
+            // Module variables are declared by the top-level code, after the
+            // signatures: those the value uses are typed ahead of it.
+            const ahead = aheadScope(c, init, defaults, nameNode(p), new Set<string>())
+            const value = ahead !== null ? checkDefault(c, init, ahead, null) : null
             if (value !== null) type = value.type
             // A value that constructs a class declared further down has the class's
-            // type; its diagnostics come from checking it again with that type.
-            early = c.constructedEarly && value !== null
+            // type, as one using module variables has theirs; its diagnostics come
+            // from checking it again with that type.
+            early = (c.constructedEarly || ahead !== defaults) && value !== null
             if (early) while (c.diagnostics.length > before) c.diagnostics.pop()
             c.constructedEarly = saved
         } else c.error(nameNode(p), `Parameter '${c.text(nameNode(p))}' must have a type annotation.`)
@@ -2277,6 +2282,94 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope, propert
     }
     if (required !== -1) c.signatures.set(params, new Signature(params_, scope, required, rest))
     return params
+}
+
+/**
+ * The scope in which the default value `node` of the parameter named `param`,
+ * without an annotation, is checked for its type: `scope`, with the module
+ * variables it uses that the top-level code has not declared yet declared
+ * ahead, by the types of their annotations or values (`visiting`, the
+ * variables whose values are being typed, guards against a cycle). Null
+ * after reporting one whose value cannot be typed yet: one with a function
+ * in it, or using a function whose signature is not known yet.
+ */
+function aheadScope(c: Checker, node: Node, scope: Scope, param: Node, visiting: Set<string>): Scope | null {
+    const names = new Set<string>()
+    undeclaredNames(c, node, scope, names)
+    if (names.size === 0) return scope
+    const source = c.sourceOf(node)
+    const info = c.modules.get(source)
+    const outer = info !== null ? info.scope : scope
+    const ahead = new Scope(scope)
+    for (const stmt of c.statementsOf(source)) {
+        if (stmt.kind !== "VariableStatement") continue
+        const list = declarationList(stmt)
+        const isConst = declarationKind(list, source.text) === "const"
+        for (const d of declarations(list)) {
+            const id = nameNode(d)
+            if (!isIdentifier(id) || !names.has(id.text) || visiting.has(id.text)) continue
+            const annotation = typeNode(d)
+            if (annotation !== null) {
+                const declared = c.resolveValueType(annotation, outer)
+                if (declared !== null)
+                    ahead.declareValue(id.text, new LocalSymbol(c.newLocal(id.text, declared, !isConst), d))
+                continue
+            }
+            const init = initializer(d)
+            if (init === null) continue
+            // A function in the value is not made before its declaration.
+            let symbol: ValueSymbol | null = null
+            visiting.add(id.text)
+            const inner = hasFunction(init) ? null : aheadScope(c, init, outer, param, visiting)
+            visiting.delete(id.text)
+            if (inner !== null) {
+                // The value is checked again where it is declared, which reports its errors.
+                const errors = c.diagnostics.length
+                const savedFn = c.fn
+                const savedFacts = c.facts
+                if (c.fn === null) c.fn = new FuncContext(types.void, [], 0)
+                c.facts = [new Map<string, Type>()]
+                const value = checkExpr(c, init, inner, null)
+                if (isConst && (value.k === "untyped-int" || value.k === "untyped-float"))
+                    symbol = new ConstSymbol(value, null, d)
+                else if (value.k !== "error")
+                    symbol = new LocalSymbol(c.newLocal(id.text, c.toDefault(value, init).type, !isConst), d)
+                c.fn = savedFn
+                c.facts = savedFacts
+                c.truncateDiagnostics(errors)
+            }
+            if (symbol === null) {
+                c.error(
+                    param,
+                    `Parameter '${c.text(param)}' needs a type annotation: its default value uses '${id.text}', whose type is not known before its declaration.`,
+                )
+                return null
+            }
+            ahead.declareValue(id.text, symbol)
+        }
+    }
+    return ahead
+}
+
+/** Adds the variables of its module an expression names that are not declared yet. */
+function undeclaredNames(c: Checker, node: Node, scope: Scope, names: Set<string>) {
+    if (isIdentifier(node)) {
+        if (moduleVariables(c, node).has(node.text) && scope.lookupValue(node.text) === null) names.add(node.text)
+        return
+    }
+    // `a.name` names a member, not a variable.
+    if (node.kind === "PropertyAccessExpression") {
+        undeclaredNames(c, expression(node), scope, names)
+        return
+    }
+    for (const child of node.children) undeclaredNames(c, child, scope, names)
+}
+
+/** Whether an expression has a function in it. */
+function hasFunction(node: Node): bool {
+    const k = node.kind
+    if (k === "ArrowFunction" || k === "FunctionExpression") return true
+    return node.children.some(hasFunction)
 }
 
 /** Checks a default parameter value, for its type and errors; the value is created again at each call. */

@@ -331,6 +331,13 @@ before 1.0, a minor version may change the language.
   function called earlier, is `""`: it held a string that printed and
   measured as `""` but was not `=== ""` and became `null` as a `string |
   null`. A tagged union with `null` (`int | string | null`) is `null` then.
+- The default value of a parameter without an annotation may use module
+  variables and constants declared further down, as in TypeScript
+  (`function join(xs: string[], sep = separator)`): the variables are typed
+  ahead of the top-level code, by their annotations or values, where it
+  reported "Cannot find name". A variable whose value has a function in it,
+  or calls a function declared after the parameter's, needs an annotation,
+  on it or on the parameter (new: [ORE6086](docs/errors/ORE6086.md)).
 
 ## 0.5.0
 
