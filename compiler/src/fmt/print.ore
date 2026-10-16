@@ -591,7 +591,8 @@ function needsParens(n: ENode): bool {
             return (
                 (key === "objectType" && parent.type === "TSIndexedAccessType") ||
                 (key === "elementType" && parent.type === "TSArrayType") ||
-                parent.type === "TSTypeOperator"
+                parent.type === "TSTypeOperator" ||
+                parent.type === "TSOptionalType"
             )
         case "TSTypeQuery":
             return (
@@ -1070,6 +1071,12 @@ function printNode(n: ENode, args: Args): Doc {
             return printConditionalType(n)
         case "TSInferType":
             return c([t("infer "), pk(n, "typeParameter")])
+        case "TSOptionalType":
+            return c([pk(n, "typeAnnotation"), t("?")])
+        case "TSRestType":
+            return c([t("..."), pk(n, "typeAnnotation")])
+        case "TSNamedTupleMember":
+            return c([pk(n, "label"), t(n.optional ? "?: " : ": "), pk(n, "elementType")])
         case "TSMappedType":
             return printMappedType(n)
         case "TSTypeOperator":

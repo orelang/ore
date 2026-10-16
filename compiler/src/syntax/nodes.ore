@@ -124,6 +124,23 @@ export function dotDotDotToken(node: Node): Node | null {
     return node.child("dotDotDotToken")
 }
 
+/** The type of a tuple element, without its name, `?` or `...`: `T` of `name?: T`. */
+export function tupleElementType(node: Node): Node {
+    if (node.kind === "NamedTupleMember" || node.kind === "OptionalType" || node.kind === "RestType")
+        return required(node, "type")
+    return node
+}
+
+/** Whether a tuple element is optional: `T?` or `name?: T`. */
+export function isOptionalTupleElement(node: Node): bool {
+    return node.kind === "OptionalType" || (node.kind === "NamedTupleMember" && questionToken(node) !== null)
+}
+
+/** Whether a tuple element is a rest element: `...T` or `...name: T`. */
+export function isRestTupleElement(node: Node): bool {
+    return node.kind === "RestType" || (node.kind === "NamedTupleMember" && dotDotDotToken(node) !== null)
+}
+
 export function exclamationToken(node: Node): Node | null {
     return node.child("exclamationToken")
 }
