@@ -3,12 +3,13 @@
 The standard library.
 
 - `builtin.d.ore`: declarations visible in every module: the numeric types,
-  `console`, `Math`, `Number`, `fs`, `Date`, `task`, `process`, `JSON`,
+  `console`, `Math`, `Number`, `fs`, `Date`, `time`, `task`, `process`, `JSON`,
   `unsafe`, `Error` and `internal`. The checker implements them; built-ins
   live in namespaces, never as bare globals.
 - Namespaces written in Ore: the exports of `runtime/core/fs.ore`,
-  `runtime/core/process.ore` and `runtime/core/process-command.ore` are
-  members of `fs`, `process` and the nested `process.command`
+  `runtime/core/process.ore`, `runtime/core/process-command.ore` and
+  `runtime/core/time.ore` are members of `fs`, `process`, the nested
+  `process.command` and `time`
   (`namespaceModule` in `compiler/src/checker/builtins.ore`), classes and
   types included; builtin.d.ore declares them too, for documentation.
   - `fs`: `readFile`, `writeFile`, `exists`, and in Ore `readDir` (sorted
@@ -26,10 +27,20 @@ The standard library.
     `clearEnv`, `stdin`). Children start with `posix_spawn`
     (`runtime/core/spawn.ore`); their pipes and exits are awaited on the
     poller.
+  - `time`: everything in nanoseconds as `int`, as in Go: `now()` (a
+    monotonic clock), `unixNanos()` (the wall clock), the durations
+    `nanosecond`, `microsecond`, `millisecond`, `second`, `minute`, `hour`,
+    `day`, and `parse(text)` / `format(ns, options?)` (a `time.FormatOptions`:
+    `long`), a port of the npm package `ms` that returns and takes
+    nanoseconds where `ms` has milliseconds (`parse("1m")` is
+    60_000_000_000, `format(60 * second)` is "1m"); its texts are those of
+    `ms`, so a number without a unit is milliseconds, and it also knows
+    `us`/`µs` and `ns`.
 - Modules imported as `ore:<name>`: `ore:sync` (`Mutex`, `WaitGroup`),
   `ore:net` (TCP `listen`, `Listener`, `Conn`), `ore:test` (`test`,
   `describe`, the hooks, `expect` and its matchers, used by `ore test`), `ore:crypto` (`sha256`, the incremental
-  `Sha256`), `ore:path` (`join`, `dirname`, `basename`, `extname`,
+  `Sha256`, and `randomUUIDv4`, `randomUUIDv7` of RFC 9562 from the
+  system's secure random numbers, getentropy(3)), `ore:path` (`join`, `dirname`, `basename`, `extname`,
   `normalize`, `isAbsolute`, `resolve`, `relative`, `sep`, `delimiter`,
   with the POSIX semantics of Node's `node:path`).
 
