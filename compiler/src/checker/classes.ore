@@ -97,7 +97,8 @@ import {
     typeNames,
 } from "./declarations"
 import { checkExpr, settle } from "./expressions"
-import { cIdent, findThis, hasZeroValue, indexSignatureMessage, zeroNeedsInit, zeroValue } from "./helpers"
+import { cIdent, findThis, hasZeroValue, indexSignatureMessage, terminates, zeroNeedsInit, zeroValue } from "./helpers"
+import { assertionReturn, declarePredicate, enterPredicate } from "./predicates"
 import { checkBlock } from "./statements"
 import { type Generic, type Instance, ClassSymbol, Generic as GenericClass, Scope, TypeSymbol } from "./symbols"
 
@@ -1097,6 +1098,7 @@ export function makeMethod(
     )
     c.module.functions.push(func)
     c.funcDecls.set(func, decl)
+    declarePredicate(c, decl, func, scope, true)
     return func
 }
 
@@ -1105,9 +1107,11 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     const scope = paramScope(c, parameters(decl), func.params, outer, prologue)
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(func.type.result, [], 0, null, null, func.receiver, type)
+    enterPredicate(c, func, scope)
     const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
     else func.body = checkBlock(c, body(decl)!, scope)
+    if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
     checkReturns(c, func, typeNode(decl) ?? nameNode(decl))

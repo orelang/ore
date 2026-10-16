@@ -53,6 +53,33 @@ those numbers. They are subtypes of `number`:
   unions of string literals, and a `switch` with a case for each number is
   exhaustive.
 
+## Boolean literal types
+
+`true` and `false` are types too, each with one value; `boolean` is
+`true | false`, so a union of both, or of either with `boolean`, is
+`boolean`:
+
+- Representation: a `bool`, as `boolean` is.
+- A boolean literal expression fits the literal type of its value:
+  `const t: true = true`; `const f: true = false` and assigning a `boolean`
+  to `true` are errors. A value of a boolean literal type widens to
+  `boolean`.
+- A field of a boolean literal type discriminates a union of objects, as
+  in the Result pattern:
+
+  ```ts
+  type Result = { ok: true; value: int } | { ok: false; error: string }
+
+  function show(r: Result): string {
+      if (r.ok) return `value ${r.value}`
+      return `error ${r.error}`
+  }
+  ```
+
+  `if (r.ok)`, `if (!r.ok)`, `r.ok === false` and `switch (r.ok)` with
+  `case true` and `case false` narrow `r`, and a `switch` on a `boolean`
+  with both cases is exhaustive.
+
 ## Conversions
 
 There are no implicit conversions between distinct numeric types. Conversions
@@ -189,6 +216,13 @@ data. Division is Knuth's algorithm D, multiplication schoolbook.
   pattern can have one too: `const { inner: { c = 2 } = { c: 5 } } = o`.
   A rest element comes last, has no default value, and in an object
   pattern is a name rather than a pattern.
+
+
+Type aliases can be declared inside functions and blocks too, generic or
+not: `type Pair<T> = { first: T; second: T }`. Such an alias is scoped to
+its block, as a `let` is, but declared before the block's statements, as
+in TypeScript, so that it can be named above its declaration and in the
+block's nested functions; it hides an alias of the same name outside.
 
 ## Built-in namespaces
 

@@ -747,6 +747,16 @@ export class Converter {
                 if (type !== null) signature.set("returnType", this.typeAnnotation(type))
                 return signature
             }
+            case "TypePredicate": {
+                const predicate = this.make("TSTypePredicate", node).set(
+                    "parameterName",
+                    this.req(node.child("parameterName")),
+                )
+                const type = node.child("type")
+                if (type !== null) predicate.set("typeAnnotation", this.req(type))
+                predicate.operator = node.child("assertsModifier") !== null ? "asserts" : ""
+                return predicate
+            }
             case "TypeQuery":
                 return this.make("TSTypeQuery", node).set("exprName", this.req(node.child("exprName")))
             case "TypeOperator": {

@@ -27,8 +27,14 @@ export class FloatType {
     ) {}
 }
 
+/**
+ * `boolean`, or a boolean literal type `true` or `false`: those are held as a
+ * `bool` too, so that only the checker tells them apart. Each is a singleton.
+ */
 export class BoolType {
     readonly kind: "bool" = "bool"
+    /** "true" or "false" for a literal type; "" for `boolean`. */
+    constructor(readonly literal: string = "") {}
 }
 
 export class StringType {
@@ -403,6 +409,8 @@ export const types = {
     f32: new FloatType("f32", 32),
     f64: new FloatType("f64", 64),
     bool: new BoolType(),
+    boolTrue: new BoolType("true"),
+    boolFalse: new BoolType("false"),
     string: new StringType(),
     bigint: new BigIntType(),
     void: new VoidType(),
@@ -541,6 +549,8 @@ export function typeToString(t: Type): string {
             return JSON.stringify(t.value)
         case "number-literal":
             return t.value
+        case "bool":
+            return t.literal !== "" ? t.literal : "bool"
         case "map":
             if (t.dict) return `{ ${t.readonly ? "readonly " : ""}[key: string]: ${typeToString(t.value)} }`
             return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
@@ -618,6 +628,11 @@ export function isReference(type: Type): bool {
         k === "func" ||
         k === "chan"
     )
+}
+
+/** Whether a type is a boolean literal type, `true` or `false`. */
+export function isBoolLiteral(type: Type): bool {
+    return type.kind === "bool" && type.literal !== ""
 }
 
 /** Whether values of a type are strings: `string` or a string literal type. */

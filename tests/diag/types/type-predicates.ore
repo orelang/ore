@@ -1,0 +1,52 @@
+type Circle = { kind: "circle"; r: f64 }
+type Square = { kind: "square"; side: f64 }
+type Shape = Circle | Square
+
+function always(x: unknown): x is string {
+    return true // error: This result does not show that 'x' is 'string': return a check of 'x' that narrows it, such as 'typeof x === "string"' or 'x instanceof C', or false.
+}
+
+function wrong(s: Shape): s is Circle {
+    return s.kind === "square" // error: This result does not show that 's' is 'Circle'
+}
+
+function partly(x: unknown): x is string {
+    if (typeof x === "string") return true
+    return x !== null // error: This result does not show that 'x' is 'string'
+}
+
+const arrow = (x: unknown): x is f64 => typeof x === "string" // error: This result does not show that 'x' is 'f64'
+
+function missing(x: unknown): y is string {
+    // error: Cannot find parameter 'y'.
+    return false
+}
+
+function self(x: unknown): this is string {
+    // error: A 'this' type predicate is allowed only in a method.
+    return false
+}
+
+function unrelated(s: Shape): s is string {
+    // error: A type predicate's type must be assignable to its parameter's type: 'string' is not assignable to 'Shape'.
+    return false
+}
+
+function weakAssert(x: unknown): asserts x is string {
+    // error: The function can return here without showing that 'x' is 'string'
+    if (typeof x === "number") process.panic("number")
+}
+
+function earlyAssert(cond: bool): asserts cond {
+    if (cond) return
+    return // error: The function can return here without showing that 'cond' is 'true'
+}
+
+function isCircle(s: Shape): s is Circle {
+    return s.kind === "circle"
+}
+
+function area(s: Shape): f64 {
+    if (isCircle(s)) return s.side // error: Property 'side' does not exist on type 'Circle'.
+    return s.r // error: Property 'r' does not exist on type 'Square'.
+}

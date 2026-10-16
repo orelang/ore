@@ -34,7 +34,24 @@ before 1.0, a minor version may change the language.
 - `p["x"]` reads and assigns the member `x` of an object, an interface or a
   class instance, and `p[k]` with `k: keyof P` reads the field `k` names, of
   type `P[K]`.
-
+- Type aliases inside functions and blocks, generic ones too, scoped to
+  their block (they used to be ORE7016).
+- Indexed access and `keyof` on a union of object types, as in
+  TypeScript: `U["x"]` is the union of the members' field types, and
+  `keyof U` their common names, so `Omit<U, "z">` gives one object type of
+  the common fields but `z` (TypeScript's `Omit` is not distributive).
+- Type predicates, as in TypeScript: `x is T` and `this is T` narrow the
+  argument or receiver of a call in conditions, `filter` with such a
+  callback gives an array of `T`, and `asserts x is T` and `asserts x`
+  narrow after the call. Unlike TypeScript, the body is checked: each
+  result must be `false` or a check that narrows the parameter to `T`,
+  and an assertion function must panic or exit where the assertion does
+  not hold. `x is T` used to be a parse error.
+- Boolean literal types: `true` and `false` are types, and `boolean` is
+  their union. A field of such a type discriminates a union of objects, as
+  in the Result pattern `{ ok: true; value: T } | { ok: false; error: E }`:
+  `if (r.ok)`, `if (!r.ok)`, `r.ok === false` and `switch (r.ok)` narrow
+  `r`.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

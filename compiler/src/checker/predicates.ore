@@ -1,0 +1,246 @@
+// Type predicates: `x is T`, `this is T`, `asserts x is T` and `asserts x`.
+//
+// A call of a function with a predicate narrows its argument (or receiver)
+// as a check would. Since Ore checks a narrowed read at run time, a
+// predicate that does not hold would panic later, so the body of such a
+// function is checked too: each value it returns must be a test that
+// narrows the parameter to the predicate's type when true (or `false`), and
+// an assertion function must not return before its parameter is narrowed.
+
+import { type Expr, type Local, Block, Func, FuncRef, LocalRef, ReturnStmt } from "../ir/nodes"
+import { type Type, FuncType, membersOf, sameType, typeToString, types } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { args, expression, isIdentifier, nameNode, parameters, typeNode } from "../syntax/nodes"
+import { type Checker } from "./base"
+import { Fact, FactPair, Predicate } from "./context"
+import { memberOf } from "./helpers"
+import { type Scope } from "./symbols"
+import { condition, flatFacts, narrowConvert, refKey } from "./statements"
+
+/** Records the type predicate of a function, method or function literal whose return type is one. */
+export function declarePredicate(c: Checker, decl: Node, func: Func, scope: Scope, method: bool) {
+    const annotation = typeNode(decl)
+    if (annotation === null || annotation.kind !== "TypePredicate") return
+    const name = annotation.child("parameterName")!
+    const typeNode_ = annotation.child("type")
+    const asserts = annotation.child("assertsModifier") !== null
+    let param = -1
+    let declared: Type | null = null
+    if (name.kind === "ThisKeyword") {
+        const receiver = func.receiver
+        if (!method || receiver === null) {
+            c.error(name, "A 'this' type predicate is allowed only in a method.")
+            return
+        }
+        declared = receiver.type
+    } else {
+        const params = parameters(decl)
+        for (let i = 0; i < params.length; i++) {
+            const n = nameNode(params[i])
+            if (isIdentifier(n) && n.text === name.text) param = i
+        }
+        if (param < 0 || param >= func.params.length) {
+            c.error(name, `Cannot find parameter '${name.text}'.`)
+            return
+        }
+        declared = func.params[param].type
+    }
+    let type: Type | null = null
+    if (typeNode_ !== null) {
+        type = c.resolveType(typeNode_, scope)
+        if (type === null) return
+        if (declared !== null && !narrowable(declared, type)) {
+            c.error(
+                typeNode_,
+                `A type predicate's type must be assignable to its parameter's type: '${typeToString(type)}' is not assignable to '${typeToString(declared)}'.`,
+            )
+            return
+        }
+    }
+    c.predicates.set(func, new Predicate(param, name.kind === "ThisKeyword" ? "this" : name.text, type, asserts))
+}
+
+/** Whether a value of type `declared` can be of type `target`: each member of `target` is in `declared`, or `declared` is `unknown`, an interface or a base class. */
+function narrowable(declared: Type, target: Type): bool {
+    const have = membersOf(declared)
+    if (have.some((m) => m.kind === "unknown" || m.kind === "interface")) return true
+    return membersOf(target).every((t) => have.some((m) => memberOf(t, m)))
+}
+
+/** The type a reference of type `declared` has when a predicate of type `target` holds: the members of a union in `target`, or `target`. */
+export function predicateType(c: Checker, declared: Type, target: Type): Type {
+    if (declared.kind === "union") {
+        const kept = declared.members.filter((m) => membersOf(target).some((t) => memberOf(m, t)))
+        if (kept.length > 0) return c.unionOf(kept)
+    }
+    return target
+}
+
+/** The function an expression calls, if it is a direct call of a function or a method. */
+function calledFunc(expr: Expr): Func | null {
+    if (expr.k === "call") return expr.func
+    if (expr.k === "method-call") return expr.func
+    return null
+}
+
+/** The node of the argument (or receiver, for `this`) that a call's predicate is about. */
+function subjectOf(node: Node, predicate: Predicate): Node | null {
+    if (predicate.param < 0) {
+        const callee = expression(node)
+        return callee.kind === "PropertyAccessExpression" ? expression(callee) : null
+    }
+    const given = args(node)
+    return predicate.param < given.length ? given[predicate.param] : null
+}
+
+/**
+ * The facts a call with a type predicate `x is T` establishes about its
+ * argument when it returns true (`yes`) and false (`no`); null for other
+ * calls.
+ */
+export function predicateFacts(c: Checker, node: Node, expr: Expr, scope: Scope): FactPair | null {
+    const func = calledFunc(expr)
+    const predicate = func !== null ? c.predicates.get(func) : null
+    if (predicate === null || predicate.asserts) return null
+    const target = predicate.type
+    const subject = subjectOf(node, predicate)
+    if (subject === null || target === null) return null
+    const key = refKey(c, subject, scope)
+    const declared = c.info.types.get(subject)
+    if (key === null || declared === null) return new FactPair([], [])
+    const narrowed = predicateType(c, declared, target)
+    const no: Fact[] = []
+    // Only members of a union can be excluded when the predicate is false.
+    if (declared.kind === "union") {
+        const rest = c.without(declared, (m) => membersOf(narrowed).some((n) => sameType(n, m)))
+        if (rest.kind !== "never") no.push(new Fact(key, rest))
+    }
+    return new FactPair([new Fact(key, narrowed)], no)
+}
+
+/** The facts that hold after a call of an assertion function, `asserts x is T` or `asserts x`, which returns only when they hold. */
+export function assertionFacts(c: Checker, node: Node, expr: Expr, scope: Scope): Fact[] {
+    const none: Fact[] = []
+    if (node.kind !== "CallExpression") return none
+    const func = calledFunc(expr)
+    const predicate = func !== null ? c.predicates.get(func) : null
+    if (predicate === null || !predicate.asserts) return none
+    const subject = subjectOf(node, predicate)
+    if (subject === null) return none
+    const target = predicate.type
+    if (target !== null) {
+        const key = refKey(c, subject, scope)
+        const declared = c.info.types.get(subject)
+        if (key === null || declared === null) return none
+        return [new Fact(key, predicateType(c, declared, target))]
+    }
+    // `asserts x`: what the argument tells when it is true, from checking it again as a condition.
+    const before = c.diagnostics.length
+    const cond = condition(c, subject, scope)
+    c.truncateDiagnostics(before)
+    return cond.whenTrue
+}
+
+/** Starts checking the body of a function: the predicate its returns are checked against, if it has one. */
+export function enterPredicate(c: Checker, func: Func, scope: Scope) {
+    const fn = c.fn!
+    const predicate = c.predicates.get(func)
+    if (predicate === null) return
+    let local: Local | null = null
+    if (predicate.param < 0) local = fn.thisLocal
+    else {
+        const symbol = scope.lookupValue(predicate.name)
+        if (symbol !== null && symbol.k === "local") local = symbol.local
+    }
+    if (local === null) return
+    fn.predicate = predicate
+    fn.predicateLocal = local
+}
+
+/**
+ * Whether the facts in effect, with `extra` on top, show what the predicate
+ * of the function being checked tells: that its parameter is of the
+ * predicate's type, or `true` for `asserts x`.
+ */
+function proves(c: Checker, extra: Fact[]): bool {
+    const fn = c.fn!
+    const predicate = fn.predicate
+    const local = fn.predicateLocal
+    if (predicate === null || local === null) return true
+    const key = `L${local.id}`
+    let type: Type | null = null
+    for (const f of extra) if (f.key === key) type = f.type
+    if (type === null) type = flatFacts(c).get(key)
+    const known = type ?? local.type
+    const target = predicate.type ?? types.boolTrue
+    return membersOf(known).every((m) => m.kind === "never" || membersOf(target).some((t) => memberOf(m, t)))
+}
+
+/** What the predicate tells, for messages: `'x' is 'string'`. */
+function told(c: Checker): string {
+    const predicate = c.fn!.predicate!
+    const target = predicate.type
+    return `'${predicate.name}' is '${target !== null ? typeToString(target) : "true"}'`
+}
+
+/**
+ * Checks a value returned by a function with a type predicate `x is T`:
+ * `false`, or a test that narrows x to T when true. Returns the checked
+ * value, or null when the function has no such predicate.
+ */
+export function predicateReturn(c: Checker, value: Node, scope: Scope): Expr | null {
+    const fn = c.fn
+    const predicate = fn !== null ? fn.predicate : null
+    if (predicate === null || predicate.asserts) return null
+    if (value.kind === "FalseKeyword") return null
+    const cond = condition(c, value, scope)
+    if (!proves(c, cond.whenTrue)) {
+        c.error(
+            value,
+            `This result does not show that ${told(c)}: return a check of '${predicate.name}' that narrows it, such as 'typeof x === "string"' or 'x instanceof C', or false.`,
+        )
+    }
+    return cond.expr
+}
+
+/** Checks that an assertion function returns (with `return` or at its end, at `node`) only where its assertion holds. */
+export function assertionReturn(c: Checker, node: Node) {
+    const fn = c.fn
+    const predicate = fn !== null ? fn.predicate : null
+    if (predicate === null || !predicate.asserts || proves(c, [])) return
+    c.error(
+        node,
+        `The function can return here without showing that ${told(c)}: it must panic or exit where the assertion does not hold.`,
+    )
+}
+
+/** For `filter` with a callback that has a type predicate on its element: the narrowed element type, or null. */
+export function filteredType(c: Checker, callback: Expr, elem: Type): Type | null {
+    let func: Func | null = null
+    if (callback.k === "closure") func = callback.func
+    if (callback.k === "func-ref") func = callback.func
+    const predicate = func !== null ? c.predicates.get(func) : null
+    if (predicate === null || predicate.asserts || predicate.param !== 0) return null
+    const target = predicate.type
+    if (target === null) return null
+    const narrowed = predicateType(c, elem, target)
+    return sameType(narrowed, elem) ? null : narrowed
+}
+
+/** A function converting an element kept by such a `filter` to the narrowed type, for the `map` after it. */
+export function narrowingFunc(c: Checker, from: Type, to: Type, node: Node): FuncRef {
+    const param = c.newLocal("x", from, false)
+    const value = narrowConvert(c, new LocalRef(from, param), to)
+    const func = new Func(
+        `ore_lambda_${c.nextLambda++}`,
+        "<filter>",
+        c.line(node),
+        new FuncType([from], to),
+        [param],
+        new Block([new ReturnStmt(value)]),
+        false,
+        c.sourceOf(node).path,
+    )
+    c.module.functions.push(func)
+    return new FuncRef(func.type, func)
+}

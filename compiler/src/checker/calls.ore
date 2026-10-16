@@ -122,6 +122,7 @@ import {
     zeroValue,
 } from "./helpers"
 import { type Operand, errorOperand, UntypedInt } from "./operand"
+import { filteredType, narrowingFunc } from "./predicates"
 import { capture, checkClosure, disposeCall } from "./statements"
 import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
 import { objectCall } from "./dicts"
@@ -372,6 +373,12 @@ export function arrayMethod(
         case "every": {
             const cb = callback(c, args[0], scope, each, types.bool)
             if (cb === null) return errorOperand
+            // A callback with a type predicate narrows the elements that `filter` keeps.
+            const narrowed = name === "filter" ? filteredType(c, cb.expr, T) : null
+            if (narrowed !== null) {
+                const kept = new ArrayMethod(name, type, array, [cb.expr], cb.arity)
+                return typed(new ArrayMethod("map", arrayOf(narrowed), kept, [narrowingFunc(c, T, narrowed, node)], 1))
+            }
             const result: Type =
                 name === "filter"
                     ? type
