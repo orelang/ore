@@ -28,13 +28,13 @@
   uses and changes the variables of the enclosing functions like other
   nested functions do. An instance is checked at its first call, in the
   scope of the declaration as it is at that call, so it sees the variables
-  declared before the call (or every variable of the block, when the call
-  is in a hoisted function), and each call creates its closure. Such a function can only be called: using it as
-  a value is an error (ORE6071), and so are generic function literals
-  anywhere else (`xs.map(<T>(x: T) => x)`, ORE7038) and generic function
-  types (`<T>(x: T) => T`, ORE2012), since a function value has one
-  function type. A generic closure that calls itself needs a return type
-  annotation (ORE6072).
+  declared before the call (or every variable of the block, when the call is
+  in a hoisted function), and each call creates its closure. Such a function
+  can only be called: using it as a value is an error (ORE6071), and so are
+  generic function literals anywhere else (`xs.map(<T>(x: T) => x)`,
+  ORE7038) and generic function types (`<T>(x: T) => T`, ORE2012), since a
+  function value has one function type. A generic closure that calls itself
+  needs a return type annotation (ORE6072).
 - Top-level functions, methods and constructors can have optional
   parameters after the required ones: `b = 1` (its type may come from the
   value), or `b?: T`, which is `T | null` and `null` when missing. A default
@@ -134,14 +134,15 @@ right, as in TypeScript.
 - Loops and switches may be labeled for `break label`, and loops for
   `continue label`; labels on other statements are rejected.
 - A function with a return type must return a value on every path. A path
-  ending in an infinite loop or a `process.panic(...)` call needs no return.
+  ending in an infinite loop or a `process.panic(...)` call needs no return,
+  and a function whose result type is `null` may end without one.
 
 ## Panics
 
 A panic prints its message and exits with status 2. Debug builds (the default)
 print the Ore call stack with source lines:
 
-```
+```text
 panic: integer divide by zero
 
   div at main.ore:9
@@ -149,3 +150,7 @@ panic: integer divide by zero
 ```
 
 Release builds (`--release`) keep no call stack information.
+
+Recursion that overflows the stack of a task is a panic too, `panic: stack
+overflow`, with the call stack; the size of stacks is set by `ORE_STACK`
+(see [concurrency](06-concurrency.md)).

@@ -226,6 +226,8 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `Number.isNaN(x)`, `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)` | predicates on an `f64`, as in JavaScript |
 | `BigInt(x)`, `BigInt.parse(s, radix?)`, `BigInt.asIntN(bits, b)`, `BigInt.asUintN(bits, b)` | bigints from numbers and text, and modulo a power of two (see [BigInt](#bigint)) |
 | `String.fromCharCode(...codes)`, `String.fromCodePoint(...points)` | a string of UTF-16 code units or code points (see [strings](#strings)) |
+| `Array.from(items, mapFn?)`, `Array.of(...items)`, `Array.isArray(x)` | arrays from other collections and from values (see [array methods](04-functions.md#array-methods)) |
+| `Map.groupBy(items, keyFn)` | the elements of an array grouped by a key (see [maps](03-objects.md#maps)) |
 | `fs.readFile(path)` | the file as a `string`, or an `Error` |
 | `fs.writeFile(path, data)` | `null`, or an `Error` |
 | `fs.exists(path)` | whether a file exists |
@@ -254,6 +256,9 @@ others convert them to `f64`. An argument out of range panics with
 JavaScript's `RangeError` message. A method of an integer literal needs
 parentheses or a second dot, as in JavaScript: `(255).toString(16)`,
 `255..toString(16)`. `bool` has `toString()`.
+
+Modules that a program imports by name, such as `ore:path` and
+`ore:crypto`, are in [standard modules](11-standard-modules.md).
 
 `String`, `fs`, `process`, `Number`, `Math`, `BigInt`, `Map` and `console`
 are partly written in Ore, and `time` and `task` partly or wholly
@@ -395,12 +400,12 @@ const code = process.command.run("cc", ["-c", "main.c"], { cwd: "build", env: ne
   fills one while this program reads the other cannot deadlock. Many tasks
   can run programs at the same time.
 
-`console.log` prints any value as Node's `util.inspect` does; the code that formats a type is generated for it. Strings among the
-arguments are printed as they are, and the arguments are separated by
-spaces. Floats are printed in the shortest form that round-trips, like
-JavaScript: `0.1`, `1`, `1e+21`, `1e-7`, `NaN`, `Infinity`, `-0`. Inside
-other values strings are quoted (`'a'`, or `"it's"`, with escapes such as
-`\n`), and:
+`console.log` prints any value as Node's `util.inspect` does; the code that
+formats a type is generated for it. Strings among the arguments are printed
+as they are, and the arguments are separated by spaces. Floats are printed
+in the shortest form that round-trips, like JavaScript: `0.1`, `1`, `1e+21`,
+`1e-7`, `NaN`, `Infinity`, `-0`. Inside other values strings are quoted
+(`'a'`, or `"it's"`, with escapes such as `\n`), and:
 
 | Value | Printed |
 |---|---|
@@ -478,10 +483,10 @@ functions.
 - A `string` is an immutable sequence of UTF-8 bytes.
 - `a + b` and `+=` concatenate two strings. A string and a non-string cannot
   be added: use a template literal, `` `${a}${b}` ``, which formats numbers
-  and `bool` like `print`.
+  and `bool` as `console.log` prints them.
 - `s.length` is the length in bytes. `s[i]` is the byte at `i` as `u8`;
   an index out of range panics.
-- `s.slice(start, end?)` takes byte offsets with JavaScript rules: negative
+- `s.slice(start?, end?)` takes byte offsets with JavaScript rules: negative
   offsets count from the end, out-of-range offsets are clamped.
 - `<`, `<=`, `>`, `>=` compare strings byte-wise; `===` compares contents.
 - `for (const r of s)` iterates runes as `i32`. Invalid UTF-8 yields
@@ -578,15 +583,15 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   braces without Annex B (`/\a/u` is an error). Ignoring case compares
   simple case foldings: also `ſ` with `s`, the Kelvin sign with `k`, the Ohm
   sign with `Ω` and `ẞ` with `ß`; so `\w` and `\b` take `ſ` and the Kelvin
-  sign as word characters, and `\W` takes neither. Matching is by code
-  point with or without it. The properties of `\p{...}`, from Unicode
-  17.0: the General_Category values of letters and numbers (`L`, `LC`, `Lu`, `Ll`, `Lt`, `Lm`, `Lo`,
-  `N`, `Nd`, `Nl`, `No`, by their short or long names, alone or as
-  `gc=`/`General_Category=`), the scripts `Latin`, `Greek`, `Cyrillic` and
-  `Han` (`sc=`/`Script=`, also `Latn`, `Grek`, `Cyrl`, `Hani`), `Any` and
-  `ASCII`. Other properties JavaScript has (`Emoji`, `Script_Extensions`,
-  other categories and scripts) are errors: `The property 'Emoji' is not
-  supported`.
+  sign as word characters, and `\W` takes neither. Matching is by code point
+  with or without it. The properties of `\p{...}`, from Unicode 17.0: the
+  General_Category values of letters and numbers (`L`, `LC`, `Lu`, `Ll`,
+  `Lt`, `Lm`, `Lo`, `N`, `Nd`, `Nl`, `No`, by their short or long names,
+  alone or as `gc=`/`General_Category=`), the scripts `Latin`, `Greek`,
+  `Cyrillic` and `Han` (`sc=`/`Script=`, also `Latn`, `Grek`, `Cyrl`,
+  `Hani`), `Any` and `ASCII`. Other properties JavaScript has (`Emoji`,
+  `Script_Extensions`, other categories and scripts) are errors: `The
+  property 'Emoji' is not supported`.
 - `v` is `u` with JavaScript's classes of the `v` flag: nested classes
   (`[[a-z][0-9]]`), differences `[\p{L}--[a-z]]` and intersections
   `[\w&&\d]`, and the characters that must be escaped in them
@@ -650,8 +655,8 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
 - `a[i]` reads and writes elements; an index of any integer type is allowed
   and an index out of range panics. Compound assignments (`a[i] += 1`,
   `a[i]++`) evaluate `a` and `i` once.
-- `a.push(...values)` appends and returns the new length; arrays spread in
-  (`a.push(...b)`) append all their elements. `a.pop()` removes
+- `a.push(...values)` appends and returns the new length; arrays and tuples
+  spread in (`a.push(...b)`) append all their elements. `a.pop()` removes
   and returns the last element and panics on an empty array; `a.shift()`
   does the same with the first element. `a.unshift(...values)` inserts at
   the start and returns the new length. `a.splice(start, count?,
@@ -661,10 +666,7 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   both are clamped to the array, as in JavaScript. Arrays spread in add all
   their elements, as with `push`; every reference to the array sees the
   change.
-- `a.push(...values)` appends and returns the new length; arrays and tuples
-  spread in (`a.push(...b)`) append all their elements. `a.pop()` removes
-  and returns the last element and panics on an empty array.
-  `a.slice(start?, end?)` returns a copy with JavaScript offsets.
+- `a.slice(start?, end?)` returns a copy with JavaScript offsets.
 - `let a: T[]` without an initializer is a new empty array.
 - `new Array<T>(n)` (or `new Array(n)` with an array type as the context)
   is an array of `n` zero values of `T`, each its own: 0, `false`, `""`, a

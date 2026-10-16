@@ -90,7 +90,7 @@ in the instance (`(in 'toHaveLength<i64>')`).
 A failure shows the matcher, the expected and the received value, as Bun
 does:
 
-```
+```text
   ✗ math > adds
       expect(received).toBe(expected)
 

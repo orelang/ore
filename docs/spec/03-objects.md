@@ -47,8 +47,6 @@
   public fields of a class instance (not its methods), the fields of an
   object type or an interface. A later property replaces an earlier one
   (`{ ...p, y: 0 }`); the values are evaluated once, in order.
-- Variables of object, class and interface types must be initialized: there
-  is no `null` yet.
 
 ## Classes
 
@@ -61,9 +59,15 @@
 - Static members belong to the class: `C.count`, `C.make()`, also through a
   subclass. A static field is a global of the module, initialized where the
   class is declared, in order; it has a type annotation or an initializer
-  (and then its type). A static method is a function, without `this`.
-  `private` static members are used only inside the class declaration;
-  generic classes cannot have static members yet.
+  (and then its type). A static method is a function, without `this`, and
+  may have type parameters of its own (`static of<T>(x: T): T[]`), inferred
+  from each call's arguments or written (`List.of<string>("a")`).
+  `private` static members are used only inside the class declaration.
+- A generic class can have static methods, generic ones too
+  (`Box.of<U>(v)`), as in TypeScript: one function shared by every
+  instance of the class, which cannot use the class's type parameters.
+  Static fields of a generic class are not supported yet
+  ([ORE3079](../errors/ORE3079.md)).
 - Getters and setters (`get celsius(): f64`, `set celsius(v: f64)`) define a
   property read and written like a field, by calling them; a getter needs a
   return type annotation, and both must have the same type. A property with
@@ -231,12 +235,13 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
 - the same checks of an `unknown`, which unbox it (see
   [unknown](02-types.md#unknown)).
 
-Narrowing applies inside `if` / `else`, `while` and `for` bodies, the operands
-of `&&`, `||` and `?:` (where `a || b` narrows a reference to the union of
-what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`), and `switch` clauses on a literal (clauses reached by
-falling through code are not narrowed). An assignment narrows to the assigned
-value's type until the next assignment; a `?:` keeps the union of its
-branches' types (`u = t !== null ? t : "none"` makes `u` a string).
+Narrowing applies inside `if` / `else`, `while` and `for` bodies, the
+operands of `&&`, `||` and `?:` (where `a || b` narrows a reference to the
+union of what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`),
+and `switch` clauses on a literal (clauses reached by falling through code
+are not narrowed). An assignment narrows to the assigned value's type until
+the next assignment; a `?:` keeps the union of its branches' types
+(`u = t !== null ? t : "none"` makes `u` a string).
 
 Narrowing follows the flow of the code: after an `if`, a reference is
 narrowed to the union of its types at the ends of the branches that do not
@@ -291,7 +296,16 @@ literal is exhaustive: like a `default`, it lets a function end without
   on another instance is an error in that instance.
 - A function literal passed for a parameter like `f: (x: T) => U` gets its
   parameter types from the type arguments inferred from the other arguments,
-  and its result binds the rest: `box.map((n) => n * 2)`.
+  and its result binds the rest: `box.map((n) => n * 2)`. A function
+  literal that returns nothing binds such a result parameter to `void`.
+- `void` is a type argument like any other (`new Box<void>(...)`): its
+  value is `null`, and trailing parameters of its type may be left out of
+  a call, so a `put: (value: T) => void` of a `Box<void>` is called as
+  `put()`. A function whose result type is `null` may end without a
+  `return`.
+- `x instanceof Box` names a generic class without type arguments, and
+  narrows a union such as `string | Box<int>` or `T | Box<T>` to its
+  member of that class.
 
 ## Computed types
 
@@ -328,9 +342,10 @@ names them is:
   as in `Prev[D]` and `D extends number = 10`, and are types of values too
   (see [numeric literal types](02-types.md#numeric-literal-types)). `never`
   inside tuples and object types takes part in them, as in
-  `[D] extends [never]`; values cannot have it yet. In the `extends` clause of a conditional type, `unknown` matches any
-  type, `object` any value that is not a primitive, `Function` any function
-  and `readonly unknown[]` any array or tuple; `{}` matches object types
+  `[D] extends [never]`; values cannot have it yet. In the `extends` clause
+  of a conditional type, `unknown` matches any type, `object` any value
+  that is not a primitive, `Function` any function and `readonly unknown[]`
+  any array or tuple; `{}` matches object types
   structurally (`{} extends Pick<T, K>` when K is optional in T); and a
   template literal type with `infer` takes a string literal type apart
   (`` P extends `${infer K}.${infer Rest}` ``). A member of two parts of an
@@ -384,9 +399,9 @@ names them is:
 ## Sets
 
 - `Set<T>` is a reference to a hash set that iterates in insertion order,
-  with the hashing and equality of `Map` keys (unions included). `new Set<T>()` creates one;
-  the type may come from the context; a variable or field without an
-  initializer starts as a new empty set.
+  with the hashing and equality of `Map` keys (unions included).
+  `new Set<T>()` creates one; the type may come from the context; a
+  variable or field without an initializer starts as a new empty set.
 - `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`) or
   of another set; without a type argument, `T` is their element type.
 - `add(value)` returns the set; `has`, `delete` (returns whether the value

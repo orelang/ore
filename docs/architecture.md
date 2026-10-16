@@ -8,12 +8,13 @@ always underneath; they are in the [specification](spec).
 
 ## Principles
 
-1. **TS syntax as-is, no new syntax.** Only the semantics change. This reuses
-   tree-sitter-typescript, TextMate grammars and the habits of TS developers;
-   the compiler's own parser builds TypeScript's tree. Where Ore needs more (attributes,
-   thread-locals), it uses comments: `//ore:` directives.
+1. **TS syntax as-is, no new syntax.** Only the semantics change. This
+   reuses tree-sitter-typescript, TextMate grammars and the habits of TS
+   developers; the compiler's own parser builds TypeScript's tree. Where Ore
+   needs more (attributes, thread-locals), it uses comments: `//ore:`
+   directives.
 2. **Go-like in spirit.** One `ore` binary (`build`, `run`, `test`, `fmt`,
-   `check`, `lsp`), fast compilation, static binaries, a GC, structural
+   `check`, `doc`, `lsp`), fast compilation, static binaries, a GC, structural
    interfaces, errors as values, simplicity over expressiveness.
 3. **Own type checker.** `tsc` is not used as a checker: Ore has its own
    types (`i64`, `u8`, …) and rules. Its parser accepts the TypeScript
@@ -23,10 +24,10 @@ always underneath; they are in the [specification](spec).
 
 ## Pipeline
 
-```
-.ore ─ syntax ─ project ─ checker ─ IR ─ opt ─ codegen ─ LLVM IR ─ LLVM ─ lld ─ binary
-                                                              │
-                         runtime: core (Ore, with the GC) + std (Ore)
+```text
+.ore ─ syntax ─ project ─ checker ─ IR ─ opt ─ llvm ─ LLVM IR ─ LLVM ─ lld ─ binary
+                                                           │
+                      runtime: core (Ore, with the GC) + std (Ore)
 ```
 
 - **syntax** parses each file into a tree in the shape of TypeScript's, with
@@ -64,13 +65,15 @@ Everything a program needs at run time is in [`runtime/`](../runtime):
   in spans of one size class, a page table for pointers into objects, each
   thread allocating from its own spans without locks. A collection stops the
   world with a signal, scans stacks conservatively and globals from a table
-  the compiler emits, and objects allocated as bytes not at all. Strings are immutable UTF-8 `{ptr, len}`; arrays are references
-  to `{data, len, cap}`; maps are insertion-ordered hash tables.
+  the compiler emits, and objects allocated as bytes not at all. Strings are
+  immutable UTF-8 `{ptr, len}`; arrays are references to `{data, len, cap}`;
+  maps are insertion-ordered hash tables.
 - **Tasks**: an M:N scheduler of green threads (stackful, with an assembly
   context switch on arm64 and x86-64) on `ORE_THREADS` OS threads, a run
-  queue per thread with work stealing and a global one, channels with a lock each, `select` claimed by compare-and-swap,
-  a handoff for blocking file operations, and a netpoller (kqueue / epoll)
-  for sockets. The collector scans the stacks of suspended tasks.
+  queue per thread with work stealing and a global one, channels with a lock
+  each, `select` claimed by compare-and-swap, a handoff for blocking file
+  operations, and a netpoller (kqueue / epoll) for sockets. The collector
+  scans the stacks of suspended tasks.
 - **Panics** print a message and, in debug builds, a stack trace from a
   shadow stack of frames kept by generated code.
 

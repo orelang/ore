@@ -4,8 +4,7 @@ The runtime written in Ore. Every file is a module `ore:runtime/<name>`,
 loaded first into every program.
 
 A function marked `//ore:runtime ore_rt_name` implements the runtime function
-`ore_rt_name` that generated code calls; once it is written here, its C
-version in [`runtime/c`](../c) is deleted. Generated code calls it directly,
+`ore_rt_name` that generated code calls. Generated code calls it directly,
 in the same LLVM module, so it inlines into the program.
 
 Rules for this code:
@@ -15,7 +14,8 @@ Rules for this code:
 - It keeps no stack frames, as when it was C: stack traces show the
   program's code.
 - A new file is added to `runtimeModules` and `stdModules` in
-  [`compiler/project/src/resolve.ts`](../../compiler/project/src/resolve.ts).
+  [`compiler/src/project/resolve.ore`](../../compiler/src/project/resolve.ore),
+  which embeds it as text.
 
 | Module | Contents |
 |---|---|
@@ -29,6 +29,7 @@ Rules for this code:
 | `format.ore` | Integers and booleans as strings |
 | `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript (Ryu for f64) |
 | `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |
+| `inspect.ore` | Formatting values as `console.log` prints them, as Node's `util.inspect` does: the layout and colors that the formatter the compiler generates for each type calls |
 | `json.ore` | The string builder, the JSON parser and the helpers of the generated encoders and decoders |
 | `bigint.ore` | `bigint`: arithmetic, Knuth's division, shifts and bitwise operations in two's complement, comparison, hashing, conversions to and from numbers and text in radixes 2 to 36; the namespace `BigInt` |
 | `number.ore` | `parseInt`, `parseFloat`, `toString(radix)`, `toFixed`, `toPrecision`, `toExponential` and `toLocaleString` as JavaScript computes them, `Math.round`, `Math.cbrt`, `Math.pow`, `process.getenv`; the namespace `Number` |
@@ -47,4 +48,6 @@ Rules for this code:
 | `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |
 | `net.ore` | TCP on non-blocking sockets: listen, connect, accept, read, write, with the socket layouts and constants of each platform |
 | `io.ore` | Printing through one shared buffer, and the end of the program |
+| `time.ore` | The namespace `time`: the clocks and durations in nanoseconds, `parse` and `format` |
+| `types.ore` | The utility types of TypeScript (`Partial`, `Pick`, `Record`...) and more (`DeepPartial`, `Paths`...), global names in every module |
 | `program.ore` | The entry point (`main`), arguments, panics with their stack trace, and what `ore:test` needs: a body run in a task whose panic is caught, and a call when the top-level code ends |
