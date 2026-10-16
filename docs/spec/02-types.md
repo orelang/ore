@@ -614,7 +614,11 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   did not take part; negative `i` count from the end), `m.length` their
   number, `m.captures` the array of them, `m.index` and `m.input` as in
   JavaScript, and `m.groups` a `Map<string, string | null>` of the named
-  groups (empty without names).
+  groups (empty without names). As a match array, a match is indexed,
+  `m[i]` (a `string | null`, read-only; an index out of range panics, as
+  for arrays, where JavaScript gives `undefined`), destructured,
+  `const [, key, value] = m`, and iterated with `for...of`, over its
+  captures.
 - With the `d` flag, `m.indices` is a `([int, int] | null)[]`: the start
   and end of the match and of each group (null for one that did not take
   part), byte offsets as `index`; `m.groupIndices` is a
