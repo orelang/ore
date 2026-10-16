@@ -752,6 +752,73 @@ on the proleptic Gregorian calendar with days of 86 400 000 ms.
 - `Date` is a class of the runtime written in Ore (`runtime/core/date.ore`),
   a global name as in JavaScript.
 
+## URLs
+
+```ts
+const u = new URL("../x?a=1", "https://Example.com:443/b/c/d")
+console.log(u.href, u.host, u.pathname)           // https://example.com/b/x?a=1 example.com /b/x
+u.searchParams.append("q", "a b")
+console.log(u.search, u.searchParams.get("a"))    // ?a=1&q=a+b 1
+console.log(URL.canParse("nope"), URL.parse("nope"))  // false null
+```
+
+`URL` and `URLSearchParams` are JavaScript's, after the WHATWG URL
+Standard, whose parser they follow over the UTF-8 bytes of the input:
+
+- `new URL(url, base?)` parses `url`, resolved against `base` (a string or
+  a `URL`) when it is given, and panics with `TypeError: Invalid URL` if
+  either is invalid, as JavaScript throws. `URL.canParse(url, base?)` tells
+  whether it would succeed, and `URL.parse(url, base?)` returns the URL or
+  `null`.
+- Parsing: leading and trailing C0 controls and spaces and every tab and
+  newline are left out; the scheme is lowercased; the special schemes
+  `http`, `https`, `ws`, `wss`, `ftp` and `file` read `\` as `/` and drop
+  their default ports; `.` and `..` segments (also `%2e`) are resolved;
+  each component is percent-encoded with its own set; hosts are lowercased,
+  IPv4 addresses are read in their decimal, octal and hexadecimal forms
+  (`http://0x7f.1/` is `http://127.0.0.1/`), and IPv6 addresses written in
+  their compressed form (`[::ffff:c0a8:1]`); `file` URLs keep drive
+  letters; other schemes have opaque hosts and, without `/` after the
+  colon, opaque paths (`mailto:a@b`).
+- Properties, as strings: `href`, `origin` (`null` but for `http`,
+  `https`, `ws`, `wss`, `ftp` and a `blob` of one), `protocol` (with its
+  colon), `username`, `password`, `host` (with the port), `hostname`,
+  `port` (`""` for none or the default), `pathname`, `search` (with its
+  `?`, `""` for an empty query), `hash` (with its `#`), and
+  `searchParams`. All but `origin` and `searchParams` can be set: the
+  setters parse their component as the standard's state override does,
+  and leave the URL as it is when the value is invalid (`protocol` does not
+  change between a special scheme and another), but setting `href` to an
+  invalid URL panics with `TypeError: Invalid URL`. `toString()` and
+  `toJSON()` are the `href`.
+- `searchParams` is a `URLSearchParams` linked both ways to the URL:
+  changing it rewrites the query, and setting `search` or `href` changes
+  its pairs.
+- `new URLSearchParams(init?)` takes a query string (a leading `?` left
+  out), an array of `[name, value]` pairs, or another `URLSearchParams` to
+  copy. `append(name, value)`, `delete(name, value?)`, `get(name)` (`null`
+  when missing, as in JavaScript), `getAll(name)`, `has(name, value?)`,
+  `set(name, value)`, `sort()` (stable, by UTF-16 code units as JavaScript
+  compares strings), `size`, `forEach((value, name, params) => ...)`, and
+  `toString()`, which writes `application/x-www-form-urlencoded`: a space
+  is `+`, and every byte but ASCII letters, digits and `*-._` is
+  percent-encoded. Reading a query, `+` is a space and invalid UTF-8 after
+  decoding becomes U+FFFD.
+- `console.log` prints a URL as Node does, `URL { href: '...', origin:
+  '...', ... }`, and a `URLSearchParams` as `URLSearchParams { 'a' => '1'
+  }`; `JSON.stringify` writes a URL as its `href`.
+- Differences from JavaScript: domains outside ASCII are lowercased in
+  ASCII only and kept as they are, without Unicode's IDNA mapping and
+  Punycode (`http://é.com/` stays so, where JavaScript has
+  `http://xn--9ca.com/`); `keys()`, `values()` and `entries()` return
+  arrays (of `[name, value]` tuples for `entries`) until Ore has
+  iterators, and `for...of` does not iterate a `URLSearchParams`; the
+  constructor of `URLSearchParams` does not take a `Map` or a record; a URL
+  is not formatted by a template literal (`` `${u}` ``: use `u.href`);
+  `URL.createObjectURL` and `URL.revokeObjectURL` are missing.
+- `URL` and `URLSearchParams` are classes of the runtime written in Ore
+  (`runtime/core/url.ore`), global names as in JavaScript.
+
 ## Arrays
 
 - `T[]` (or `Array<T>`) is a reference to a growable array, as in

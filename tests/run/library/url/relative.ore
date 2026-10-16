@@ -1,0 +1,62 @@
+// Relative references resolved against a base, as RFC 3986's examples and
+// the WHATWG URL Standard's special cases.
+const base = "http://a/b/c/d;p?q"
+const refs = [
+    "g:h",
+    "g",
+    "./g",
+    "g/",
+    "/g",
+    "//g",
+    "?y",
+    "g?y",
+    "#s",
+    "g#s",
+    "g?y#s",
+    ";x",
+    "g;x",
+    "",
+    ".",
+    "./",
+    "..",
+    "../",
+    "../g",
+    "../..",
+    "../../",
+    "../../g",
+    "../../../g",
+    "../../../../g",
+    "/./g",
+    "/../g",
+    "g.",
+    ".g",
+    "g..",
+    "..g",
+    "./../g",
+    "./g/.",
+    "g/./h",
+    "g/../h",
+    "g;x=1/./y",
+    "g;x=1/../y",
+    "\\g",
+    "\\\\g\\h",
+    "http:g",
+    "https:g",
+    "  ../x  ",
+]
+for (const ref of refs) console.log(JSON.stringify(ref), new URL(ref, base).href)
+
+// The base may be a URL; a base with an opaque path takes only fragments.
+const u = new URL("https://user:pw@example.com:8080/dir/file?x#y")
+console.log(new URL("other", u).href, new URL("//h2/p", u).href, new URL("?z", u).href)
+console.log(new URL("#f", "mailto:a@b").href, URL.canParse("x", "mailto:a@b"))
+console.log(new URL("x", "foo:/a/b").href, new URL("x", "foo://h/a/b").href)
+
+// file bases: drive letters stay.
+console.log(new URL("..", "file:///C:/a").href, new URL("/x", "file:///C:/a/b").href)
+console.log(new URL("d:/y", "file:///C:/a/b").href, new URL("x", "file:///tmp/a").href)
+console.log(new URL("//h/x", "file:///tmp/a").href, new URL("?q", "file:///tmp/a#f").href)
+
+// An invalid base or reference.
+console.log(URL.canParse("x"), URL.canParse("x", "nope"), URL.canParse("http://[", base))
+console.log(URL.parse("/x", "nope"), URL.parse("../y", base)?.href)
