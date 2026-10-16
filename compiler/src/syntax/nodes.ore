@@ -245,14 +245,68 @@ export function stringText(node: Node): string {
  * delimiters and with escapes resolved.
  */
 export function templateText(node: Node): string {
+    // Escapes are those of string literals; `"` is not special between the delimiters.
+    const fake = new Node("StringLiteral", 0, 0)
+    fake.text = `"${templateRaw(node)}"`
+    return stringValue(fake)
+}
+
+/**
+ * The raw text of a template part, as a tag sees it in `strings.raw`:
+ * without its delimiters, with escapes as written, and with each line break
+ * (`\r\n` or `\r`) as `\n`.
+ */
+export function templateRaw(node: Node): string {
     const raw = node.text
     const head = node.kind === "TemplateHead" || node.kind === "TemplateMiddle"
     const end = raw.length - (head ? 2 : 1)
     if (end < 1) return ""
-    // Escapes are those of string literals; `"` is not special between the delimiters.
-    const fake = new Node("StringLiteral", 0, 0)
-    fake.text = `"${raw.slice(1, end)}"`
-    return stringValue(fake)
+    return raw.slice(1, end).replaceAll("\r\n", "\n").replaceAll("\r", "\n")
+}
+
+/**
+ * The cooked text of a template part, or null when it has an escape that is
+ * not valid, which only a tagged template allows: `\x` or `\u` without
+ * their hex digits, a code point past U+10FFFF, or a decimal digit after
+ * `\` other than a `\0` that no digit follows.
+ */
+export function templateCooked(node: Node): string | null {
+    const raw = templateRaw(node)
+    let i = 0
+    while (i < raw.length) {
+        if (raw.slice(i, i + 1) !== "\\") {
+            i++
+            continue
+        }
+        const c = raw.slice(i + 1, i + 2)
+        i += 2
+        if (c === "x") {
+            if (!isHex(raw.slice(i, i + 2), 2)) return null
+        } else if (c === "u") {
+            if (raw.slice(i, i + 1) === "{") {
+                const close = raw.indexOf("}", i)
+                if (close < 0 || !isHex(raw.slice(i + 1, close), close - i - 1)) return null
+                const point = Number.parseInt(raw.slice(i + 1, close), 16)
+                if (point === null || point > 0x10ffff) return null
+            } else if (!isHex(raw.slice(i, i + 4), 4)) return null
+        } else if (c >= "1" && c <= "9") {
+            return null
+        } else if (c === "0") {
+            const next = raw.slice(i, i + 1)
+            if (next >= "0" && next <= "9" && next !== "") return null
+        }
+    }
+    return templateText(node)
+}
+
+/** Whether a text is `count` hex digits, at least one. */
+function isHex(text: string, count: int): bool {
+    if (count < 1 || text.length !== count) return false
+    for (let i = 0; i < text.length; i++) {
+        const c = text.slice(i, i + 1)
+        if (!((c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F"))) return false
+    }
+    return true
 }
 
 /** The kind of a `VariableDeclarationList` from its keyword: TypeScript's node flags. */

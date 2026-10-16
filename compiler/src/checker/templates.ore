@@ -1,0 +1,185 @@
+// Tagged templates: `` tag`a${x}b` `` calls the tag with the strings of the
+// template and the substitutions. The strings are a `TemplateStringsArray`,
+// an array of the cooked strings whose header has the array of the raw
+// strings after it (`templateObject` in runtime/core/string.ore).
+
+import {
+    type Expr,
+    ArrayLit,
+    Block,
+    Call,
+    Concat,
+    FieldInit,
+    Func,
+    LetStmt,
+    LocalRef,
+    NullLit,
+    ObjectLit,
+    Recast,
+    StringLit,
+} from "../ir/nodes"
+import { type StructType, type Type, type UnionType, arrayOf, FuncType, sameType, types } from "../ir/types"
+import { Node } from "../syntax/ast"
+import {
+    expression,
+    isIdentifier,
+    literal,
+    nameNode,
+    templateCooked,
+    templateHead,
+    templateRaw,
+    templateSpans,
+} from "../syntax/nodes"
+import { type Checker } from "./base"
+import { checkCall } from "./calls"
+import { checkExpr, printable } from "./expressions"
+import { typed } from "./helpers"
+import { type Operand } from "./operand"
+import { type Scope } from "./symbols"
+
+/** The module of the runtime functions of tagged templates. */
+const stringModule = "ore:runtime/string"
+
+/**
+ * A tagged template: a call of the tag with the strings object of the site
+ * and the substitutions, checked as any call. The strings object is a
+ * global created once, before the program's own top-level code, so that
+ * each evaluation of the site passes the same object, as in JavaScript.
+ * `` String.raw`...` `` is the raw strings and the substitutions concatenated.
+ */
+export function checkTaggedTemplate(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const tag = node.child("tag")!
+    const template = node.child("template")!
+    const parts: Node[] = []
+    const substitutions: Node[] = []
+    if (template.kind === "TemplateExpression") {
+        parts.push(templateHead(template))
+        for (const span of templateSpans(template)) {
+            substitutions.push(expression(span))
+            parts.push(literal(span))
+        }
+    } else {
+        parts.push(template)
+    }
+    if (isStringRaw(tag, scope)) return rawTemplate(c, parts, substitutions, scope)
+
+    const type = c.templateStrings()
+    const elem = type.elem
+    const cooked: Expr[] = []
+    const raw: Expr[] = []
+    for (const part of parts) {
+        const text = templateCooked(part)
+        cooked.push(text === null ? new NullLit(nullable(elem)) : new Recast(elem, new StringLit(types.string, text)))
+        raw.push(new StringLit(types.string, templateRaw(part)))
+    }
+    const site = c.newLocal("template", type, false)
+    site.global = true
+    const make = runtimeFunc(c, "templateObject")
+    const strings: Expr[] = [new ArrayLit(arrayOf(elem), cooked), new ArrayLit(arrayOf(types.string), raw)]
+    c.templateSites.push(new LetStmt(site, new Call(type, make, strings)))
+
+    // The call, with the strings object as an argument already checked.
+    const source = c.sourceOf(node)
+    const call = new Node("CallExpression", node.start, node.end)
+    c.sources.set(call, source)
+    call.add(tag, "expression")
+    const first = new Node("SpreadPart", template.start, template.end)
+    c.sources.set(first, source)
+    c.presets.set(first, typed(new LocalRef(type, site)))
+    call.add(first, "arguments")
+    for (const s of substitutions) call.add(s, "arguments")
+    return checkCall(c, call, scope, expected)
+}
+
+/** Whether a tag is `String.raw` of the built-in namespace. */
+function isStringRaw(tag: Node, scope: Scope): bool {
+    if (tag.kind !== "PropertyAccessExpression" || nameNode(tag).text !== "raw") return false
+    const object = expression(tag)
+    if (!isIdentifier(object) || object.text !== "String") return false
+    const symbol = scope.lookupValue("String")
+    return symbol !== null && symbol.k === "namespace" && symbol.name === "String"
+}
+
+/** `` String.raw`...` ``: the raw strings with the substitutions between them, formatted as in a template. */
+function rawTemplate(c: Checker, parts: Node[], substitutions: Node[], scope: Scope): Operand {
+    const exprs: Expr[] = []
+    for (let i = 0; i < parts.length; i++) {
+        const text = templateRaw(parts[i])
+        if (text !== "") exprs.push(new StringLit(types.string, text))
+        if (i >= substitutions.length) continue
+        const e = substitutions[i]
+        const value = checkExpr(c, e, scope)
+        if (value.k === "error") continue
+        const expr = c.toDefault(value, e)
+        if (printable(c, expr, e)) exprs.push(expr)
+    }
+    return typed(new Concat(types.string, exprs))
+}
+
+/** `strings.raw` of a `TemplateStringsArray`: the array after its header. */
+export function templateRawOf(c: Checker, strings: Expr): Expr {
+    return new Call(arrayOf(types.string), runtimeFunc(c, "templateRaw"), [new Recast(c.templateStrings(), strings)])
+}
+
+/**
+ * A `TemplateStringsArray` as an object type whose only field is `raw`,
+ * as `String.raw` takes; null when the type is not such an object type.
+ */
+export function templateAsRaw(c: Checker, strings: Expr, target: StructType): Expr | null {
+    if (target.nominal || target.fields.length !== 1 || target.fields[0].name !== "raw") return null
+    if (!sameType(target.fields[0].type, arrayOf(types.string))) return null
+    return new ObjectLit(target, [new FieldInit("raw", templateRawOf(c, strings))])
+}
+
+/** A value as an array, when it is a `TemplateStringsArray`: its copies and the results of its methods are arrays. */
+export function plainArray(value: Expr): Expr {
+    const type = value.type
+    if (type.kind !== "array" || !type.template) return value
+    return new Recast(arrayOf(type.elem), value)
+}
+
+/**
+ * Adds the top-level code that creates the strings objects of the tagged
+ * templates, run after the runtime's and before every other module's.
+ */
+export function addTemplateSites(c: Checker) {
+    if (c.templateSites.length === 0) return
+    const func = new Func(
+        "ore_templates_init",
+        "<tagged templates>",
+        1,
+        new FuncType([], types.void),
+        [],
+        new Block(c.templateSites),
+        false,
+    )
+    const inits: Func[] = []
+    let added = false
+    for (const init of c.module.inits) {
+        const file = init.file ?? ""
+        if (!added && !file.startsWith("ore:runtime/")) {
+            inits.push(func)
+            added = true
+        }
+        inits.push(init)
+    }
+    if (!added) inits.push(func)
+    c.module.inits = inits
+    c.module.functions.push(func)
+}
+
+/** A function of runtime/core/string.ore by name, exported or not. */
+function runtimeFunc(c: Checker, name: string): Func {
+    for (const [source, info] of c.modules) {
+        if (source.path !== stringModule) continue
+        const symbol = info.scope.ownValue(name)
+        if (symbol !== null && symbol.k === "func") return symbol.func
+    }
+    process.panic(`tagged templates: no function ${name} in ${stringModule}`)
+}
+
+/** The union `string | null` that the elements of a `TemplateStringsArray` have. */
+function nullable(elem: Type): UnionType {
+    if (elem.kind !== "union") process.panic("tagged templates: the elements are not nullable")
+    return elem
+}

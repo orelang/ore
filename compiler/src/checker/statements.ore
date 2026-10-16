@@ -51,6 +51,7 @@ import {
     type Type,
     Field,
     FuncType as FuncTypeClass,
+    arrayOf,
     findMethod,
     isNumeric,
     isStringLike,
@@ -750,7 +751,7 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
         if (e.kind === "OmittedExpression") continue
         const index: Expr = new IntLit(types.i64, i)
         if (dotDotDotToken(e) !== null) {
-            bindPattern(c, nameNode(e), new Slice(array, whole, index), mutable, scope, out)
+            bindPattern(c, nameNode(e), new Slice(arrayOf(array.elem), whole, index), mutable, scope, out)
             continue
         }
         const value = withDefault(c, new Index(array.elem, whole, index), initializer(e), scope, whole)
@@ -1007,7 +1008,8 @@ function destructure(c: Checker, state: Destructuring, target: Node, part: Expr,
             const e = elems[i]
             if (e.kind === "OmittedExpression") continue
             const index: Expr = new IntLit(types.i64, i)
-            if (e.kind === "SpreadElement") destructure(c, state, expression(e), new Slice(array, whole, index), scope)
+            if (e.kind === "SpreadElement")
+                destructure(c, state, expression(e), new Slice(arrayOf(array.elem), whole, index), scope)
             else destructureDefault(c, state, e, new Index(array.elem, whole, index), scope, whole)
         }
         return
@@ -1424,7 +1426,7 @@ export function checkClosure(
         }
         if (type === null)
             return c.fail(nameNode(p), `Parameter '${c.text(nameNode(p))}' needs a type annotation here.`)
-        if (isRest && (i !== params_.length - 1 || type.kind !== "array"))
+        if (isRest && (i !== params_.length - 1 || type.kind !== "array" || type.template))
             return c.fail(p, "A rest parameter must be the last parameter, of an array type.")
         if (optional && required === -1) required = i
         if (!optional && !isRest && required !== -1)
