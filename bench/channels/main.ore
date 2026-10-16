@@ -1,0 +1,23 @@
+// Channels: a pipeline of three tasks. A producer sends the numbers 1..n,
+// a stage squares them modulo a prime and a consumer sums what arrives, each
+// hop through a buffered channel.
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 1000000) : 1000000
+
+const numbers = new Chan<int>(100)
+const squares = new Chan<int>(100)
+task.spawn(() => {
+    for (let i = 1; i <= n; i++) numbers.send(i)
+    numbers.close()
+})
+task.spawn(() => {
+    for (const v of numbers) squares.send((v * v) % 1000003)
+    squares.close()
+})
+let count = 0
+let sum = 0
+for (const v of squares) {
+    count++
+    sum += v
+}
+console.log(count, sum)
