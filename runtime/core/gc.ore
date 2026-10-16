@@ -38,6 +38,7 @@ import {
     writeRaw,
     permanent,
     permanentMutex,
+    pageSize as systemPageSize,
     pthread_attr_destroy,
     pthread_attr_getstack,
     pthread_get_stackaddr_np,
@@ -94,7 +95,10 @@ const spanGrowBits = 88
  * `gcdata` (see `allocTyped`), or nil to scan it word by word.
  */
 const spanTypes = 96
-/** For a free run: 1 once its pages were given back to the system (see `scavenge`). */
+/**
+ * For a free run: how many bytes of it were given back to the system (see
+ * `scavengeLocked`), 0 while none were.
+ */
 const spanReleased = 104
 /** For a free run: the number of the collection that freed it, so that only runs free for a while are given back. */
 const spanFreedAt = 112
@@ -446,9 +450,13 @@ function newSpan(pages: int): ptr {
         const have = field(run, spanPages)
         if (have >= pages) {
             const next = pointerAt(run, spanNext)
-            if (field(run, spanReleased) !== 0) {
+            const released = field(run, spanReleased)
+            if (released !== 0) {
                 // Its pages come back into use: those taken now, or all of them for the rest, counted once.
-                releasedBytes -= have * pageSize
+                // On macOS the kernel may still discard pages given back with MADV_FREE_REUSABLE, even after
+                // they are written again, until MADV_FREE_REUSE takes them back; Linux zeroes them at once.
+                if (target.os === "darwin") adviseSystemPages(run, 8)
+                releasedBytes -= released
                 if (releasedBytes < 0) releasedBytes = 0
                 setField(run, spanReleased, 0)
             }
@@ -1534,14 +1542,34 @@ function scavengeLocked(): void {
     let free = 0
     for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) free += field(run, spanPages)
     if (free * 2 < nextPage) return
-    // MADV_FREE_REUSABLE on macOS, which the kernel counts out of the footprint at once; MADV_DONTNEED on Linux.
+    // MADV_FREE_REUSABLE on macOS, which the kernel counts out of the footprint at once, and which `newSpan`
+    // undoes with MADV_FREE_REUSE before the pages are used again; MADV_DONTNEED on Linux.
     const advice: i32 = target.os === "darwin" ? 7 : 4
     for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) {
         if (field(run, spanReleased) !== 0 || collections - field(run, spanFreedAt) < scavengeAge) continue
-        const bytes = field(run, spanPages) * pageSize
-        if (madvise(pointerAt(run, spanStart), u64(bytes), advice) === 0) releasedBytes += bytes
-        setField(run, spanReleased, 1)
+        const bytes = adviseSystemPages(run, advice)
+        releasedBytes += bytes
+        setField(run, spanReleased, bytes)
     }
+}
+
+/**
+ * Gives `advice` to madvise for the system's pages that lie wholly inside the
+ * pages of a free run, and returns how many bytes that covered (0 for none, or
+ * when madvise failed). The system's pages may be larger than the heap's: 16 KB
+ * on Apple silicon, two heap pages, and madvise rounds its range out to whole
+ * system pages, so advice for the whole run would also reach the heap page
+ * next to it, which may hold live objects.
+ */
+function adviseSystemPages(run: ptr, advice: i32): int {
+    const system = u64(systemPageSize())
+    const start = unsafe.toInt(pointerAt(run, spanStart))
+    const end = start + u64(field(run, spanPages) * pageSize)
+    const from = (start + system - 1) & ~(system - 1)
+    const to = end & ~(system - 1)
+    if (to <= from) return 0
+    if (madvise(unsafe.fromInt(from), to - from, advice) !== 0) return 0
+    return i64(to - from)
 }
 
 /**
