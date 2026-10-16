@@ -783,6 +783,12 @@ on the proleptic Gregorian calendar with days of 86 400 000 ms.
   array literals. JSON encodes a tuple as an array and decodes an array of
   exactly its length.
 
+- `x as const` gives a literal its literal type, an array literal the
+  read-only tuple of its elements' `as const` types, and an object literal
+  read-only fields of theirs: `const Dirs = ["n", "s"] as const` is a
+  `readonly ["n", "s"]`, and `(typeof Dirs)[number]` is `"n" | "s"`, an
+  enum of string literals. Other type assertions are not supported.
+
 ## unknown
 
 - `unknown` is the type of any value: every value converts to it

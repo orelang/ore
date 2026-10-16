@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `as const`: literals keep their literal types, array literals are
+  read-only tuples and object literals have read-only fields, so
+  `(typeof Dirs)[number]` of `const Dirs = ["n", "s"] as const` is the
+  union `"n" | "s"`.
 - Interfaces and object types can declare fields with accessor
   signatures, `get x(): T` (read-only) and `set x(value: T)`.
 - `readonly T[]` and `ReadonlyArray<T>` are enforced: the methods that

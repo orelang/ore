@@ -300,6 +300,11 @@ function constructorType(c: Checker, cls: StructType): FuncType | null {
 function isData(node: Node): bool {
     const k = node.kind
     if (k === "ParenthesizedExpression") return isData(expression(node))
+    // `[...] as const`.
+    if (k === "AsExpression") {
+        const type = node.child("type")
+        return type !== null && type.kind === "TypeReference" && type.end - type.start === 5 && isData(expression(node))
+    }
     if (k === "ArrayLiteralExpression") return elements(node).every(isData)
     if (k === "ObjectLiteralExpression") {
         return properties(node).every((p) => {

@@ -238,8 +238,17 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         if (type !== null && value.k !== "error") c.coerce(value, type, expression(node))
         return value
     }
-    if (k === "AsExpression")
+    if (k === "AsExpression") {
+        const asType = node.child("type")!
+        if (asType.kind === "TypeReference" && c.text(asType) === "const") {
+            const type = constType(c, expression(node), scope)
+            if (type === null) return errorOperand
+            const value = checkExpr(c, expression(node), scope, type)
+            if (value.k === "error") return value
+            return typed(c.coerce(value, type, expression(node)))
+        }
         return c.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
+    }
     if (k === "TemplateExpression") return checkTemplate(c, node, scope)
     if (k === "TaggedTemplateExpression") return checkTaggedTemplate(c, node, scope, expected)
     if (k === "PropertyAccessExpression") return checkProperty(c, node, scope)
@@ -2191,4 +2200,50 @@ function genericStatic(c: Checker, decl: Node, object: Node, nameId: Node): Valu
     }
     c.genericStatics.set(nameId.text + "@" + `${decl.start}`, symbol)
     return symbol
+}
+
+/**
+ * The type of `x as const`: literals keep their literal types, an array
+ * literal is a read-only tuple and an object literal has read-only fields,
+ * all the way down; any other value keeps its type.
+ */
+function constType(c: Checker, node: Node, scope: Scope): Type | null {
+    const k = node.kind
+    if (k === "ParenthesizedExpression") return constType(c, expression(node), scope)
+    if (k === "StringLiteral") return c.literal(stringText(node))
+    if (k === "NoSubstitutionTemplateLiteral") return c.literal(templateText(node))
+    if (k === "NumericLiteral") return c.numberLiteral(node.text)
+    if (k === "PrefixUnaryExpression" && c.text(node).startsWith("-") && operand(node).kind === "NumericLiteral")
+        return c.numberLiteral(`-${operand(node).text}`)
+    if (k === "ArrayLiteralExpression") {
+        const elems: Type[] = []
+        for (const e of elements(node)) {
+            if (e.kind === "SpreadElement") {
+                c.error(e, "'as const' takes array literals without spread elements.")
+                return null
+            }
+            const t = constType(c, e, scope)
+            if (t === null) return null
+            elems.push(t)
+        }
+        return c.tupleOf(elems, true)
+    }
+    if (k === "ObjectLiteralExpression") {
+        const fields: Field[] = []
+        for (const p of properties(node)) {
+            const value = p.kind === "PropertyAssignment" ? initializer(p) : null
+            const name = p.kind === "PropertyAssignment" ? c.memberName(nameNode(p)) : null
+            if (value === null || name === null) {
+                c.error(p, "'as const' takes object literals of 'name: value' properties.")
+                return null
+            }
+            const t = constType(c, value, scope)
+            if (t === null) return null
+            fields.push(new Field(name, t, true))
+        }
+        return c.shape(fields)
+    }
+    const value = checkExpr(c, node, scope)
+    if (value.k === "error") return null
+    return typeOf(c.toDefault(value, node))
 }

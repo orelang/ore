@@ -222,6 +222,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE3081](ORE3081.md) | A union of promises and other values cannot be awaited yet. |
 | [ORE3082](ORE3082.md) | Static members cannot reference class type parameters. |
 | [ORE3083](ORE3083.md) | Index signature in type '…' only permits reading. |
+| [ORE3084](ORE3084.md) | 'as const' takes array literals without spread elements. |
+| [ORE3085](ORE3085.md) | 'as const' takes object literals of 'name: value' properties. |
 
 ## ORE4xxx: Calls and built-in functions
 
