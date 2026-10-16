@@ -1,0 +1,44 @@
+//ore:internal
+// Runs the cases of tests/fuzz/regexp/gen.mjs with Ore's RegExp and prints
+// them as it prints JavaScript's results; a pattern Ore rejects, which Node
+// took, prints `rejected: why` instead of panicking.
+
+import { compileRegExp } from "ore:runtime/regexp-syntax"
+type Case = { p: string; f: string; s: string }
+
+function show(groups: (string | null)[]): string {
+    return groups.map((g) => (g === null ? "null" : JSON.stringify(g))).join(" ")
+}
+
+const text = fs.readFile(process.args[0])
+if (text instanceof Error) process.panic(text.message)
+const out: string[] = []
+for (const line of text.split("\n")) {
+    if (line === "") continue
+    const c = JSON.parse<Case>(line)
+    if (c instanceof Error) process.panic(c.message)
+    out.push(`== /${c.p}/${c.f} ${JSON.stringify(c.s)}`)
+    const program = compileRegExp(c.p, c.f)
+    if (program.error !== "") {
+        out.push(`rejected: ${program.error}`)
+        continue
+    }
+    const re = new RegExp(c.p, c.f)
+    const loop = re.global || re.sticky
+    let guard = 0
+    while (guard++ < 50) {
+        const m = re.exec(c.s)
+        if (m === null) {
+            out.push("no match")
+            break
+        }
+        const groups: (string | null)[] = []
+        for (let i = 0; i < m.length; i++) groups.push(m.at(i))
+        out.push(`${m.index}: ${show(groups)}`)
+        if (!loop) break
+        if ((m.at(0) ?? "") === "") re.lastIndex++
+    }
+    re.lastIndex = 0
+    out.push(`replace: ${JSON.stringify(c.s.replace(re, "<$&>"))}`)
+}
+console.log(out.join("\n"))
