@@ -3,19 +3,19 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/orelang/ore?label=release&color=C9A18B&cacheSeconds=3600&labelColor=293239&style=for-the-badge"></a>
+  <a href="https://github.com/orelang/ore/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/orelang/ore/release.yml?label=release%20build&labelColor=293239&style=for-the-badge"></a>
+  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-7E8F95?labelColor=293239&style=for-the-badge">
+  <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-C9A18B?labelColor=293239&style=for-the-badge">
+  <a href="#license"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-7E8F95?labelColor=293239&style=for-the-badge"></a>
+</p>
+
+<p align="center">
   <a href="#getting-started">Getting started</a> ·
   <a href="docs/spec">Specification</a> ·
   <a href="docs/architecture.md">Architecture</a> ·
   <a href="docs/roadmap.md">Roadmap</a> ·
   <a href="CHANGELOG.md">Changelog</a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/orelang/ore?label=release&color=C9A18B&labelColor=293239&style=for-the-badge"></a>
-  <a href="https://github.com/orelang/ore/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/orelang/ore/release.yml?label=release%20build&labelColor=293239&style=for-the-badge"></a>
-  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-7E8F95?labelColor=293239&style=for-the-badge">
-  <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-C9A18B?labelColor=293239&style=for-the-badge">
-  <a href="#license"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-7E8F95?labelColor=293239&style=for-the-badge"></a>
 </p>
 
 ```sh
