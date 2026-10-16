@@ -69,7 +69,7 @@ class Summary {
 const safe = -1
 const escapes = -2
 
-export function planStack(module: Module): StackPlan {
+export function planStack(module: Module, values: Set<int> = new Set<int>()): StackPlan {
     const funcs: Func[] = []
     for (const f of module.functions) if (!f.extern) funcs.push(f)
     const summaries = new Map<Func, Summary>()
@@ -107,6 +107,11 @@ export function planStack(module: Module): StackPlan {
         const placed: SlotNode[] = []
         for (const site of analysis.sites) {
             if (analysis.leaked(analysis.id(site))) continue
+            // An instance of a value class is no allocation.
+            if (site instanceof Call) {
+                const t = site.type
+                if (t.kind === "struct" && values.has(t.id)) continue
+            }
             const size = siteSize(site)
             if (size > maxObject || frame + size > maxFrame) continue
             frame += size

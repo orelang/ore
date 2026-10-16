@@ -5,6 +5,7 @@ import { type Module } from "../ir/nodes"
 import { classTables } from "../ir/types"
 import { inlineCalls } from "../opt/inline"
 import { planStack } from "../opt/escape"
+import { valueClasses } from "../opt/values"
 import { Emitter } from "./base"
 import { classTable, itab } from "./collections"
 import { ARRAY, EmitOptions, FN, FRAME, IFACE, MAP, STR, TYPE, UNKNOWN } from "./context"
@@ -45,7 +46,8 @@ export function emit(g: Emitter): string {
     g.defs.set(MAP, `${MAP} = type { i64, i64, i64, ptr, ptr, ptr, i64, i64, i64, ptr, i64, ptr, ptr, ptr }`)
     g.decls.set("@ore_rt_top", "@ore_rt_top = external thread_local global ptr")
     g.decls.set("@llvm.threadlocal.address.p0", "declare ptr @llvm.threadlocal.address.p0(ptr)")
-    g.plan = planStack(m)
+    g.values = valueClasses(m)
+    g.plan = planStack(m, g.values)
     g.tables = classTables(m.structs)
     // An interface value converted to another keeps its entries under the same names.
     for (const t of m.itabs) for (const a of t.accessors) g.accessorFields.add(t.iface.members[a.index].name)
@@ -62,7 +64,7 @@ export function emit(g: Emitter): string {
         g.globals.add(local)
         // The collector scans the globals that may hold pointers; a thread-local one belongs to its thread.
         const kind = local.type.kind
-        if (!local.threadLocal && kind !== "int" && kind !== "float" && kind !== "bool") {
+        if (!local.threadLocal && kind !== "int" && kind !== "float" && kind !== "bool" && !g.isValue(local.type)) {
             roots.push(`{ ptr, i64 } { ptr ${g.globalOf(local)}, i64 ${sizeOf(g.mt(local.type))} }`)
         }
         // An exported global is the definition of a C name, such as the runtime's `ore_rt_top`.

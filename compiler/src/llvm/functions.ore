@@ -47,7 +47,8 @@ export function signature(g: Emitter, func: Func, at: bool): string {
     const params: string[] = []
     if (at) params.push("ptr %mem")
     if (func.captures !== null) params.push("ptr %env")
-    if (func.receiver !== null) params.push("ptr %self")
+    const receiver = func.receiver
+    if (receiver !== null) params.push(`${g.lt(receiver.type)} %self`)
     const attrs = func.attributes
     const exportName = attrs !== null ? attrs.exportName : null
     const exported = exportName !== null && !at
@@ -99,7 +100,7 @@ export function emitFunction(g: Emitter, func: Func, at: bool): string {
         g.frame = frame
     }
     const receiver = func.receiver
-    if (receiver !== null) g.declare(receiver, { ty: "ptr", v: "%self" })
+    if (receiver !== null) g.declare(receiver, { ty: g.lt(receiver.type), v: "%self" })
     for (let i = 0; i < func.params.length; i++) {
         const p = func.params[i]
         g.declare(p, { ty: g.lt(p.type), v: `%p${i}` })

@@ -1,0 +1,486 @@
+// Value classes: small immutable classes whose instances the backend keeps
+// in registers and inside the objects that hold them, instead of on the heap.
+
+import { type Expr, type Func, type Local, type Module, type Stmt } from "../ir/nodes"
+import { isSubclass, type StructType, type Type } from "../ir/types"
+import { children } from "./escape"
+
+/** The most fields a value class may have, and its largest size in bytes. */
+const maxFields = 8
+const maxSize = 64
+
+/**
+ * Finds the classes whose instances can be values, by id: an instance is
+ * then copied where a reference to it would be passed, which no program can
+ * tell apart because nothing observes its identity or changes it.
+ *
+ * A class qualifies when it has no base class and no subclass, a
+ * constructor, one to eight `readonly` fields of numbers, booleans or other
+ * value classes, and when the whole program uses its instances only in these
+ * ways: bound to locals and parameters, returned, stored in fields of
+ * classes, read field by field and passed as the receiver of its methods.
+ * Anything else makes it a reference class again: comparing instances,
+ * converting one to an interface or to `unknown` (printing, JSON), keeping
+ * them in arrays, maps, sets, channels, unions or object types, closures
+ * taking or returning them, and a constructor letting `this` go anywhere but
+ * to its own fields before it returns. A class reachable from a value that
+ * is printed or converted keeps references too, so that what reads its
+ * fields by their layout sees pointers.
+ */
+export function valueClasses(module: Module): Set<int> {
+    const finder = new Finder(module)
+    finder.run()
+    const out = new Set<int>()
+    for (const s of finder.candidates.values()) out.add(s.id)
+    return out
+}
+
+class Finder {
+    /** The classes still taken for values, by id. */
+    candidates = new Map<int, StructType>()
+    /** Types whose values the program reflects on or converts: printed, compared as `unknown`, sent to an interface. */
+    reflected: Type[] = []
+    /** The instance a constructor of a candidate is building, while its body is walked. */
+    self: Local | null = null
+    func: Func | null = null
+
+    constructor(public module: Module) {}
+
+    run() {
+        const structs = this.module.structs
+        for (const s of structs) if (this.qualifies(s)) this.candidates.set(s.id, s)
+        for (const t of this.module.itabs) this.drop(t.struct)
+        for (const s of structs) {
+            // The fields of an object type or a tuple are read by layout in conversions between shapes.
+            for (const f of s.fields) {
+                if (s.nominal && !s.tuple) this.inner(f.type)
+                else this.contained(f.type)
+            }
+        }
+        for (const f of this.module.functions) if (!f.extern) this.function(f)
+        this.closeReflected()
+        // A class with a field of a class that is not a value any more is not one either, nor one that would contain itself.
+        let changed = true
+        while (changed) {
+            changed = false
+            const list: StructType[] = []
+            for (const s of this.candidates.values()) list.push(s)
+            for (const s of list) {
+                let keep = !this.reaches(s, s, new Set<int>())
+                for (const f of s.fields) {
+                    const t = f.type
+                    if (t.kind === "struct" && !this.candidates.has(t.id)) keep = false
+                }
+                if (!keep) {
+                    this.candidates.delete(s.id)
+                    changed = true
+                }
+            }
+        }
+    }
+
+    /** Whether the fields of `s`, and theirs, have a field of class `target`. */
+    reaches(s: StructType, target: StructType, seen: Set<int>): bool {
+        if (seen.has(s.id)) return false
+        seen.add(s.id)
+        for (const f of s.fields) {
+            const t = f.type
+            if (t.kind !== "struct") continue
+            if (t.id === target.id) return true
+            if (this.reaches(t, target, seen)) return true
+        }
+        return false
+    }
+
+    qualifies(s: StructType): bool {
+        if (!s.nominal || s.tuple || s.base !== null || s.ctor === null) return false
+        if (s.fields.length === 0 || s.fields.length > maxFields) return false
+        for (const t of this.module.structs) if (t !== s && isSubclass(t, s)) return false
+        let size = 0
+        for (const f of s.fields) {
+            if (!f.readonly) return false
+            const t = f.type
+            if (t.kind === "int") size += t.bits / 8
+            else if (t.kind === "float") size += t.bits / 8
+            else if (t.kind === "bool") size += 1
+            else if (t.kind === "struct" && t.nominal && !t.tuple && t !== s) size += 8 * t.fields.length
+            else return false
+        }
+        return size <= maxSize
+    }
+
+    drop(s: StructType) {
+        this.candidates.delete(s.id)
+    }
+
+    isCandidate(t: Type): bool {
+        return t.kind === "struct" && this.candidates.has(t.id)
+    }
+
+    /** A type a value of which stands on its own, or in a field of a class: only what it contains is checked. */
+    inner(t: Type) {
+        switch (t.kind) {
+            case "struct":
+                return
+            default:
+                this.contained(t)
+        }
+    }
+
+    /** A type inside another, other than in a field of a class: a candidate there stops being one. */
+    contained(t: Type) {
+        this.walkType(t, new Set<Type>())
+    }
+
+    walkType(t: Type, seen: Set<Type>) {
+        if (seen.has(t)) return
+        seen.add(t)
+        switch (t.kind) {
+            case "struct":
+                if (this.candidates.has(t.id)) this.drop(t)
+                if (!t.nominal || t.tuple) for (const f of t.fields) this.walkType(f.type, seen)
+                return
+            case "array":
+                this.walkType(t.elem, seen)
+                return
+            case "set":
+                this.walkType(t.elem, seen)
+                return
+            case "chan":
+                this.walkType(t.elem, seen)
+                return
+            case "map":
+                this.walkType(t.key, seen)
+                this.walkType(t.value, seen)
+                return
+            case "union":
+                for (const m of t.members) this.walkType(m, seen)
+                return
+            case "func":
+                for (const p of t.params) this.walkType(p, seen)
+                this.walkType(t.result, seen)
+                return
+            case "interface":
+                for (const m of t.members) {
+                    if (m.k === "field") this.walkType(m.type, seen)
+                    else this.walkType(m.type, seen)
+                }
+                return
+            default:
+                return
+        }
+    }
+
+    /** The types of the values of a program that reach printing or conversions, and every type inside them. */
+    closeReflected() {
+        const seen = new Set<Type>()
+        const work: Type[] = []
+        for (const t of this.reflected) work.push(t)
+        while (work.length > 0) {
+            const t = work.pop()
+            if (seen.has(t)) continue
+            seen.add(t)
+            switch (t.kind) {
+                case "struct":
+                    this.drop(t)
+                    for (const f of t.fields) work.push(f.type)
+                    // An instance of a subclass may be read through its base.
+                    for (const s of this.module.structs) if (s !== t && isSubclass(s, t)) work.push(s)
+                    break
+                case "array":
+                    work.push(t.elem)
+                    break
+                case "set":
+                    work.push(t.elem)
+                    break
+                case "chan":
+                    work.push(t.elem)
+                    break
+                case "map":
+                    work.push(t.key)
+                    work.push(t.value)
+                    break
+                case "union":
+                    for (const m of t.members) work.push(m)
+                    break
+                case "interface":
+                    for (const it of this.module.itabs) if (it.iface === t) work.push(it.struct)
+                    break
+                default:
+                    break
+            }
+        }
+    }
+
+    function(f: Func) {
+        this.func = f
+        this.self = null
+        const result = f.type.result
+        if (result.kind === "struct" && result.ctor === f && this.candidates.has(result.id)) {
+            const body = f.body.body
+            if (body.length > 0) {
+                const first = body[0]
+                if (first.k === "let") {
+                    const init = first.init
+                    if (init !== null && init.k === "alloc") this.self = first.local
+                }
+            }
+        }
+        for (const p of f.params) this.local(p)
+        const receiver = f.receiver
+        if (receiver !== null) this.local(receiver)
+        // A function exported to C has C's types.
+        const attrs = f.attributes
+        const exported = attrs !== null && attrs.exportName !== null
+        if (exported) this.contained(result)
+        else this.inner(result)
+        for (const p of f.type.params) {
+            if (exported) this.contained(p)
+            else this.inner(p)
+        }
+        const captures = f.captures
+        const self = this.self
+        if (captures !== null) for (const c of captures) if (c === self) this.dropType(c.type)
+        this.block(f.body.body)
+    }
+
+    local(l: Local) {
+        this.inner(l.type)
+    }
+
+    dropType(t: Type) {
+        if (t.kind === "struct") this.drop(t)
+    }
+
+    block(stmts: Stmt[]) {
+        for (const s of stmts) this.stmt(s)
+    }
+
+    stmt(s: Stmt) {
+        switch (s.k) {
+            case "block":
+                this.block(s.body)
+                return
+            case "let": {
+                this.local(s.local)
+                const init = s.init
+                if (init !== null) this.expr(init, s.local.type)
+                return
+            }
+            case "expr":
+                this.expr(s.expr, s.expr.type)
+                return
+            case "if": {
+                this.expr(s.cond, null)
+                this.stmt(s.then)
+                const otherwise = s.else
+                if (otherwise !== null) this.stmt(otherwise)
+                return
+            }
+            case "loop": {
+                for (const l of s.perIteration ?? []) this.local(l)
+                const cond = s.cond
+                if (cond !== null) this.expr(cond, null)
+                const update = s.update
+                if (update !== null) this.expr(update, update.type)
+                this.stmt(s.body)
+                return
+            }
+            case "for-of": {
+                this.local(s.local)
+                const value = s.value
+                if (value !== null) this.local(value)
+                this.expr(s.iterable, null)
+                this.stmt(s.body)
+                return
+            }
+            case "switch":
+                this.local(s.local)
+                this.expr(s.value, null)
+                for (const c of s.clauses) {
+                    const test = c.test
+                    if (test !== null) this.expr(test, null)
+                    this.block(c.body)
+                }
+                return
+            case "using":
+                this.local(s.local)
+                this.expr(s.init, null)
+                this.stmt(s.dispose)
+                this.block(s.body)
+                return
+            case "return": {
+                const value = s.value
+                if (value === null) return
+                const func = this.func
+                const self = this.self
+                if (self !== null && value.k === "local" && value.local === self) return
+                this.expr(value, func !== null ? func.type.result : null)
+                return
+            }
+            default:
+                return
+        }
+    }
+
+    /** The object of a field read or a field assignment: the instance a constructor builds may be one. */
+    object(e: Expr) {
+        const self = this.self
+        if (self !== null && e.k === "local" && e.local === self) return
+        this.expr(e, e.type)
+    }
+
+    /**
+     * Visits an expression whose value goes where a value of type `expected`
+     * is taken (null: anywhere else). A candidate stops being one when its
+     * values appear anywhere else.
+     */
+    expr(e: Expr, expected: Type | null) {
+        const t = e.type
+        this.inner(t)
+        if (this.isCandidate(t)) {
+            let fits = expected !== null && expected.kind === "struct" && t.kind === "struct" && expected.id === t.id
+            const k = e.k
+            if (!(
+                k === "local" ||
+                k === "call" ||
+                k === "method-call" ||
+                k === "field" ||
+                k === "cond" ||
+                k === "seq" ||
+                k === "bind" ||
+                k === "alloc" ||
+                k === "assign"
+            ))
+                fits = false
+            const self = this.self
+            if (e.k === "local" && self !== null && e.local === self) fits = false
+            if (!fits) this.dropType(t)
+        }
+        // What becomes `unknown` or an interface may be printed or read by its layout.
+        if (t.kind === "unknown" || t.kind === "interface") for (const c of children(e)) this.reflected.push(c.type)
+        switch (e.k) {
+            case "local":
+                return
+            case "field":
+                this.object(e.object)
+                return
+            case "assign": {
+                const target = e.target
+                switch (target.k) {
+                    case "local":
+                        this.expr(e.value, target.local.type)
+                        return
+                    case "field": {
+                        const object = target.object
+                        const self = this.self
+                        // Only a constructor sets the fields of an instance it builds.
+                        if (
+                            this.isCandidate(object.type) &&
+                            !(self !== null && object.k === "local" && object.local === self)
+                        )
+                            this.dropType(object.type)
+                        this.object(object)
+                        this.expr(e.value, e.type)
+                        return
+                    }
+                    case "element":
+                        this.expr(target.array, null)
+                        this.expr(target.index, null)
+                        this.expr(e.value, null)
+                        return
+                    case "iface-field":
+                        this.expr(target.value, null)
+                        this.expr(e.value, null)
+                        return
+                    case "union-field":
+                        this.expr(target.value, null)
+                        this.expr(e.value, null)
+                        return
+                }
+                return
+            }
+            case "incdec": {
+                const target = e.target
+                switch (target.k) {
+                    case "local":
+                        return
+                    case "field":
+                        this.dropType(target.object.type)
+                        this.expr(target.object, null)
+                        return
+                    case "element":
+                        this.expr(target.array, null)
+                        this.expr(target.index, null)
+                        return
+                    case "iface-field":
+                        this.expr(target.value, null)
+                        return
+                    case "union-field":
+                        this.expr(target.value, null)
+                        return
+                }
+                return
+            }
+            case "call": {
+                // C takes no Ore structs by value.
+                const params: Local[] = e.func.extern ? [] : e.func.params
+                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], i < params.length ? params[i].type : null)
+                return
+            }
+            case "method-call": {
+                const receiver = e.func.receiver
+                this.expr(e.receiver, !e.virtual && receiver !== null ? receiver.type : null)
+                const params = e.func.params
+                for (let i = 0; i < e.args.length; i++) this.expr(e.args[i], i < params.length ? params[i].type : null)
+                return
+            }
+            case "cond":
+                this.expr(e.cond, null)
+                this.expr(e.then, e.type)
+                this.expr(e.else, e.type)
+                return
+            case "seq":
+                for (let i = 0; i < e.exprs.length; i++) {
+                    const x = e.exprs[i]
+                    this.expr(x, i === e.exprs.length - 1 ? e.type : x.type)
+                }
+                return
+            case "bind":
+                for (const b of e.locals) {
+                    this.local(b.local)
+                    this.expr(b.init, b.local.type)
+                }
+                this.expr(e.body, e.type)
+                return
+            case "optional":
+                this.local(e.binding)
+                this.expr(e.value, null)
+                this.expr(e.body, null)
+                return
+            case "closure": {
+                const captures = e.func.captures
+                const self = this.self
+                if (captures !== null) for (const c of captures) if (c === self) this.dropType(c.type)
+                return
+            }
+            case "builtin": {
+                for (const a of e.args) this.reflected.push(a.type)
+                for (const t2 of e.typeArgs ?? []) this.reflected.push(t2)
+                for (const a of e.args) this.expr(a, null)
+                return
+            }
+            case "concat":
+            case "typeof":
+            case "is":
+            case "to-iface":
+                for (const c of children(e)) {
+                    this.reflected.push(c.type)
+                    this.expr(c, null)
+                }
+                return
+            default:
+                for (const c of children(e)) this.expr(c, null)
+        }
+    }
+}

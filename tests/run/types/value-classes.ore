@@ -1,0 +1,190 @@
+// Small immutable classes the compiler keeps as values, and the uses that
+// make it keep references: identity, mutation through aliases, closures,
+// arrays, printing, and constructors that let `this` go.
+
+class Vec {
+    constructor(
+        readonly x: f64,
+        readonly y: f64,
+    ) {}
+
+    add(o: Vec): Vec {
+        return new Vec(this.x + o.x, this.y + o.y)
+    }
+
+    scale(k: f64): Vec {
+        return new Vec(this.x * k, this.y * k)
+    }
+
+    self(): Vec {
+        return this
+    }
+
+    length2(): f64 {
+        return this.x * this.x + this.y * this.y
+    }
+}
+
+// Nested values, a boolean and an integer field, a field computed in the constructor.
+class Segment {
+    readonly len2: f64
+
+    constructor(
+        readonly from: Vec,
+        readonly to: Vec,
+        readonly closed: bool,
+        readonly tag: i32,
+    ) {
+        this.len2 = to.add(from.scale(-1)).length2()
+    }
+}
+
+class Body {
+    constructor(
+        public pos: Vec,
+        public seg: Segment,
+    ) {}
+}
+
+function moved(b: Body, d: Vec): Body {
+    b.pos = b.pos.add(d)
+    return b
+}
+
+const bodies: Body[] = []
+for (let i = 0; i < 3; i++)
+    bodies.push(new Body(new Vec(f64(i), 0), new Segment(new Vec(0, 0), new Vec(3, 4), i % 2 === 0, i32(i))))
+for (let step = 0; step < 4; step++) for (const b of bodies) moved(b, new Vec(0.5, 1))
+for (const b of bodies) {
+    const s = b.seg
+    console.log(b.pos.x, b.pos.y, s.len2, s.closed, s.tag, s.to.self().x)
+}
+
+// A body aliased: the class with mutable fields stays a reference.
+const a = bodies[0]
+const alias = a
+alias.pos = new Vec(100, 200)
+console.log(a.pos.x, a.pos.y, a === alias)
+
+// A value bound to two locals and read after the first is rebound.
+let p = new Vec(1, 2)
+const q = p
+p = p.add(new Vec(10, 10))
+console.log(p.x, q.x)
+
+// Compared by identity: a reference class.
+class Point {
+    constructor(
+        readonly x: int,
+        readonly y: int,
+    ) {}
+}
+const p1 = new Point(1, 2)
+const p2 = p1
+const p3 = new Point(1, 2)
+console.log(p1 === p2, p1 === p3, p1 !== p3)
+
+// Mutable: changes are seen through every alias.
+class Counter {
+    constructor(public n: int) {}
+}
+const c1 = new Counter(1)
+const c2 = c1
+c2.n += 5
+console.log(c1.n)
+
+// Captured by closures, which run after the local is rebound.
+class Cell {
+    constructor(readonly v: int) {}
+
+    plus(k: int): Cell {
+        return new Cell(this.v + k)
+    }
+}
+let cell = new Cell(1)
+const before = cell
+const read = () => cell.v
+const readBefore = () => before.v
+cell = cell.plus(41)
+console.log(read(), readBefore())
+
+// Kept in an array: elements keep their identity.
+class Tag {
+    constructor(readonly id: int) {}
+}
+const t = new Tag(7)
+const tags: Tag[] = [t, t, new Tag(7)]
+console.log(tags[0] === tags[1], tags[0] === tags[2], tags[2].id)
+
+// Printed: a reference whose fields console.log reads.
+class Pair {
+    constructor(
+        readonly left: int,
+        readonly right: int,
+    ) {}
+}
+class Holder {
+    constructor(public pair: Pair) {}
+}
+console.log(new Holder(new Pair(1, 2)))
+
+// A constructor that hands `this` out before setting its fields: the holder sees them set.
+class Late {
+    readonly first: int
+    readonly second: int
+
+    constructor(log: Late[]) {
+        this.first = 1
+        log.push(this)
+        this.second = 2
+    }
+}
+const log: Late[] = []
+const late = new Late(log)
+console.log(log[0].first, log[0].second, log[0] === late)
+
+class Registered {
+    readonly v: int
+
+    constructor(v: int) {
+        registry = this
+        this.v = v
+    }
+}
+let registry: Registered | null = null
+const r = new Registered(9)
+console.log(registry !== null ? registry.v : -1, r.v)
+
+// Through a generic function, a global and a closure that returns one.
+function same<T>(v: T): T {
+    return v
+}
+const origin = new Vec(0.25, 0.5)
+function shifted(): Vec {
+    return origin.add(new Vec(1, 1))
+}
+const make = (x: f64) => new Vec(x, x)
+console.log(same(origin).y, shifted().x, make(3).add(origin).x)
+
+// Implementing an interface: read through its table, so a reference.
+interface Sized {
+    size(): int
+}
+class Box implements Sized {
+    constructor(readonly n: int) {}
+
+    size(): int {
+        return this.n
+    }
+}
+const sized: Sized = new Box(4)
+console.log(sized.size())
+
+// A key of a map: compared by identity.
+class Key {
+    constructor(readonly k: int) {}
+}
+const k1 = new Key(1)
+const byKey = new Map<Key, string>()
+byKey.set(k1, "one")
+console.log(byKey.get(k1), byKey.get(new Key(1)))
