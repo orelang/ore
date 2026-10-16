@@ -5,6 +5,14 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Small immutable classes are values when nothing can tell: a class with no
+  base class or subclass and one to eight `readonly` fields of numbers,
+  booleans or other such classes, whose instances the program never
+  compares, prints, converts to an interface or `unknown`, or keeps in an
+  array, a map, a set, a channel or a union, has its instances kept in
+  registers and inside the objects that hold them instead of on the heap.
+  `bench/structs`, which moves particles with an immutable `Vec3`, no
+  longer allocates in its loop.
 - Tagged templates: `` tag`a${x}b` `` calls the tag with a
   `TemplateStringsArray` (the cooked strings, `null` for an invalid escape,
   and their `raw` text) and the substitutions, checked as a call against

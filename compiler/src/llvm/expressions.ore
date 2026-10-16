@@ -221,9 +221,16 @@ export function expr(g: Emitter, e: Expr): V {
         }
         case "field": {
             const object = expr(g, e.object)
-            return g.load(fieldPtr(g, object.v, structOf(e.object.type), e.name), e.type)
+            const s = structOf(e.object.type)
+            if (g.isValue(s)) {
+                const v = g.extract(object, g.fieldIndex(s, e.name), g.mt(e.type))
+                return e.type.kind === "bool" ? g.b.value("i1", `trunc i8 ${v.v} to i1`) : v
+            }
+            return g.load(fieldPtr(g, object.v, s, e.name), e.type)
         }
         case "alloc": {
+            // A constructor of a value class fills the fields of its local `this` (see `assign`).
+            if (g.isValue(e.type)) return { ty: g.lt(e.type), v: "zeroinitializer" }
             const object: V = g.at ? { ty: "ptr", v: "%mem" } : g.alloc(g.structType(e.type))
             g.setTable(object, e.type)
             return object
@@ -464,6 +471,16 @@ export function assign(g: Emitter, e: Assign): V {
         const value = expr(g, e.value)
         g.store(value, g.place(target.local), target.local.type)
         return value
+    }
+    // A constructor of a value class sets the fields of the instance it builds, a local, in the local's slot.
+    if (target.k === "field" && g.isValue(target.object.type)) {
+        const object = target.object
+        if (object.k === "local" && e.op === null) {
+            const value = expr(g, e.value)
+            g.store(value, fieldPtr(g, g.place(object.local), structOf(object.type), target.name), e.type, false)
+            return value
+        }
+        process.panic("a field of a value class set outside its constructor")
     }
     // The parts of the place and the value are evaluated before the place's
     // address is taken, since evaluating the value may grow an array.

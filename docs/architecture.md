@@ -39,8 +39,11 @@ always underneath; they are in the [specification](spec).
   generics are instantiated per type arguments, closures list their captures,
   unions are tagged, interfaces are `(data, itab)` pairs as in Go. It also
   produces the facts the language server needs.
-- **opt** runs escape analysis (objects that never outlive their function go
-  on the stack) and, in release builds, inlining of small functions.
+- **opt** finds value classes (small immutable classes whose identity the
+  program never observes: their instances are kept in registers and inside
+  the objects that hold them, never on the heap), runs escape analysis
+  (objects that never outlive their function go on the stack) and, in
+  release builds, inlining of small functions.
 - **llvm** writes textual LLVM IR, with the runtime in the same module so
   that it inlines; **driver** hands it to LLVM through its C API (parsed in
   memory, optimized by LLVM's pass pipeline, in debug builds one module per

@@ -90,6 +90,8 @@ export class Emitter {
 
     /** The classes whose instances start with a pointer to their class table, by id; see `classTables`. */
     tables = new Map<int, bool>()
+    /** The value classes of the program (opt/values.ore), by id: their instances are LLVM structs in registers. */
+    values = new Set<int>()
 
     /**
      * The names of interface fields that some struct implements with accessors:
@@ -161,9 +163,16 @@ export class Emitter {
                 if (repr.k === "nullable") return this.lt(repr.base)
                 return this.unionType(type)
             }
+            case "struct":
+                return this.values.has(type.id) ? this.structType(type) : "ptr"
             default:
                 return "ptr"
         }
+    }
+
+    /** Whether values of a type are instances of a value class, kept as LLVM structs instead of pointers. */
+    isValue(type: Type): bool {
+        return type.kind === "struct" && this.values.has(type.id)
     }
 
     /** The LLVM type of values of an Ore type in memory: booleans take a byte. */
