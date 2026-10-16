@@ -9,6 +9,7 @@
 // parameter `g`. Now that a class can extend a class, the layers can become
 // classes again.
 
+import { gcdata } from "./gcdata"
 import { type Func, type Local, type Module } from "../ir/nodes"
 import {
     isSubclass,
@@ -317,8 +318,12 @@ export class Emitter {
         this.b.terminate("unreachable")
     }
 
+    /** A new zeroed object of an LLVM type, which the collector scans by the pointer words of the type. */
     alloc(ty: string): V {
-        return this.rt("ore_rt_alloc", [{ ty: "i64", v: sizeOf(ty) }])
+        const size: V = { ty: "i64", v: sizeOf(ty) }
+        const data = gcdata(this, ty)
+        if (data === null) return this.rt("ore_rt_alloc_bytes", [size])
+        return this.rt("ore_rt_alloc_typed", [size, { ty: "ptr", v: data }])
     }
 
     /** Stores a value in a new stack slot and returns the slot. */

@@ -1,5 +1,6 @@
 // JSON: an encoder and a decoder generated per type.
 
+import { elementData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
 import { intRange, typeToString, unionRepr, type Type, type UnionType } from "../ir/types"
 import { error, helper } from "./calls"
@@ -520,7 +521,7 @@ export function decodeJson(g: Emitter, type: Type) {
             const elemType = type.elem
             const elem = g.mt(elemType)
             const len = g.b.value("i64", `load i64, ptr ${g.field("%v", JSON_VALUE, 4)}`)
-            const a = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, len])
+            const a = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, len, elementData(g, elem)])
             const items = g.b.value("ptr", `load ptr, ptr ${g.field("%v", JSON_VALUE, 5)}`)
             counted(g, len, (i) => {
                 const item = g.b.value(

@@ -1,0 +1,125 @@
+// The pointer maps of the types the program allocates, for the collector to
+// scan objects precisely (see `allocTyped` in runtime/core/gc.ore): the
+// layout of an LLVM type of this module, computed as LLVM lays it out on the
+// 64-bit targets Ore compiles for (natural alignment), and the words of it
+// that may hold a pointer. The payload of a tagged union may hold one, as
+// may every word of a type this file does not know.
+
+import { type Emitter } from "./base"
+import { constArray } from "./expressions"
+import { type V } from "./ll"
+
+/** The size and alignment in bytes of an LLVM type, and the byte offsets of the words in it that may hold pointers. */
+class Layout {
+    constructor(
+        readonly size: int,
+        readonly align: int,
+        readonly pointers: int[],
+    ) {}
+}
+
+/** The top-level parts of a list such as `ptr, { i64, ptr }, [2 x i64]`, split at the commas outside brackets. */
+function splitTop(list: string): string[] {
+    const parts: string[] = []
+    let depth = 0
+    let start = 0
+    for (let i = 0; i < list.length; i++) {
+        const c = list[i]
+        if (c === 0x7b || c === 0x5b || c === 0x3c || c === 0x28) depth++
+        else if (c === 0x7d || c === 0x5d || c === 0x3e || c === 0x29) depth--
+        else if (c === 0x2c && depth === 0) {
+            parts.push(list.slice(start, i).trim())
+            start = i + 1
+        }
+    }
+    const last = list.slice(start).trim()
+    if (last !== "") parts.push(last)
+    return parts
+}
+
+/** A type whose every word may hold a pointer: what this file does not know, scanned as the conservative collector would. */
+function unknownLayout(size: int): Layout {
+    const pointers: int[] = []
+    for (let o = 0; o + 8 <= size; o += 8) pointers.push(o)
+    return new Layout(size, 8, pointers)
+}
+
+function layoutOf(g: Emitter, ty: string, seen: Set<string>): Layout {
+    const t = ty.trim()
+    if (t === "ptr") return new Layout(8, 8, [0])
+    if (t === "i64" || t === "double") return new Layout(8, 8, [])
+    if (t === "i32" || t === "float") return new Layout(4, 4, [])
+    if (t === "i16") return new Layout(2, 2, [])
+    if (t === "i8" || t === "i1") return new Layout(1, 1, [])
+    if (t.startsWith("%")) {
+        const def = g.defs.get(t)
+        if (def === null || def === "" || seen.has(t)) return unknownLayout(8)
+        seen.add(t)
+        const body = def.slice(def.indexOf("= type ") + "= type ".length)
+        const layout = layoutOf(g, body, seen)
+        seen.delete(t)
+        // The payload of a tagged union holds whichever member it has: any word of it may be a pointer.
+        if (t.startsWith("%U.")) {
+            const pointers: int[] = []
+            for (let o = 8; o + 8 <= layout.size; o += 8) pointers.push(o)
+            return new Layout(layout.size, layout.align, pointers)
+        }
+        return layout
+    }
+    if (t.startsWith("[")) {
+        // `[N x T]`
+        const x = t.indexOf(" x ")
+        const count = Number.parseInt(t.slice(1, x).trim()) ?? 0
+        const elem = layoutOf(g, t.slice(x + 3, t.length - 1), seen)
+        const pointers: int[] = []
+        for (let i = 0; i < count; i++) for (const p of elem.pointers) pointers.push(i * elem.size + p)
+        return new Layout(count * elem.size, elem.align, pointers)
+    }
+    if (t.startsWith("{")) {
+        let offset = 0
+        let align = 1
+        const pointers: int[] = []
+        for (const part of splitTop(t.slice(1, t.length - 1))) {
+            const f = layoutOf(g, part, seen)
+            offset = (offset + f.align - 1) & ~(f.align - 1)
+            for (const p of f.pointers) pointers.push(offset + p)
+            offset += f.size
+            if (f.align > align) align = f.align
+        }
+        return new Layout((offset + align - 1) & ~(align - 1), align, pointers)
+    }
+    return unknownLayout(8)
+}
+
+/**
+ * A pointer to the `gcdata` of an LLVM type, `[unit, bits...]` as i64s; null
+ * when no word of it holds a pointer, so that it is allocated as bytes the
+ * collector never scans.
+ */
+export function gcdata(g: Emitter, ty: string): string | null {
+    const layout = layoutOf(g, ty, new Set<string>())
+    if (layout.pointers.length === 0) return null
+    const words = (layout.size + 7) >> 3
+    const bits: int[] = []
+    for (let i = 0; i < (words + 63) >> 6; i++) bits.push(0)
+    for (const p of layout.pointers) {
+        // A pointer is at an offset that is a multiple of 8 in the layouts LLVM gives these types.
+        const w = p >> 3
+        bits[w >> 6] = bits[w >> 6] | (1 << (w & 63))
+    }
+    const values: string[] = [`${words * 8}`]
+    for (const b of bits) values.push(`${b}`)
+    return constArray(g, "i64", values)
+}
+
+/**
+ * The `gcdata` of the elements of an array of an LLVM type, as a value: with
+ * no pointer bits when they hold no pointers, so that the runtime allocates
+ * its buffers as bytes it never scans.
+ */
+export function elementData(g: Emitter, ty: string): V {
+    const data = gcdata(g, ty)
+    if (data !== null) return { ty: "ptr", v: data }
+    const size = layoutOf(g, ty, new Set<string>()).size
+    return { ty: "ptr", v: constArray(g, "i64", [`${(size + 7) & ~7}`, "0"]) }
+}

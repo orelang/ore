@@ -1,5 +1,6 @@
 // Expressions and unions.
 
+import { elementData } from "./gcdata"
 import {
     type ArithOp,
     type Assign,
@@ -175,7 +176,11 @@ export function expr(g: Emitter, e: Expr): V {
             for (const x of e.elems) values.push(expr(g, x))
             const spread = e.spread
             if (spread !== null) return spreadArray(g, e.type.elem, values, spread)
-            const array = g.rt("ore_rt_array_new", [{ ty: "i64", v: sizeOf(elem) }, g.i64(values.length)])
+            const array = g.rt("ore_rt_array_new", [
+                { ty: "i64", v: sizeOf(elem) },
+                g.i64(values.length),
+                elementData(g, elem),
+            ])
             if (values.length === 0) return array
             const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
             for (let i = 0; i < values.length; i++)
@@ -1307,7 +1312,7 @@ function spreadArray(g: Emitter, elemType: Type, values: V[], spread: bool[]): V
         length = g.b.value("i64", `add i64 ${length.v}, ${n.v}`)
     }
     length = g.b.value("i64", `add i64 ${length.v}, ${singles}`)
-    const array = g.rt("ore_rt_array_new", [{ ty: "i64", v: size }, length])
+    const array = g.rt("ore_rt_array_new", [{ ty: "i64", v: size }, length, elementData(g, elem)])
     const data = g.b.value("ptr", `load ptr, ptr ${g.field(array.v, ARRAY, 0)}`)
     let at = g.i64(0)
     for (let i = 0; i < values.length; i++) {

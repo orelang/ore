@@ -7,7 +7,7 @@
 // the collector and a test; the panic is out of line.
 
 import { flushOutput } from "ore:runtime/io"
-import { alloc as gcAlloc } from "ore:runtime/gc"
+import { alloc as gcAlloc, allocTyped } from "ore:runtime/gc"
 import { blockingEnter, blockingExit, randomState, wallClockMs } from "ore:runtime/task"
 
 declare function open(path: string, flags: i32): i32
@@ -31,6 +31,12 @@ declare function __errno_location(): ptr
 //ore:runtime ore_rt_alloc
 function alloc(size: int): ptr {
     return gcAlloc(size, false)
+}
+
+/** Zeroed collected memory of a type whose pointer words `gcdata` gives (see `allocTyped` in gc.ore). */
+//ore:runtime ore_rt_alloc_typed
+function allocWithType(size: int, gcdata: ptr): ptr {
+    return allocTyped(size, false, gcdata)
 }
 
 /** Collected memory that holds no pointers, so the collector never scans it. */

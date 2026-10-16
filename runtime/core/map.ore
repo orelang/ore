@@ -214,7 +214,8 @@ function mapClear(m: ptr): void {
 /** The keys (or the values) of the live entries, as an array of their elements. */
 function collect(m: ptr, values: bool): ptr {
     const size = field(m, values ? valueSizeAt : keySizeAt)
-    const out = unsafe.alloc(24)
+    // An array header {data, len, cap, gcdata}, its elements scanned word by word (see array.ore).
+    const out = unsafe.alloc(32)
     const count = field(m, sizeAt)
     unsafe.store<ptr>(out, unsafe.alloc(size * count))
     unsafe.store<int>(unsafe.add(out, 8), count)

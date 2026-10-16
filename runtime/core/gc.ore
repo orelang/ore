@@ -88,7 +88,14 @@ const spanClass = 72
 const spanDivMul = 80
 /** A bitmap of the objects allocated as growable strings (see `allocGrowable`). */
 const spanGrowBits = 88
-const spanRecordSize = 96
+/**
+ * The type of each object, for scanning it precisely: a pointer to its
+ * `gcdata` (see `allocTyped`), or nil to scan it word by word.
+ */
+const spanTypes = 96
+const spanRecordSize = 104
+/** The most objects a span holds; a span of more would have room for more, unused. */
+const maxElems = 512
 
 // A thread record, in permanent memory, pointed to by the thread-local `thread`.
 const threadId = 0
@@ -406,6 +413,7 @@ function newRecord(): ptr {
     setPointer(r, spanAllocBits, meta(bitmapSize))
     setPointer(r, spanMarkBits, meta(bitmapSize))
     setPointer(r, spanGrowBits, meta(bitmapSize))
+    setPointer(r, spanTypes, meta(maxElems * 8))
     return r
 }
 
@@ -504,7 +512,7 @@ function refill(t: ptr, cls: int, noscan: bool): ptr {
         const pages = elemSize * 8 > pageSize ? (elemSize * 8 + pageSize - 1) / pageSize : 1
         span = newSpan(pages)
         const elems = (pages * pageSize) / elemSize
-        useSpan(span, elemSize, elems < 512 ? elems : 512, noscan, cls)
+        useSpan(span, elemSize, elems < maxElems ? elems : maxElems, noscan, cls)
     }
     unlock(heapLock)
     setPointer(t, threadCache + (cls * 2 + (noscan ? 1 : 0)) * 8, span)
@@ -513,11 +521,12 @@ function refill(t: ptr, cls: int, noscan: bool): ptr {
 
 /** One large object in a span of its own. */
 //ore:noinline
-function allocLarge(size: int, noscan: bool): ptr {
+function allocLarge(size: int, noscan: bool, gcdata: ptr): ptr {
     const pages = (size + pageSize - 1) / pageSize
     lock(heapLock)
     const span = newSpan(pages)
     useSpan(span, pages * pageSize, 1, noscan, -1)
+    setPointer(pointerAt(span, spanTypes), 0, gcdata)
     setBit(pointerAt(span, spanAllocBits), 0)
     unlock(heapLock)
     const p = pointerAt(span, spanStart)
@@ -534,8 +543,19 @@ function flush(t: ptr): void {
     if (unsafe.atomicAdd<i64>(allocatedCell, allocated) + allocated >= nextCollection) collect()
 }
 
-/** `size` zeroed bytes; `noscan` memory is never scanned for pointers. */
+/** `size` zeroed bytes; `noscan` memory is never scanned for pointers, the rest word by word. */
 export function alloc(size: int, noscan: bool): ptr {
+    return allocTyped(size, noscan, nil())
+}
+
+/**
+ * `size` zeroed bytes of a type whose pointers the collector knows: `gcdata`
+ * is `{ unit: i64, bits: u64[] }`, the object being units of `unit` bytes,
+ * one after the other (one for a struct, many for the elements of an
+ * array), and bit i of `bits` set when the word at byte 8 * i of a unit may
+ * hold a pointer. A nil `gcdata` has the object scanned word by word.
+ */
+export function allocTyped(size: int, noscan: bool, gcdata: ptr): ptr {
     if (size <= 0) size = 1
     const t = threadRecord()
     if (isNil(t)) process.panic("gc: allocation on an unregistered thread")
@@ -545,7 +565,7 @@ export function alloc(size: int, noscan: bool): ptr {
     unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
     let p: ptr
     if (size > maxSmall) {
-        p = allocLarge(size, noscan)
+        p = allocLarge(size, noscan, gcdata)
     } else {
         const cls = field(classOfSize, ((size + 15) >> 4) * 8)
         const slot = unsafe.add(t, threadCache + (cls * 2 + (noscan ? 1 : 0)) * 8)
@@ -568,6 +588,7 @@ export function alloc(size: int, noscan: bool): ptr {
         const elemSize = field(span, spanElemSize)
         p = unsafe.add(pointerAt(span, spanStart), i * elemSize)
         unsafe.fill(p, 0, elemSize)
+        if (!noscan) setPointer(pointerAt(span, spanTypes), i * 8, gcdata)
     }
     unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
     if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
@@ -930,6 +951,18 @@ function helperMain(m: ptr): ptr {
     return m
 }
 
+/**
+ * `bytes` zeroed bytes for elements whose pointers `gcdata` describes: never
+ * scanned when they have none, word by word for a nil `gcdata`.
+ */
+export function allocElements(bytes: int, gcdata: ptr): ptr {
+    if (isNil(gcdata)) return alloc(bytes, false)
+    const words = field(gcdata, 0) >> 3
+    for (let w = 0; w < words; w += 64)
+        if (field(gcdata, 8 + (w >> 6) * 8) !== 0) return allocTyped(bytes, false, gcdata)
+    return alloc(bytes, true)
+}
+
 /** Marks the object that `p` points into, if it is an allocated object of the heap, on marker `m`. */
 function mark(m: ptr, p: u64): void {
     const offset = p - unsafe.toInt(heapBase)
@@ -966,6 +999,33 @@ function push(m: ptr, object: ptr): void {
 /** Marks what the words in [from, from + size) point to. */
 function scanOn(m: ptr, from: ptr, size: int): void {
     for (let i = 0; i + 8 <= size; i += 8) mark(m, unsafe.load<u64>(unsafe.add(from, i)))
+}
+
+/** Marks what the pointer words of the units of an object point to, as its `gcdata` says (see `allocTyped`). */
+function scanTyped(m: ptr, object: ptr, size: int, gcdata: ptr): void {
+    const unit = field(gcdata, 0)
+    const words = unit >> 3
+    for (let base = 0; base + unit <= size; base += unit) {
+        for (let w = 0; w < words; w += 64) {
+            let bits = unsafe.load<u64>(unsafe.add(gcdata, 8 + (w >> 6) * 8))
+            while (bits !== 0) {
+                const i = ctz(bits)
+                mark(m, unsafe.load<u64>(unsafe.add(object, base + (w + i) * 8)))
+                bits = bits & (bits - 1)
+            }
+        }
+    }
+}
+
+/** The number of trailing zero bits of a word that is not zero. */
+function ctz(x: u64): int {
+    let n = 0
+    let v = x
+    while ((v & 1) === 0) {
+        v = v >> 1
+        n++
+    }
+    return n
 }
 
 /** Marks what the words in [from, from + size) point to: a root, scanned by the collector. */
@@ -1016,7 +1076,9 @@ function drain(m: ptr): void {
             setField(m, markerTop, top)
             const object = pointerAt(pointerAt(m, markerStack), top * 8)
             const span = pointerAt(pageTable, (unsafe.diff(object, heapBase) >> pageShift) * 8)
-            scanOn(m, object, field(span, spanElemSize))
+            const gcdata = pointerAt(pointerAt(span, spanTypes), objectIndex(span, object) * 8)
+            if (isNil(gcdata)) scanOn(m, object, field(span, spanElemSize))
+            else scanTyped(m, object, field(span, spanElemSize), gcdata)
             // Others are idle: give them half of the work.
             if (top >= 2 && unsafe.atomicLoad<i64>(idleHint) > 0 && unsafe.atomicLoad<i64>(poolHint) === 0) {
                 lock(poolLock)
