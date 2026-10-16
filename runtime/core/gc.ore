@@ -399,15 +399,14 @@ export function allowCollections(): void {
  */
 export function enterNoStop(): void {
     const t = threadRecord()
-    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    enterRegion(t)
     lock(heapLock)
 }
 
 export function exitNoStop(): void {
     const t = threadRecord()
     unlock(heapLock)
-    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
-    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+    leaveRegion(t)
 }
 
 /** Tells the collector which stack the thread runs on from now: `base` is its highest address. */
@@ -595,7 +594,7 @@ export function allocTyped(size: int, noscan: bool, gcdata: ptr): ptr {
     setField(t, threadAllocated, field(t, threadAllocated) + size)
     if (field(t, threadAllocated) >= flushEvery) flush(t)
     // From here to the end, a collection waits for this thread (see `onStop`).
-    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    enterRegion(t)
     let p: ptr
     if (size > maxSmall) {
         p = allocLarge(size, noscan, gcdata)
@@ -626,8 +625,7 @@ export function allocTyped(size: int, noscan: bool, gcdata: ptr): ptr {
         if (!isNil(markingCell) && unsafe.atomicLoad<i64>(markingCell) !== 0)
             unsafe.atomicOr<i64>(unsafe.add(pointerAt(span, spanMarkBits), (i >> 6) * 8), 1 << (i & 63))
     }
-    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
-    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+    leaveRegion(t)
     return p
 }
 
@@ -1004,6 +1002,25 @@ export function allocElements(bytes: int, gcdata: ptr): ptr {
     return alloc(bytes, true)
 }
 
+/**
+ * Marks the thread as in a region that a stop waits for: an allocation, a
+ * write barrier, an assist, a change of the collector's lists. Only the
+ * thread's own signal handler (`onStop`) reads the mark, so a compiler
+ * barrier orders it, not a fence between processors.
+ */
+function enterRegion(t: ptr): void {
+    unsafe.store<i64>(unsafe.add(t, threadInAlloc), 1)
+    unsafe.signalFence()
+}
+
+/** Ends a region `enterRegion` began, and stops the thread if a stop came meanwhile. */
+function leaveRegion(t: ptr): void {
+    unsafe.signalFence()
+    unsafe.store<i64>(unsafe.add(t, threadInAlloc), 0)
+    unsafe.signalFence()
+    if (unsafe.load<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+}
+
 /** Marks the object that `p` points into, if it is an allocated object of the heap, on marker `m`. */
 function mark(m: ptr, p: u64): void {
     const object = greyen(p)
@@ -1070,15 +1087,13 @@ function shadeWords(slot: ptr, words: int): void {
     // barrier can run inside a region that already keeps the collector waiting (`enterNoStop`), which it
     // must leave as it was: only the region that started it stops the thread afterwards.
     const t = threadRecord()
-    const outer = isNil(t) ? 1 : unsafe.atomicLoad<i64>(unsafe.add(t, threadInAlloc))
-    if (outer === 0) unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    const outer = isNil(t) ? 1 : unsafe.load<i64>(unsafe.add(t, threadInAlloc))
+    if (outer === 0) enterRegion(t)
     for (let i = 0; i < words; i++) {
         const object = greyen(unsafe.load<u64>(unsafe.add(slot, i * 8)))
         if (!isNil(object)) shade(object)
     }
-    if (outer !== 0) return
-    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
-    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+    if (outer === 0) leaveRegion(t)
 }
 
 /** Hands an object the barrier marked to the markers, through the thread's buffer. */
@@ -1234,8 +1249,8 @@ function assist(t: ptr): void {
         m = newMarker()
         setPointer(t, threadAssist, m)
     }
-    const outer = unsafe.atomicLoad<i64>(unsafe.add(t, threadInAlloc))
-    if (outer === 0) unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    const outer = unsafe.load<i64>(unsafe.add(t, threadInAlloc))
+    if (outer === 0) enterRegion(t)
     lock(poolLock)
     take(m)
     unlock(poolLock)
@@ -1252,9 +1267,7 @@ function assist(t: ptr): void {
         unlock(poolLock)
         setField(m, markerTop, 0)
     }
-    if (outer !== 0) return
-    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
-    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+    if (outer === 0) leaveRegion(t)
 }
 
 /** Marks until there is nothing left to mark on any marker. */
