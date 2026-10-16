@@ -154,7 +154,10 @@ export function findPackageRoot(dir: string): string | null {
     }
 }
 
-/** A file path for a module path: `x.ore`, `x` itself if it ends in `.ore`, or `x/index.ore`. */
+/**
+ * A file path for a module path: `x` itself if it ends in `.ore`, `x.ore`, or
+ * `x/index.ore`; a file wins over a directory of the same name.
+ */
 function resolveFile(base: string): string | null {
     if (base.endsWith(".ore")) return isFile(base) ? base : null
     const file = `${base}.ore`
@@ -181,8 +184,20 @@ export function packageEntry(dir: string): string | Error | null {
 export function resolveImport(specifier: string, fromFile: string): string | Error | null {
     if (specifier.startsWith("ore:")) return stdModules.has(specifier) ? specifier : null
     if (isGithubUrl(specifier)) return resolveGithub(specifier)
-    if (specifier.startsWith("./") || specifier.startsWith("../") || isAbsolute(specifier)) {
-        return resolveFile(resolve(dirname(fromFile), specifier))
+    if (
+        specifier.startsWith("./") ||
+        specifier.startsWith("../") ||
+        specifier === "." ||
+        specifier === ".." ||
+        isAbsolute(specifier)
+    ) {
+        const base = resolve(dirname(fromFile), specifier)
+        // `./lib/` names the directory, not `./lib.ore`.
+        if (specifier.endsWith("/") || specifier === "." || specifier === "..") {
+            const index = join(base, "index.ore")
+            return isFile(index) ? index : null
+        }
+        return resolveFile(base)
     }
     const parts = specifier.split("/")
     const nameLength = specifier.startsWith("@") ? 2 : 1
