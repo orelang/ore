@@ -78,9 +78,10 @@ exports, type assertions (Ore converts: `i32(x)`).
     interfaces (done; not methods), generic methods in interfaces;
   - `keyof`, `typeof x` as a type, indexed access `T["k"]` (done);
   - dictionaries, `{ [key: string]: V }` and `Record<string, V>`, with
-    the syntax of objects, `delete` and `in` (done; an index signature with
-    other members is not supported); the namespace `Object` (done);
-    `obj["k"]` and `obj[k]` with `k: keyof T`, read and assigned (done);
+    the syntax of objects, `delete` and `in` (done), with named entries
+    beside an index signature (done; not in classes); the namespace
+    `Object` (done); `obj["k"]` and `obj[k]` with `k: keyof T`, read and
+    assigned (done);
   - conditional types, mapped types and template literal types, and with
     them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...)
     (done); numeric literal types in computations on types, `infer` in

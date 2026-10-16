@@ -112,7 +112,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2043](ORE2043.md) | Exponent … is too large. |
 | [ORE2044](ORE2044.md) | Shift count must not be negative. |
 | [ORE2045](ORE2045.md) | Shift count … is too large. |
-| [ORE2046](ORE2046.md) | An index signature is a type alone, '{ [key: string]: T }', not a member of a class, an interface or an object type with other members. |
+| [ORE2046](ORE2046.md) | An index signature makes a dictionary, '{ name: string; [key: string]: T }': it is not a member of a class, of a generic interface or of an interface that extends another. |
 | [ORE2047](ORE2047.md) | Cannot find name '…'. Use '…'. |
 | [ORE2048](ORE2048.md) | Type '…' cannot be converted to or from JSON: the keys of a Map must be strings. |
 | [ORE2049](ORE2049.md) | Type '…' cannot be converted to or from JSON. |
@@ -139,6 +139,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE2070](ORE2070.md) | The type '…' is 'readonly' and cannot be assigned to the mutable type '…'. |
 | [ORE2071](ORE2071.md) | A required element cannot follow an optional element. |
 | [ORE2072](ORE2072.md) | A rest element of type '…' is not supported: tuples have a fixed length in Ore. Spread a tuple type, or use an array. |
+| [ORE2073](ORE2073.md) | A dictionary has one index signature, '[key: string]: T'. |
+| [ORE2074](ORE2074.md) | The other members of an object type with an index signature are properties, its named entries: '{ name: string; [key: string]: string }'. |
+| [ORE2075](ORE2075.md) | Property '…' of type '…' is not assignable to 'string' index type '…'. |
 
 ## ORE3xxx: Expressions
 
@@ -237,6 +240,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE3091](ORE3091.md) | 'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'. |
 | [ORE3092](ORE3092.md) | 'as const' takes array literals without spread elements. |
 | [ORE3093](ORE3093.md) | 'as const' takes object literals of 'name: value' properties. |
+| [ORE3094](ORE3094.md) | The operand of a 'delete' operator must be optional: '…' is a required entry of '…'. |
+| [ORE3095](ORE3095.md) | Property '…' is missing in this literal but required in type '…'. |
 
 ## ORE4xxx: Calls and built-in functions
 

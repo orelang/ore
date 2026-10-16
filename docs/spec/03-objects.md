@@ -117,9 +117,11 @@
   cannot be reserved words, nor the words strict mode reserves (`implements`,
   `interface`, `let`, `package`, `private`, `protected`, `public`, `static`,
   `yield`): Ore modules are always in strict mode.
-- An index signature (`[key: string]: T`) is a [dictionary](#dictionaries)
-  type alone, not a member of a class, an interface or an object type with
-  other members ([ORE2046](../errors/ORE2046.md)).
+- An index signature (`[key: string]: T`) makes an object type or an
+  interface a [dictionary](#dictionaries), whose other members are its
+  [named entries](#named-entries). It is not a member of a class, of a
+  generic interface or of an interface that extends another
+  ([ORE2046](../errors/ORE2046.md)).
 - `private` members are accessible only inside the class that declares them,
   `protected` members inside that class and its subclasses. Neither counts
   for interfaces. `readonly` fields can be assigned only by the constructor
@@ -510,6 +512,42 @@ names them is:
   from a JSON object.
 - Keys are strings only: `{ [i: number]: V }` is an error
   ([ORE2069](../errors/ORE2069.md)); use a `Map` for other keys.
+
+### Named entries
+
+An object type or an interface of an index signature and properties,
+`{ host: string; accept?: string; [name: string]: string }`, is a dictionary
+whose properties are named entries: entries that every value of the type has,
+but optional ones. It is the same hash table at run time; the names are known
+to the checker only.
+
+- The type of each named entry is assignable to the values' type, as
+  TypeScript requires ([ORE2075](../errors/ORE2075.md)): the same type,
+  members of a union of values, any type for `unknown` values, or string
+  literal types of values that hold `string` (a required entry only). The other
+  members are properties only ([ORE2074](../errors/ORE2074.md)), and there is
+  one index signature ([ORE2073](../errors/ORE2073.md)).
+- `d.host` and `d["host"]` read a named entry as its own type, `string`
+  (`string | null` when optional); other entries read as `V | null`. The
+  value is checked when read: an entry removed or changed through a key known
+  only at run time (`delete d[key]`, `d[key] = v`) panics when read by its
+  name (`unexpected null`, or `value is not of type ...`).
+- `d.host = v` takes a value of the entry's type. A required named entry is
+  always there, so its compound assignments work as for a field
+  (`d.total += 1`, `d.total++`, `d.flag ||= x`); `??=` applies to an optional
+  one. `delete d.host` of a required entry is an error
+  ([ORE3094](../errors/ORE3094.md)), and `readonly` entries are not assigned
+  or deleted.
+- A literal of the type gives every required named entry
+  ([ORE3095](../errors/ORE3095.md)), by name, from a spread object's fields or
+  from a spread dictionary's required named entries. Its entries are in the
+  order written, named or not, as JavaScript orders an object's properties.
+- `console.log`, `JSON.stringify`, `Object.keys` and the others see a
+  dictionary, its entries in insertion order. `JSON.parse` checks that the
+  required named entries are there and that each named entry is of its type.
+- A dictionary with named entries converts to one with fewer of them, of the
+  same values, and to the plain dictionary `{ [key: string]: V }`; not the
+  other way. A type alias or an interface names it in messages.
 
 ## The namespace Object
 

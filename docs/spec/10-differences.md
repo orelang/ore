@@ -5,8 +5,8 @@
 `any`, `var`, `==` / `!=`, `eval`, `with`, `arguments`, `prototype`,
 `for...in` (use `for...of` over `Object.keys(o)`), dynamic property keys on
 objects (use a [dictionary](03-objects.md#dictionaries); `delete` and `in`
-work on dictionaries only), index signatures as members of classes,
-interfaces and object types with other members, decorators, `#name` private
+work on dictionaries only), index signatures as members of classes, of
+generic interfaces and of interfaces that extend others, decorators, `#name` private
 fields (use `private`), `enum` and `const enum` (use unions of literals),
 `namespace` (use modules), `throw` / `try`.
 
