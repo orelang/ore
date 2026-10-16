@@ -1,0 +1,92 @@
+// Dynamic dispatch: sums the areas and perimeters of an array of shapes of
+// four classes behind one interface, over and over.
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 200000) : 200000
+
+interface Shape {
+    area(): f64
+    perimeter(): f64
+}
+
+class Circle implements Shape {
+    constructor(public r: f64) {}
+    area(): f64 {
+        return Math.PI * this.r * this.r
+    }
+    perimeter(): f64 {
+        return 2 * Math.PI * this.r
+    }
+}
+
+class Rect implements Shape {
+    constructor(
+        public w: f64,
+        public h: f64,
+    ) {}
+    area(): f64 {
+        return this.w * this.h
+    }
+    perimeter(): f64 {
+        return 2 * (this.w + this.h)
+    }
+}
+
+class Square implements Shape {
+    constructor(public side: f64) {}
+    area(): f64 {
+        return this.side * this.side
+    }
+    perimeter(): f64 {
+        return 4 * this.side
+    }
+}
+
+class Triangle implements Shape {
+    constructor(
+        public a: f64,
+        public b: f64,
+    ) {}
+    area(): f64 {
+        return 0.5 * this.a * this.b
+    }
+    perimeter(): f64 {
+        return this.a + this.b + Math.sqrt(this.a * this.a + this.b * this.b)
+    }
+}
+
+// A thousand shapes of sizes 1 to 10, picked by a Lehmer generator.
+let seed = 42
+function next(): f64 {
+    seed = (seed * 48271) % 2147483647
+    return f64(1 + (seed % 10))
+}
+const shapes: Shape[] = []
+for (let i = 0; i < 1000; i++) {
+    switch (i % 4) {
+        case 0:
+            shapes.push(new Circle(next()))
+            break
+        case 1:
+            shapes.push(new Rect(next(), next()))
+            break
+        case 2:
+            shapes.push(new Square(next()))
+            break
+        default:
+            shapes.push(new Triangle(next(), next()))
+    }
+}
+// Shuffled, so that the calls do not repeat in a pattern.
+for (let i = shapes.length - 1; i > 0; i--) {
+    seed = (seed * 48271) % 2147483647
+    const j = seed % (i + 1)
+    const t = shapes[i]
+    shapes[i] = shapes[j]
+    shapes[j] = t
+}
+
+let total = 0.0
+for (let pass = 0; pass < n; pass++) {
+    for (const s of shapes) total += s.area() + s.perimeter()
+}
+console.log(int(Math.floor(total)))
