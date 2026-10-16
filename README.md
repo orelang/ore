@@ -293,8 +293,13 @@ curl -fsSL https://raw.githubusercontent.com/orelang/ore/main/install.sh | sh
 
 or `brew install orelang/tap/ore`. A release carries its LLVM and lld; the
 script installs what linking needs from the system, puts `ore` in
-`~/.ore/bin` and adds it to the PATH. `ore update` updates it to the latest
-release.
+`~/.ore/bin` and adds it to the PATH. On a terminal it shows each step and
+asks before replacing an installed `ore` or editing shell startup files;
+without one (CI) it asks nothing. Options go after `sh -s --`:
+`--version v0.3.0`, `--home <dir>` (instead of `~/.ore`), `--yes`,
+`--no-modify-path`, `--verbose`, `--help` (or `ORE_VERSION`, `ORE_HOME`,
+`ORE_YES=1`, `ORE_NO_MODIFY_PATH=1`, `ORE_VERBOSE=1`). `ore update` updates
+it to the latest release.
 
 From source, the compiler (written in Ore) builds itself and checks that it
 reproduces itself; it needs LLVM 19 or newer and lld (`apt install llvm-22-dev

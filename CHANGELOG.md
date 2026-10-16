@@ -16,6 +16,18 @@ before 1.0, a minor version may change the language.
   `Array.from` and `new Map(params)` take its pairs, and `keys()`,
   `values()` and `entries()` return lazy iterators, as in JavaScript.
 
+- install.sh speaks like `ore`: the `{Ore}` wordmark and its colors (true
+  color, the terminal's 256 or 16, or none, by the same rules: NO_COLOR,
+  FORCE_COLOR, COLORTERM, TERM), a header with the version, platform,
+  directory and URL, numbered steps with marks (ASCII when the locale is
+  not UTF-8), a progress bar while it downloads, errors that say what failed,
+  why and what to do, and a summary with next steps. On a terminal it asks
+  before replacing an installed `ore`, installing system packages or editing
+  shell startup files, and warns when another `ore` (Homebrew's) comes first
+  in PATH. New options: `--version`, `--home`, `--yes`, `--no-modify-path`,
+  `--verbose`, `--help` (and `ORE_YES`, `ORE_NO_MODIFY_PATH`, `ORE_VERBOSE`);
+  without a terminal it does what it did.
+
 ## 0.5.0
 
 Dictionaries and Object, type predicates, generators and iterators, globalThis, URL, TextEncoder, structuredClone, as const, tuple forms, the this type, and class features.
@@ -193,7 +205,6 @@ Unterminated strings are errors; a heap that does not fragment.
 ## 0.4.7
 
 Regular expressions: one group name in different alternatives, quantified groups around lookarounds.
-
 - Regular expressions take one group name in different alternatives
   (ES2025, `(?<y>\d{4})-\d\d|\d\d\/(?<y>\d{4})`): the group that took part
   gives the name's value in `groups`, `\k<name>` and `$<name>`. A quantifier
