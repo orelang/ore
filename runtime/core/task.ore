@@ -2,16 +2,19 @@
 // Green threads ("tasks") on several OS threads ("workers"), M:N like Go.
 //
 // Tasks run until they wait (on a channel, a timer or a select) or yield;
-// any worker runs any runnable task. Every task, including the one running
-// the program's top-level code, has its own mapped stack with a guard page.
+// any worker runs any runnable task. Every task that has started, including
+// the one running the program's top-level code, has its own mapped stack with
+// a guard page.
 // The program ends when the top-level code ends.
 //
 // Garbage collection: each worker tells the collector the stack base of the
 // task it runs (gc.setStackBase), and a hook scans the used part of every task
-// that is not running. Switching stacks is not atomic, so a worker switches
-// inside the read side of the collector's switch lock (gc.enterSwitch), which
-// the collector takes for writing before it stops the world. No code allocates
-// while it holds the read side, or a collection would wait for it forever.
+// that is not running, walking a list of stack records that spawning and
+// ending a task do not lock (see "Stacks"). Switching stacks is not atomic,
+// so a worker switches inside the read side of the collector's switch lock
+// (gc.enterSwitch), which the collector takes for writing before it stops the
+// world. No code allocates while it holds the read side, or a collection
+// would wait for it forever.
 //
 // Waking before sleeping: a task that waits holds a lock (of a channel, or of
 // the scheduler) that its wakers need, and releases it only after it has left
@@ -32,9 +35,7 @@ import {
     addRoot,
     allocatedTotal,
     dumpThreads,
-    enterNoStop,
     enterSwitch,
-    exitNoStop,
     exitSwitch,
     ownStackBase,
     registerThread,
@@ -88,25 +89,15 @@ export const selectWaiting = -1
 export const selectTimeout = -2
 
 export class Task {
-    /**
-     * Memory that assembly and the GC read by address: the stack pointer while
-     * the task is parked (at 0), and the GC's stack base, the stack's top (at 8).
-     */
-    context: ptr = unsafe.allocBytes(16)
-    /** The mapping and the usable stack range [lo, hi). */
-    map: ptr = nil()
-    mapSize = 0
-    hi: ptr = nil()
+    /** The task's stack record (see "Stacks"), from when a worker first runs it; nil before. */
+    stack: ptr = nil()
+    /** The size of stack it gets. */
+    stackSize = 0
     /** The shadow stack of debug frames while the task is parked. */
     top: ptr = nil()
     state = runnable
-    /** Whether a worker runs the task: its stack is then scanned as the worker's. */
-    running = false
     /** The next task in the run queue or the timers. */
     next: Task | null = null
-    /** All live tasks, for the garbage collector. */
-    allNext: Task | null = null
-    allPrev: Task | null = null
     /** When a sleeping task wakes, in milliseconds. */
     wakeAt = 0
     /** The select the task waits in, if any, so that a timer can time it out. */
@@ -118,8 +109,14 @@ export class Task {
 
     constructor(readonly body: () => void) {}
 
+    /** The stack pointer saved while the task is parked. */
     sp(): ptr {
-        return unsafe.load<ptr>(this.context)
+        return unsafe.load<ptr>(this.stack)
+    }
+
+    /** The top of the task's stack. */
+    hi(): ptr {
+        return unsafe.load<ptr>(unsafe.add(this.stack, stackHi))
     }
 }
 
@@ -138,8 +135,6 @@ class Scheduler {
     /** Tasks parked until a socket is ready: not a deadlock while there are any. */
     netWaiters = 0
     mainTask: Task | null = null
-    /** All live tasks; changed only with the GC's allocation lock held. */
-    allTasks: Task | null = null
     /** Whether the network poller was started: 0 not yet, 1 starting, 2 running. */
     pollState = permanent(8)
     /** How many times a worker has started or resumed a task: the watchdog's sign of progress. */
@@ -156,8 +151,8 @@ export function scheduler(): Scheduler {
 // ---------------------------------------------------------------------------
 // Per worker: a block of memory that the thread-local `worker` points to.
 //   0 the scheduler loop's stack pointer while a task runs
-//   8 unused
-//  16 unused
+//   8 free stack records kept by this worker, linked by their stackFreeNext
+//  16 how many
 //  24 what to do after the current task has left its stack: a closure cell, or null
 //  32 the current task, or null
 //  40 a timespec, for clocks and deadlines (16 bytes)
@@ -245,33 +240,177 @@ function trampoline(): void {
 // ---------------------------------------------------------------------------
 // Garbage collection
 
+// Stacks
+//
+// A stack record is permanent memory that describes one mapped stack, linked
+// into a list that only grows (a new record is published with one atomic
+// compare-and-swap), so that the collector's hook can walk it while the world
+// is stopped at any instruction, and spawning or ending a task takes no lock
+// of the collector. A task gets a stack when a worker first runs it and gives
+// it back when it ends: each worker keeps a few free stacks, a shared cache
+// keeps more, and only what overflows both is unmapped; its record then waits
+// for reuse with no mapping.
+//   0 the stack pointer while the task is parked, or nil when no task uses the stack
+//   8 the top of the stack: the GC's stack base
+//  16 the mapping, guard page first, or nil
+//  24 the size of the stack, without the guard page
+//  32 whether a worker runs the task: its stack is then scanned as the worker's
+//  40 the next record of all of them
+//  48 the next free record
+//  56 the task using the stack, for the watchdog, or nil
+
+const stackHi = 8
+const stackMap = 16
+const stackUsable = 24
+const stackRunning = 32
+const stackAllNext = 40
+const stackFreeNext = 48
+const stackTask = 56
+const stackRecordSize = 64
+
+/** Free stacks a worker keeps for itself before it gives them to the shared cache. */
+const workerStacks = 16
+/** Free stacks the shared cache keeps mapped before it unmaps them. */
+const sharedStacks = 256
+
+/** A cell holding the first of every stack record, linked by their stackAllNext; set by ore_rt_run_main. */
+let allStacks: ptr
+/** Under `stackLock`: free records with a task stack mapped, how many, and free records with none. */
+let stackLock: ptr
+let freeStacks: ptr
+let freeStackCount: int
+let bareStacks: ptr
+
+function stackField(record: ptr, offset: int): ptr {
+    return unsafe.load<ptr>(unsafe.add(record, offset))
+}
+
+function setStackField(record: ptr, offset: int, value: ptr): void {
+    unsafe.store<ptr>(unsafe.add(record, offset), value)
+}
+
+/** The first stack record, or nil. */
+function firstStack(): ptr {
+    return unsafe.fromInt(unsafe.atomicLoad<u64>(allStacks))
+}
+
 /** Pushes the used part of the stack of every task that no worker is running. */
 function pushTaskStacks(): void {
-    const s = scheduler()
-    let t = s.allTasks
-    while (t !== null) {
-        if (!t.running && !isNil(t.sp())) scanRange(t.sp(), t.hi)
-        t = t.allNext
+    let r = firstStack()
+    while (!isNil(r)) {
+        const sp = stackField(r, 0)
+        if (unsafe.load<i64>(unsafe.add(r, stackRunning)) === 0 && !isNil(sp)) scanRange(sp, stackField(r, stackHi))
+        r = stackField(r, stackAllNext)
     }
 }
 
-function linkTask(data: ptr): void {
-    const s = scheduler()
-    const t = unsafe.fromAddress<Task>(data)
-    t.allNext = s.allTasks
-    const first = s.allTasks
-    if (first !== null) first.allPrev = t
-    s.allTasks = t
+/** A new record, published in the list of all of them. */
+function newStackRecord(): ptr {
+    const r = permanent(stackRecordSize)
+    while (true) {
+        const head = unsafe.atomicLoad<u64>(allStacks)
+        setStackField(r, stackAllNext, unsafe.fromInt(head))
+        if (unsafe.atomicCompareExchange<u64>(allStacks, head, unsafe.toInt(r))) return r
+    }
 }
 
-function unlinkTask(data: ptr): void {
-    const s = scheduler()
-    const t = unsafe.fromAddress<Task>(data)
-    const prev = t.allPrev
-    const next = t.allNext
-    if (prev !== null) prev.allNext = next
-    else s.allTasks = next
-    if (next !== null) next.allPrev = prev
+/** Maps a stack of `size` usable bytes, with a guard page below it, for a record that has none. */
+function mapStack(r: ptr, size: int): void {
+    const mapSize = size + pageSize()
+    const map = mapGuarded(mapSize)
+    if (isNil(map)) process.panic("cannot allocate a task stack")
+    setStackField(r, stackMap, map)
+    unsafe.store<i64>(unsafe.add(r, stackUsable), size)
+    setStackField(r, stackHi, unsafe.add(map, mapSize))
+}
+
+/** A free stack record of `size` usable bytes: one this worker keeps, one of the shared cache, or a new one. */
+function takeStack(w: ptr, size: int): ptr {
+    if (size === taskStackSize) {
+        const own = unsafe.load<ptr>(unsafe.add(w, 8))
+        if (!isNil(own)) {
+            unsafe.store<ptr>(unsafe.add(w, 8), stackField(own, stackFreeNext))
+            unsafe.store<i64>(unsafe.add(w, 16), unsafe.load<i64>(unsafe.add(w, 16)) - 1)
+            return own
+        }
+    }
+    lock(stackLock)
+    if (size === taskStackSize && !isNil(freeStacks)) {
+        const r = freeStacks
+        freeStacks = stackField(r, stackFreeNext)
+        freeStackCount--
+        unlock(stackLock)
+        return r
+    }
+    let r = bareStacks
+    if (!isNil(r)) bareStacks = stackField(r, stackFreeNext)
+    unlock(stackLock)
+    if (isNil(r)) r = newStackRecord()
+    mapStack(r, size)
+    return r
+}
+
+/** Takes back the stack record of an ended task. */
+function giveStack(w: ptr, r: ptr): void {
+    // No longer scanned, before any other worker can take it.
+    setStackField(r, 0, nil())
+    setStackField(r, stackTask, nil())
+    const size = unsafe.load<i64>(unsafe.add(r, stackUsable))
+    if (size === taskStackSize) {
+        const own = unsafe.load<i64>(unsafe.add(w, 16))
+        if (own < workerStacks) {
+            setStackField(r, stackFreeNext, unsafe.load<ptr>(unsafe.add(w, 8)))
+            unsafe.store<ptr>(unsafe.add(w, 8), r)
+            unsafe.store<i64>(unsafe.add(w, 16), own + 1)
+            return
+        }
+        lock(stackLock)
+        if (freeStackCount < sharedStacks) {
+            setStackField(r, stackFreeNext, freeStacks)
+            freeStacks = r
+            freeStackCount++
+            unlock(stackLock)
+            return
+        }
+        unlock(stackLock)
+    }
+    unmap(stackField(r, stackMap), size + pageSize())
+    setStackField(r, stackMap, nil())
+    lock(stackLock)
+    setStackField(r, stackFreeNext, bareStacks)
+    bareStacks = r
+    unlock(stackLock)
+}
+
+/**
+ * Gives a task that has not run yet its stack, with an initial frame that the
+ * context switch "returns" through into the trampoline.
+ */
+function startStack(w: ptr, t: Task): void {
+    const r = takeStack(w, t.stackSize)
+    const top = unsafe.fromInt(unsafe.toInt(stackField(r, stackHi)) & ~u64(15))
+    const self = unsafe.addressOf(t)
+    let frame = nil()
+    if (target.arch === "arm64") {
+        frame = unsafe.add(top, -160)
+        unsafe.fill(frame, 0, 160)
+        unsafe.store<ptr>(frame, self)
+        unsafe.store<ptr>(unsafe.add(frame, 8), unsafe.functionAddress(taskMain))
+        unsafe.store<ptr>(unsafe.add(frame, 88), unsafe.functionAddress(trampoline))
+    } else {
+        // Six saved registers and the return address into the trampoline; after
+        // `ret`, rsp is 16-byte aligned, as the ABI requires before the
+        // trampoline's call.
+        frame = unsafe.add(top, -72)
+        unsafe.fill(frame, 0, 72)
+        unsafe.store<ptr>(unsafe.add(frame, 24), unsafe.functionAddress(taskMain))
+        unsafe.store<ptr>(unsafe.add(frame, 32), self)
+        unsafe.store<ptr>(unsafe.add(frame, 48), unsafe.functionAddress(trampoline))
+    }
+    setStackField(r, stackTask, self)
+    // Scanned from here on, as a parked task's stack.
+    setStackField(r, 0, frame)
+    t.stack = r
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +425,8 @@ export function enqueueLocked(t: Task): void {
     if (tail !== null) tail.next = t
     else s.runHead = t
     s.runTail = t
-    pthread_cond_signal(s.cond)
+    // Idle workers count themselves with the lock held, before they wait.
+    if (s.idleWorkers > 0) pthread_cond_signal(s.cond)
 }
 
 export function enqueue(t: Task): void {
@@ -298,45 +438,8 @@ export function enqueue(t: Task): void {
 
 function newTask(body: () => void, stackSize: int): Task {
     const t = new Task(body)
-    const page = pageSize()
-    t.mapSize = stackSize + page
-    t.map = mapGuarded(t.mapSize)
-    if (isNil(t.map)) process.panic("cannot allocate a task stack")
-    t.hi = unsafe.add(t.map, t.mapSize)
-    unsafe.store<ptr>(unsafe.add(t.context, 8), t.hi)
-
-    // An initial frame that the context switch "returns" through into the trampoline.
-    const top = unsafe.fromInt(unsafe.toInt(t.hi) & ~u64(15))
-    const self = unsafe.addressOf(t)
-    if (target.arch === "arm64") {
-        const frame = unsafe.add(top, -160)
-        unsafe.fill(frame, 0, 160)
-        unsafe.store<ptr>(frame, self)
-        unsafe.store<ptr>(unsafe.add(frame, 8), unsafe.functionAddress(taskMain))
-        unsafe.store<ptr>(unsafe.add(frame, 88), unsafe.functionAddress(trampoline))
-        unsafe.store<ptr>(t.context, frame)
-    } else {
-        // Six saved registers and the return address into the trampoline; after
-        // `ret`, rsp is 16-byte aligned, as the ABI requires before the
-        // trampoline's call.
-        const frame = unsafe.add(top, -72)
-        unsafe.fill(frame, 0, 72)
-        unsafe.store<ptr>(unsafe.add(frame, 24), unsafe.functionAddress(taskMain))
-        unsafe.store<ptr>(unsafe.add(frame, 32), self)
-        unsafe.store<ptr>(unsafe.add(frame, 48), unsafe.functionAddress(trampoline))
-        unsafe.store<ptr>(t.context, frame)
-    }
-    enterNoStop()
-    linkTask(self)
-    exitNoStop()
+    t.stackSize = stackSize
     return t
-}
-
-function freeTask(t: Task): void {
-    enterNoStop()
-    unlinkTask(unsafe.addressOf(t))
-    exitNoStop()
-    unmap(t.map, t.mapSize)
 }
 
 /**
@@ -373,8 +476,8 @@ function parkWith(cell: ptr, mutex: ptr): void {
     unsafe.store<ptr>(unsafe.add(w, 56), mutex)
     enterSwitch()
     setStackBase(ownStackBase())
-    t.running = false
-    switchContext(t.context, unsafe.load<ptr>(w))
+    unsafe.store<i64>(unsafe.add(t.stack, stackRunning), 0)
+    switchContext(t.stack, unsafe.load<ptr>(w))
     // Resumed, maybe by another worker, which took the switch lock to get here.
     // `w` is the old worker's block; nothing reads it from here on.
     exitSwitch()
@@ -518,6 +621,7 @@ export function blockingExit(): void {
 /** Moves tasks whose time has come from the timers to the run queue; the caller holds the scheduler's lock. */
 function wakeTimersLocked(): void {
     const s = scheduler()
+    if (s.timers === null) return
     const at = now()
     while (true) {
         const t = s.timers
@@ -579,9 +683,10 @@ function schedule(): void {
         unsafe.atomicAdd<i64>(s.switches, 1)
         setCurrent(w, unsafe.addressOf(t))
         setTop(t.top)
+        if (isNil(t.stack)) startStack(w, t)
         enterSwitch()
-        setStackBase(t.hi)
-        t.running = true
+        setStackBase(t.hi())
+        unsafe.store<i64>(unsafe.add(t.stack, stackRunning), 1)
         switchContext(w, t.sp())
         // The task parked or ended, holding the switch lock.
         exitSwitch()
@@ -598,7 +703,7 @@ function schedule(): void {
             const then = unsafe.load<() => void>(cell)
             then()
         }
-        if (finished) freeTask(t)
+        if (finished) giveStack(w, t.stack)
     }
 }
 
@@ -629,6 +734,8 @@ function workerCount(): int {
 export function runMain(entry: ptr): void {
     const s = new Scheduler()
     schedulerAddress = unsafe.addressOf(s)
+    stackLock = permanentMutex()
+    allStacks = permanent(8)
     newWorker()
     setStackRootsHook(unsafe.functionAddress(pushTaskStacks))
 
@@ -729,11 +836,16 @@ function reportStuck(): void {
     writeNumber(2, s.netWaiters, false, scratch)
     writeRaw(2, s.runHead !== null ? ", runnable tasks queued" : ", no runnable task")
     writeRaw(2, s.timers !== null ? ", timers pending\n" : ", no timer\n")
-    // Parked tasks, with their debug frames: prev at 0, function at 8, file at 16, line at 24.
-    let t = s.allTasks
+    // Tasks that have a stack, with their debug frames: prev at 0, function at 8, file at 16, line at 24.
+    let r = firstStack()
     let shown = 0
-    while (t !== null && shown < 64) {
-        writeRaw(2, t.running ? "task (running):\n" : "task (parked):\n")
+    while (!isNil(r) && shown < 64) {
+        const task = stackField(r, stackTask)
+        r = stackField(r, stackAllNext)
+        if (isNil(task)) continue
+        const t = unsafe.fromAddress<Task>(task)
+        const running = unsafe.load<i64>(unsafe.add(t.stack, stackRunning)) !== 0
+        writeRaw(2, running ? "task (running):\n" : "task (parked):\n")
         let frame = t.top
         let depth = 0
         while (!isNil(frame) && depth < 32) {
@@ -748,7 +860,6 @@ function reportStuck(): void {
             depth++
         }
         if (depth === 0) writeRaw(2, "  (no frames: a release build, or not started)\n")
-        t = t.allNext
         shown++
     }
     writeRaw(2, "native stacks:\n")

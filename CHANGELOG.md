@@ -5,6 +5,13 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Spawning tasks is about ten times faster (`bench/tasks`, 100000 tasks:
+  1.1 s to 0.09 s on a 10-core Mac). A task gets its stack when it first
+  runs, not when it is spawned, and gives it back when it ends to a cache
+  of the worker and a shared one, so mapping and unmapping stacks is rare;
+  the stacks are listed for the collector without its lock. A `WaitGroup`
+  of "ore:sync" counts atomically and locks only when its count drops to
+  zero. An idle worker is signalled only when there is one.
 - The collector marks alongside the program: two short stops (scanning
   the roots, then finishing) instead of one for the whole collection, with
   a write barrier the compiler emits before stores of pointers into the

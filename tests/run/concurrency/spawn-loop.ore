@@ -1,0 +1,72 @@
+// threads: 4
+
+// Many short tasks, spawned in a loop and joined: each gets a stack when it
+// first runs and gives it back when it ends, for the next task to reuse.
+
+import { WaitGroup } from "ore:sync"
+
+const n = 200000
+const results: int[] = []
+for (let i = 0; i < n; i++) results.push(0)
+const group = new WaitGroup()
+for (let i = 0; i < n; i++) {
+    group.add(1)
+    task.spawn(() => {
+        results[i] = i % 7
+        group.done()
+    })
+}
+group.wait()
+let sum = 0
+for (const r of results) sum += r
+console.log("sum", sum)
+
+// Tasks that park while holding what only their stacks reference, while
+// others allocate enough for collections: more stacks are in use at once
+// than the caches keep, and every parked one is still scanned.
+const parked = 2000
+const gate = new Chan<bool>()
+const held = new WaitGroup()
+const total = new Chan<int>(parked)
+for (let i = 0; i < parked; i++) {
+    held.add(1)
+    task.spawn(() => {
+        const mine = [i, i + 1, i + 2]
+        held.done()
+        gate.receive()
+        total.send(mine[0] + mine[1] + mine[2])
+    })
+}
+held.wait()
+const churn = new WaitGroup()
+for (let i = 0; i < 1000; i++) {
+    churn.add(1)
+    task.spawn(() => {
+        let junk: int[][] = []
+        for (let k = 0; k < 200; k++) junk.push([k, k, k, k])
+        churn.done()
+    })
+}
+churn.wait()
+gate.close()
+let parkedSum = 0
+for (let i = 0; i < parked; i++) parkedSum += total.receive() ?? 0
+console.log("parked", parkedSum)
+
+// A group waited for again after it went back to zero.
+const again = new WaitGroup()
+for (let round = 0; round < 3; round++) {
+    let count = 0
+    const counted = new Chan<int>(100)
+    for (let i = 0; i < 100; i++) {
+        again.add(1)
+        task.spawn(() => {
+            counted.send(1)
+            again.done()
+        })
+    }
+    again.wait()
+    for (let i = 0; i < 100; i++) count += counted.receive() ?? 0
+    console.log("round", round, count)
+}
+again.wait()
