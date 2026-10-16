@@ -182,6 +182,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.cwd()` | the working directory, as an absolute path |
 | `process.env()` | the environment variables, as a `Map<string, string>` |
 | `process.cpus()` | the number of CPUs online |
+| `process.isatty(fd)` | whether a file descriptor (1 stdout, 2 stderr) is a terminal |
 | `process.run(program, args?)`, `process.output(program, args?)`, `process.spawn(program, args?)` | other programs (below); `spawn` starts one without waiting: a `process.Child` |
 | `process.command.run(program, args?, options?)`, `process.command.output(...)`, `process.command.spawn(...)` | the same with a `process.CommandOptions`: `cwd`, `env`, `clearEnv`, `stdin` |
 | `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |

@@ -9,7 +9,7 @@
 // namespace `process.command` (runtime/core/process-command.ore) without
 // options; children are started and awaited by runtime/core/spawn.ore.
 
-import { cpuCount } from "ore:runtime/os"
+import { cpuCount, isatty as cIsatty } from "ore:runtime/os"
 import { codeOf, reason, variables, waitExit } from "ore:runtime/spawn"
 import { errno } from "ore:runtime/sys"
 
@@ -23,6 +23,11 @@ const sigterm = 15
 /** The number of CPUs the system has online. */
 export function cpus(): int {
     return cpuCount()
+}
+
+/** Whether a file descriptor (0 stdin, 1 stdout, 2 stderr) is a terminal. */
+export function isatty(fd: int): bool {
+    return cIsatty(i32(fd)) === 1
 }
 
 /** The variables of this process's environment, by name. */
