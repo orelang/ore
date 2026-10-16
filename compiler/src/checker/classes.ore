@@ -96,7 +96,7 @@ import {
 import { checkExpr, settle } from "./expressions"
 import { cIdent, findThis, hasZeroValue, indexSignatureMessage, zeroNeedsInit, zeroValue } from "./helpers"
 import { checkBlock } from "./statements"
-import { type Generic, ClassSymbol, Generic as GenericClass, Scope, TypeSymbol } from "./symbols"
+import { type Generic, type Instance, ClassSymbol, Generic as GenericClass, Scope, TypeSymbol } from "./symbols"
 
 export function declareClass(c: Checker, decl: Node, scope: Scope) {
     const nameId = decl.child("name")
@@ -173,7 +173,7 @@ function baseClass(c: Checker, ref: Node, scope: Scope): StructType | null {
         }
         const resolved: Type[] = []
         for (const a of typeArgs) {
-            const arg = c.resolveValueType(a, scope)
+            const arg = c.resolveTypeArgument(a, scope)
             if (arg === null) return null
             resolved.push(arg)
         }
@@ -632,12 +632,22 @@ function declareStatic(c: Checker, info: ClassInfo, member: Node, flags: MemberF
         c.error(member, "Only fields and methods can be static.")
         return
     }
-    if (typeParameters(member).length > 0) {
-        c.error(nameAt, "Generic static methods are not supported yet.")
-        return
-    }
     if (body(member) === null) {
         c.error(nameAt, "A method must have a body.")
+        return
+    }
+    if (typeParameters(member).length > 0) {
+        // A generic static method is a generic function in the class's scope (see `instantiate`).
+        const generic = new GenericClass(
+            `${className}.${name}`,
+            member,
+            typeParameters(member),
+            scope,
+            new Map<string, Instance>(),
+        )
+        const entry = new StaticMember(name, member, info, null, null, hidden)
+        entry.generic = generic
+        info.statics.set(name, entry)
         return
     }
     const func = makeFunc(c, member, scope, `${className}.${name}`, `${info.cname}_s_${cIdent(name)}`, false)

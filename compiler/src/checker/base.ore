@@ -13,6 +13,7 @@ import {
     Local,
     Module,
     NullLit,
+    Seq,
     Recast,
     StringLit,
     ToIface,
@@ -96,7 +97,7 @@ import {
     typeOf,
 } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
-import { type Generic, type NamespaceSymbol, type TypeSymbol, Scope } from "./symbols"
+import { type Generic, type NamespaceSymbol, type TypeSymbol, type ValueSymbol, Scope } from "./symbols"
 
 /** Two operands brought to a common type, or nulls when that failed: `[ir.Expr | undefined, ir.Expr | undefined]`. */
 export class Unified {
@@ -161,6 +162,14 @@ export class Checker {
     readonly instanceOf = new Map<Type, InstanceInfo>()
 
     instanceCount = 0
+    /** The static methods of generic classes used so far, by name and class (see `genericStatic`). */
+    readonly genericStatics = new Map<string, ValueSymbol>()
+    /** Types of void callbacks checked again to return null for a type parameter bound to void. */
+    readonly voidCallbacks = new Set<Type>()
+    /** Each generic declaration's Generic, by its node. */
+    readonly genericsByDecl = new Map<Node, Generic>()
+    /** The type parameters given `void`, bound to `null` (see `namesVoidParameter`). */
+    readonly voidParameters = new Set<TypeSymbol>()
     /** The type that names the generic type alias being resolved, outermost first: where errors in the runtime's aliases are reported. */
     typeSite: Node | null = null
 
@@ -444,6 +453,13 @@ export class Checker {
                     params.push(t)
                 }
             }
+            // As in TypeScript, trailing parameters of a type that is `void` may be left out: those whose type
+            // names a type parameter given `void` (`resolve` of a `Promise<void>`), which is `null` in Ore.
+            if (required === -1 && !rest) {
+                let first = list.length
+                while (first > 0 && this.namesVoidParameter(typeNode(list[first - 1])!, scope)) first--
+                if (first < list.length) required = first
+            }
             const result = this.resolveType(typeNode(node)!, scope)
             if (result === null) return null
             const type = new FuncType(params, result)
@@ -476,6 +492,17 @@ export class Checker {
         if (inner === null || inner.k !== "namespace") return null
         this.info.definitions.set(name, inner.decl)
         return inner
+    }
+
+    /** Whether a type names, alone or in a union, a type parameter that was given `void`. */
+    namesVoidParameter(node: Node, scope: Scope): bool {
+        if (node.kind === "UnionType") return typeNodes(node).some((m) => this.namesVoidParameter(m, scope))
+        if (node.kind === "ParenthesizedType") return this.namesVoidParameter(typeNode(node)!, scope)
+        if (node.kind !== "TypeReference" || node.list("typeArguments").length > 0) return false
+        const name = typeName(node)
+        if (!isIdentifier(name)) return false
+        const symbol = scope.lookupType(name.text)
+        return symbol !== null && this.voidParameters.has(symbol)
     }
 
     /** The type named by `T` or `m.T` (an export of a module imported as `* as m`); reports missing names. */
@@ -744,12 +771,8 @@ export class Checker {
      * types in it (`Paths<T, Prev[D]>`), not `void`.
      */
     resolveTypeArgument(node: Node, scope: Scope): Type | null {
-        const type = this.resolveType(node, scope)
-        if (type !== null && type.kind === "void") {
-            this.error(node, "A value cannot have type 'void'.")
-            return null
-        }
-        return type
+        // `void` is allowed: the instance binds its type parameter to `null` (see `instantiate`).
+        return this.resolveType(node, scope)
     }
 
     resolveValueType(node: Node, scope: Scope): Type | null {
@@ -797,7 +820,12 @@ export class Checker {
                     return new Recast(target, expr)
                 if (from.kind === "null") {
                     if (target.kind === "union") {
-                        for (const m of targetMembers) if (m.kind === "null") return new NullLit(target)
+                        // A null-typed expression other than the literal, such as a call, still runs.
+                        for (const m of targetMembers)
+                            if (m.kind === "null")
+                                return expr.k === "null"
+                                    ? new NullLit(target)
+                                    : new Seq(target, [expr, new NullLit(target)])
                     }
                     this.error(node, `Type 'null' is not assignable to type '${typeToString(target)}'.`)
                     return poison(target)

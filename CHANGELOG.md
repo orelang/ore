@@ -5,6 +5,15 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Generic classes can have static methods, generic ones too (`Box.of<U>(v)`),
+  which do not see the class's type parameters, as in TypeScript; a generic
+  class name works with `instanceof` and narrows a union to its instance
+  (`v instanceof Box` for `T | Box<T>`). `void` is a type argument: its
+  value is `null`, trailing parameters of its type may be left out
+  (`new Box<void>((put) => put())`), and a void callback for a result type
+  parameter binds it to `void`. A function returning `null` may end without
+  a `return`. A null-returning call converted to a union is no longer
+  dropped.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with

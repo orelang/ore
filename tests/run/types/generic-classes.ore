@@ -1,0 +1,56 @@
+// Static methods of generic classes, `instanceof` with a generic class, and void type arguments.
+
+class Box<T> {
+    values: T[] = []
+    constructor(executor: (put: (value: T | Box<T>) => void) => void) {
+        executor((v) => this.put(v))
+    }
+    put(v: T | Box<T>): void {
+        // A generic class name without type arguments narrows to its instance in the union.
+        if (v instanceof Box) {
+            for (const x of v.values) this.put(x)
+            return
+        }
+        this.values.push(v)
+    }
+    map<R>(f: (value: T) => R): Box<R> {
+        const out = new Box<R>((put) => {})
+        for (const v of this.values) out.put(f(v))
+        return out
+    }
+    static of<U>(v: U): Box<U> {
+        return new Box<U>((put) => put(v))
+    }
+    get size(): int {
+        return this.values.length
+    }
+}
+
+const b = new Box<int>((put) => {
+    put(1)
+    put(Box.of(2))
+})
+console.log(b.values)
+
+// A static generic method infers its type argument; an explicit one works too.
+console.log(Box.of("s").values, Box.of<number>(1.5).values)
+
+// A void callback binds a result type parameter to void: the callback returns null.
+let seen = 0
+const done = b
+    .map((v) => v * 10)
+    .map((v) => {
+        seen += v
+    })
+console.log(seen, done.size)
+
+// A void type argument makes trailing parameters of its type optional.
+const signal = new Box<void>((put) => put())
+console.log(signal.size)
+
+// A call of a null-returning function converted to a union still runs.
+function note(): null {
+    console.log("noted")
+}
+const n: string | null = note()
+console.log(n)

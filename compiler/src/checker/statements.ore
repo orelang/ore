@@ -1500,6 +1500,14 @@ function closureBody(
         const result = fn.result
         if (result !== null && result.kind === "void") {
             func.body = new Block(value.k === "typed" ? [new ExprStmt(value.expr)] : [])
+        } else if (
+            result !== null &&
+            result.kind === "null" &&
+            value.k === "typed" &&
+            value.expr.type.kind === "void"
+        ) {
+            // A void call for a null result, as a callback whose type argument is void.
+            func.body = new Block([new ExprStmt(value.expr), new ReturnStmt(new NullLit(types.null))])
         } else {
             const expr = result !== null ? c.coerce(value, result, fnBody) : c.toDefault(value, fnBody)
             if (fn.result === null) fn.result = expr.type
@@ -1578,11 +1586,21 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             const type = c.info.types.get(left(node))
             const r = right(node)
             const found = isIdentifier(r) ? scope.lookupType(r.text) : null
-            const target = found !== null ? found.type : null
+            let target = found !== null ? found.type : null
+            // A generic class without type arguments: its instance among the value's types.
+            const generic = found !== null ? found.generic : null
+            if (generic !== null && type !== null) {
+                target = null
+                for (const m of membersOf(type)) {
+                    const info = m.kind === "struct" ? c.instanceOf.get(m) : null
+                    if (info !== null && info.generic === generic) target = m
+                }
+            }
             if (key === null || type === null || target === null) return new Condition(expr, [], [])
+            const t: Type = target
             // Members that are the class or its subclasses, for which the test is true: one keeps its type.
             const inside = (m: Type): bool =>
-                sameType(m, target) || (m.kind === "struct" && target.kind === "struct" && isSubclass(m, target))
+                sameType(m, t) || (m.kind === "struct" && t.kind === "struct" && isSubclass(m, t))
             const matching = membersOf(type).filter(inside)
             if (type.kind !== "union" && matching.length > 0 && !sameType(type, target))
                 return new Condition(expr, [], [])

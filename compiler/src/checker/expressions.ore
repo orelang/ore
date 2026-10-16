@@ -73,7 +73,10 @@ import {
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
+    hasModifier,
     typeNode,
+    typeParameters,
+    members,
     parameters,
     body,
     argumentExpression,
@@ -115,6 +118,8 @@ import {
     staticMember,
 } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
+import { checkFunctionBody, inContext, makeFunc } from "./declarations"
+import { cIdent } from "./helpers"
 import { foldBinary, foldUnary } from "./fold"
 import {
     arithOps,
@@ -148,7 +153,16 @@ import {
     narrowed,
     refKey,
 } from "./statements"
-import { type ValueSymbol, ConstSymbol, FuncSymbol, LocalSymbol, Scope } from "./symbols"
+import {
+    type Instance,
+    type ValueSymbol,
+    ConstSymbol,
+    FuncSymbol,
+    Generic,
+    GenericFuncSymbol,
+    LocalSymbol,
+    Scope,
+} from "./symbols"
 
 /**
  * Checks an expression. `expected` is the type required by the context; it
@@ -1764,6 +1778,7 @@ export function moduleMember(c: Checker, node: Node, scope: Scope): ValueSymbol 
 
 /** `C.name`: a static member of class `C` (or of a base class) as a value symbol, or null. */
 function staticOf(c: Checker, type: StructType | null, decl: Node, object: Node, nameId: Node): ValueSymbol | null {
+    if (type === null) return genericStatic(c, decl, object, nameId)
     const info = type !== null ? c.classInfos.get(type.id) : null
     const member_ = info !== null ? staticMember(c, info, nameId.text) : null
     if (member_ === null) {
@@ -1787,6 +1802,8 @@ function staticOf(c: Checker, type: StructType | null, decl: Node, object: Node,
     }
     const local = member_.local
     if (local !== null) return new LocalSymbol(local, member_.decl)
+    const generic = member_.generic
+    if (generic !== null) return new GenericFuncSymbol(generic, member_.decl)
     return new FuncSymbol(member_.func!, member_.decl)
 }
 
@@ -1891,7 +1908,7 @@ export function checkInstanceOf(c: Checker, node: Node, scope: Scope): Operand {
     const value_ = checkExpr(c, left(node), scope)
     if (value_.k !== "typed") return value_.k === "error" ? value_ : c.fail(left(node), "A constant is not an object.")
     const value = value_.expr
-    const target = instanceOfTarget(c, right(node), scope)
+    const target = instanceOfTarget(c, right(node), scope, value.type)
     if (target === null) return errorOperand
     const test = instanceTest(c, value, target)
     if (test !== null) return typed(test)
@@ -1929,9 +1946,31 @@ export function interfaceFor(c: Checker, type: Type, cls: StructType): Interface
     return ifaces.length === 1 ? ifaces[0] : null
 }
 
-export function instanceOfTarget(c: Checker, node: Node, scope: Scope): StructType | InterfaceType | null {
+export function instanceOfTarget(
+    c: Checker,
+    node: Node,
+    scope: Scope,
+    valueType: Type,
+): StructType | InterfaceType | null {
     const symbol = isIdentifier(node) ? scope.lookupType(node.text) : null
     if (symbol !== null) c.info.definitions.set(node, symbol.decl)
+    // A generic class without type arguments, as in TypeScript: the instance of it among the value's types.
+    const generic = symbol !== null ? symbol.generic : null
+    if (generic !== null && generic.decl.kind === "ClassDeclaration") {
+        const found: StructType[] = []
+        for (const m of membersOf(valueType)) {
+            const info = m.kind === "struct" ? c.instanceOf.get(m) : null
+            if (m.kind === "struct" && info !== null && info.generic === generic) found.push(m)
+        }
+        if (found.length === 1) return found[0]
+        c.error(
+            node,
+            found.length === 0
+                ? `A value of type '${typeToString(valueType)}' is never an instance of '${generic.name}'.`
+                : `'${generic.name}' needs its type arguments here: the value may be one of several instances of it.`,
+        )
+        return null
+    }
     const type = symbol !== null ? symbol.type : null
     if (type !== null && type.kind === "struct" && type.nominal) return type
     if (type !== null && type.kind === "interface") return type
@@ -2020,4 +2059,47 @@ export function defineMember(c: Checker, node: Node, type: StructType | Interfac
     const decls = c.memberDecls.get(type)
     const decl = decls === null ? null : decls.get(name)
     if (decl !== null && isIdentifier(node)) c.info.definitions.set(node, decl)
+}
+
+/**
+ * `C.name` for a generic class `C`: its static methods do not see the class's
+ * type parameters, as in TypeScript, so they are functions of their own,
+ * made once on first use (generic ones per call); static fields are not
+ * supported in generic classes yet.
+ */
+function genericStatic(c: Checker, decl: Node, object: Node, nameId: Node): ValueSymbol | null {
+    const known = c.genericStatics.get(nameId.text + "@" + `${decl.start}`)
+    if (known !== null) return known
+    const owner = c.genericsByDecl.get(decl)
+    const scope = owner !== null ? owner.scope : null
+    let found: Node | null = null
+    for (const m of members(decl)) {
+        const n = m.child("name")
+        if (n !== null && isIdentifier(n) && n.text === nameId.text && hasModifier(m, "StaticKeyword")) found = m
+    }
+    if (found === null || scope === null) {
+        c.error(nameId, `Class '${object.text}' has no static member '${nameId.text}'.`)
+        return new ConstSymbol(errorOperand, null, nameId)
+    }
+    c.info.definitions.set(object, decl)
+    if (isIdentifier(nameId)) c.info.definitions.set(nameId, found)
+    if (found.kind !== "MethodDeclaration" || body(found) === null) {
+        c.error(nameId, "Static fields of generic classes are not supported yet.")
+        return new ConstSymbol(errorOperand, null, nameId)
+    }
+    const name = `${object.text}.${nameId.text}`
+    let symbol: ValueSymbol
+    if (typeParameters(found).length > 0) {
+        symbol = new GenericFuncSymbol(
+            new Generic(name, found, typeParameters(found), scope, new Map<string, Instance>()),
+            found,
+        )
+    } else {
+        const func = makeFunc(c, found, scope, name, `${cIdent(object.text)}_gs_${cIdent(nameId.text)}`, false)
+        const method = found
+        c.pending.push(inContext(c, name, () => checkFunctionBody(c, method, func, scope)))
+        symbol = new FuncSymbol(func, found)
+    }
+    c.genericStatics.set(nameId.text + "@" + `${decl.start}`, symbol)
+    return symbol
 }

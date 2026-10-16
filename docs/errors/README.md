@@ -214,6 +214,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3076](ORE3076.md) | Accessors are not supported in an object literal with methods yet. |
 | [ORE3077](ORE3077.md) | A method of an object literal needs a return type annotation, or a type to fit. |
 | [ORE3078](ORE3078.md) | Object is of type 'unknown'. |
+| [ORE3079](ORE3079.md) | Static fields of generic classes are not supported yet. |
 
 ## ORE4xxx: Calls and built-in functions
 

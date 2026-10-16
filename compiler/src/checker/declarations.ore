@@ -14,6 +14,7 @@ import {
     LocalRef,
     Recast,
     ReturnStmt,
+    NullLit,
 } from "../ir/nodes"
 import {
     type InterfaceType,
@@ -52,6 +53,7 @@ import {
     isAssignmentOperator,
     isIdentifier,
     isStringLiteralNode,
+    typeName,
     members,
     moduleSpecifierNode,
     modifiers,
@@ -1127,6 +1129,7 @@ export function declareGeneric(c: Checker, decl: Node, scope: Scope) {
     const params = typeParameters(decl)
     checkDefaults(c, params)
     const generic = new Generic(name, decl, params, scope, new Map<string, Instance>())
+    c.genericsByDecl.set(decl, generic)
     let declared: bool
     if (decl.kind === "FunctionDeclaration") declared = scope.declareValue(name, new GenericFuncSymbol(generic, decl))
     else {
@@ -1161,7 +1164,7 @@ export function withDefaults(c: Checker, generic: Generic, given: Type[]): Type[
 }
 
 /** A pending check of a generic instance, run with the instance named in its diagnostics. */
-function inContext(c: Checker, label: string, check: () => void): () => void {
+export function inContext(c: Checker, label: string, check: () => void): () => void {
     return () => {
         const saved = c.context
         c.context = label
@@ -1189,8 +1192,12 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
     }
 
     const scope = new Scope(generic.scope)
-    for (let i = 0; i < generic.params.length; i++)
-        scope.declareType(nameNode(generic.params[i]).text, new TypeSymbol(args[i], generic.params[i]))
+    for (let i = 0; i < generic.params.length; i++) {
+        // A type parameter given `void` is `null` in the instance, as `undefined` is in TypeScript.
+        const symbol = new TypeSymbol(args[i].kind === "void" ? types.null : args[i], generic.params[i])
+        if (args[i].kind === "void") c.voidParameters.add(symbol)
+        scope.declareType(nameNode(generic.params[i]).text, symbol)
+    }
     for (let i = 0; i < generic.params.length; i++) {
         const p = generic.params[i]
         const bound = constraint(p)
@@ -1223,6 +1230,13 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
         return type
     }
     if (decl.kind === "FunctionDeclaration") {
+        const func = makeFunc(c, decl, scope, label, cname, false)
+        generic.instances.set(key, func)
+        c.pending.push(inContext(c, label, () => checkFunctionBody(c, decl, func, scope)))
+        return func
+    }
+    if (decl.kind === "MethodDeclaration" && hasModifier(decl, "StaticKeyword")) {
+        // A generic static method: a function, without `this`.
         const func = makeFunc(c, decl, scope, label, cname, false)
         generic.instances.set(key, func)
         c.pending.push(inContext(c, label, () => checkFunctionBody(c, decl, func, scope)))
@@ -1452,7 +1466,18 @@ export function inferFrom(
             if (annotation !== null && i < type.params.length)
                 inferFrom(c, annotation, type.params[i], names, bindings, scope)
         }
-        inferFrom(c, typeNode(n)!, type.result, names, bindings, scope)
+        const result = typeNode(n)!
+        // A void callback re-checked to return null binds its result's type parameter to void.
+        if (
+            c.voidCallbacks.has(type) &&
+            result.kind === "TypeReference" &&
+            isIdentifier(typeName(result)) &&
+            names.includes(typeName(result).text)
+        ) {
+            bindings.set(typeName(result).text, types.void)
+            return
+        }
+        inferFrom(c, result, type.result, names, bindings, scope)
         return
     }
     if (n.kind === "ArrayType") {
@@ -1639,7 +1664,7 @@ export function genericCall(
         // With explicit type arguments, the arguments are checked against the instance.
         const explicit: Type[] = []
         for (const t of typeArgs) {
-            const type = c.resolveValueType(t, scope)
+            const type = c.resolveTypeArgument(t, scope)
             if (type === null) return null
             explicit.push(type)
         }
@@ -1695,6 +1720,25 @@ export function genericCall(
             const resolvedParams: Type[] = []
             for (const t of paramTypes) resolvedParams.push(t!)
             found[i] = checkClosure(c, arg, scope, new FuncType(resolvedParams, result), !resultKnown)
+            // A void callback for a result that is a type parameter binds it to void: the
+            // callback is checked again to return null, the value of a void type argument.
+            const first = found[i]!
+            const resultName = typeNode(fn)!
+            if (
+                !resultKnown &&
+                first.k === "typed" &&
+                first.expr.k === "closure" &&
+                first.expr.type.result.kind === "void" &&
+                resultName.kind === "TypeReference" &&
+                isIdentifier(typeName(resultName)) &&
+                names.includes(typeName(resultName).text)
+            ) {
+                const dropped = first.expr.func
+                c.module.functions = c.module.functions.filter((f) => f !== dropped)
+                const again = checkClosure(c, arg, scope, new FuncType(resolvedParams, types.null), false)
+                if (again.k === "typed") c.voidCallbacks.add(again.expr.type)
+                found[i] = again
+            }
         }
         bindArg(c, generic, params, found, i, names, bindings)
     }
@@ -1877,6 +1921,11 @@ export function checkReturns(c: Checker, func: Func, node: Node) {
     // A naked function returns from its assembly.
     const attributes = func.attributes
     const naked = attributes !== null && attributes.naked
+    // A function returning null may end without a return, as TypeScript's undefined-returning ones.
+    if (result.kind === "null" && !naked && !terminates(func.body)) {
+        func.body.body.push(new ReturnStmt(new NullLit(types.null)))
+        return
+    }
     if (result.kind !== "void" && !naked && !terminates(func.body)) {
         c.error(
             node,
