@@ -1,0 +1,42 @@
+// Blob: bytes made of strings (UTF-8), bytes and other blobs, with a media
+// type; text() and bytes() return promises.
+const enc = new TextEncoder()
+const empty = new Blob()
+console.log(empty.size, JSON.stringify(empty.type), JSON.stringify(await empty.text()))
+console.log(Array.from(await empty.bytes()))
+
+const b = new Blob(["héllo", enc.encode(" ✓ "), new Blob(["wörld"])], { type: "Text/Plain;Charset=UTF-8" })
+console.log(b.size, b.type)
+console.log(await b.text())
+console.log(Array.from(await b.bytes()))
+console.log(new TextDecoder().decode(await b.arrayBuffer()))
+
+// The bytes are copied: changing the array afterwards changes no blob.
+const bytes = enc.encode("abc")
+const copied = new Blob([bytes])
+bytes[0] = 0x7a
+console.log(await copied.text())
+// And bytes() gives a new copy each time.
+const got = await copied.bytes()
+got[1] = 0x7a
+console.log(await copied.text(), Array.from(got))
+
+// A media type outside U+0020 to U+007E is "", else lowercased.
+console.log(JSON.stringify(new Blob([], { type: "IMAGE/PNG" }).type))
+console.log(JSON.stringify(new Blob([], { type: "imagé/png" }).type))
+console.log(JSON.stringify(new Blob([], { type: "a\tb" }).type))
+console.log(JSON.stringify(new Blob([], { type: " A B " }).type))
+
+// endings: "native" makes CRLF a LF in strings, not in bytes.
+const lines = new Blob(["a\r\nb\n", enc.encode("c\r\n")], { endings: "native" })
+console.log(JSON.stringify(await lines.text()), lines.size)
+const kept = new Blob(["a\r\nb\n"], { endings: "transparent" })
+console.log(JSON.stringify(await kept.text()), kept.size)
+
+// Invalid UTF-8 reads as U+FFFD; a leading byte order mark is left out.
+console.log(JSON.stringify(await new Blob([enc.encode("\uFEFFa"), new Blob(["b"])]).text()))
+const raw: u8[] = [0x61, 0xff, 0xe2, 0x82, 0x62, 0xf0, 0x9f, 0x98]
+const bad = new Blob([raw, new Blob([new Blob(["y"])])])
+console.log(JSON.stringify(await bad.text()), bad.size)
+
+console.log(b instanceof Blob, new File([], "f") instanceof Blob)

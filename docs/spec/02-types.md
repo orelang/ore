@@ -563,7 +563,7 @@ dropped unless `ignoreBOM`. `btoa(s)` is the base64 of a binary string,
 whose characters are U+0000 to U+00FF (another panics with
 `InvalidCharacterError: Invalid character`), and `atob(s)` the binary
 string of base64 text, skipping ASCII whitespace, with the padding
-optional.
+optional. Bytes with a media type are a `Blob` (see [Blobs](#blobs)).
 
 `structuredClone(value)` is JavaScript's deep copy, a global name as there,
 whose code is generated for the type as JSON's is. Numbers, `bool`,
@@ -909,6 +909,53 @@ Standard, whose parser they follow over the UTF-8 bytes of the input:
   `URL.revokeObjectURL` are missing.
 - `URL` and `URLSearchParams` are classes of the runtime written in Ore
   (`runtime/core/url.ore`), global names as in JavaScript.
+
+## Blobs
+
+```ts
+const b = new Blob(["héllo ", new TextEncoder().encode("wörld")], { type: "Text/Plain" })
+console.log(b.size, b.type)                 // 13 text/plain
+console.log(await b.slice(-6).text())       // wörld
+const f = new File([b], "hello.txt")
+console.log(f)  // File { size: 13, type: '', name: 'hello.txt', lastModified: 1760... }
+```
+
+`Blob` and `File` are JavaScript's, after the W3C File API: immutable
+bytes with a media type.
+
+- `new Blob(parts?, { type, endings }?)` joins its parts: a string as its
+  UTF-8 bytes (a byte that is not valid UTF-8 as U+FFFD, as JavaScript
+  encodes a lone surrogate), a `u8[]` (copied: changing the array later
+  changes no blob) and another blob. A parts array of one blob shares its
+  bytes. `type` is lowercased, and is `""` when it has a character outside
+  U+0020 to U+007E; `endings: "native"` makes each CR and CRLF of the
+  strings a LF, and `"transparent"` (the default) keeps them.
+- `size` is the number of bytes and `type` the media type.
+- `slice(start?, end?, contentType?)` is a blob of the bytes from `start`
+  to `end`, which count from the end when negative and are clamped to the
+  blob (`end` before `start` gives an empty blob), with the media type
+  `contentType`, normalized as `type`. A missing `end` is `null`, as for
+  other optional arguments, and a slice shares the bytes of its blob; a
+  slice of a file is a `Blob`.
+- `text()` reads the bytes as UTF-8 (invalid sequences as U+FFFD, a
+  leading byte order mark left out, as `TextDecoder` does) and `bytes()`
+  copies them, both as promises, `Promise<string>` and `Promise<u8[]>`.
+  `arrayBuffer()` is `bytes()`: Ore has `u8[]` where JavaScript has an
+  `ArrayBuffer`.
+- `new File(parts, name, { type, endings, lastModified }?)` is a blob with
+  a `name`, the time of its last change `lastModified`, an `int` of
+  milliseconds since 1970 (`Date.now()` when left out), and
+  `webkitRelativePath`, always `""`.
+- `console.log` prints them as Node does, `Blob { size: 3, type: '' }` and
+  `File { size: 3, type: '', name: 'a.txt', lastModified: 1700000000000 }`
+  (`[Blob]` beyond the depth limit), and `JSON.stringify` writes `{}`, as
+  JavaScript, which finds no properties of their own.
+- Differences from JavaScript: a part is a string, a `u8[]` or a blob,
+  not any value converted to a string; `stream()` is missing (as are
+  `URL.createObjectURL` and `FileReader`); `structuredClone` does not copy
+  a blob (ORE4091, a class with methods).
+- `Blob` and `File` are classes of the runtime written in Ore
+  (`runtime/core/blob.ore`), global names as in JavaScript.
 
 ## Arrays
 

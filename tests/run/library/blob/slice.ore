@@ -1,0 +1,29 @@
+// Blob.slice: positions from the end when negative, clamped to the blob, an
+// empty blob when the end comes first; the media type of the slice is its
+// third argument.
+const b = new Blob(["hello world"], { type: "text/plain" })
+console.log(b.slice().size, JSON.stringify(b.slice().type), await b.slice().text())
+console.log(await b.slice(6).text(), await b.slice(-5).text(), await b.slice(0, 5).text())
+console.log(await b.slice(2, -2).text(), await b.slice(-100, -6).text(), await b.slice(3, 100).text())
+console.log(b.slice(5, 1).size, b.slice(100).size, b.slice(-3, -5).size, b.slice(11, 11).size)
+console.log(b.slice(0, null, "Image/PNG").type, JSON.stringify(b.slice(0, 1, "é").type))
+
+// Slices of slices, and blobs made of slices.
+const s = b.slice(2, -2)
+console.log(await s.slice(1, 3).text(), await s.slice(-2).text(), s.slice(-100).size)
+console.log(await new Blob([s.slice(0, 2), " ", b.slice(-5)]).text())
+console.log(await new Blob([s]).text(), new Blob([s]).size, JSON.stringify(new Blob([s]).type))
+
+// A slice of a file is a blob.
+const f = new File(["abcdef"], "letters.txt", { type: "text/plain" })
+const part = f.slice(1, 4)
+console.log(await part.text(), part instanceof File, part.type === "")
+
+// The bytes of a slice are a copy.
+const bytes = await b.slice(0, 3).bytes()
+bytes[0] = 0x48
+console.log(Array.from(bytes), await b.slice(0, 3).text())
+
+// A character cut in two reads as U+FFFD.
+const cut = new Blob(["aé"]).slice(0, 2)
+console.log(cut.size, JSON.stringify(await cut.text()))

@@ -356,6 +356,12 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
                 g.rt("ore_sb_put", [b, g.extract(text, 0, "ptr"), g.extract(text, 1, "i64")])
                 return
             }
+            if (hookedClass(g, type, "ore_rt_blob_json", 0)) {
+                // A blob has no properties of its own: `{}`.
+                const text = g.rt("ore_rt_blob_json", [v])
+                g.rt("ore_sb_put", [b, g.extract(text, 0, "ptr"), g.extract(text, 1, "i64")])
+                return
+            }
             if (type.tuple) {
                 // A tuple is an array.
                 putc(g, b, "[")
@@ -497,10 +503,15 @@ function writeReplaced(g: Emitter, b: V, u: V, o: V, depth: V) {
     g.b.emit(`call void ${name}(ptr ${b.v}, ${UNKNOWN} ${u.v}, ptr ${o.v}, i64 ${depth.v})`)
 }
 
-/** Whether a type has values whose parts go through a replacer: arrays, maps, objects and classes but dates and URLs. */
+/** Whether a type has values whose parts go through a replacer: arrays, maps, objects and classes but dates, URLs and blobs. */
 function hasParts(g: Emitter, t: Type): bool {
     if (t.kind === "array" || t.kind === "map") return true
-    return t.kind === "struct" && dateClass(g, t) === null && !hookedClass(g, t, "ore_rt_url_json", 0)
+    return (
+        t.kind === "struct" &&
+        dateClass(g, t) === null &&
+        !hookedClass(g, t, "ore_rt_url_json", 0) &&
+        !hookedClass(g, t, "ore_rt_blob_json", 0)
+    )
 }
 
 /**

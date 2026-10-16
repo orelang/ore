@@ -1,0 +1,21 @@
+// File: a blob with a name and the time of its last change, in milliseconds.
+const before = Date.now()
+const f = new File(["first line\n", new Blob(["second"])], "notes.txt", { type: "Text/Plain" })
+const after = Date.now()
+console.log(f.name, f.size, f.type, await f.text())
+console.log(f.lastModified >= before && f.lastModified <= after)
+
+const dated = new File([], "empty.bin", { lastModified: 1700000000000 })
+console.log(dated.name, dated.size, JSON.stringify(dated.type), dated.lastModified)
+console.log(new File(["a\r\nb"], "crlf", { endings: "native" }).size)
+console.log(dated instanceof File, dated instanceof Blob)
+
+// A file is a blob where one is expected.
+const blobs: Blob[] = [f, new Blob(["x"])]
+console.log(blobs.map((b) => b.size))
+// Blob[] is not a (string | u8[] | Blob)[]: no array is covariant in Ore.
+const parts: (string | u8[] | Blob)[] = [f, "x"]
+console.log(await new Blob(parts).text())
+
+// Always "", as in browsers (Node has no webkitRelativePath).
+console.log(JSON.stringify(f.webkitRelativePath))

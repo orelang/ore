@@ -17,17 +17,18 @@ function charLength(b: u8): int {
 }
 
 /**
- * The length of the valid UTF-8 character at `at` in `bytes`, or minus the
- * length of the longest prefix of one there (at least 1), which decodes as
- * one U+FFFD, as the Encoding Standard's decoder reads it.
+ * The length of the valid UTF-8 character at `at` in `bytes`, which end at
+ * `stop`, or minus the length of the longest prefix of one there (at least
+ * 1), which decodes as one U+FFFD, as the Encoding Standard's decoder reads
+ * it.
  */
-function validAt(bytes: u8[], at: int): int {
+function validAt(bytes: u8[], at: int, stop: int): int {
     const b = bytes[at]
     const n = charLength(b)
     if (n === 1) return 1
     if (n === 0) return -1
     for (let i = 1; i < n; i++) {
-        if (at + i >= bytes.length) return -i
+        if (at + i >= stop) return -i
         const c = bytes[at + i]
         // The second byte's range rules out overlong forms, surrogates and values past U+10FFFF.
         let lo: u8 = 0x80
@@ -41,13 +42,16 @@ function validAt(bytes: u8[], at: int): int {
     return n
 }
 
-/** The string of UTF-8 `bytes`, invalid sequences replaced by U+FFFD; panics on one when `fatal`. */
-function decodeBytes(bytes: u8[], start: int, fatal: bool): string {
-    const out = unsafe.allocBytes((bytes.length - start) * 3)
+/**
+ * The string of the UTF-8 `bytes` from `start` to `stop`, invalid sequences
+ * replaced by U+FFFD; panics on one when `fatal`.
+ */
+export function decodeBytes(bytes: u8[], start: int, stop: int, fatal: bool): string {
+    const out = unsafe.allocBytes((stop - start) * 3)
     let n = 0
     let at = start
-    while (at < bytes.length) {
-        const k = validAt(bytes, at)
+    while (at < stop) {
+        const k = validAt(bytes, at, stop)
         if (k > 0) {
             for (let i = 0; i < k; i++) unsafe.store<u8>(unsafe.add(out, n + i), bytes[at + i])
             n += k
@@ -136,7 +140,7 @@ export class TextDecoder {
     /** The string of UTF-8 bytes. */
     decode(input: u8[] = []): string {
         const bom = !this.ignoreBOM && input.length >= 3 && input[0] === 0xef && input[1] === 0xbb && input[2] === 0xbf
-        return decodeBytes(input, bom ? 3 : 0, this.fatal)
+        return decodeBytes(input, bom ? 3 : 0, input.length, this.fatal)
     }
 }
 

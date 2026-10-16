@@ -75,6 +75,17 @@ before 1.0, a minor version may change the language.
 - `Object.fromEntries`, `Object.groupBy` and `Map.groupBy` take any
   iterable, as in JavaScript: a map, a set, a string, a generator,
   `map.entries()` or a `URLSearchParams`, not only an array.
+- `Blob` and `File` are global classes, JavaScript's, written in Ore
+  (runtime/core/blob.ore) after the W3C File API: `new Blob(parts,
+  { type, endings })` of strings (UTF-8), `u8[]` (copied) and other blobs,
+  `size`, `type` (lowercased, `""` when it is not printable ASCII),
+  `slice(start, end, contentType)` with JavaScript's negative and clamped
+  positions, sharing the bytes, and `text()`, `bytes()` and
+  `arrayBuffer()`, which return promises; `arrayBuffer()` gives a `u8[]`,
+  as Ore has no `ArrayBuffer`. `new File(parts, name, { type, endings,
+  lastModified })` adds `name`, `lastModified` (now, in milliseconds, by
+  default) and `webkitRelativePath` (`""`). `console.log` prints them as
+  Node does and `JSON.stringify` writes `{}`. `stream()` is not there yet.
 
 ## 0.5.0
 

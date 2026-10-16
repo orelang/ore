@@ -1,0 +1,188 @@
+// The global classes `Blob` and `File` of JavaScript's hosts, after the W3C
+// File API: immutable bytes with a media type, made of strings (UTF-8),
+// bytes and other blobs. Bytes are `u8[]`, where JavaScript has a
+// `Uint8Array` or an `ArrayBuffer`; a slice shares the bytes of its blob.
+
+import { type Inspection, begin, end, field, paint, quote } from "ore:runtime/inspect"
+import { decodeBytes } from "ore:runtime/text"
+
+/** A part of a new blob: a string, written as UTF-8, bytes, or another blob. */
+export type BlobPart = string | u8[] | Blob
+
+/**
+ * The options of `new Blob`: the media type, and whether the line endings of
+ * strings are kept (`"transparent"`) or made `\n` (`"native"`).
+ */
+export type BlobPropertyBag = { type?: string; endings?: "transparent" | "native" }
+
+/** The options of `new File`: those of a blob and the time of the last change, in milliseconds since 1970. */
+export type FilePropertyBag = { type?: string; endings?: "transparent" | "native"; lastModified?: int }
+
+/**
+ * A media type as a blob keeps it: lowercased, or `""` when it has a
+ * character outside U+0020 to U+007E.
+ */
+function mediaType(type: string): string {
+    for (let i = 0; i < type.length; i++) if (type[i] < 0x20 || type[i] > 0x7e) return ""
+    return type.toLowerCase()
+}
+
+/** Appends the UTF-8 bytes of a string, its line endings made `\n` when `native`. */
+function pushString(out: u8[], s: string, native: bool): void {
+    const text = s.toWellFormed()
+    for (let i = 0; i < text.length; i++) {
+        const b = text[i]
+        if (native && b === 0x0d) {
+            // A CR, or the CR of a CRLF, is a LF.
+            out.push(0x0a)
+            if (i + 1 < text.length && text[i + 1] === 0x0a) i++
+        } else out.push(b)
+    }
+}
+
+/** A position of `slice` in a blob of `size` bytes: from the end when negative, clamped to the blob. */
+function clamp(at: int, size: int): int {
+    if (at < 0) return at + size < 0 ? 0 : at + size
+    return at > size ? size : at
+}
+
+/**
+ * Immutable bytes with a media type, as JavaScript's `Blob`: `new
+ * Blob(["héllo", bytes], { type: "text/plain" })`. Its bytes are read with
+ * `text()` and `bytes()`, which return promises, as in JavaScript.
+ */
+export class Blob {
+    /** The bytes, shared by slices: this blob is those from `start` to `stop`. */
+    private data: u8[]
+    private start: int
+    private stop: int
+    private mime: string
+
+    /**
+     * The bytes of `blobParts` one after another: a string's UTF-8, bytes
+     * (copied), another blob's bytes. `type` is lowercased, and `""` when it
+     * has a character outside U+0020 to U+007E.
+     */
+    constructor(blobParts: BlobPart[] = [], options: BlobPropertyBag = {}) {
+        this.mime = mediaType(options.type ?? "")
+        const native = options.endings === "native"
+        const only = blobParts.length === 1 ? blobParts[0] : null
+        if (only instanceof Blob) {
+            // One blob: its bytes, shared.
+            this.data = only.data
+            this.start = only.start
+            this.stop = only.stop
+            return
+        }
+        const data: u8[] = []
+        for (const part of blobParts) {
+            if (typeof part === "string") pushString(data, part, native)
+            else if (part instanceof Blob) for (let i = part.start; i < part.stop; i++) data.push(part.data[i])
+            else for (const b of part) data.push(b)
+        }
+        this.data = data
+        this.start = 0
+        this.stop = data.length
+    }
+
+    /** The number of bytes. */
+    get size(): int {
+        return this.stop - this.start
+    }
+
+    /** The media type, lowercase, or `""`. */
+    get type(): string {
+        return this.mime
+    }
+
+    /**
+     * A blob of the bytes from `start` to `end` (left out), which count from
+     * the end when negative and are clamped to the blob, with the media type
+     * `contentType`. It shares the bytes of this one.
+     */
+    slice(start: int = 0, end: int | null = null, contentType: string = ""): Blob {
+        const size = this.size
+        const from = clamp(start, size)
+        const to = clamp(end ?? size, size)
+        const out = new Blob([], { type: contentType })
+        out.data = this.data
+        out.start = this.start + from
+        out.stop = to > from ? this.start + to : this.start + from
+        return out
+    }
+
+    /** The bytes read as UTF-8, invalid sequences as U+FFFD and a leading byte order mark left out. */
+    text(): Promise<string> {
+        const d = this.data
+        const at = this.start
+        const bom = this.stop - at >= 3 && d[at] === 0xef && d[at + 1] === 0xbb && d[at + 2] === 0xbf
+        return Promise.resolve(decodeBytes(d, bom ? at + 3 : at, this.stop, false))
+    }
+
+    /** A copy of the bytes. */
+    bytes(): Promise<u8[]> {
+        return Promise.resolve(this.data.slice(this.start, this.stop))
+    }
+
+    /** A copy of the bytes, as `bytes()`: Ore has `u8[]` where JavaScript has an `ArrayBuffer`. */
+    arrayBuffer(): Promise<u8[]> {
+        return this.bytes()
+    }
+}
+
+/**
+ * A blob with a file name and the time of its last change, as JavaScript's
+ * `File`: `new File(["text"], "a.txt", { type: "text/plain" })`.
+ */
+export class File extends Blob {
+    /** The name of the file. */
+    readonly name: string
+    /** The time of the last change, in milliseconds since 1970: by default when the file was made. */
+    readonly lastModified: int
+    /** The path of the file relative to the directory a user chose, always `""`: no files are chosen in Ore. */
+    readonly webkitRelativePath = ""
+
+    /** A blob of `fileBits`, as `new Blob`, named `fileName`. */
+    constructor(fileBits: BlobPart[], fileName: string, options: FilePropertyBag = {}) {
+        super(fileBits, { type: options.type, endings: options.endings })
+        this.name = fileName
+        this.lastModified = options.lastModified ?? Date.now()
+    }
+}
+
+/** A number as Node prints it: yellow. */
+function numberText(s: Inspection, n: int): string {
+    return paint(s, `${n}`, 33, 39)
+}
+
+/**
+ * A blob as Node prints it, `Blob { size: 3, type: '' }`, a file with its
+ * name and time too, and `[Blob]` beyond the depth limit. A subclass prints
+ * as its base, as in Node. Node formats the fields as an object of their
+ * own, outside the value around: laid out as at the top level, then
+ * indented as deep as the blob, and not counted as a level nested in the
+ * objects around it.
+ */
+//ore:runtime ore_rt_inspect_blob
+function inspectBlob(s: Inspection, b: Blob, depth: int): string {
+    const name = b instanceof File ? "File" : "Blob"
+    const outer = s.currentDepth
+    const shown = begin(s, unsafe.addressOf(b), 2, depth, "{", "}", `[${name}]`)
+    if (shown !== "") return shown
+    field(s, "size", numberText(s, b.size))
+    field(s, "type", paint(s, quote(b.type), 32, 39))
+    if (b instanceof File) {
+        field(s, "name", paint(s, quote(b.name), 32, 39))
+        field(s, "lastModified", numberText(s, b.lastModified))
+    }
+    s.currentDepth = 1
+    const text = end(s, "{", "}", 0, false, false)
+    s.currentDepth = outer
+    return `${name} ${text.replaceAll("\n", `\n${" ".repeat(depth * 2)}`)}`
+}
+
+/** How JSON.stringify writes a blob: `{}`, as JavaScript, which sees no properties of its own. */
+//ore:runtime ore_rt_blob_json
+function jsonBlob(b: Blob): string {
+    return "{}"
+}
