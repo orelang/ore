@@ -26,6 +26,13 @@ before 1.0, a minor version may change the language.
   never scans arrays of numbers; it gives free pages back to the system;
   and its pace is set by `ORE_GOGC` and `ORE_MEMLIMIT`. `ORE_GCSTW=1`
   marks with the world stopped, as before.
+- Regular expressions are faster (`bench/regex` about 2.6 times): the
+  search skips bytes no match can start with and, after a failed try, the
+  rest of a leading loop's run; a greedy loop of one character runs as one
+  instruction, and keeps no choices when giving characters back could not
+  match; `exec` and `test` reuse the expression's matcher; a replacement's
+  `$` patterns are read once. `indexOf` compares only where the first byte
+  is.
 - `ore doc [file.ore | dirs...]` prints the API of modules: their exported
   functions, classes with their public members, interfaces, type aliases
   and variables, with their signatures as the hover shows them and their
