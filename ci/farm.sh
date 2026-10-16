@@ -83,6 +83,9 @@ job() {
     return $status
 }
 
+# The whole script is read before it runs, so that editing it does not
+# change the jobs that run it.
+main() {
 seed='$(ls -t ~/.cache/ore/seed-* | head -1)'
 case ${1:-} in
 test)
@@ -175,3 +178,6 @@ status)
     exit 2
     ;;
 esac
+}
+main "$@"
+exit
