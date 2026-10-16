@@ -506,7 +506,8 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
             continue
         }
         const name = nameId.text
-        const declared = annotation !== null ? c.resolveValueType(annotation, scope) : null
+        // The value of a JSON file has the type of the declaration it initializes first.
+        const declared = annotation !== null ? c.resolveValueType(annotation, scope) : c.jsonTypes.get(decl)
         if (isConst && init_ === null) c.error(nameId, "A 'const' declaration must be initialized.")
 
         const value = init_ !== null ? checkExpr(c, init_, scope, declared) : null

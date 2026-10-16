@@ -3,7 +3,14 @@ import { named } from "./data.json" with { type: "json" } // error: A JSON impor
 import yaml from "./data.yaml" with { type: "yaml" } // error: Unknown import type 'yaml'. Use 'text' or 'json'.
 import data from "./data.json" with { type: "json", mode: "strict" } // error: Unknown import attribute 'mode'
 
-type Config = { name: string; port: string }
-const config: Config = data // error: is not assignable to type 'Config'
+// The first declaration that `data` initializes gives its type, which the
+// file fits; other declarations are checked against that type.
+type Config = { name: string; port: int; owner: string | null }
+type Other = { name: string; port: string }
+const config: Config = data
+const other: Other = data // error: is not assignable to type 'Other'
 const port: string = data.port // error: is not assignable to type 'string'
 console.log(data.missing) // error: Property 'missing' does not exist
+function load() {
+    const typed: Other = data // error: is not assignable to type 'Other'
+}

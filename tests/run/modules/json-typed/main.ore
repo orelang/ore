@@ -1,0 +1,23 @@
+// A JSON value takes the type of the first declaration it initializes:
+// `null` fits `string | null`, an empty array `string[]`, a whole number
+// `number`.
+import settings from "./settings.json" with { type: "json" }
+
+type Server = { host: string; port: int; backup: string | null }
+type Settings = {
+    name: string
+    owner: string | null
+    tags: string[]
+    ratio: number
+    servers: Server[]
+}
+
+const typed: Settings = settings
+console.log(typed.name, typed.owner ?? "nobody", typed.tags.length, typed.ratio / 4)
+for (const s of typed.servers) console.log(s.host, s.port, s.backup ?? "-")
+
+// The import has the type too, and it is the same value.
+typed.tags.push("new")
+console.log(settings.tags.join(","), settings.owner === null)
+const again: Settings = settings
+console.log(again.servers.length)

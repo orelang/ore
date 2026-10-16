@@ -88,7 +88,14 @@ import {
     makeMethod,
     resolveBase,
 } from "./classes"
-import { type ClassInfo as ClassInfoType, type ModuleInfo, Directive, InterfaceInfo, Signature } from "./context"
+import {
+    type ClassInfo as ClassInfoType,
+    type ModuleInfo,
+    Directive,
+    InterfaceInfo,
+    JsonImport,
+    Signature,
+} from "./context"
 import { intrinsicType } from "./computed"
 import { checkExpr } from "./expressions"
 import {
@@ -646,6 +653,7 @@ export function declareJsonImport(c: Checker, stmt: Node, module: ModuleInfo) {
     if (target === null) return
     if (!module.scope.declareAlias(name.text, () => exportOf(c, target, jsonExport)))
         c.error(name, `Duplicate declaration '${name.text}'.`)
+    else c.jsonImports.push(new JsonImport(name.text, module, target))
     c.specifiers.push(() => {
         const exported = exportOf(c, target, jsonExport)
         const value = exported === null ? null : exported.value
@@ -654,6 +662,41 @@ export function declareJsonImport(c: Checker, stmt: Node, module: ModuleInfo) {
         const initializer = value.decl.child("initializer")
         c.info.definitions.set(name, initializer ?? value.decl)
     })
+}
+
+/**
+ * Gives the value of each JSON file a declared type: that of the first
+ * top-level declaration of an importing module, in module and source order,
+ * whose initializer is the imported name alone, as `const c: Config = config`.
+ * The value is then checked against that type, as an annotated literal would
+ * be, so that `null` fits `string | null` and `[]` fits `string[]`. A file
+ * without such a declaration is typed as its literal.
+ */
+export function typeJsonImports(c: Checker) {
+    for (const i of c.jsonImports) {
+        const statements = c.statementsOf(i.target.source)
+        if (statements.length !== 1 || statements[0].kind !== "VariableStatement") continue
+        const target = declarations(declarationList(statements[0]))[0]
+        if (c.jsonTypes.has(target)) continue
+        let found = false
+        for (const stmt of c.statementsOf(i.module.source)) {
+            if (found || stmt.kind !== "VariableStatement") continue
+            for (const decl of declarations(declarationList(stmt))) {
+                const annotation = typeNode(decl)
+                const init = initializer(decl)
+                if (found || annotation === null || init === null || !isIdentifier(init) || init.text !== i.name)
+                    continue
+                found = true
+                // The declaration reports the errors of its type when it is checked.
+                const errors = c.diagnostics.length
+                c.prefix = i.module.prefix
+                const type = c.resolveValueType(annotation, i.module.scope)
+                c.prefix = ""
+                while (c.diagnostics.length > errors) c.diagnostics.pop()
+                if (type !== null) c.jsonTypes.set(target, type)
+            }
+        }
+    }
 }
 
 /** Reports exports of names that a module does not declare. */
@@ -1735,7 +1778,7 @@ export function checkTopLevelConstants(c: Checker, stmt: Node, scope: Scope): bo
     const constants: ConstantDecl[] = []
     for (const decl of declarations(declarationList(stmt))) {
         const annotation = typeNode(decl)
-        const declared = annotation !== null ? c.resolveValueType(annotation, scope) : null
+        const declared = annotation !== null ? c.resolveValueType(annotation, scope) : c.jsonTypes.get(decl)
         const init = initializer(decl)!
         let value = checkExpr(c, init, scope)
         if (declared !== null) value = new Typed(c.coerce(value, declared, init))

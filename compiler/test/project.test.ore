@@ -144,3 +144,23 @@ test("reports type errors of a JSON file in the file", () => {
         "config.json:3:11: Cannot infer the type of an empty array. Add a type annotation, e.g. 'let a: int[] = []'.",
     )
 })
+
+test("checks a JSON file against the type of the declaration it initializes", () => {
+    const files = new Map<string, string>()
+    files.set(
+        "main.ore",
+        'import config from "./config.json" with { type: "json" }\n' +
+            "type Server = { host: string; port: int }\n" +
+            "type Config = { name: string | null; tags: string[]; servers: Server[] }\n" +
+            "const c: Config = config\n",
+    )
+    files.set("config.json", '{\n  "name": null,\n  "tags": [],\n  "servers": [{ "host": 1, "port": 2 }, {}]\n}\n')
+    const root = project(files)
+    const program = loadProgram(join(root, "main.ore"))
+    if (program instanceof Error) fail(program.message)
+    same(
+        located(check(program).diagnostics),
+        "config.json:4:25: An integer constant is not assignable to type 'string'.\n" +
+            "config.json:4:41: Missing properties 'host', 'port' of type 'Server'.",
+    )
+})
