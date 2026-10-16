@@ -12,6 +12,7 @@
 import {
     type Program,
     canonicalize,
+    canonicalizeUnicode,
     compileRegExp,
     inRanges,
     isLineTerminator,
@@ -19,6 +20,7 @@ import {
     lowercase,
     OP_ANY,
     OP_ANY_ALL,
+    OP_BACK,
     OP_BACKREF,
     OP_BOL,
     OP_CHAR,
@@ -35,6 +37,7 @@ import {
     OP_SAVE,
     OP_SPLIT,
     OP_WORD,
+    unicodeVariant,
 } from "ore:runtime/regexp-syntax"
 
 /** A run of a program over a string: the backtracking stack and the slots. */
@@ -85,6 +88,22 @@ class Matcher {
         return c
     }
 
+    /** The code point that ends before a position (U+FFFD for an invalid byte), its width in `width`. */
+    decodeBefore(pos: int): int {
+        const s = this.s
+        let start = pos - 1
+        while (start > 0 && pos - start < 4 && (int(s[start]) & 0xc0) === 0x80) start--
+        const c = this.decode(start)
+        if (start + this.width === pos) return c
+        this.width = 1
+        return 0xfffd
+    }
+
+    /** The canonical case of a character, which the `i` flag compares. */
+    fold(c: int): int {
+        return this.program.unicode ? canonicalizeUnicode(c) : canonicalize(c)
+    }
+
     /** Whether the character before a position ends a line. */
     afterLineTerminator(pos: int): bool {
         const b = this.s[pos - 1]
@@ -114,10 +133,14 @@ class Matcher {
         const ranges = this.program.sets[set]
         if (inRanges(ranges, c)) return true
         if (!ignoreCase) return false
-        const upper = canonicalize(c)
+        const upper = this.fold(c)
         if (upper !== c && inRanges(ranges, upper)) return true
         const lower = lowercase(upper)
         if (lower !== c && inRanges(ranges, lower)) return true
+        if (this.program.unicode) {
+            const other = unicodeVariant(upper)
+            if (other >= 0 && other !== c && inRanges(ranges, other)) return true
+        }
         // Two lowercase letters with one uppercase: ς and σ, µ and μ.
         return (upper === 0x3a3 && inRanges(ranges, 0x3c2)) || (upper === 0x39c && inRanges(ranges, 0xb5))
     }
@@ -144,9 +167,37 @@ class Matcher {
             i += this.width
             const b = this.decode(at)
             at += this.width
-            if (canonicalize(a) !== canonicalize(b)) return false
+            if (this.fold(a) !== this.fold(b)) return false
         }
         this.width = at - pos
+        return true
+    }
+
+    /** Whether the text of a group ends at a position, in a lookbehind; its length in `width`. */
+    backrefBefore(group: int, pos: int): bool {
+        const start = this.slots[2 * group]
+        const end = this.slots[2 * group + 1]
+        this.width = 0
+        if (start < 0 || end < 0) return true
+        const s = this.s
+        if (!this.program.ignoreCase) {
+            const length = end - start
+            if (pos - length < 0) return false
+            for (let i = 0; i < length; i++) if (s[start + i] !== s[pos - length + i]) return false
+            this.width = length
+            return true
+        }
+        let at = pos
+        let i = end
+        while (i > start) {
+            if (at <= 0) return false
+            const a = this.decodeBefore(i)
+            i -= this.width
+            const b = this.decodeBefore(at)
+            at -= this.width
+            if (this.fold(a) !== this.fold(b)) return false
+        }
+        this.width = pos - at
         return true
     }
 
@@ -166,7 +217,35 @@ class Matcher {
         for (;;) {
             let ok = true
             const op = code[pc]
-            if (op === OP_CHAR) {
+            if (op > OP_BACK) {
+                // An instruction of a lookbehind: the character before the position.
+                const read = op - OP_BACK
+                if (read === OP_BACKREF) {
+                    ok = this.backrefBefore(code[pc + 1], pos)
+                    pos -= this.width
+                    pc += 2
+                } else if (pos === 0) {
+                    ok = false
+                } else {
+                    const c = this.decodeBefore(pos)
+                    pos -= this.width
+                    if (read === OP_CHAR) {
+                        ok = c === code[pc + 1]
+                        pc += 2
+                    } else if (read === OP_CHAR_I) {
+                        ok = this.fold(c) === code[pc + 1]
+                        pc += 2
+                    } else if (read === OP_ANY) {
+                        ok = !isLineTerminator(c)
+                        pc++
+                    } else if (read === OP_ANY_ALL) {
+                        pc++
+                    } else {
+                        ok = this.inClass(code[pc + 1], c, read === OP_CLASS_I) !== (code[pc + 2] === 1)
+                        pc += 3
+                    }
+                }
+            } else if (op === OP_CHAR) {
                 const want = code[pc + 1]
                 if (pos < n && want < 128) {
                     ok = int(s[pos]) === want
@@ -177,7 +256,7 @@ class Matcher {
                 }
                 pc += 2
             } else if (op === OP_CHAR_I) {
-                ok = pos < n && canonicalize(this.decode(pos)) === code[pc + 1]
+                ok = pos < n && this.fold(this.decode(pos)) === code[pc + 1]
                 pos += this.width
                 pc += 2
             } else if (op === OP_ANY) {
@@ -311,7 +390,15 @@ class Matcher {
             const end = this.slots[2 * g + 1]
             captures.push(start < 0 || end < 0 ? null : this.s.slice(start, end))
         }
-        return new RegExpMatch(captures, this.slots[0], this.s, this.program.names)
+        const indices: ([int, int] | null)[] = []
+        if (this.program.hasIndices) {
+            for (let g = 0; g < this.program.groups; g++) {
+                const start = this.slots[2 * g]
+                const end = this.slots[2 * g + 1]
+                indices.push(start < 0 || end < 0 ? null : [start, end])
+            }
+        }
+        return new RegExpMatch(captures, this.slots[0], this.s, this.program.names, indices)
     }
 
     /** The text of the match found by `search`. */
@@ -342,7 +429,21 @@ export class RegExpMatch {
         readonly input: string,
         /** The name of each group, "" for one without. */
         private names: string[],
+        /**
+         * With the `d` flag, where the match and each group start and end:
+         * `[start, end]` byte offsets, null for a group that took no part;
+         * empty without the flag.
+         */
+        readonly indices: ([int, int] | null)[] = [],
     ) {}
+
+    /** The `indices` of each named group, by name (`indices.groups` in JavaScript); empty without the `d` flag. */
+    get groupIndices(): Map<string, [int, int] | null> {
+        const groups = new Map<string, [int, int] | null>()
+        if (this.indices.length === 0) return groups
+        for (let g = 1; g < this.names.length; g++) if (this.names[g] !== "") groups.set(this.names[g], this.indices[g])
+        return groups
+    }
 
     /** The text of each named group, by name. */
     get groups(): Map<string, string | null> {
@@ -409,18 +510,23 @@ function escapeSource(pattern: string): string {
 /**
  * A regular expression, as in JavaScript: `/ab+c/gi`, or
  * `new RegExp("ab+c", "gi")`, which panics on an invalid pattern. Flags:
- * `g` (global), `i` (ignore case), `m` (multiline), `s` (dot matches line
- * breaks), `y` (sticky).
+ * `d` (indices of the matches), `g` (global), `i` (ignore case), `m`
+ * (multiline), `s` (dot matches line breaks), `u` (Unicode: `\u{...}`,
+ * `\p{...}`, a stricter syntax), `v` (`u` with set operations in classes),
+ * `y` (sticky).
  */
 export class RegExp {
     readonly source: string
-    /** The flags, in the order `gimsy`. */
+    /** The flags, in the order `dgimsuvy`. */
     readonly flags: string
+    readonly hasIndices: bool
     readonly global: bool
     readonly ignoreCase: bool
     readonly multiline: bool
     readonly dotAll: bool
     readonly sticky: bool
+    readonly unicode: bool
+    readonly unicodeSets: bool
     /** Where `exec` and `test` start, with the `g` or `y` flag: a byte offset, set past each match and to 0 after none. */
     lastIndex = 0
     private program: Program
@@ -435,11 +541,17 @@ export class RegExp {
         this.multiline = program.multiline
         this.dotAll = program.dotAll
         this.sticky = program.sticky
+        this.hasIndices = program.hasIndices
+        this.unicodeSets = program.unicodeSets
+        this.unicode = program.unicode && !program.unicodeSets
         let canonical = ""
+        if (program.hasIndices) canonical += "d"
         if (program.global) canonical += "g"
         if (program.ignoreCase) canonical += "i"
         if (program.multiline) canonical += "m"
         if (program.dotAll) canonical += "s"
+        if (this.unicode) canonical += "u"
+        if (program.unicodeSets) canonical += "v"
         if (program.sticky) canonical += "y"
         this.flags = canonical
     }

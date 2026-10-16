@@ -1,0 +1,103 @@
+// Lookbehind and the flags `u`, `v` and `d` on many patterns: each line is a
+// pattern, its flags, an input and what exec finds there (the captures,
+// unset as "-", the index, and with `d` the indices), as JavaScript finds
+// it. Inputs are ASCII before each match, where byte offsets and JavaScript's
+// UTF-16 offsets agree.
+
+const cases = [
+    // Lookbehind: matched backwards, its groups kept.
+    ["(?<=\\$)\\d+", "", "cost: $42"],
+    ["(?<!\\$)\\b\\d+", "", "$42 or 17"],
+    ["(?<=(\\d+)(\\d+))$", "", "1053"],
+    ["(?<=(\\d+?)(\\d+?))$", "", "1053"],
+    ["(?<=\\1(a))b", "", "aab"],
+    ["(?<=(a)\\1)b", "", "aab"],
+    ["(?<=^|,)\\w+", "", "x,yz"],
+    ["(?<=a(?=b)b)c", "", "abc"],
+    ["(?<=(?<!x)a)b", "", "xab ab"],
+    ["(?<=\\w{3})\\d", "", "ab1 abc2"],
+    ["(?<=[a-c]+)d", "", "zabcd"],
+    ["(?<=(?:ab)*)c", "", "ababc"],
+    ["(?<=a|bc)d", "", "xbcd"],
+    ["(?<=A)b", "i", "ab aB"],
+    ["^(?=.*(?<=(é)x))", "", "éx"],
+    ["^(?=.*(?<=(.)\\1))", "u", "a😀😀"],
+    ["(?<=(?<n>\\w))-", "", "a-b"],
+    ["(?<!^)x", "m", "x\nax"],
+    ["(?<=\\b)y", "", "xy y"],
+    // The u flag: code points, \u{...}, \p{...}.
+    ["\\u{1F600}", "u", "😀"],
+    ["^.$", "u", "😀"],
+    ["\\u{41}\\u{000062}", "u", "xAb"],
+    ["\\u{41}", "", "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu"],
+    ["\\uD83D\\uDE00", "u", "😀"],
+    ["[\\u{1F600}-\\u{1F64F}]+", "u", "😀😃"],
+    ["\\p{L}+", "u", "123 Ñandú!"],
+    ["\\p{Lu}\\p{Ll}+", "u", "the City"],
+    ["\\P{L}+", "u", "abc 123 def"],
+    ["\\p{N}+", "u", "x ²³½"],
+    ["\\p{Nd}+", "u", "x ٣٤5"],
+    ["\\p{Script=Greek}+", "u", "Ωμέγα"],
+    ["\\p{sc=Cyrl}+", "u", "Привет"],
+    ["\\p{Script=Han}+", "u", "漢字かな"],
+    ["\\p{Script=Latin}+", "u", "Ünïcödé"],
+    ["[\\p{L}\\p{Nd}_]+", "u", "x_1"],
+    ["[^\\p{L}]+", "u", "ab12cd"],
+    ["\\p{gc=Lt}", "u", "x ǅ"],
+    ["\\p{General_Category=Letter}", "u", "1a"],
+    ["\\p{Lm}\\p{Lo}", "u", "ʰא"],
+    ["\\p{Nl}\\p{No}", "u", "Ⅻ①"],
+    ["\\p{LC}+", "u", "Abc"],
+    ["\\p{ASCII}+", "u", "ab"],
+    ["\\p{Any}", "u", "😀"],
+    ["\\p{L}", "", "p{L}"],
+    ["\\p{Lu}", "iu", "a"],
+    ["\\u212A", "iu", "k"],
+    ["k", "iu", "K"],
+    ["ſ", "iu", "S"],
+    ["\\u212A", "i", "k"],
+    ["[\\u212A]", "iu", "k"],
+    ["(?<a>.)\\k<a>", "u", "xx"],
+    ["\\/\\-", "", "/-"],
+    ["[\\-a]+", "u", "a-"],
+    // The v flag: set operations and nested classes.
+    ["[\\p{L}--[a-z]]+", "v", "abcDEFghi"],
+    ["[[a-z]--[aeiou]]+", "v", "education"],
+    ["[\\w&&\\d]+", "v", "ab12"],
+    ["[\\p{Script=Greek}&&\\p{Lu}]+", "v", "xΓΔε"],
+    ["[[a-z]--[b]--[c]]+", "v", "cbad"],
+    ["[a&&a]", "v", "ba"],
+    ["[^[a-z]--[x]]", "v", "abx"],
+    ["[a\\&&b]+", "v", "x&ab"],
+    ["[[ab][cd]]+", "v", "xabcd"],
+    ["[\\p{L}&&[^a-z]]", "iv", "aB"],
+    ["\\p{L}", "v", "1é"],
+    // The d flag: where the match and each group are.
+    ["(a)(b)?(c)", "d", "xxac"],
+    ["(?<year>\\d{4})-(?<month>\\d{2})", "d", "on 2024-05"],
+    ["(?<=(a))b", "d", "ab"],
+    ["", "d", "abc"],
+]
+
+function show(text: string | null): string {
+    return text ?? "-"
+}
+
+for (const [source, flags, input] of cases) {
+    const re = new RegExp(source, flags)
+    const m = re.exec(input)
+    if (m === null) {
+        console.log(`/${source}/${flags}: null`)
+        continue
+    }
+    const parts: string[] = []
+    for (let i = 0; i < m.length; i++) parts.push(show(m.at(i)))
+    const indices = flags.includes("d") ? ` ${JSON.stringify(m.indices)}` : ""
+    console.log(`/${source}/${flags}: [${parts.join(", ")}] at ${m.index}${indices}`)
+}
+
+// The flags and their properties.
+for (const flags of ["dgimsuy", "yvsmigd", "u", "v", ""]) {
+    const re = new RegExp("a", flags)
+    console.log(re.flags, re.hasIndices, re.unicode, re.unicodeSets, re.toString())
+}

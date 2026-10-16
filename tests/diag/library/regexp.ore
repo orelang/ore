@@ -5,13 +5,29 @@ const d = /[z-a]/ // error: Invalid regular expression: Range out of order in ch
 const e = /a{3,1}/ // error: Invalid regular expression: numbers out of order in {} quantifier.
 const g = /(?<x>a)(?<x>b)/ // error: Invalid regular expression: Duplicate capture group name.
 const h = /\k<y>(?<x>a)/ // error: Invalid regular expression: Invalid named capture referenced.
-const i = /(?<=a)b/ // error: Invalid regular expression: Lookbehind assertions are not supported.
+const i = /(?<=a)*b/ // error: Invalid regular expression: Invalid quantifier.
 const j = /(?a)/ // error: Invalid regular expression: Invalid group.
 const l = /a/gg // error: Invalid regular expression: Invalid flags 'gg'.
 const m = /a/x // error: Invalid regular expression: Invalid flags 'x'.
-const n = /a/u // error: Invalid regular expression: The flag 'u' is not supported.
-const o = /a/dv // error: Invalid regular expression: The flag 'd' is not supported.
+const n = /a/uv // error: Invalid regular expression: Invalid flags 'uv'.
+const o = /(?=a)*/u // error: Invalid regular expression: Invalid quantifier.
 const p = /(?<1x>a)/ // error: Invalid regular expression: Invalid capture group name.
+
+// The stricter syntax of the u and v flags, and what Ore leaves out of it.
+const u1 = /\a/u // error: Invalid regular expression: Invalid escape.
+const u2 = /\u{110000}/u // error: Invalid regular expression: Invalid Unicode escape.
+const u3 = /\p{Foo=Bar}/u // error: Invalid regular expression: Invalid property name.
+const u4 = /\p{Emoji}/u // error: Invalid regular expression: The property 'Emoji' is not supported.
+const u5 = /[\d-z]/u // error: Invalid regular expression: Invalid character class.
+const u6 = /a{/u // error: Invalid regular expression: Incomplete quantifier.
+const u7 = /}/u // error: Invalid regular expression: Lone quantifier brackets.
+const u8 = /\00/u // error: Invalid regular expression: Invalid decimal escape.
+const u9 = /\k<a>/u // error: Invalid regular expression: Invalid named capture referenced.
+const v1 = /[a-z&&b]/v // error: Invalid regular expression: Invalid set operation in character class.
+const v2 = /[a&&&b]/v // error: Invalid regular expression: Invalid character in character class.
+const v3 = /[(]/v // error: Invalid regular expression: Invalid character in character class.
+const v4 = /[\q{ab}]/v // error: Invalid regular expression: Class string disjunctions are not supported.
+const fine = [/(?<=a)b/, /\p{L}/u, /[\w--\d]/v, /a/dgimsvy]
 
 const re = /a/g
 "abc".match(5) // error: An integer constant is not assignable to type 'string'.

@@ -1,6 +1,7 @@
 // The syntax of regular expressions, as in JavaScript (ECMAScript with its
-// Annex B, without the `u` flag): a pattern and its flags parsed and
-// compiled into a program for the backtracking matcher of regexp.ore.
+// Annex B, and the stricter syntax of the `u` and `v` flags): a pattern and
+// its flags parsed and compiled into a program for the backtracking matcher
+// of regexp.ore.
 //
 // The compiler imports this module too, to report the errors of a regular
 // expression literal at compile time; so it uses only what the compiler
@@ -44,6 +45,12 @@ export const OP_LOOK_END = 16
 export const OP_PROGRESS = 17
 /** The end of the pattern: a match. */
 export const OP_MATCH = 18
+/**
+ * Added to the opcode of an instruction that reads a character (`CHAR`,
+ * `CHAR_I`, `ANY`, `ANY_ALL`, `CLASS`, `CLASS_I`, `BACKREF`): it reads the
+ * one before the position and moves back, inside a lookbehind.
+ */
+export const OP_BACK = 32
 
 /** The largest program, in instructions and operands, as a counted repetition copies its atom. */
 const maxCode = 1000000
@@ -64,6 +71,7 @@ const K_EOL = 9
 const K_WORD = 10
 const K_BACKREF = 11
 const K_LOOK = 12
+const K_LOOKBEHIND = 13
 
 /** A node of a parsed pattern. */
 class Node {
@@ -107,6 +115,11 @@ export class Program {
     multiline = false
     dotAll = false
     sticky = false
+    hasIndices = false
+    /** The `u` flag, or `v`: code points, `\u{...}`, `\p{...}` and a stricter syntax. */
+    unicode = false
+    /** The `v` flag: also nested classes and their operators `--` and `&&`. */
+    unicodeSets = false
     /** The error that makes the pattern or the flags invalid, or "". */
     error = ""
 }
@@ -120,6 +133,9 @@ export function compileRegExp(pattern: string, flags: string): Program {
         return program
     }
     const parser = new Parser(pattern)
+    parser.unicode = program.unicode
+    parser.sets = program.unicodeSets
+    parser.caseless = program.unicodeSets && program.ignoreCase
     const root = parser.parse()
     if (parser.error !== "") {
         program.error = parser.error
@@ -151,9 +167,13 @@ function readFlags(program: Program, flags: string): string {
         else if (f === 109) program.multiline = true
         else if (f === 115) program.dotAll = true
         else if (f === 121) program.sticky = true
-        else if (f === 117 || f === 100 || f === 118) return `The flag '${flags.slice(i, i + 1)}' is not supported`
+        else if (f === 100) program.hasIndices = true
+        else if (f === 117) program.unicode = true
+        else if (f === 118) program.unicodeSets = true
         else return `Invalid flags '${flags}'`
     }
+    if (program.unicode && program.unicodeSets) return `Invalid flags '${flags}'`
+    if (program.unicodeSets) program.unicode = true
     return ""
 }
 
@@ -189,6 +209,29 @@ export function canonicalize(c: int): int {
     return c
 }
 
+/**
+ * The canonical case with the `u` or `v` flag, which compares the simple
+ * case folding of characters: `canonicalize`, and also the long s (ſ), the
+ * Kelvin and Ohm signs and the capital sharp s (ẞ), which have none
+ * without the flags.
+ */
+export function canonicalizeUnicode(c: int): int {
+    if (c === 0x17f) return 83
+    if (c === 0x212a) return 75
+    if (c === 0x2126) return 0x3a9
+    if (c === 0x1e9e) return 0xdf
+    return canonicalize(c)
+}
+
+/** The other character of a canonical case that `canonicalizeUnicode` adds, or -1. */
+export function unicodeVariant(c: int): int {
+    if (c === 83) return 0x17f
+    if (c === 75) return 0x212a
+    if (c === 0x3a9) return 0x2126
+    if (c === 0xdf) return 0x1e9e
+    return -1
+}
+
 /** The lowercase of an uppercase letter that `canonicalize` maps, or the character itself. */
 export function lowercase(c: int): int {
     if (c >= 65 && c <= 90) return c + 32
@@ -202,10 +245,120 @@ export function lowercase(c: int): int {
     return c
 }
 
-/** Whether a character is in sorted or unsorted ranges. */
+/** Whether a character is in sorted ranges (as `normalize` leaves them). */
 export function inRanges(ranges: int[], c: int): bool {
-    for (let i = 0; i < ranges.length; i += 2) if (c >= ranges[i] && c <= ranges[i + 1]) return true
+    let low = 0
+    let high = ranges.length / 2
+    while (low < high) {
+        const mid = (low + high) / 2
+        if (c < ranges[2 * mid]) high = mid
+        else if (c > ranges[2 * mid + 1]) low = mid + 1
+        else return true
+    }
     return false
+}
+
+/** Ranges sorted by their first character, overlapping and adjacent ones merged. */
+export function normalize(ranges: int[]): int[] {
+    // A merge sort of the pairs, bottom up.
+    const count = ranges.length / 2
+    let from = ranges
+    let width = 1
+    while (width < count) {
+        const to: int[] = []
+        for (let lo = 0; lo < count; lo += 2 * width) {
+            const mid = lo + width < count ? lo + width : count
+            const hi = lo + 2 * width < count ? lo + 2 * width : count
+            let i = lo
+            let j = mid
+            while (i < mid || j < hi) {
+                let k = j
+                if (j >= hi || (i < mid && from[2 * i] <= from[2 * j])) {
+                    k = i
+                    i++
+                } else {
+                    j++
+                }
+                to.push(from[2 * k])
+                to.push(from[2 * k + 1])
+            }
+        }
+        from = to
+        width *= 2
+    }
+    const out: int[] = []
+    for (let i = 0; i < from.length; i += 2) {
+        const n = out.length
+        if (n > 0 && from[i] <= out[n - 1] + 1) {
+            if (from[i + 1] > out[n - 1]) out[n - 1] = from[i + 1]
+        } else {
+            out.push(from[i])
+            out.push(from[i + 1])
+        }
+    }
+    return out
+}
+
+/**
+ * What `canonicalizeUnicode` maps: the first and last character of each
+ * run and the distance to their canonical case.
+ */
+const caseRuns: int[][] = [
+    [97, 122, -32],
+    [0xb5, 0xb5, 0x39c - 0xb5],
+    [0xe0, 0xf6, -32],
+    [0xf8, 0xfe, -32],
+    [0xff, 0xff, 0x178 - 0xff],
+    [0x17f, 0x17f, 83 - 0x17f],
+    [0x3ac, 0x3ac, 0x386 - 0x3ac],
+    [0x3ad, 0x3af, -37],
+    [0x3b1, 0x3c1, -32],
+    [0x3c2, 0x3c2, 0x3a3 - 0x3c2],
+    [0x3c3, 0x3c9, -32],
+    [0x430, 0x44f, -32],
+    [0x450, 0x45f, -80],
+    [0x1e9e, 0x1e9e, 0xdf - 0x1e9e],
+    [0x2126, 0x2126, 0x3a9 - 0x2126],
+    [0x212a, 0x212a, 75 - 0x212a],
+]
+
+/**
+ * Sorted ranges with every character of the same canonical case as one of
+ * them added: a class of the `v` flag ignoring case folds each operand so,
+ * before its operators and complements.
+ */
+function closeCase(ranges: int[]): int[] {
+    let out = ranges
+    // Twice, for the characters that share a canonical case with another: ς, σ and Σ.
+    for (let pass = 0; pass < 2; pass++) {
+        const all: int[] = []
+        for (const r of out) all.push(r)
+        for (const run of caseRuns) {
+            const delta = run[2]
+            for (const r of intersect(out, [run[0], run[1]])) all.push(r + delta)
+            for (const r of intersect(out, [run[0] + delta, run[1] + delta])) all.push(r - delta)
+        }
+        out = normalize(all)
+    }
+    return out
+}
+
+/** The characters in both of two sorted ranges. */
+function intersect(a: int[], b: int[]): int[] {
+    const out: int[] = []
+    let i = 0
+    let j = 0
+    while (i < a.length && j < b.length) {
+        const low = a[i] > b[j] ? a[i] : b[j]
+        const high = a[i + 1] < b[j + 1] ? a[i + 1] : b[j + 1]
+        if (low <= high) {
+            out.push(low)
+            out.push(high)
+        }
+        if (a[i + 1] < b[j + 1]) i += 2
+        else j += 2
+    }
+    return out
 }
 
 const digitRanges = [48, 57]
@@ -259,9 +412,184 @@ function isLetter(c: int): bool {
     return (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
 }
 
+/** Whether a character is one of the bytes of a text. */
+function oneOf(chars: string, c: int): bool {
+    for (let i = 0; i < chars.length; i++) if (int(chars[i]) === c) return true
+    return false
+}
+
+/** Whether a character is one of the syntax, `^$\.*+?()[]{}|` or `/`, which an escape with the `u` flag may name. */
+function isSyntaxChar(c: int): bool {
+    return oneOf("^$\\.*+?()[]{}|/", c)
+}
+
+/** Whether a character is one of the doubled punctuators that a class of the `v` flag reserves (`&&`, `--`, `!!`...). */
+function isSetPunctuator(c: int): bool {
+    return oneOf("&-!#$%*+,.:;<=>?@^`~", c)
+}
+
+/** Whether a character cannot be itself in a class of the `v` flag: `()[]{}/-\|`. */
+function isSetSyntaxChar(c: int): bool {
+    return oneOf("()[]{}/-\\|", c)
+}
+
 /** Whether a character can be in a group's name: ASCII letters, digits, `$`, `_`, and any other non-ASCII character. */
 function isNameChar(c: int, first: bool): bool {
     return isLetter(c) || c === 36 || c === 95 || c >= 128 || (!first && isDigit(c))
+}
+
+// -----------------------------------------------------------------------------
+// Unicode properties
+
+/**
+ * The characters of the properties that `\p{...}` knows, from Unicode 17.0
+ * (as node 24 has them): the letters and numbers of each General_Category
+ * and four scripts. Each table is a list of ranges, each range the number
+ * of characters since the previous one and its length less one, written in
+ * base 32: a digit `0`-`9`, `A`-`V` ends a number, and one of `W`-`Z`,
+ * `a`-`z`, `+`, `/` is a digit with more to follow.
+ */
+const propertyTables = [
+    [
+        "Lu",
+        "Y1PZ5M16X101010101010101010101010101010101010101010101010101010102010101010101010201010101010101010101010101010101010101010101011101031101112231112311110101110201112101130702020201010101010101020101010101010101020201210101010101010101010101010101010101010101010101010101010107111201310101010f10103080601210111G18X30223010101010101010101010105020112XIXG010101010101010101010101010101010901010101010101010101010101010101010101010101010101010111010101010102010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010102X5Yw9X51050sIYLYaJ06XA22g001010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010901010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010109785A78785B010101087Y83C3C3C4B3e6040322220346010101323A150XT0YpSXFXG0122010101310208210101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010801040+gD010101010101010101010101010101010101010101010J010101010101010101010101010a7010101010101030101010101010101010101010101010101010101010101010101010101010A010111010101040102010301010101010101010101414101010101010101310111010101010101010O0rvBPXc5X7a8X3aSA1E1611XtAXIaTLYvQVri0VY0Ovg7PQPQPQ01120212317QPQ1132716R113141036RPQPQPQPQPQPUOX1OX1OX1OX1OX10afLX1",
+    ],
+    [
+        "Ll",
+        "Z1PXQ0X9N1710101010101010101010101010101010101010101010101010101011101010101010101110101010101010101010101010101010101010101010102010122010203140203220201010201110203010212260202010101010101010111010101010101010112010301010101010101010101010101010101010101010101010101010101016202110401010101Y42Pc10103032I0RX21132101010101010101010101014102021XJXF101010101010101010101010101010101090101010101010101010101010101010101010101010101010101020101010101011101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010XGX8Yw7XA22tO5Ya2810ZLXBXVC1X1Z6010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010181010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101885A78785A7878D2787878411603211832187A211eI03130R04040218340XL0YrBXF10311010104011155010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101011701040CX51050+eJ010101010101010101010101010101010101010101010J010101010101010101010101010a70101010101012101010101010101010101010101010101010101010101010101010101010101710102010101010401020121010101010101010101050501010101010101040102010101010101010Q030vLXA587YFpw06C4XX9PXcDX7a8X3aRA1E1611Xu3XIZTLYvQVri0VXROvg6PQ61HQPQ310161AQPQPQPQPQPQPQPQPQRSO15QO15QO15QO15QO1510XvK91J65YlNX1",
+    ],
+    ["Lt", "k502020X60diL78787C0F0XF0"],
+    [
+        "Lm",
+        "rGH4BE47010a5050kU0d60b41eD140V09030b00b70XcK0ZV0nL0XsQ0ZB0p30kG5bEXUD0X2X4rH0D0GCY+V1dH0bV0kL0XB450Z11YT2xuM0Xd25eE0ZI0S1ZP8YG0N0Z8331kL0M0a90ZC0L1Z7390rW60XD1X/051X918XiJ0X00gL0ZuJ0ph63lS2X81n6CY0110E1l/S31611iXHXTc96zD0mJ0oB0",
+    ],
+    [
+        "Lo",
+        "bA0F0e0043cG1vQQ43XDV19X311Z210O1A220G01TTYOB0OX0LLXAO7A5N16GX8XRXL30I079GE47212L16103330G0D112E1A085412L16111111V310J2G8121L16111430I0F1N0B7212L16111430U112F0H015321331101131323BM0XK7121M1F30Q21121U047121M191430U211F1H8121X820G05282O55H3N181026XQXF11C5XR110141N1019119024N3X00XV71X3R4ZJXAK0G5433031724CC0ZHg8132610132X8132X0132610132E1XO132Y2X5FZHpB2G1P5YA677HDIEHEC12FXJX80Y3X21XK742X1105Y5AUXHT24BXB4PXMM9XKbGXEH7XMTD1AXBQX3X92ATZH3151130XXQ3Y/NXNOM9616161616161616n70XL04YL801YP405XA1YTHVXGFm0cjVY0qmK1XZMY3X78eB4FA1Y20XHY5b90Z703612131MTXJEXHXU53011BRAMPS7XEXD428A41X8N217KF15303XH1031242010O13A70E525259616aHX2Tgz3CM4XGee4hD2Z9Y30191C141011111ZBX1hAIXV2XLX8BZK41a6Z991XC2U35252522X3B1P1I111E2DX2ZQi5S3XGXFVDJ176X5AT2X347a0YDZ2X78XJYSXJCfM9LA7aO5201XB11302MAM9UY1I11ALAP6PX6XN61Y00F3121SXAS3SX371RRXLALAIDHZEY8bNX3X6310fGX961G211XOSA08LXAHXEKRMCXKXP120DXCX0OQX3T0208X230CXFE3L010X3H1OJ1XV610131E197XEX67212L16111430I0C4U910201X510P010XCXKI3K2UXFK110bOXEX93X4XFK0XRXAD0Y7QX56bPXBcJ72027111NF010YU72X6G010S0AX770L0BXDJ0IY8c7X0V81X4H0XHTZG6111X5L0P5111VE0NX811e4IF01C1X1ZS0YFyPd6c3YoCZ0FXXFH5PZyQ5o6crPTXt2nO7UHYEHTIXFXJK5IjJX7iLYA50bFdcLX9VZ1ZIemDf2F0T220E38iBYe4ZA5C3879epG0lLXCX10g1TIXBl4Qd5T20cFU1211162490d1613111E1c4XfR31Q1110201913101060401010121110201010101011102316131310191G52141Gag4XfsVX0aeT2bqD2dfGFpDYj2mTXl2awA5ef9",
+    ],
+    [
+        "Nd",
+        "XG9Xn69a69c69iS9ZM9ZM9ZM9ZM9ZM9ZM9ZM9ZM9ZM9Z09ZM9Y69eM9Y69Xw69X69fC9a09b6969bM9YM9a6969XYk69r69X69c69M9YM9iM9quM9Xi69Ya6969uS9a09XS9aG9eM9gM9ZM9hM9Z696JYC9j69Z69qM9YM9dM9Y69XM9h69mkM9Yf69YM9a69mM9txM9YsKXHYg09j69lM9dN9wL9aqM9",
+    ],
+    ["Nl", "btE2YpFX223ZpU0P8E2zrB9soGXKkC080a64eXAZEoy52"],
+    [
+        "No",
+        "bI15022YfL5hO5ZO2a56cP6H8jH9XXLJXZJ9l00XqL03569c6FX90sMXRYELpMTXh90XaK3aA9U71EX09X7EzhG5scHXCY13H1gLQX43XfK7P6X78YB4M5b012F2XDY08XK1U2YB4Z87O7X96gA5h0UaU9XA3ZG6a6JhRJXg51jE8x7IwJKoy66uUMvX9JCJZCObgE8z1XQ1213YCXC1E+2C",
+    ],
+    [
+        "Latin",
+        "Y1P6PXF0F05M1U1k0X74cmRX56XG535C1Y5Y1dVhH0D0GCaD160R0HX8YsNV+r2Z53YHKEvGXA1813pyM6XWQP6PYX551X918Xrw5U65",
+    ],
+    ["Greek", "xG3122310401012101J1XUEFcf64XI444YK0g0L252X525271010101U2XK1E1D251I2218f70XYnU0rkQYEH0XqYVY5"],
+    ["Cyrillic", "XW0a42b8bwGAb00YC0aZ7V+Y0YVryE1Xum0XTX10"],
+    ["Han", "hq0P1YOCcLXF010P8E3+4cjVY0qlVse0hD2Z9ze81C6XaW9XfsVX0aeT2bqD2dfGFpDYj2mTXl2awA5ef9"],
+]
+
+/** The value of a digit of `propertyTables`: 0-31 ends a number, 32-63 continues it. */
+function tableDigit(b: int): int {
+    if (b >= 48 && b <= 57) return b - 48
+    if (b >= 65 && b <= 90) return b - 55
+    if (b >= 97 && b <= 122) return b - 61
+    return b === 43 ? 62 : 63
+}
+
+/** The ranges of a table of `propertyTables`, by name: sorted. */
+function propertyTable(name: string): int[] {
+    const out: int[] = []
+    for (const entry of propertyTables) {
+        if (entry[0] !== name) continue
+        const text = entry[1]
+        let previous = -1
+        let start = -1
+        let n = 0
+        for (let i = 0; i < text.length; i++) {
+            const d = tableDigit(int(text[i]))
+            if (d >= 32) {
+                n = n * 32 + d - 32
+                continue
+            }
+            n = n * 32 + d
+            if (start < 0) {
+                start = previous + 1 + n
+            } else {
+                out.push(start)
+                out.push(start + n)
+                previous = start + n
+                start = -1
+            }
+            n = 0
+        }
+    }
+    return out
+}
+
+/** The tables of a General_Category value by either name, joined by commas, or "". */
+function categoryTables(value: string): string {
+    const names = [
+        "L,Letter:Lu,Ll,Lt,Lm,Lo",
+        "LC,Cased_Letter:Lu,Ll,Lt",
+        "Lu,Uppercase_Letter:Lu",
+        "Ll,Lowercase_Letter:Ll",
+        "Lt,Titlecase_Letter:Lt",
+        "Lm,Modifier_Letter:Lm",
+        "Lo,Other_Letter:Lo",
+        "N,Number:Nd,Nl,No",
+        "Nd,Decimal_Number,digit:Nd",
+        "Nl,Letter_Number:Nl",
+        "No,Other_Number:No",
+    ]
+    for (const line of names) {
+        const colon = line.indexOf(":")
+        for (const name of line.slice(0, colon).split(",")) if (name === value) return line.slice(colon + 1)
+    }
+    return ""
+}
+
+/** The table of a script by either name, or "". */
+function scriptTable(value: string): string {
+    if (value === "Latin" || value === "Latn") return "Latin"
+    if (value === "Greek" || value === "Grek") return "Greek"
+    if (value === "Cyrillic" || value === "Cyrl") return "Cyrillic"
+    if (value === "Han" || value === "Hani") return "Han"
+    return ""
+}
+
+/**
+ * The characters of a property of `\p{...}`, sorted, into `out`: a
+ * General_Category of letters or numbers (`L`, `Lu`, `gc=Nd`,
+ * `General_Category=Letter`...), a script (`Script=Greek`, `sc=Cyrl`), or
+ * `Any` and `ASCII`. Returns an error message, or "".
+ */
+function propertyRanges(text: string, out: int[]): string {
+    const invalid = "Invalid property name"
+    const unsupported = `The property '${text}' is not supported`
+    const eq = text.indexOf("=")
+    let tables = ""
+    if (eq >= 0) {
+        const name = text.slice(0, eq)
+        const value = text.slice(eq + 1)
+        if (value === "" || value.indexOf("=") >= 0) return invalid
+        if (name === "General_Category" || name === "gc") tables = categoryTables(value)
+        else if (name === "Script" || name === "sc") tables = scriptTable(value)
+        else if (name === "Script_Extensions" || name === "scx") return unsupported
+        else return invalid
+    } else if (text === "Any") {
+        out.push(0)
+        out.push(0x10ffff)
+        return ""
+    } else if (text === "ASCII") {
+        out.push(0)
+        out.push(127)
+        return ""
+    } else {
+        if (text === "" || scriptTable(text) !== "") return invalid
+        tables = categoryTables(text)
+    }
+    if (tables === "") return unsupported
+    const all: int[] = []
+    for (const name of tables.split(",")) for (const r of propertyTable(name)) all.push(r)
+    for (const r of normalize(all)) out.push(r)
+    return ""
 }
 
 // -----------------------------------------------------------------------------
@@ -278,6 +606,16 @@ class Parser {
     named = false
     /** The backreferences by name, resolved at the end. */
     references: Node[] = []
+    /** The `u` or `v` flag: the stricter syntax, `\u{...}` and `\p{...}`. */
+    unicode = false
+    /** The `v` flag: classes with nested classes and the operators `--` and `&&`. */
+    sets = false
+    /** Whether the last group read was a lookahead or a lookbehind, which a quantifier may follow only without `u` and for a lookahead. */
+    look = false
+    /** The character of the last `setOperand`, or -1 when it was a class. */
+    single = -1
+    /** The flags `v` and `i`: the operands of a class are closed under case (`closeCase`). */
+    caseless = false
 
     constructor(readonly text: string) {}
 
@@ -420,8 +758,16 @@ class Parser {
         }
         if (c === 42 || c === 43 || c === 63) return this.fail("Nothing to repeat")
         if (c === 123 && this.quantifierAhead()) return this.fail("Nothing to repeat")
+        if (this.unicode && (c === 123 || c === 125 || c === 93)) return this.fail("Lone quantifier brackets")
+        this.look = false
         const atom = this.atom()
         if (this.error !== "") return atom
+        if (this.look && (this.unicode || atom.kind === K_LOOKBEHIND)) {
+            const q = this.peek()
+            if (q === 42 || q === 43 || q === 63 || (q === 123 && this.quantifierAhead()))
+                return this.fail("Invalid quantifier")
+            return atom
+        }
         return this.quantified(atom)
     }
 
@@ -485,6 +831,8 @@ class Parser {
             }
             this.pos++
             if (max !== unbounded && max < min) return this.fail("numbers out of order in {} quantifier")
+        } else if (c === 123 && this.unicode) {
+            return this.fail("Incomplete quantifier")
         } else {
             return atom
         }
@@ -506,7 +854,7 @@ class Parser {
             return new Node(K_ANY, 0)
         }
         if (c === 40) return this.group()
-        if (c === 91) return this.characterClass()
+        if (c === 91) return this.sets ? this.classSet() : this.characterClass()
         if (c === 92) return this.atomEscape()
         const start = this.pos
         const node = new Node(K_CHAR, this.char())
@@ -527,8 +875,13 @@ class Parser {
                 this.pos += 2
                 node = new Node(K_LOOK, kind === 33 ? 1 : 0)
                 node.kids.push(this.disjunction())
+                this.look = true
             } else if (kind === 60 && (this.peekAt(2) === 61 || this.peekAt(2) === 33)) {
-                return this.fail("Lookbehind assertions are not supported")
+                const negate = this.peekAt(2) === 33 ? 1 : 0
+                this.pos += 3
+                node = new Node(K_LOOKBEHIND, negate)
+                node.kids.push(this.disjunction())
+                this.look = true
             } else if (kind === 60) {
                 this.pos += 2
                 const name = this.groupName()
@@ -581,6 +934,7 @@ class Parser {
             const start = this.pos
             const n = this.number(1000000)
             if (n <= this.total) return new Node(K_BACKREF, n)
+            if (this.unicode) return this.fail("Invalid escape")
             this.pos = start
             if (c >= 56) {
                 this.pos++
@@ -588,7 +942,7 @@ class Parser {
             }
             return new Node(K_CHAR, this.octal())
         }
-        if (c === 107 && this.named) {
+        if (c === 107 && (this.named || this.unicode)) {
             this.pos++
             if (this.peek() !== 60) return this.fail("Invalid named reference")
             this.pos++
@@ -606,7 +960,41 @@ class Parser {
             node.ranges = ranges
             return node
         }
+        if ((c === 112 || c === 80) && this.unicode) {
+            const node = new Node(K_CLASS, 0)
+            node.ranges = this.property()
+            return node
+        }
         return new Node(K_CHAR, this.characterEscape(false))
+    }
+
+    /** `\p{...}` or `\P{...}`, at its `p`: the characters of the property, or of the others for `\P`. */
+    property(): int[] {
+        const negate = this.peek() === 80
+        this.pos++
+        const out: int[] = []
+        if (this.peek() !== 123) {
+            this.fail("Invalid property name")
+            return out
+        }
+        this.pos++
+        const start = this.pos
+        while (this.peek() !== 125) {
+            const c = this.peek()
+            if (!isLetter(c) && !isDigit(c) && c !== 95 && c !== 61) {
+                this.fail("Invalid property name")
+                return out
+            }
+            this.pos++
+        }
+        const error = propertyRanges(this.text.slice(start, this.pos), out)
+        this.pos++
+        if (error !== "") {
+            this.fail(error)
+            return out
+        }
+        if (this.caseless) return negate ? complement(closeCase(out)) : out
+        return negate ? complement(out) : out
     }
 
     /** Up to three octal digits, at most 0o377. */
@@ -662,15 +1050,23 @@ class Parser {
             case 48:
                 this.pos++
                 if (isDigit(this.peek())) {
+                    if (this.unicode) {
+                        this.fail("Invalid decimal escape")
+                        return 0
+                    }
                     this.pos--
                     return this.octal()
                 }
                 return 0
             case 99: {
                 const letter = this.peekAt(1)
-                if (isLetter(letter) || (inClass && (isDigit(letter) || letter === 95))) {
+                if (isLetter(letter) || (inClass && !this.unicode && (isDigit(letter) || letter === 95))) {
                     this.pos += 2
                     return letter % 32
+                }
+                if (this.unicode) {
+                    this.fail("Invalid Unicode escape")
+                    return 0
                 }
                 // A `\` that escapes nothing: the `c` is read next.
                 return 92
@@ -678,11 +1074,20 @@ class Parser {
             case 120: {
                 this.pos++
                 const value = this.hex(2)
+                if (value < 0 && this.unicode) {
+                    this.fail("Invalid escape")
+                    return 0
+                }
                 return value < 0 ? 120 : value
             }
             case 117: {
                 this.pos++
+                if (this.unicode && this.peek() === 123) return this.codePoint()
                 const value = this.hex(4)
+                if (value < 0 && this.unicode) {
+                    this.fail("Invalid Unicode escape")
+                    return 0
+                }
                 if (value < 0) return 117
                 // A surrogate pair written as two escapes is one character.
                 if (value >= 0xd800 && value <= 0xdbff && this.peek() === 92 && this.peekAt(1) === 117) {
@@ -695,8 +1100,39 @@ class Parser {
                 return value
             }
         }
+        if (this.unicode) {
+            // Only the characters of the syntax escape themselves: `^$\.*+?()[]{}|/`, and `-` in a class.
+            if ((c >= 49 && c <= 55 && inClass) || isDigit(c)) {
+                this.fail(c >= 56 ? "Invalid escape" : "Invalid decimal escape")
+                return 0
+            }
+            if (!isSyntaxChar(c) && !(inClass && c === 45)) {
+                this.fail("Invalid escape")
+                return 0
+            }
+            this.pos++
+            return c
+        }
         if (inClass && c >= 49 && c <= 55) return this.octal()
         return this.char()
+    }
+
+    /** `{hex}` of `\u{...}`, at its `{`: a code point up to U+10FFFF. */
+    codePoint(): int {
+        this.pos++
+        let n = 0
+        const start = this.pos
+        while (hexValue(this.peek()) >= 0) {
+            n = n * 16 + hexValue(this.peek())
+            if (n > 0x10ffff) n = 0x110000
+            this.pos++
+        }
+        if (this.pos === start || this.peek() !== 125 || n > 0x10ffff) {
+            this.fail("Invalid Unicode escape")
+            return 0
+        }
+        this.pos++
+        return n
     }
 
     characterClass(): Node {
@@ -727,6 +1163,7 @@ class Parser {
             const last = this.classAtom(ranges)
             if (this.error !== "") return node
             if (first < 0 || last < 0) {
+                if (this.unicode) return this.fail("Invalid character class")
                 if (first >= 0) {
                     ranges.push(first)
                     ranges.push(first)
@@ -743,8 +1180,181 @@ class Parser {
             ranges.push(first)
             ranges.push(last)
         }
-        node.ranges = ranges
+        node.ranges = normalize(ranges)
         return node
+    }
+
+    /**
+     * A class of the `v` flag, at its `[`: characters, ranges, class escapes
+     * and nested classes joined, or operands of `--` (the characters of the
+     * first but not the others) or `&&` (the characters of all of them).
+     */
+    classSet(): Node {
+        this.pos++
+        const node = new Node(K_CLASS, 0)
+        if (this.peek() === 94) {
+            node.value = 1
+            this.pos++
+        }
+        node.ranges = this.classSetBody()
+        return node
+    }
+
+    /** The characters of a class of the `v` flag after its `[` or `[^`, sorted; past its `]`. */
+    classSetBody(): int[] {
+        const none: int[] = []
+        if (this.peek() === 93) {
+            this.pos++
+            return none
+        }
+        if (this.doubled()) {
+            this.fail("Invalid set operation in character class")
+            return none
+        }
+        let operand = this.setOperand()
+        if (this.error !== "") return none
+        if (this.caseless) operand = closeCase(operand)
+        const op = this.peek()
+        if ((op === 45 || op === 38) && this.peekAt(1) === op) {
+            // `A--B--C` or `A&&B&&C`: one operator, no ranges.
+            let set = operand
+            for (;;) {
+                this.pos += 2
+                if (op === 38 && this.peek() === 38) {
+                    this.fail("Invalid character in character class")
+                    return none
+                }
+                let next = this.setOperand()
+                if (this.error !== "") return none
+                if (this.caseless) next = closeCase(next)
+                set = op === 45 ? intersect(set, complement(next)) : intersect(set, next)
+                if (this.atEnd()) {
+                    this.fail("Unterminated character class")
+                    return none
+                }
+                if (this.peek() === 93) {
+                    this.pos++
+                    return set
+                }
+                if (this.peek() !== op || this.peekAt(1) !== op) {
+                    this.fail("Invalid set operation in character class")
+                    return none
+                }
+            }
+        }
+        // A union of characters, ranges and classes.
+        const ranges: int[] = []
+        for (;;) {
+            if (this.single >= 0 && this.peek() === 45 && this.peekAt(1) !== 45) {
+                const first = this.single
+                this.pos++
+                if (this.peek() === 93) {
+                    this.fail("Invalid character in character class")
+                    return none
+                }
+                this.setOperand()
+                if (this.error !== "") return none
+                const last = this.single
+                if (last < 0) {
+                    this.fail("Invalid character class")
+                    return none
+                }
+                if (first > last) {
+                    this.fail("Range out of order in character class")
+                    return none
+                }
+                operand = [first, last]
+                if (this.caseless) operand = closeCase(operand)
+            }
+            for (const r of operand) ranges.push(r)
+            if (this.atEnd()) {
+                this.fail("Unterminated character class")
+                return none
+            }
+            if (this.peek() === 93) {
+                this.pos++
+                return normalize(ranges)
+            }
+            if (this.peek() === 45 && this.peekAt(1) !== 45) {
+                this.fail("Invalid character class")
+                return none
+            }
+            if (this.doubled()) {
+                this.fail("Invalid set operation in character class")
+                return none
+            }
+            operand = this.setOperand()
+            if (this.error !== "") return none
+            if (this.caseless) operand = closeCase(operand)
+        }
+    }
+
+    /** Whether a doubled punctuator that a class of the `v` flag reserves is at the position. */
+    doubled(): bool {
+        const c = this.peek()
+        return c >= 0 && c === this.peekAt(1) && isSetPunctuator(c)
+    }
+
+    /** An operand of a class of the `v` flag: a character (also in `single`), a class escape or a nested class, sorted. */
+    setOperand(): int[] {
+        this.single = -1
+        const none: int[] = []
+        if (this.atEnd()) {
+            this.fail("Unterminated character class")
+            return none
+        }
+        const c = this.peek()
+        if (c === 91) {
+            this.pos++
+            let negate = false
+            if (this.peek() === 94) {
+                negate = true
+                this.pos++
+            }
+            const inner = this.classSetBody()
+            this.single = -1
+            return negate ? complement(inner) : inner
+        }
+        if (c === 92) {
+            this.pos++
+            if (this.atEnd()) {
+                this.fail("\\ at end of pattern")
+                return none
+            }
+            const e = this.peek()
+            if (this.caseless && (e === 68 || e === 83 || e === 87)) {
+                // `\D`, `\S` and `\W` complement the characters of `\d`, `\s` or `\w` closed under case.
+                this.pos++
+                return complement(closeCase(classEscape(e + 32)!))
+            }
+            const escape = classEscape(e)
+            if (escape !== null) {
+                this.pos++
+                return escape
+            }
+            if (e === 112 || e === 80) return this.property()
+            if (e === 113) {
+                this.fail("Class string disjunctions are not supported")
+                return none
+            }
+            if (isSetPunctuator(e) || isSyntaxChar(e)) {
+                this.pos++
+                this.single = e
+            } else {
+                this.single = this.characterEscape(true)
+            }
+            return [this.single, this.single]
+        }
+        if (isSetSyntaxChar(c) || c === 93) {
+            this.fail("Invalid character in character class")
+            return none
+        }
+        if (this.doubled()) {
+            this.fail("Invalid set operation in character class")
+            return none
+        }
+        this.single = this.char()
+        return [this.single, this.single]
     }
 
     /** A character of a class, or -1 for a class escape such as `\d`, whose ranges are added. */
@@ -760,6 +1370,10 @@ class Parser {
         if (escape !== null) {
             this.pos++
             for (const r of escape) ranges.push(r)
+            return -1
+        }
+        if ((c === 112 || c === 80) && this.unicode) {
+            for (const r of this.property()) ranges.push(r)
             return -1
         }
         if (c === 45) {
@@ -809,6 +1423,9 @@ class Compiler {
         readonly pattern: string,
     ) {}
 
+    /** Whether the code emitted reads backwards, in a lookbehind. */
+    back = false
+
     op(code: int) {
         this.program.code.push(code)
     }
@@ -835,24 +1452,26 @@ class Compiler {
                 return
             case K_CHAR:
                 if (p.ignoreCase) {
-                    this.op(OP_CHAR_I)
-                    this.op(canonicalize(node.value))
+                    this.read(OP_CHAR_I)
+                    this.op(p.unicode ? canonicalizeUnicode(node.value) : canonicalize(node.value))
                 } else {
-                    this.op(OP_CHAR)
+                    this.read(OP_CHAR)
                     this.op(node.value)
                 }
                 return
             case K_ANY:
-                this.op(p.dotAll ? OP_ANY_ALL : OP_ANY)
+                this.read(p.dotAll ? OP_ANY_ALL : OP_ANY)
                 return
             case K_CLASS:
-                this.op(p.ignoreCase ? OP_CLASS_I : OP_CLASS)
+                this.read(p.ignoreCase ? OP_CLASS_I : OP_CLASS)
                 this.op(p.sets.length)
                 this.op(node.value)
                 p.sets.push(node.ranges)
                 return
             case K_SEQ:
-                for (const kid of node.kids) this.emit(kid)
+                // Backwards, a sequence matches its last term first.
+                if (this.back) for (let i = node.kids.length - 1; i >= 0; i--) this.emit(node.kids[i])
+                else for (const kid of node.kids) this.emit(kid)
                 return
             case K_ALT: {
                 const ends: int[] = []
@@ -873,11 +1492,12 @@ class Compiler {
                 return
             }
             case K_GROUP:
+                // Backwards, a group's end is known first.
                 this.op(OP_SAVE)
-                this.op(2 * node.value)
+                this.op(this.back ? 2 * node.value + 1 : 2 * node.value)
                 this.emit(node.kids[0])
                 this.op(OP_SAVE)
-                this.op(2 * node.value + 1)
+                this.op(this.back ? 2 * node.value : 2 * node.value + 1)
                 return
             case K_REPEAT:
                 this.repeat(node)
@@ -893,19 +1513,28 @@ class Compiler {
                 this.op(node.value)
                 return
             case K_BACKREF:
-                this.op(OP_BACKREF)
+                this.read(OP_BACKREF)
                 this.op(node.value)
                 return
-            case K_LOOK: {
+            case K_LOOK:
+            case K_LOOKBEHIND: {
                 this.op(OP_LOOK)
                 this.op(node.value)
                 const end = this.hole()
+                const back = this.back
+                this.back = node.kind === K_LOOKBEHIND
                 this.emit(node.kids[0])
+                this.back = back
                 this.op(OP_LOOK_END)
                 this.patch(end)
                 return
             }
         }
+    }
+
+    /** An instruction that reads a character, backwards in a lookbehind. */
+    read(code: int) {
+        this.op(this.back ? code + OP_BACK : code)
     }
 
     /**
