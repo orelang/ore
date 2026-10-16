@@ -36,6 +36,9 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `a.length = n` | truncates, or grows with holes | truncates; a larger `n` panics (no holes) |
 | `map.keys()`, `set.values()`, `array.entries()` | iterator | array |
 | `s.charCodeAt(i)`, `s.slice(i)`, other string positions | UTF-16 code units | bytes of UTF-8 (`charCodeAt` is the byte at `i`) |
+| `Uint8Array` (`TextEncoder`, `TextDecoder`) | a typed array | `u8[]`, printed as an array |
+| `encoder.encodeInto(s, bytes).read` | UTF-16 code units | bytes of UTF-8 |
+| `m[i]` past the end of a `RegExpMatch` | `undefined` | panics, as for arrays |
 | `s.localeCompare(t)` | the locale's collation | code point order |
 | `new Array(3)` | three holes | three zero values of the element type |
 | `Set` methods `union`, `isSubsetOf`, … | take set-like objects | take sets |

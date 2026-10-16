@@ -5,6 +5,9 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `TextEncoder` and `TextDecoder` (UTF-8: `encode`, `encodeInto`, `decode`
+  with `fatal` and `ignoreBOM`) and `atob` and `btoa` (base64 of binary
+  strings), global names as in JavaScript, with `u8[]` for `Uint8Array`.
 - A `RegExpMatch` is indexed, destructured and iterated as JavaScript's
   match arrays: `m[1]`, `const [, key, value] = s.match(re)!`,
   `for (const c of m)`, over its captures (`string | null`). Assigning to

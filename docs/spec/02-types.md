@@ -475,6 +475,23 @@ type must match, and a field must be present unless its type includes
 are written in alphabetical order, fields of classes in declaration order;
 non-finite floats are written as `null`.
 
+Strings and bytes convert as with the globals of JavaScript's hosts, which
+are global names in Ore too, with `u8[]` where JavaScript has a
+`Uint8Array`. `new TextEncoder().encode(s)` is the UTF-8 bytes of `s`
+(a byte that is not valid UTF-8 as U+FFFD), and `encodeInto(s, bytes)`
+writes the whole characters that fit into `bytes` and returns
+`{ read, written }`, both in bytes. `new TextDecoder(label?, { fatal,
+ignoreBOM }?)` takes only UTF-8 (`"utf-8"`, `"utf8"`,
+`"unicode-1-1-utf-8"`; another label panics with `RangeError: The "x"
+encoding is not supported`), and `decode(bytes?)` reads them as the
+Encoding Standard does: the longest prefix of a character that is invalid
+is one U+FFFD (a panic with `fatal`) and a leading byte order mark is
+dropped unless `ignoreBOM`. `btoa(s)` is the base64 of a binary string,
+whose characters are U+0000 to U+00FF (another panics with
+`InvalidCharacterError: Invalid character`), and `atob(s)` the binary
+string of base64 text, skipping ASCII whitespace, with the padding
+optional.
+
 Numeric conversions (`i32(x)`, `f64(x)`) are type names, not namespaced
 functions.
 
