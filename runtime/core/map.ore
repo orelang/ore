@@ -4,20 +4,24 @@
 //
 // Entries are stored densely in insertion order, each a header {live, hash}
 // then the key and the value, rounded up to 8 bytes; deleted entries stay as
-// holes until the table is rebuilt. An open-addressing index holds, per
-// slot, the entry's index + 1, or 0 for an empty slot; its capacity is a
-// power of two.
+// holes until the table is rebuilt. An open-addressing index, probed
+// linearly, holds per slot the entry's index + 1 in its low 32 bits and the
+// high 32 bits of the key's hash in its high ones, or 0 for an empty slot,
+// so that probing compares keys only when their hashes nearly match; its
+// capacity is a power of two, at least twice the entries'.
 //
 // The map's header is read by generated code too (the count and the size),
 // so its layout is fixed:
 //   0 keySize, 8 valueSize, 16 entrySize, 24 hash, 32 eq, 40 entries,
 //   48 count (entries, with holes), 56 cap, 64 size (live entries),
-//   72 index, 80 indexCap, 88 keyData, 96 valueData, 104 entryData.
+//   72 index, 80 indexCap, 88 keyData, 96 valueData, 104 entryData,
+//   112 keyKind.
 // `hash` and `eq` point to closures over the compiler's functions for the
-// key type, `(env, key) => u64` and `(env, a, b) => bool`. The `gcdata` of
-// the keys, of the values and of whole entries (see `allocTyped` in gc.ore)
-// come from the compiler too, so that the collector scans entries and the
-// arrays of keys and values precisely.
+// key type, `(env, key) => u64` and `(env, a, b) => bool`. The key kind lets
+// the runtime hash and compare strings and 8-byte keys itself, without
+// calling them. The `gcdata` of the keys, of the values and of whole entries
+// (see `allocTyped` in gc.ore) come from the compiler too, so that the
+// collector scans entries and the arrays of keys and values precisely.
 
 import { allocElements } from "ore:runtime/gc"
 
@@ -35,7 +39,18 @@ const indexCapAt = 80
 const keyDataAt = 88
 const valueDataAt = 96
 const entryDataAt = 104
-const headerSize = 112
+const keyKindAt = 112
+const headerSize = 120
+
+/** Keys hashed and compared by the compiler's closures. */
+const keyOther = 0
+/** String keys, the same when their bytes are. */
+const keyString = 1
+/** 8-byte keys, such as `int` or references, the same when their bits are. */
+const keyWord = 2
+
+/** The bits of an index slot that hold the high bits of the hash. */
+const tagMask: u64 = 0xffffffff00000000
 
 /** Key and value start after the {live, hash} header of an entry. */
 const entryHeader = 16
@@ -61,13 +76,54 @@ function slotOf(m: ptr, slot: int): ptr {
 }
 
 function hashOf(m: ptr, key: ptr): u64 {
+    const kind = field(m, keyKindAt)
+    if (kind === keyString) {
+        const s = unsafe.load<string>(key)
+        return hashString(unsafe.stringData(s), s.length)
+    }
+    if (kind === keyWord) return hashU64(unsafe.load<u64>(key))
     const hash = unsafe.load<(key: ptr) => u64>(unsafe.load<ptr>(unsafe.add(m, hashAt)))
     return hash(key)
 }
 
 function equal(m: ptr, a: ptr, b: ptr): bool {
+    const kind = field(m, keyKindAt)
+    if (kind === keyString) {
+        const x = unsafe.load<string>(a)
+        const y = unsafe.load<string>(b)
+        return x.length === y.length && sameBytes(unsafe.stringData(x), unsafe.stringData(y), x.length)
+    }
+    if (kind === keyWord) return unsafe.load<u64>(a) === unsafe.load<u64>(b)
     const eq = unsafe.load<(a: ptr, b: ptr) => bool>(unsafe.load<ptr>(unsafe.add(m, eqAt)))
     return eq(a, b)
+}
+
+/**
+ * Whether the `n` bytes at `p` and `q` are the same. Keys are mostly short,
+ * so up to 16 bytes are compared in two loads of each, without memcmp; the
+ * loads may be unaligned, which the targets of Ore allow.
+ */
+function sameBytes(p: ptr, q: ptr, n: int): bool {
+    if (p === q) return true
+    if (n > 16) return unsafe.compare(p, q, n) === 0
+    if (n >= 8) {
+        const last = n - 8
+        return (
+            unsafe.load<u64>(p) === unsafe.load<u64>(q) &&
+            unsafe.load<u64>(unsafe.add(p, last)) === unsafe.load<u64>(unsafe.add(q, last))
+        )
+    }
+    return n === 0 || shortBytes(p, n) === shortBytes(q, n)
+}
+
+/** The 1 to 7 bytes at `p` in one word: two runs of `n` bytes give the same word only if they are the same. */
+function shortBytes(p: ptr, n: int): u64 {
+    if (n >= 4) return u64(unsafe.load<u32>(p)) | (u64(unsafe.load<u32>(unsafe.add(p, n - 4))) << 32)
+    return (
+        u64(unsafe.load<u8>(p)) |
+        (u64(unsafe.load<u8>(unsafe.add(p, n >> 1))) << 8) |
+        (u64(unsafe.load<u8>(unsafe.add(p, n - 1))) << 16)
+    )
 }
 
 /** A closure over a function that takes an environment it does not use. */
@@ -77,7 +133,16 @@ function closureOf(cell: ptr, fn: ptr): void {
 }
 
 //ore:runtime ore_rt_map_new
-function mapNew(keySize: int, valueSize: int, hash: ptr, eq: ptr, keyData: ptr, valueData: ptr, entryData: ptr): ptr {
+function mapNew(
+    keySize: int,
+    valueSize: int,
+    hash: ptr,
+    eq: ptr,
+    keyData: ptr,
+    valueData: ptr,
+    entryData: ptr,
+    keyKind: int,
+): ptr {
     const m = unsafe.alloc(headerSize)
     unsafe.store<ptr>(unsafe.add(m, keyDataAt), keyData)
     unsafe.store<ptr>(unsafe.add(m, valueDataAt), valueData)
@@ -85,6 +150,7 @@ function mapNew(keySize: int, valueSize: int, hash: ptr, eq: ptr, keyData: ptr, 
     setField(m, keySizeAt, keySize)
     setField(m, valueSizeAt, valueSize)
     setField(m, entrySizeAt, entryHeader + round8(keySize) + round8(valueSize))
+    setField(m, keyKindAt, keyKind)
     const closures = unsafe.alloc(32)
     closureOf(closures, hash)
     closureOf(unsafe.add(closures, 16), eq)
@@ -111,21 +177,26 @@ function mapValue(m: ptr, i: int): ptr {
 /** The slot of `key` in the index, or the empty slot where it would go. */
 function findSlot(m: ptr, key: ptr, hash: u64): int {
     const mask = field(m, indexCapAt) - 1
+    const tag = hash & tagMask
     let slot = i64(hash) & mask
     while (true) {
-        const e = unsafe.load<int>(slotOf(m, slot))
-        if (e === 0) return slot
-        const found = entry(m, e - 1)
-        // Deleted entries keep their slot, so that probing goes on past them.
-        if (
-            unsafe.load<int>(found) !== 0 &&
-            unsafe.load<u64>(unsafe.add(found, 8)) === hash &&
-            equal(m, unsafe.add(found, entryHeader), key)
-        ) {
-            return slot
+        const s = unsafe.load<u64>(slotOf(m, slot))
+        if (s === 0) return slot
+        if ((s & tagMask) === tag) {
+            const found = entry(m, i64(s & 0xffffffff) - 1)
+            // Deleted entries keep their slot, so that probing goes on past them.
+            if (unsafe.load<int>(found) !== 0 && equal(m, unsafe.add(found, entryHeader), key)) return slot
         }
         slot = (slot + 1) & mask
     }
+}
+
+/** Puts entry `i`, whose key has `hash` and is not in the index, in the first empty slot of its probe sequence. */
+function place(m: ptr, i: int, hash: u64): void {
+    const mask = field(m, indexCapAt) - 1
+    let slot = i64(hash) & mask
+    while (unsafe.load<u64>(slotOf(m, slot)) !== 0) slot = (slot + 1) & mask
+    unsafe.store<u64>(slotOf(m, slot), (hash & tagMask) | u64(i + 1))
 }
 
 /** Rebuilds the entries without holes, and the index with room for `cap` entries. */
@@ -146,33 +217,60 @@ function rebuild(m: ptr, cap: int): void {
     setField(m, indexCapAt, indexCap)
     // The index holds numbers only, so the collector need not scan it.
     unsafe.store<ptr>(unsafe.add(m, indexAt), unsafe.allocBytes(indexCap * 8))
-    const mask = indexCap - 1
-    for (let i = 0; i < count; i++) {
-        let slot = i64(unsafe.load<u64>(unsafe.add(entry(m, i), 8))) & mask
-        while (unsafe.load<int>(slotOf(m, slot)) !== 0) slot = (slot + 1) & mask
-        unsafe.store<int>(slotOf(m, slot), i + 1)
-    }
+    for (let i = 0; i < count; i++) place(m, i, unsafe.load<u64>(unsafe.add(entry(m, i), 8)))
+}
+
+/** The address of the value of the entry that the index slot `s` points to, or null for an empty slot. */
+function valueAt(m: ptr, s: u64): ptr {
+    return s === 0 ? unsafe.fromInt(0) : mapValue(m, i64(s & 0xffffffff) - 1)
 }
 
 /** The address of the value of `key`, or null. */
 //ore:runtime ore_rt_map_get
 function mapGet(m: ptr, key: ptr): ptr {
     if (field(m, sizeAt) === 0) return unsafe.fromInt(0)
-    const e = unsafe.load<int>(slotOf(m, findSlot(m, key, hashOf(m, key))))
-    return e === 0 ? unsafe.fromInt(0) : mapValue(m, e - 1)
+    return valueAt(m, unsafe.load<u64>(slotOf(m, findSlot(m, key, hashOf(m, key)))))
+}
+
+/**
+ * The address of the value of `key`, or null, with the hash of the key
+ * stored at `hash`: the first half of `map.set(key, f(map.get(key)))`, which
+ * hashes the key and probes for it once; `mapPut` is the second half.
+ */
+//ore:runtime ore_rt_map_find
+function mapFind(m: ptr, key: ptr, hash: ptr): ptr {
+    const h = hashOf(m, key)
+    unsafe.store<u64>(hash, h)
+    if (field(m, sizeAt) === 0) return unsafe.fromInt(0)
+    return valueAt(m, unsafe.load<u64>(slotOf(m, findSlot(m, key, h))))
+}
+
+/**
+ * Sets the value of `key`, whose hash is `hash`, to the one at `value`: at
+ * `at`, the address `mapFind` gave, or in a new entry when that was null.
+ * The map must not have changed in between.
+ */
+//ore:runtime ore_rt_map_put
+function mapPut(m: ptr, key: ptr, hash: u64, at: ptr, value: ptr): void {
+    if (unsafe.toInt(at) !== 0) unsafe.copy(at, value, field(m, valueSizeAt))
+    else append(m, key, hash, value)
 }
 
 //ore:runtime ore_rt_map_set
 function mapSet(m: ptr, key: ptr, value: ptr): void {
     const hash = hashOf(m, key)
-    const valueSize = field(m, valueSizeAt)
-    if (field(m, indexCapAt) > 0) {
-        const e = unsafe.load<int>(slotOf(m, findSlot(m, key, hash)))
-        if (e !== 0) {
-            unsafe.copy(mapValue(m, e - 1), value, valueSize)
+    if (field(m, sizeAt) > 0) {
+        const at = valueAt(m, unsafe.load<u64>(slotOf(m, findSlot(m, key, hash))))
+        if (unsafe.toInt(at) !== 0) {
+            unsafe.copy(at, value, field(m, valueSizeAt))
             return
         }
     }
+    append(m, key, hash, value)
+}
+
+/** Adds an entry for `key`, which has `hash` and is not in the map. */
+function append(m: ptr, key: ptr, hash: u64, value: ptr): void {
     const cap = field(m, capAt)
     if (field(m, countAt) === cap) {
         // Full: drop the holes of deleted entries if they are many, else grow.
@@ -185,8 +283,8 @@ function mapSet(m: ptr, key: ptr, value: ptr): void {
     unsafe.store<int>(e, 1)
     unsafe.store<u64>(unsafe.add(e, 8), hash)
     unsafe.copy(unsafe.add(e, entryHeader), key, field(m, keySizeAt))
-    unsafe.copy(mapValue(m, i), value, valueSize)
-    unsafe.store<int>(slotOf(m, findSlot(m, key, hash)), i + 1)
+    unsafe.copy(mapValue(m, i), value, field(m, valueSizeAt))
+    place(m, i, hash)
     setField(m, sizeAt, field(m, sizeAt) + 1)
 }
 
@@ -205,9 +303,9 @@ function mapAddKeys(m: ptr, a: ptr): void {
 //ore:runtime ore_rt_map_delete
 function mapDelete(m: ptr, key: ptr): bool {
     if (field(m, sizeAt) === 0) return false
-    const e = unsafe.load<int>(slotOf(m, findSlot(m, key, hashOf(m, key))))
-    if (e === 0) return false
-    unsafe.store<int>(entry(m, e - 1), 0)
+    const s = unsafe.load<u64>(slotOf(m, findSlot(m, key, hashOf(m, key))))
+    if (s === 0) return false
+    unsafe.store<int>(entry(m, i64(s & 0xffffffff) - 1), 0)
     setField(m, sizeAt, field(m, sizeAt) - 1)
     return true
 }
@@ -265,9 +363,27 @@ function hashU64(value: u64): u64 {
 
 //ore:runtime ore_rt_hash_bytes
 function hashBytes(p: ptr, n: int): u64 {
-    // FNV-1a, then mixed.
-    let h: u64 = 0xcbf29ce484222325
-    for (let i = 0; i < n; i++) h = (h ^ u64(unsafe.load<u8>(unsafe.add(p, i)))) * 0x100000001b3
+    return hashString(p, n)
+}
+
+/**
+ * The hash of `n` bytes: the length, then each 8 bytes multiplied into the
+ * state and folded, the last 1 to 8 read in one or two loads that may overlap
+ * the others, then the splitmix64 finalizer. The loads may be unaligned,
+ * which the targets of Ore allow.
+ */
+function hashString(p: ptr, n: int): u64 {
+    let h: u64 = 0x243f6a8885a308d3 ^ (u64(n) * 0x9e3779b97f4a7c15)
+    if (n > 8) {
+        let i = 0
+        while (i + 8 < n) {
+            h = (h ^ unsafe.load<u64>(unsafe.add(p, i))) * 0xbf58476d1ce4e5b9
+            h = h ^ (h >> 31)
+            i += 8
+        }
+        h = h ^ unsafe.load<u64>(unsafe.add(p, n - 8))
+    } else if (n === 8) h = h ^ unsafe.load<u64>(p)
+    else if (n > 0) h = h ^ shortBytes(p, n)
     return hashU64(h)
 }
 

@@ -5,8 +5,10 @@ import {
     type ArrayMethod,
     type BuiltinCall,
     type ChanOp,
+    type Expr,
     type Itab,
     type ItabAccessor,
+    type Local,
     type MapOp,
     type SetOp,
 } from "../ir/nodes"
@@ -24,7 +26,7 @@ import {
 } from "../ir/types"
 import { callClosure, helper, toStr, virtualThunk } from "./calls"
 import { ARRAY, FN, MAP, STR } from "./context"
-import { Emitter } from "./base"
+import { Emitter, FusedGet } from "./base"
 import {
     choose,
     compare,
@@ -552,6 +554,21 @@ export function naturalOrder(g: Emitter, type: Type): string {
     return name
 }
 
+/**
+ * How the runtime hashes and compares the keys of a map (see map.ore): 1 for
+ * strings by their bytes, 2 for 8-byte keys by their bits (64-bit integers and
+ * references compared by identity), 0 for the others, through the functions
+ * of `keyFunctions`.
+ */
+export function keyKind(g: Emitter, key: Type): string {
+    if (isStringLike(key) || (key.kind === "union" && unionRepr(key).k === "strings")) return "1"
+    if (key.kind === "int" && key.bits === 64) return "2"
+    const k = key.kind
+    if (k === "struct" || k === "array" || k === "map" || k === "set" || k === "chan" || k === "ptr")
+        return g.mt(key) === "ptr" ? "2" : "0"
+    return "0"
+}
+
 /** The hash and equality functions of a map key type: `{ hash, eq }` in TypeScript. */
 export type KeyFunctions = { hash: string; eq: string }
 
@@ -666,6 +683,7 @@ export function mapOp(g: Emitter, e: MapOp): V {
                 elementData(g, kt),
                 elementData(g, vt),
                 entryData(g, kt, vt),
+                { ty: "i64", v: keyKind(g, K) },
             ])
             // With entries: an array of [key, value] tuples, set in order.
             const entries = e.value
@@ -737,7 +755,11 @@ export function mapOp(g: Emitter, e: MapOp): V {
     switch (e.op) {
         case "get": {
             const result = unionOf(e.type)
-            const p = g.rt("ore_rt_map_get", [m, key])
+            const fused = g.fused
+            const p =
+                fused !== null && isLocal(map, fused.map) && isLocal(keyExpr, fused.key)
+                    ? fused.at
+                    : g.rt("ore_rt_map_get", [m, key])
             const found = g.b.value("i1", `icmp ne ptr ${p.v}, null`)
             return choose(
                 g,
@@ -751,6 +773,18 @@ export function mapOp(g: Emitter, e: MapOp): V {
             const v = g.b.alloca(vt)
             const value = e.value
             if (value === null) process.panic("map.set without a value")
+            if (map.k === "local" && keyExpr.k === "local" && keyReads(value, map.local, keyExpr.local) > 0) {
+                // The key is hashed and looked up once, for the reads and the update.
+                const hash = g.b.alloca("i64")
+                const at = g.rt("ore_rt_map_find", [m, key, { ty: "ptr", v: hash }])
+                const outer = g.fused
+                g.fused = new FusedGet(map.local, keyExpr.local, at)
+                g.store(expr(g, value), v, valueType)
+                g.fused = outer
+                const h: V = g.b.value("i64", `load i64, ptr ${hash}`)
+                g.rt("ore_rt_map_put", [m, key, h, at, { ty: "ptr", v }])
+                return m
+            }
             g.store(expr(g, value), v, valueType)
             g.rt("ore_rt_map_set", [m, key, { ty: "ptr", v }])
             return m
@@ -760,6 +794,67 @@ export function mapOp(g: Emitter, e: MapOp): V {
         default:
             return g.rtBool("ore_rt_map_delete", [m, key])
     }
+}
+
+/** Whether `e` reads the local `local`. */
+function isLocal(e: Expr, local: Local): bool {
+    return e.k === "local" && e.local === local
+}
+
+/**
+ * How many times `e` reads `map.get(key)`, or -1 when it does anything but
+ * that, reading locals and constants, and computing with them: then `map`
+ * cannot change while `e` is evaluated, and `map.set(key, e)` may look the
+ * key up once, before `e`.
+ */
+function keyReads(e: Expr, map: Local, key: Local): int {
+    switch (e.k) {
+        case "int":
+            return 0
+        case "float":
+            return 0
+        case "bool":
+            return 0
+        case "string":
+            return 0
+        case "null":
+            return 0
+        case "local":
+            return 0
+        case "arith":
+            return both(keyReads(e.left, map, key), keyReads(e.right, map, key))
+        case "compare":
+            return both(keyReads(e.left, map, key), keyReads(e.right, map, key))
+        case "logical":
+            return both(keyReads(e.left, map, key), keyReads(e.right, map, key))
+        case "coalesce":
+            return both(keyReads(e.value, map, key), keyReads(e.fallback, map, key))
+        case "cond":
+            return both(keyReads(e.cond, map, key), both(keyReads(e.then, map, key), keyReads(e.else, map, key)))
+        case "unary":
+            return keyReads(e.operand, map, key)
+        case "not":
+            return keyReads(e.operand, map, key)
+        case "convert":
+            return keyReads(e.value, map, key)
+        case "recast":
+            return keyReads(e.value, map, key)
+        case "is-null":
+            return keyReads(e.value, map, key)
+        case "map": {
+            const m = e.map
+            const k = e.key
+            if (e.op === "get" && m !== null && k !== null && isLocal(m, map) && isLocal(k, key)) return 1
+            return -1
+        }
+        default:
+            return -1
+    }
+}
+
+/** The reads of two parts of an expression, or -1 when either has other effects. */
+function both(a: int, b: int): int {
+    return a < 0 || b < 0 ? -1 : a + b
 }
 
 /** A set is a map whose values take no bytes. */
@@ -778,6 +873,7 @@ export function setOp(g: Emitter, e: SetOp): V {
                 elementData(g, t),
                 { ty: "ptr", v: "null" },
                 entryData(g, t, ""),
+                { ty: "i64", v: keyKind(g, T) },
             ])
             const values = e.value
             if (values !== null) g.rt("ore_rt_map_add_keys", [s, expr(g, values)])

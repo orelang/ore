@@ -26,6 +26,21 @@ import { boxed } from "./helpers"
 import { cString, FnBuilder, globalName, intConstant, sizeOf, voidValue, type V } from "./ll"
 import { fnvHex, StableNames } from "./names"
 
+/**
+ * `map.set(key, value)` where `value` reads `map.get(key)` and does nothing
+ * else but read locals and compute, as in `map.set(key, (map.get(key) ?? 0) + 1)`:
+ * the map and the key are locals, and `at` is the address of the key's value
+ * (or null) that `ore_rt_map_find` gave, which those reads load instead of
+ * looking the key up again.
+ */
+export class FusedGet {
+    constructor(
+        readonly map: Local,
+        readonly key: Local,
+        readonly at: V,
+    ) {}
+}
+
 /** The saved state of the function being emitted, while a helper is emitted. */
 export class Saved {
     constructor(
@@ -105,6 +120,9 @@ export class Emitter {
     disposals: Disposal[] = []
 
     frame: string | null = null
+
+    /** While the value of `map.set(key, value)` that reads `map.get(key)` is emitted: see `FusedGet`. */
+    fused: FusedGet | null = null
 
     constructor(
         public module: Module,
