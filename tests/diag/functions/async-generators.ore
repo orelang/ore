@@ -1,0 +1,31 @@
+// Async generators and `for await`: their types and where they are allowed.
+
+async function* promised(): Promise<int> {} // error: The return type of an async generator function must be 'AsyncGenerator<T, TReturn, TNext>', 'AsyncIterator<T>' or 'AsyncIterableIterator<T>', not 'Promise<i64>'.
+
+async function* letters(): AsyncGenerator<string> {
+    yield "a"
+}
+
+async function* numbers(): AsyncGenerator<int> {
+    yield* letters() // error: 'yield*' takes a generator of the same value and next types: 'i64' and 'null'.
+    yield* ["a"] // error: 'yield*' yields values of type 'string', which type 'i64' does not include.
+    yield "b" // error: Type 'string' is not assignable to type 'i64'.
+}
+
+function* plain(): Generator<int> {
+    for await (const n of numbers()) yield n // error: 'for await' is only allowed in async functions and in the top-level code of a module.
+}
+
+function sync() {
+    for await (const n of [1, 2]) console.log(n) // error: 'for await' is only allowed in async functions and in the top-level code of a module.
+}
+
+class Bag {
+    items: string[] = []
+}
+
+async function read() {
+    for await (const item of new Bag()) console.log(item) // error: Type 'Bag' is not async iterable: it needs a '[Symbol.asyncIterator]()' method whose iterator's 'next()' returns a promise of an 'IteratorResult', or a '[Symbol.iterator]()' method.
+    for (const n of numbers()) console.log(n) // error: Type 'AsyncGenerator<i64, null, null>' is not iterable: it needs a '[Symbol.iterator]()' method.
+    console.log(await Array.fromAsync(new Bag())) // error: Type 'Bag' is not async iterable: it needs a '[Symbol.asyncIterator]()' method whose iterator's 'next()' returns a promise of an 'IteratorResult', or a '[Symbol.iterator]()' method.
+}

@@ -5,6 +5,11 @@
 // `[Symbol.iterator]()` makes an iterator of the runtime, see
 // `builtinIteratorOf`); a generator is advanced by its `advance()` and
 // `current()`, without the result objects of `next()`.
+//
+// `for await` over values with a `[Symbol.asyncIterator]()` method, whose
+// iterator's `next()` returns a promise of an `IteratorResult`, or over any
+// other iterable, whose values it awaits with the ticks of JavaScript's
+// async-from-sync iterator (see "ore:runtime/iterator-async").
 
 import {
     type Expr,
@@ -37,10 +42,11 @@ import {
 } from "../ir/nodes"
 import { type Type, arrayOf, findField, findMethod, isStringLike, sameType, types, typeToString } from "../ir/types"
 import { type Node } from "../syntax/ast"
+import { awaitExpr, promiseValue } from "./async"
 import { type Checker } from "./base"
 import { dispatch } from "./classes"
-import { isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
-import { iteratorName, typed } from "./helpers"
+import { asyncIteratorFunc, isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
+import { asyncIteratorName, iteratorName, typed } from "./helpers"
 import { symbolMethodCall } from "./statements"
 
 /** A `next()` call on an iterator, of a struct or an interface type. */
@@ -282,4 +288,177 @@ function loopOf(id: int, labeled: bool, first: Stmt[], prologue: Stmt[], body: S
     for (const s of prologue) all.push(s)
     all.push(body)
     return new LoopStmt(id, labeled, false, new Block(all))
+}
+
+/** How `for await` iterates a value: what `asyncSource` tells. */
+export class AsyncSource {
+    constructor(
+        /**
+         * The iterator: an async generator, another async iterator, or the
+         * iterator of an iterable that is not async.
+         */
+        readonly iterator: Expr,
+        /** The type of the values, awaited. */
+        readonly elem: Type,
+        /** Whether the iterator is not async: its values, or the values of its promises, are awaited one by one. */
+        readonly sync: bool,
+        /** Of an iterator that is not async: whether its values are promises. */
+        readonly promises: bool,
+    ) {}
+}
+
+/** Whether a class or interface type has a method `name` without parameters. */
+function hasMethod(type: Type, name: string): bool {
+    if (type.kind === "struct") {
+        const m = findMethod(type, name)
+        return m !== null && m.func.params.length === 0
+    }
+    if (type.kind === "interface") for (const m of type.members) if (m.name === name && m.k === "method") return true
+    return false
+}
+
+/**
+ * The type of the values of an async iterator, whose `next()` returns a
+ * promise of an `IteratorResult`; null for any other type.
+ */
+function asyncIteratorValue(c: Checker, iterator: Type): Type | null {
+    const generator = iteratorInstance(c, iterator, "AsyncGenerator")
+    if (generator !== null) return generator[0]
+    let result: Type | null = null
+    if (iterator.kind === "struct") {
+        const m = findMethod(iterator, "next")
+        if (m !== null && m.func.params.length === 0) result = m.func.type.result
+    } else if (iterator.kind === "interface") {
+        for (const m of iterator.members) if (m.name === "next" && m.k === "method") result = m.type.result
+    }
+    const resolved = result !== null ? promiseValue(c, result) : null
+    if (resolved === null) return null
+    const member = notDone(resolved)
+    if (member === null || member.kind !== "struct") return null
+    return findField(member, "value")!.type
+}
+
+/**
+ * How `for await`, `yield*` in an async generator and `Array.fromAsync`
+ * iterate `value`: by its `[Symbol.asyncIterator]()` (an async generator is
+ * its own iterator), whose `next()` returns a promise of an
+ * `IteratorResult`; else as `for...of` does, each value awaited, the value of
+ * a promise for a promise. Reports a value that is neither.
+ */
+export function asyncSource(c: Checker, value: Expr, node: Node): AsyncSource | null {
+    const type = value.type
+    const generator = iteratorInstance(c, type, "AsyncGenerator")
+    if (generator !== null) return new AsyncSource(value, generator[0], false, false)
+    if (hasMethod(type, asyncIteratorName)) {
+        const call = symbolMethodCall(c, value, asyncIteratorName)
+        if (call === null) return null
+        const elem = asyncIteratorValue(c, call.type)
+        if (elem !== null) return new AsyncSource(call, elem, false, false)
+    } else if (
+        isStringLike(type) ||
+        (type.kind === "union" && type.members.every(isStringLike)) ||
+        type.kind === "array" ||
+        type.kind === "set" ||
+        (type.kind === "map" && !type.dict) ||
+        iteratorInstance(c, type, "Generator") !== null ||
+        isIteratorObject(c, type) ||
+        hasMethod(type, iteratorName)
+    ) {
+        const iterator = iteratorOf(c, value, node)
+        if (iterator === null) return null
+        const elem = iteratorValue(c, iterator.type)!
+        const awaited = promiseValue(c, elem)
+        if (awaited !== null) return new AsyncSource(iterator, awaited, true, true)
+        if (elem.kind === "union" && elem.members.some((m) => promiseValue(c, m) !== null)) {
+            c.error(node, "A union of promises and other values cannot be awaited yet.")
+            return null
+        }
+        return new AsyncSource(iterator, elem, true, false)
+    }
+    c.error(
+        node,
+        `Type '${typeToString(type)}' is not async iterable: it needs a '[Symbol.asyncIterator]()' method whose iterator's 'next()' returns a promise of an 'IteratorResult', or a '[Symbol.iterator]()' method.`,
+    )
+    return null
+}
+
+/**
+ * `for await (const x of iterable)` over the iterator of `source`, with the
+ * loop variable `local` (or the hidden one of a pattern) and the statements
+ * that unpack it, `prologue`, before the body: each step awaits the promise
+ * of `next()`, or, of an iterator that is not async, awaits its value as
+ * JavaScript's async-from-sync iterator does, until it is done. When the
+ * loop is left early, it awaits the iterator's `return()` if it has one
+ * without arguments (an async generator's `close()`); of an iterator that is
+ * not async, it calls its `return()` (a generator's `close()`) and waits as
+ * the async-from-sync iterator does.
+ */
+export function asyncLoop(
+    c: Checker,
+    source: AsyncSource,
+    local: Local,
+    id: int,
+    labeled: bool,
+    prologue: Stmt[],
+    body: Stmt,
+    node: Node,
+): Stmt | null {
+    const iterator = source.iterator
+    const itLocal = c.newLocal("iterator", iterator.type, false)
+    const it: Expr = new LocalRef(iterator.type, itLocal)
+    const call = nextCall(c, it)
+    if (call === null) return null
+    const next = source.sync ? call : awaitExpr(c, call, node)
+    if (next === null) return null
+    const member = notDone(next.type)
+    if (member === null || member.kind !== "struct") return null
+    const resultLocal = c.newLocal("result", next.type, false)
+    const result: Expr = new LocalRef(next.type, resultLocal)
+    const doneLocal = c.newLocal("done", types.bool, true)
+    const first: Stmt[] = [new LetStmt(resultLocal, next)]
+    const finished: Stmt[] = []
+    if (source.sync) {
+        const f = asyncIteratorFunc(c, "awaitStepDone", [], node)
+        if (f === null) return null
+        finished.push(new ExprStmt(new Call(types.void, f, [])))
+    }
+    finished.push(new ExprStmt(new Assign(types.bool, new LocalLValue(doneLocal), new BoolLit(types.bool, true))))
+    finished.push(new BreakStmt())
+    first.push(new IfStmt(new UnionField(types.bool, result, "done"), new Block(finished)))
+    const memberValue = findField(member, "value")!.type
+    let value: Expr = new FieldGet(memberValue, new Recast(member, result), "value")
+    if (source.sync) {
+        const step = source.promises ? "awaitPromiseStep" : "awaitStep"
+        const f = asyncIteratorFunc(c, step, [local.type], node)
+        if (f === null) return null
+        value = new Call(local.type, f, [value])
+    }
+    first.push(new LetStmt(local, value))
+    // What ends the iterator when the loop is left early.
+    const generator =
+        iteratorInstance(c, iterator.type, "AsyncGenerator") !== null ||
+        iteratorInstance(c, iterator.type, "Generator") !== null
+    let closing = symbolMethodCall(c, it, generator ? "close" : "return")
+    const returns = closing !== null
+    if (closing === null && source.sync && isIteratorObject(c, iterator.type))
+        closing = symbolMethodCall(c, it, "close")
+    const ending: Stmt[] = []
+    if (closing !== null) {
+        if (source.sync || closing.type.kind === "void") ending.push(new ExprStmt(closing))
+        else {
+            const awaited = awaitExpr(c, closing, node)
+            if (awaited === null) return null
+            ending.push(new ExprStmt(awaited))
+        }
+    }
+    if (source.sync) {
+        const f = asyncIteratorFunc(c, "awaitStepClose", [], node)
+        if (f === null) return null
+        ending.push(new ExprStmt(new Call(types.void, f, [new BoolLit(types.bool, returns)])))
+    }
+    const loop = loopOf(id, labeled, first, prologue, body)
+    const doneInit: Stmt = new LetStmt(doneLocal, new BoolLit(types.bool, false))
+    if (ending.length === 0) return new Block([doneInit, new LetStmt(itLocal, iterator), loop])
+    const dispose: Stmt = new IfStmt(new Not(types.bool, new LocalRef(types.bool, doneLocal)), new Block(ending))
+    return new Block([doneInit, new UsingStmt(itLocal, iterator, dispose, [loop])])
 }

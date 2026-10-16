@@ -1,0 +1,355 @@
+//ore:internal
+// Async iteration, as in JavaScript: async generators, the protocol of
+// `for await`, and `Array.fromAsync`.
+//
+// `for await` takes a value with a `[Symbol.asyncIterator]()` method, whose
+// iterator's `next()` returns a promise of an `IteratorResult`, or else any
+// iterable of `for...of`, whose values (or the values of its promises) it
+// awaits, as JavaScript's async-from-sync iterator does, with its ticks:
+// `awaitStep` and the functions after it. The interfaces `AsyncIterator`,
+// `AsyncIterable` and `AsyncIterableIterator` and the class `AsyncGenerator`
+// are global names.
+//
+// An async generator runs its body on a fiber of its own, as a generator
+// does (iterator.ore), and awaits there as an async function does
+// (promise.ore). Its `next`, `return` and `close` queue a request and return
+// a promise of its result; the body takes the requests in order, one at each
+// `yield` and one at its end, so that the promises settle as those of the
+// AsyncGeneratorQueue of the ECMAScript specification do, tick for tick:
+// `yield value` and `return value` await the value first (the compiler
+// writes the `await`), a `return` request awaits its value, and the requests
+// left when the body ends are done one after the other.
+
+import { awaitPromise, awaitValue } from "ore:runtime/promise"
+import { post } from "ore:runtime/loop"
+import { type Task, endFiber, handBack, handTo, newFiber, onLoop } from "ore:runtime/task"
+
+/** An object that produces promises of values one at a time with `next()`. */
+export interface AsyncIterator<T, TReturn = void, TNext = null> {
+    next(): Promise<IteratorResult<T, TReturn>>
+}
+
+/** An object that `for await` takes: its `[Symbol.asyncIterator]()` makes an async iterator. */
+export interface AsyncIterable<T> {
+    [Symbol.asyncIterator](): AsyncIterator<T>
+}
+
+/** An async iterator that is async iterable too, whose `[Symbol.asyncIterator]()` returns itself, as async generators. */
+export interface AsyncIterableIterator<T, TReturn = void, TNext = null> {
+    next(): Promise<IteratorResult<T, TReturn>>
+    [Symbol.asyncIterator](): AsyncIterableIterator<T, TReturn, TNext>
+}
+
+/** A pending promise, resolved by its owner. */
+function pending<T>(): Promise<T> {
+    return new Promise<T>((resolve) => {})
+}
+
+/** A promise fulfilled with `value`, which is no promise: what JavaScript's PromiseResolve makes of it. */
+function fulfilled<T>(value: T): Promise<T> {
+    const p = pending<T>()
+    p.resolveWith(value)
+    return p
+}
+
+const asyncStart = 0
+const asyncYield = 1
+const asyncRunning = 2
+const asyncReturning = 3
+const asyncDone = 4
+
+/** A call of `next`, `return` or `close` of an async generator, queued until the generator gets to it. */
+export class AsyncRequest<T, TReturn, TNext> {
+    constructor(
+        /** A `return(value)` or `close()`, which ends the generator. */
+        readonly returning: bool,
+        /** The value of `next(value)`: one element, or none. */
+        readonly sent: TNext[],
+        /** The value of `return(value)`: one element, or none for `close()`. */
+        readonly returned: TReturn[],
+        /** The promise that `next` and `return` return; null for `close()`. */
+        readonly result: Promise<IteratorResult<T, TReturn>> | null,
+        /** The promise that `close()` returns; null for the others. */
+        readonly closed: Promise<null> | null,
+    ) {}
+}
+
+/**
+ * The object an async generator function returns: `next()` returns a
+ * promise of the value of the body's next `yield` (`done: false`) or of its
+ * end (`done: true`); `next(value)` also makes `value` the result of the
+ * `yield` the body waits at. Calls made before the body gets to them wait in
+ * a queue, in order.
+ */
+export class AsyncGenerator<T, TReturn = void, TNext = null> {
+    /** The fiber of the body, from the first `next()` until it ends. */
+    private fiber: Task | null = null
+    private state = asyncStart
+    /** The calls not answered yet, the one the body works for first. */
+    private queue: AsyncRequest<T, TReturn, TNext>[] = []
+    /** What the body returned, or what `return(value)` gave: one element once done. */
+    private returned: TReturn[] = []
+
+    constructor(
+        private readonly body: (generator: AsyncGenerator<T, TReturn, TNext>) => TReturn,
+        /** The value of a generator that is done without one: null when TReturn has it, else none. */
+        private readonly closedValue: TReturn[],
+    ) {}
+
+    /** A promise of the body's next `yield` (`done: false`) or of its end (`done: true`). */
+    next(): Promise<IteratorResult<T, TReturn>> {
+        const out = pending<IteratorResult<T, TReturn>>()
+        this.request(new AsyncRequest<T, TReturn, TNext>(false, [], [], out, null))
+        return out
+    }
+
+    /** `next(value)`: `value` is the result of the `yield` that the body waits at. */
+    send(value: TNext): Promise<IteratorResult<T, TReturn>> {
+        const out = pending<IteratorResult<T, TReturn>>()
+        this.request(new AsyncRequest<T, TReturn, TNext>(false, [value], [], out, null))
+        return out
+    }
+
+    /**
+     * Ends the generator, as if its body returned `value` at the `yield`
+     * where it waits, and returns a promise of `{ value, done: true }`. A
+     * generator that has not started never runs.
+     */
+    return(value: TReturn): Promise<IteratorResult<T, TReturn>> {
+        const out = pending<IteratorResult<T, TReturn>>()
+        this.request(new AsyncRequest<T, TReturn, TNext>(true, [], [value], out, null))
+        return out
+    }
+
+    /**
+     * Ends the generator as `return()` without a value does: what `for
+     * await` awaits when it leaves early, as JavaScript calls `return()`.
+     */
+    close(): Promise<null> {
+        const out = pending<null>()
+        this.request(new AsyncRequest<T, TReturn, TNext>(true, [], [], null, out))
+        return out
+    }
+
+    /** The generator itself. */
+    [Symbol.asyncIterator](): AsyncIterableIterator<T, TReturn, TNext> {
+        return this
+    }
+
+    /** Queues a call: AsyncGenerator.prototype.next and return. */
+    private request(r: AsyncRequest<T, TReturn, TNext>): void {
+        if (!onLoop()) {
+            post(() => this.request(r))
+            return
+        }
+        if (this.state === asyncDone && !r.returning) {
+            // Once done, `next` is done at once.
+            r.result!.resolveWith(this.doneResult())
+            return
+        }
+        this.queue.push(r)
+        if (r.returning) {
+            if (this.state === asyncStart || this.state === asyncDone) {
+                this.state = asyncReturning
+                this.awaitReturn()
+            } else if (this.state === asyncYield) {
+                this.resume()
+            }
+        } else if (this.state === asyncStart || this.state === asyncYield) {
+            this.resume()
+        }
+    }
+
+    /** Runs the body until it awaits, yields or ends, for the first request of the queue. */
+    private resume(): void {
+        if (this.state === asyncStart) {
+            this.fiber = newFiber(() => {
+                const value: TReturn = this.body(this)
+                this.fiber = null
+                this.complete([value])
+                endFiber()
+            })
+        }
+        this.state = asyncRunning
+        handTo(this.fiber!)
+    }
+
+    /** `{ value, done: true }` for a `next` after the end: null when TReturn has it, as JavaScript's undefined. */
+    private doneResult(): IteratorResult<T, TReturn> {
+        if (this.closedValue.length > 0) return { value: this.closedValue[0], done: true }
+        if (this.returned.length === 0) process.panic("TypeError: Generator ended early without a return value")
+        return { value: this.returned[0], done: true }
+    }
+
+    /** The generator is done, with the value of its end (none for `close()`): answers the first request, then the others. */
+    private complete(value: TReturn[]): void {
+        this.state = asyncDone
+        if (value.length > 0) this.returned = value
+        this.answerDone(value)
+        this.drain()
+    }
+
+    /** Answers the first request with the end of the generator. */
+    private answerDone(value: TReturn[]): void {
+        const r = this.queue.shift()
+        const closed = r.closed
+        if (closed !== null) {
+            closed.resolveWith(null)
+            return
+        }
+        if (value.length > 0) r.result!.resolveWith({ value: value[0], done: true })
+        else r.result!.resolveWith(this.doneResult())
+    }
+
+    /** AsyncGeneratorDrainQueue: the requests left once done, each done, until a `return`, which awaits its value. */
+    private drain(): void {
+        while (this.queue.length > 0) {
+            if (this.queue[0].returning) {
+                this.state = asyncReturning
+                this.awaitReturn()
+                return
+            }
+            this.answerDone([])
+        }
+    }
+
+    /** AsyncGeneratorAwaitReturn: a `return` of a generator not running awaits its value, then is done. */
+    private awaitReturn(): void {
+        const value = this.queue[0].returned
+        if (value.length > 0) {
+            const p = fulfilled<TReturn>(value[0])
+            p.react(() => this.complete([p.valueOf()]))
+        } else {
+            fulfilled<null>(null).react(() => this.complete([]))
+        }
+    }
+
+    /**
+     * AsyncGeneratorYield of the body, for a value awaited already: answers
+     * the first request with it, waits for the next request unless one is
+     * queued, and returns it. The value of a `return` request is awaited,
+     * as AsyncGeneratorUnwrapYieldResumption does.
+     */
+    yieldStep(value: T): AsyncRequest<T, TReturn, TNext> {
+        const r = this.queue.shift()
+        r.result!.resolveWith({ value, done: false })
+        if (this.queue.length === 0) {
+            this.state = asyncYield
+            handBack()
+        }
+        const next = this.queue[0]
+        if (next.returning) {
+            if (next.returned.length > 0) awaitValue(next.returned[0])
+            else awaitValue<null>(null)
+        }
+        return next
+    }
+
+    /**
+     * `yield value` in the body, the value awaited already: hands it to the
+     * first request and returns the value of the `next` that resumes the
+     * body (null when it gave none). A `return` ends the body here.
+     */
+    yieldValue(value: T): TNext | null {
+        const r = this.yieldStep(value)
+        if (r.returning) this.end(r.returned)
+        return r.sent.length > 0 ? r.sent[0] : null
+    }
+
+    /** Ends the body at a `yield` that a `return` resumed: done with its value (none for `close()`). */
+    end(value: TReturn[]): void {
+        this.fiber = null
+        this.complete(value)
+        endFiber()
+    }
+}
+
+/** An async generator whose body is `body`, given the generator for its `yield`s: what an async generator function returns. */
+export function asyncGenerator<T, TReturn, TNext>(
+    body: (generator: AsyncGenerator<T, TReturn, TNext>) => TReturn,
+    closedValue: TReturn[],
+): AsyncGenerator<T, TReturn, TNext> {
+    return new AsyncGenerator<T, TReturn, TNext>(body, closedValue)
+}
+
+/**
+ * `yield* inner` of an async generator in the body of `self`: yields its
+ * values, passes on what `next` sends, returns its result. A `return` of
+ * `self` while it waits ends `inner` first.
+ */
+export function delegateAsync<T, R, TReturn, TNext>(
+    self: AsyncGenerator<T, TReturn, TNext>,
+    inner: AsyncGenerator<T, R, TNext>,
+): R {
+    let sent: TNext[] = []
+    while (true) {
+        const r = awaitPromise(sent.length > 0 ? inner.send(sent[0]) : inner.next())
+        if (r.done) return r.value
+        const request = self.yieldStep(r.value)
+        if (request.returning) {
+            awaitPromise(inner.close())
+            self.end(request.returned)
+        }
+        sent = request.sent
+    }
+}
+
+/**
+ * `yield* iterable` of any other value that `for await` takes, in the body
+ * of `self`: yields its values. A `return` of `self` while it waits leaves
+ * the loop, which ends the iterable's iterator, then ends `self`.
+ */
+export function delegateIterable<R, T, TReturn, TNext>(self: AsyncGenerator<T, TReturn, TNext>, iterable: R): void {
+    let ending: AsyncRequest<T, TReturn, TNext>[] = []
+    for await (const value of iterable) {
+        const request = self.yieldStep(value)
+        if (request.returning) {
+            ending = [request]
+            break
+        }
+    }
+    if (ending.length > 0) self.end(ending[0].returned)
+}
+
+/**
+ * `Array.fromAsync(items)`: a promise of the values of anything `for await`
+ * takes, in an array, each awaited in turn.
+ */
+export async function fromAsync<R, E>(items: R): Promise<E[]> {
+    const out: E[] = []
+    for await (const value of items) out.push(value)
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// `for await` over an iterable that is not async
+//
+// JavaScript wraps its iterator in an async-from-sync iterator, whose
+// `next()` returns a promise that a `then` of the value's promise (the
+// value itself when it is one, else a fulfilled one) resolves, which `for
+// await` awaits: two ticks after the value is there. Its `return()`, when
+// the loop is left early, calls the iterator's own `return()` and takes two
+// ticks too, or one when the iterator has none.
+
+/** The value of one step: two ticks. */
+export function awaitStep<T>(value: T): T {
+    return awaitPromiseStep<T>(fulfilled<T>(value))
+}
+
+/** The value of one step whose value is a promise: two ticks once it is fulfilled. */
+export function awaitPromiseStep<T>(promise: Promise<T>): T {
+    const out = pending<T>()
+    promise.react(() => out.resolveWith(promise.valueOf()))
+    return awaitPromise(out)
+}
+
+/** The last step, which is done: two ticks. */
+export function awaitStepDone(): void {
+    awaitStep<null>(null)
+}
+
+/** The end of a loop left early, after the iterator's `return()` if it has one: two ticks, else one. */
+export function awaitStepClose(returned: bool): void {
+    if (returned) awaitStep<null>(null)
+    else awaitValue<null>(null)
+}

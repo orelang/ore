@@ -35,7 +35,6 @@ import { attributeName, importType } from "../syntax/imports"
 import { jsonExport } from "../project/json"
 import {
     args as argsOf,
-    asteriskToken,
     body,
     constraint,
     declarationKind,
@@ -1031,8 +1030,6 @@ export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | nu
         declareGeneric(c, decl, scope)
         return null
     }
-    const asterisk = asteriskToken(decl)
-    if (asterisk !== null && isAsync(decl)) c.error(asterisk, "Async generators are not supported in Ore.")
     for (const mod of modifiers(decl)) {
         if (mod.kind === "AsyncKeyword") continue
         else if (mod.kind === "DefaultKeyword") c.error(mod, "Default exports are not supported in Ore.")
@@ -1207,16 +1204,17 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
 /**
  * The declared result type of a function or method; `void`, or `Promise<void>`
  * for an async one, without an annotation. A generator's comes from its body
- * then (see `inferredGenerator`).
+ * then (see `inferredGenerator`), an async generator's too.
  */
 export function resultType(c: Checker, decl: Node, scope: Scope): Type {
     const annotation = typeNode(decl)
+    const promised = isAsync(decl) && !isGenerator(decl)
     if (annotation !== null) {
         const t = c.resolveType(annotation, scope) ?? types.void
-        if (isAsync(decl)) asyncValue(c, t, annotation)
+        if (promised) asyncValue(c, t, annotation)
         return t
     }
-    if (isAsync(decl)) return promiseOf(c, types.void, decl) ?? types.void
+    if (promised) return promiseOf(c, types.void, decl) ?? types.void
     return types.void
 }
 
@@ -1226,7 +1224,7 @@ export function resultType(c: Checker, decl: Node, scope: Scope): Type {
  * first use of the function or with the other bodies.
  */
 export function inferredGenerator(c: Checker, decl: Node, func: Func, check: () => void) {
-    if (!isGenerator(decl) || isAsync(decl) || typeNode(decl) !== null || body(decl) === null) return
+    if (!isGenerator(decl) || typeNode(decl) !== null || body(decl) === null) return
     c.inferredGenerators.set(func, new InferredGenerator(check))
 }
 
@@ -2326,7 +2324,7 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(func.type.result, [], 0)
     enterPredicate(c, func, scope)
-    const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
+    const value = isAsync(decl) && !isGenerator(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
     else if (isGenerator(decl)) func.body = new Block(generatorStmts(c, decl, func, scope))
     else func.body = checkBlock(c, body(decl)!, scope)

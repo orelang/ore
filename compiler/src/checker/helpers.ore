@@ -188,6 +188,9 @@ export const disposeName = "[Symbol.dispose]"
 /** The member name of `[Symbol.iterator]`. */
 export const iteratorName = "[Symbol.iterator]"
 
+/** The member name of `[Symbol.asyncIterator]`. */
+export const asyncIteratorName = "[Symbol.asyncIterator]"
+
 /** The words that strict mode reserves, which cannot name bindings in Ore. */
 export const strictReserved = [
     "implements",
@@ -209,7 +212,11 @@ export function isSymbolDispose(node: Node): bool {
     return wellKnownSymbol(node) === disposeName
 }
 
-/** The member name of a well-known symbol, `Symbol.dispose` or `Symbol.iterator`, or null for any other expression. */
+/**
+ * The member name of a well-known symbol, `Symbol.dispose`,
+ * `Symbol.iterator` or `Symbol.asyncIterator`, or null for any other
+ * expression.
+ */
 export function wellKnownSymbol(node: Node): string | null {
     if (node.kind !== "PropertyAccessExpression") return null
     const object = node.child("expression")
@@ -217,6 +224,7 @@ export function wellKnownSymbol(node: Node): string | null {
     const name = nameNode(node).text
     if (name === "dispose") return disposeName
     if (name === "iterator") return iteratorName
+    if (name === "asyncIterator") return asyncIteratorName
     return null
 }
 

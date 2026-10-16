@@ -1,0 +1,139 @@
+// Async generators: yield, await, return, next(value), return(value) and
+// yield*, in functions, methods, function expressions and object literals.
+
+async function* count(n: int): AsyncGenerator<int> {
+    for (let i = 0; i < n; i++) {
+        await null
+        yield i
+    }
+}
+
+for await (const x of count(3)) console.log("count", x)
+
+// The body runs lazily, from the first next(), and awaits between the yields.
+async function* traced(): AsyncGenerator<string, int> {
+    console.log("start")
+    yield "a"
+    console.log("between")
+    await time.delay(1 * time.millisecond)
+    yield "b"
+    console.log("end")
+    return 42
+}
+
+const t = traced()
+console.log("created")
+console.log(await t.next())
+console.log(await t.next())
+console.log(await t.next())
+const after = await t.next()
+console.log("after the end", after.done)
+
+// next(value) is the value of the yield the body waits at; the first is ignored.
+async function* echo(): AsyncGenerator<string, int, string> {
+    let total = 0
+    while (true) {
+        const got = yield `total ${total}`
+        if (got === "stop") return total
+        total += got.length
+    }
+}
+
+const e = echo()
+console.log(await e.next("ignored"))
+console.log(await e.next("ab"))
+console.log(await e.next("cde"))
+console.log(await e.next("stop"))
+
+// return(value) ends a suspended generator at its yield; one that has not started never runs.
+const r = traced()
+console.log(await r.next())
+console.log(await r.return(7))
+console.log((await r.next()).done)
+const fresh = traced()
+console.log(await fresh.return(8))
+console.log((await fresh.next()).done)
+
+// yield and return await their values: a promise gives its value.
+async function* promised(): AsyncGenerator<int, string> {
+    yield Promise.resolve(1)
+    yield 2
+    return Promise.resolve("returned")
+}
+
+const p = promised()
+console.log(await p.next(), await p.next(), await p.next())
+
+// yield* of an async generator passes the values sent, and gives its return value.
+async function* inner(): AsyncGenerator<int, string, string> {
+    const a = yield 1
+    console.log("inner got", a)
+    const b = yield 2
+    console.log("inner got", b)
+    return "inner done"
+}
+
+async function* outer(): AsyncGenerator<int, string, string> {
+    yield 0
+    const result = yield* inner()
+    console.log("outer got", result)
+    yield* [10, 20]
+    yield* new Set([30])
+    yield* [Promise.resolve(40), Promise.resolve(50)]
+    return "outer done"
+}
+
+const o = outer()
+console.log(await o.next())
+console.log(await o.next("x"))
+console.log(await o.next("y"))
+console.log(await o.next("z"))
+for await (const x of o) console.log("rest", x)
+
+// Without a return type, the body gives it: AsyncGenerator<int | string, bool, null>, of the values awaited.
+async function* inferred() {
+    yield 1
+    yield Promise.resolve("two")
+    return true
+}
+
+const i = inferred()
+console.log(await i.next(), await i.next(), await i.next())
+
+// A class is async iterable by an async generator method `[Symbol.asyncIterator]`.
+class Range {
+    constructor(
+        readonly start: int,
+        readonly end: int,
+    ) {}
+
+    async *[Symbol.asyncIterator]() {
+        for (let i = this.start; i < this.end; i++) yield i
+    }
+
+    async *squares(): AsyncGenerator<int> {
+        for await (const x of this) yield x * x
+    }
+}
+
+for await (const x of new Range(1, 4)) console.log("range", x)
+console.log(await Array.fromAsync(new Range(1, 5).squares()))
+
+// Function expressions and object literal methods.
+const letters = async function* (word: string): AsyncGenerator<string> {
+    for (const ch of word.split("")) yield ch
+}
+console.log(await Array.fromAsync(letters("abc")))
+
+const source = {
+    async *items() {
+        yield "x"
+        yield "y"
+    },
+    async size(): Promise<int> {
+        await null
+        return 2
+    },
+}
+for await (const item of source.items()) console.log("item", item)
+console.log("size", await source.size())

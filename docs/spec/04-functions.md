@@ -256,15 +256,68 @@ strings, see [Strings](02-types.md#strings)).
   its value is the generator's return value. Calling `next` of a generator
   from its own body panics with `TypeError: Generator is already running`.
   A generator is iterable once: its `[Symbol.iterator]()` returns itself.
-- Ore has no exceptions, so generators have no `throw()`, and a panic in
-  the body ends the program. Async generators (`async function*`) are not
-  supported ([ORE5013](../errors/ORE5013.md)).
+- Ore has no exceptions, so generators have no `throw()` (async generators
+  neither), and a panic in the body ends the program.
 - A generator runs its body on a fiber of its own, as async functions do
   (see [concurrency](06-concurrency.md)): `next` switches to it and `yield`
   switches back, a step costing two task switches. A generator that is not
   run to its end keeps its fiber (a parked stack) until it finishes or
   `return()` ends it; `for...of` ends it on an early exit, and spread and
   `Array.from` run it to the end.
+
+### Async iteration
+
+The async iteration protocol is JavaScript's too. A value is async
+iterable when it has a `[Symbol.asyncIterator]()` method (the well-known
+symbol `Symbol.asyncIterator`) that returns an async iterator, whose
+`next()` returns a `Promise<IteratorResult<T, TReturn>>`. The global
+interfaces `AsyncIterator<T, TReturn = void, TNext = null>`,
+`AsyncIterable<T>` and `AsyncIterableIterator<T, TReturn = void, TNext =
+null>` describe them, matched exactly as `Iterator` and its kin are.
+
+- `for await (const x of iterable)`, in an async function (an async
+  generator too) or in the top-level code of a module
+  ([ORE7047](../errors/ORE7047.md)), awaits the promise of each `next()`
+  until it is done. It also takes anything `for...of` takes but channels
+  (strings, as their characters, arrays, maps, sets, generators, objects
+  with `[Symbol.iterator]()`): it awaits each value, the value of a promise for
+  an iterable of promises, with the ticks of JavaScript's async-from-sync
+  iterator (two ticks a step after the value is there).
+  Anything else is [ORE7048](../errors/ORE7048.md). When the loop is left
+  early, it calls the iterator's `return()` if it has one without required
+  arguments (an async generator's `close()`) and awaits it; of an iterable
+  that is not async, it calls its `return()` (a generator's `close()`) and
+  waits as JavaScript does.
+- An async generator function `async function* f(): AsyncGenerator<T,
+  TReturn, TNext>`, an async generator method `async *m()` (also `async
+  *[Symbol.asyncIterator]()`, and in object literals) or an async generator
+  function expression returns an `AsyncGenerator<T, TReturn = void, TNext
+  = null>` without running its body; the declared result type may also be
+  `AsyncIterator<T, TReturn>` or `AsyncIterableIterator<T, TReturn>`
+  ([ORE6084](../errors/ORE6084.md)). Without one, the body gives it, as for
+  a generator: `AsyncGenerator<T, TReturn, null>` of the values awaited.
+  The body runs on a fiber of its own and may `await`; `yield value` and
+  `return value` await the value first (a `Promise<T>` yields or returns
+  its `T`), as in JavaScript.
+- `next()`, `next(value)` and `return(value)` return promises of
+  `{ value, done }`. Each call is a request that waits in a queue: the
+  first `next()` starts the body, which answers one request at each `yield`
+  and goes on at once when the next request is already queued; the body's
+  end answers one with `done: true`, and the requests after it are done
+  one after the other, as JavaScript's AsyncGeneratorQueue does, so the
+  promises settle in its order and with its ticks. `return(value)` ends a
+  generator waiting at a `yield` there (after awaiting the value) and
+  answers `{ value, done: true }`; one that has not started never runs.
+  After the end, `next()` answers `{ value: null, done: true }` when
+  `TReturn` includes null (JavaScript's `undefined`), else the value
+  returned. `return` takes a value of `TReturn`, not a promise of one.
+- `yield* other` in an async generator of another async generator yields
+  its values, passes on the values sent with `next` and gives its return
+  value; of anything else that `for await` takes, it yields the values
+  awaited ([ORE6085](../errors/ORE6085.md) when T does not include them). A
+  `return` of the generator while `yield*` waits ends the other one first.
+- `Array.fromAsync(iterable)` is a promise of the values that `for await`
+  takes from `iterable`, in an array (without JavaScript's `mapFn`).
 
 ## Resources
 

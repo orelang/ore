@@ -1,0 +1,156 @@
+// for await over async iterables and over iterables that are not async,
+// whose values it awaits, with the ticks of JavaScript's async-from-sync
+// iterator; leaving the loop early ends the iterator. A ticker logs on
+// every microtask.
+
+let tick = 0
+function ticker(n: int) {
+    tick = 0
+    let left = n
+    const step = () => {
+        tick++
+        console.log(`tick ${tick}`)
+        left--
+        if (left > 0) task.microtask(step)
+    }
+    task.microtask(step)
+}
+
+console.log("-- an array of values: two ticks a step")
+ticker(9)
+for await (const x of [1, 2]) console.log("value", x)
+console.log("loop done")
+await time.delay(1 * time.millisecond)
+
+console.log("-- an array of promises: each awaited")
+let release: (value: string) => void = (v) => {}
+const slow = new Promise<string>((resolve) => {
+    release = resolve
+})
+task.microtask(() => {
+    console.log("releasing")
+    release("slow")
+})
+for await (const s of [Promise.resolve("fast"), slow]) console.log("promise", s)
+await time.delay(1 * time.millisecond)
+
+console.log("-- sets, maps and sync generators")
+for await (const v of new Set(["a", "b"])) console.log("set", v)
+for await (const ch of "hé") console.log("char", ch)
+for await (const [k, v] of new Map([["one", 1]])) console.log("map", k, v)
+function* numbers(): Generator<int> {
+    yield 1
+    yield 2
+    yield 3
+}
+for await (const n of numbers()) {
+    console.log("generator", n)
+    if (n === 2) break
+}
+await time.delay(1 * time.millisecond)
+
+console.log("-- leaving early: the ticks of return()")
+async function leaveArray() {
+    ticker(6)
+    for await (const x of [1, 2]) {
+        console.log("array", x)
+        break
+    }
+    console.log("array left")
+}
+async function leaveGenerator() {
+    ticker(6)
+    for await (const x of numbers()) {
+        console.log("generator", x)
+        break
+    }
+    console.log("generator left")
+}
+await leaveArray()
+await time.delay(1 * time.millisecond)
+await leaveGenerator()
+await time.delay(1 * time.millisecond)
+
+console.log("-- an async iterable class, with return()")
+class Countdown {
+    constructor(readonly start: int) {}
+
+    [Symbol.asyncIterator](): CountdownIterator {
+        return new CountdownIterator(this.start)
+    }
+}
+
+class CountdownIterator {
+    constructor(public n: int) {}
+
+    next(): Promise<IteratorResult<int, void>> {
+        if (this.n === 0) return Promise.resolve<IteratorResult<int, void>>({ value: null, done: true })
+        this.n--
+        return Promise.resolve<IteratorResult<int, void>>({ value: this.n + 1, done: false })
+    }
+
+    return(): Promise<IteratorResult<int, void>> {
+        console.log("countdown closed at", this.n)
+        return Promise.resolve<IteratorResult<int, void>>({ value: null, done: true })
+    }
+}
+
+for await (const n of new Countdown(3)) console.log("countdown", n)
+async function firstOf(c: Countdown): Promise<int> {
+    for await (const n of c) return n
+    return -1
+}
+console.log("first", await firstOf(new Countdown(5)))
+
+// Through the interfaces AsyncIterable and AsyncIterator.
+class Counted {
+    [Symbol.asyncIterator](): AsyncIterator<int> {
+        return new CountdownIterator(4)
+    }
+}
+async function sum(items: AsyncIterable<int>): Promise<int> {
+    let total = 0
+    for await (const n of items) total += n
+    return total
+}
+console.log("sum", await sum(new Counted()))
+
+console.log("-- an async generator left early is returned")
+async function* endless(): AsyncGenerator<int> {
+    let i = 0
+    while (true) {
+        yield i++
+    }
+}
+outer: for (const round of [1, 2]) {
+    for await (const n of endless()) {
+        if (n === round) continue outer
+        console.log("round", round, n)
+    }
+}
+
+console.log("-- Array.fromAsync")
+ticker(8)
+Array.fromAsync([1, 2]).then((all) => console.log("from values", all))
+Array.fromAsync([Promise.resolve("a"), Promise.resolve("b")]).then((all) => console.log("from promises", all))
+await time.delay(1 * time.millisecond)
+async function* letters(): AsyncGenerator<string> {
+    yield "x"
+    yield "y"
+}
+console.log(await Array.fromAsync(letters()))
+console.log(await Array.fromAsync(new Countdown(3)))
+
+console.log("-- timers between the steps")
+async function* slowly(): AsyncGenerator<int> {
+    for (let i = 1; i <= 3; i++) {
+        await time.delay(1 * time.millisecond)
+        yield i
+    }
+}
+for await (const n of slowly()) {
+    console.log("slow", n)
+    time.timeout(() => console.log("timer after", n), 0)
+}
+await time.delay(5 * time.millisecond)
+console.log("end")

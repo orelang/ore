@@ -53,7 +53,6 @@ import {
 import { type Node } from "../syntax/ast"
 import {
     defaultType as defaultTypeNode,
-    asteriskToken,
     body,
     exclamationToken,
     expression,
@@ -342,8 +341,6 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             )
                 continue
             if (flags.isReadonly) c.error(member, "Methods cannot be 'readonly'.")
-            const asterisk = asteriskToken(member)
-            if (asterisk !== null && isAsync(member)) c.error(asterisk, "Async generators are not supported in Ore.")
             const question = questionToken(member)
             if (question !== null) c.error(question, "Optional methods are not supported in classes.")
             if (flags.isAbstract) {
@@ -1373,7 +1370,7 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(func.type.result, [], 0, null, null, func.receiver, type)
     enterPredicate(c, func, scope)
-    const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
+    const value = isAsync(decl) && !isGenerator(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
     else if (isGenerator(decl)) func.body = new Block(generatorStmts(c, decl, func, scope))
     else func.body = checkBlock(c, body(decl)!, scope)

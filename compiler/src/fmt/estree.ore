@@ -57,6 +57,8 @@ export class ENode {
     generator = false
     /** For a YieldExpression: `yield*`. */
     delegate = false
+    /** For a ForOfStatement: `for await`. */
+    isAwait = false
     declare = false
     isAbstract = false
     definite = false
@@ -486,11 +488,14 @@ export class Converter {
                     .set("update", this.opt(node.child("incrementor")))
                     .set("body", this.req(node.child("statement")))
             case "ForOfStatement":
-            case "ForInStatement":
-                return this.make(node.kind, node)
+            case "ForInStatement": {
+                const loop = this.make(node.kind, node)
                     .set("left", this.forLeft(must(node.child("initializer"))))
                     .set("right", this.req(node.child("expression")))
                     .set("body", this.req(node.child("statement")))
+                loop.isAwait = node.child("awaitModifier") !== null
+                return loop
+            }
             case "ReturnStatement":
             case "ThrowStatement": {
                 const statement = this.make(node.kind, node).set("argument", this.opt(node.child("expression")))

@@ -504,6 +504,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE6081](ORE6081.md) | 'yield' is only allowed in generator functions. |
 | [ORE6082](ORE6082.md) | 'yield' without a value yields null, which type '…' does not include. |
 | [ORE6083](ORE6083.md) | 'yield*' takes a generator of the same value and next types: '…' and '…'. |
+| [ORE6084](ORE6084.md) | The return type of an async generator function must be 'AsyncGenerator<T, TReturn, TNext>', 'AsyncIterator<T>' or 'AsyncIterableIterator<T>', not '…'. |
+| [ORE6085](ORE6085.md) | 'yield*' yields values of type '…', which type '…' does not include. |
 
 ## ORE7xxx: Statements
 
@@ -555,3 +557,5 @@ The codes are grouped by the part of the language they concern:
 | [ORE7044](ORE7044.md) | The rest of an object pattern must be a name, not a pattern. |
 | [ORE7045](ORE7045.md) | A dictionary is not iterable: loop over 'Object.keys(d)' or 'Object.entries(d)'. |
 | [ORE7046](ORE7046.md) | Type '…' is not iterable: it needs a '[Symbol.iterator]()' method. |
+| [ORE7047](ORE7047.md) | 'for await' is only allowed in async functions and in the top-level code of a module. |
+| [ORE7048](ORE7048.md) | Type '…' is not async iterable: it needs a '[Symbol.asyncIterator]()' method whose iterator's 'next()' returns a promise of an 'IteratorResult', or a '[Symbol.iterator]()' method. |

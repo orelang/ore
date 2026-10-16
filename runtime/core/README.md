@@ -41,6 +41,7 @@ Rules for this code:
 | `sys.ore` | Allocation (`ore_rt_alloc`, inlined into every `new`), files, `Math.random`, C strings, conversion of interface values to narrower interfaces |
 | `iterator.ore` | Generators on fibers of their own, the iteration protocol, the iterators of arrays, maps and sets, and the iterator helpers of `IteratorObject` (`map`, `filter`, `take`, `flatMap`...) |
 | `iterator-from.ore` | The namespace `Iterator` (`Iterator.from`) |
+| `iterator-async.ore` | Async generators on fibers of their own, with the request queue of JavaScript's; the async iteration protocol of `for await`, with the ticks of the async-from-sync iterator; `Array.fromAsync` |
 | `chan.ore` | Channels and `select` |
 | `poll.ore` | Waiting for sockets, pipes and the exit of children: the kqueue or epoll poller thread |
 | `fs.ore` | The namespace `fs` in Ore: directories, `stat`, `remove`, `rename`, `realpath`, temporary directories, with the `stat` and `dirent` layouts of each platform |

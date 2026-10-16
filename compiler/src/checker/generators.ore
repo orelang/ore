@@ -3,6 +3,12 @@
 // that takes the generator, which `generator(body)` makes; `yield value` is
 // `generator.yieldValue(value)`, which hands the value to `next()` and
 // waits for the following call.
+//
+// Async generator functions are compiled the same way, to the runtime's
+// "ore:runtime/iterator-async": `asyncGenerator(body)` makes the
+// generator, and the body awaits as an async function's does. As in
+// JavaScript, `yield value` and `return value` await the value first: they
+// are `yieldValue(await value)` and `return await value`.
 
 import {
     type Expr,
@@ -19,20 +25,34 @@ import {
     Recast,
     ReturnStmt,
 } from "../ir/nodes"
-import { type StructType, type Type, FuncType, arrayOf, findMethod, sameType, types, typeToString } from "../ir/types"
+import {
+    type StructType,
+    type Type,
+    FuncType,
+    arrayOf,
+    findMethod,
+    membersOf,
+    sameType,
+    types,
+    typeToString,
+} from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { asteriskToken, body, expression } from "../syntax/nodes"
+import { awaitOperand, isAsync } from "./async"
 import { type Checker } from "./base"
 import { FuncContext, InferredYields } from "./context"
 import { checkReturns, instantiate } from "./declarations"
 import { checkExpr } from "./expressions"
 import { canBeNull, typed } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
-import { iteratorOf, iteratorValue } from "./iteration"
+import { asyncSource, iteratorOf, iteratorValue } from "./iteration"
 import { checkBlock } from "./statements"
 import { FuncSymbol, GenericFuncSymbol, Scope } from "./symbols"
 
 export const iteratorModule = "ore:runtime/iterator"
+
+/** The runtime's module of async iteration: async generators, `for await`, `Array.fromAsync`. */
+export const asyncIteratorModule = "ore:runtime/iterator-async"
 
 /** Whether a function or method is a generator: `function*`, `*method()`. */
 export function isGenerator(node: Node): bool {
@@ -48,7 +68,10 @@ export class GeneratorTypes {
     ) {}
 }
 
-/** Whether `type` is an instance of the class or interface `name` of the runtime's iterator module. */
+/**
+ * Whether `type` is an instance of the class or interface `name` of the
+ * runtime's iterator modules: "ore:runtime/iterator" and those named after it.
+ */
 export function iteratorInstance(c: Checker, type: Type, name: string): Type[] | null {
     if (type.kind !== "struct" && type.kind !== "interface") return null
     const info = c.instanceOf.get(type)
@@ -69,28 +92,44 @@ export function isIteratorObject(c: Checker, type: Type): bool {
  * The types of a generator function whose declared result type is `result`:
  * `Generator<T, TReturn, TNext>`, its base class `IteratorObject`, or an
  * interface a generator converts to, `Iterator<T, TReturn>` or
- * `IterableIterator<T, TReturn>`. Reports any other.
+ * `IterableIterator<T, TReturn>`; of an async one, `AsyncGenerator<T,
+ * TReturn, TNext>`, `AsyncIterator<T, TReturn>` or
+ * `AsyncIterableIterator<T, TReturn>`. Reports any other.
  */
-export function generatorTypes(c: Checker, result: Type, node: Node): GeneratorTypes | null {
-    let args = iteratorInstance(c, result, "Generator")
-    if (args === null) args = iteratorInstance(c, result, "IteratorObject")
-    if (args === null) args = iteratorInstance(c, result, "Iterator")
-    if (args === null) args = iteratorInstance(c, result, "IterableIterator")
-    if (args === null || args.length < 1) {
-        c.error(
-            node,
-            `The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '${typeToString(result)}'.`,
-        )
-        return null
+export function generatorTypes(c: Checker, result: Type, node: Node, asynchronous: bool): GeneratorTypes | null {
+    let args: Type[] | null = null
+    if (asynchronous) {
+        args = iteratorInstance(c, result, "AsyncGenerator")
+        if (args === null) args = iteratorInstance(c, result, "AsyncIterator")
+        if (args === null) args = iteratorInstance(c, result, "AsyncIterableIterator")
+        if (args === null || args.length < 1) {
+            c.error(
+                node,
+                `The return type of an async generator function must be 'AsyncGenerator<T, TReturn, TNext>', 'AsyncIterator<T>' or 'AsyncIterableIterator<T>', not '${typeToString(result)}'.`,
+            )
+            return null
+        }
+    } else {
+        args = iteratorInstance(c, result, "Generator")
+        if (args === null) args = iteratorInstance(c, result, "IteratorObject")
+        if (args === null) args = iteratorInstance(c, result, "Iterator")
+        if (args === null) args = iteratorInstance(c, result, "IterableIterator")
+        if (args === null || args.length < 1) {
+            c.error(
+                node,
+                `The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '${typeToString(result)}'.`,
+            )
+            return null
+        }
     }
     const returned = args.length > 1 ? args[1] : types.void
     const next = args.length > 2 ? args[2] : types.null
     return new GeneratorTypes(args[0], returned, next)
 }
 
-/** The class `Generator<T, TReturn, TNext>` of the runtime. */
-export function generatorClass(c: Checker, t: GeneratorTypes, node: Node): StructType | null {
-    const symbol = c.builtins!.lookupType("Generator")
+/** The class `Generator<T, TReturn, TNext>` of the runtime, or `AsyncGenerator<T, TReturn, TNext>`. */
+export function generatorClass(c: Checker, t: GeneratorTypes, node: Node, asynchronous: bool): StructType | null {
+    const symbol = c.builtins!.lookupType(asynchronous ? "AsyncGenerator" : "Generator")
     const generic = symbol !== null ? symbol.generic : null
     if (generic === null) return null
     const instance = instantiate(c, generic, [t.value, t.result, t.next], node)
@@ -100,8 +139,17 @@ export function generatorClass(c: Checker, t: GeneratorTypes, node: Node): Struc
 
 /** A function of the runtime's iterator module, instantiated for `typeArgs`. */
 export function iteratorFunc(c: Checker, name: string, typeArgs: Type[], node: Node): Func | null {
+    return moduleFunc(c, iteratorModule, name, typeArgs, node)
+}
+
+/** A function of the runtime's module of async iteration, instantiated for `typeArgs`. */
+export function asyncIteratorFunc(c: Checker, name: string, typeArgs: Type[], node: Node): Func | null {
+    return moduleFunc(c, asyncIteratorModule, name, typeArgs, node)
+}
+
+function moduleFunc(c: Checker, module: string, name: string, typeArgs: Type[], node: Node): Func | null {
     for (const [source, info] of c.modules) {
-        if (source.path !== iteratorModule) continue
+        if (source.path !== module) continue
         const symbol = info.scope.ownValue(name)
         if (symbol instanceof FuncSymbol) return symbol.func
         if (!(symbol instanceof GenericFuncSymbol)) process.panic(`generators: no function ${name}`)
@@ -125,7 +173,8 @@ export class GeneratorBody {
  * runtime's `generator`. Without a declared result type (`declared` null),
  * the body gives it, as in TypeScript: `Generator<T, TReturn, null>`, where T
  * is the union of the types of the values yielded (`null` without any) and
- * TReturn the type of the first `return`, `void` without a value.
+ * TReturn the type of the first `return`, `void` without a value; of an
+ * async one, `AsyncGenerator<T, TReturn, null>`, of the values awaited.
  */
 export function generatorBody(
     c: Checker,
@@ -135,12 +184,13 @@ export function generatorBody(
     name: string,
 ): GeneratorBody | null {
     const outer = c.fn!
+    const asynchronous = isAsync(decl)
     let t: GeneratorTypes | null = null
     let genType: StructType | null = null
     if (declared !== null) {
-        t = generatorTypes(c, declared, decl)
+        t = generatorTypes(c, declared, decl, asynchronous)
         if (t === null) return null
-        genType = generatorClass(c, t, decl)
+        genType = generatorClass(c, t, decl, asynchronous)
         if (genType === null) return null
     }
     // Without a declared type, the generator's type is known after the body: `yield`s complete then.
@@ -171,6 +221,8 @@ export function generatorBody(
     const fn = new FuncContext(t !== null ? t.result : null, [], 0, func, captures, outer.thisLocal, outer.cls)
     c.fn = fn
     fn.generator = self
+    fn.inAsync = asynchronous
+    fn.asyncGenerator = asynchronous
     fn.yieldType = t !== null ? t.value : null
     fn.nextType = t !== null ? t.next : types.null
     const yields = t === null ? new InferredYields() : null
@@ -189,7 +241,7 @@ export function generatorBody(
         const returned = fn.result
         const result = returned === null || returned.kind === "void" ? types.null : returned
         t = new GeneratorTypes(c.unionOf(found), result, types.null)
-        genType = generatorClass(c, t, decl)
+        genType = generatorClass(c, t, decl, asynchronous)
         if (genType === null) return null
         self.type = genType
         func.type = new FuncType([genType], t.result)
@@ -199,7 +251,10 @@ export function generatorBody(
     }
     checkReturns(c, func, decl)
     const types_ = t!
-    const make = iteratorFunc(c, "generator", [types_.value, types_.result, types_.next], decl)
+    const typeArgs = [types_.value, types_.result, types_.next]
+    const make = asynchronous
+        ? asyncIteratorFunc(c, "asyncGenerator", typeArgs, decl)
+        : iteratorFunc(c, "generator", typeArgs, decl)
     if (make === null) return null
     const closure: Expr = new Closure(func.type, func)
     // What `next()` gives as the value once the generator is ended early: null, when its return type has it.
@@ -289,8 +344,16 @@ export function checkYield(c: Checker, node: Node, scope: Scope): Operand {
                 `'yield' without a value yields null, which type '${typeToString(valueType)}' does not include.`,
             )
         value = c.coerce(typed(new NullLit(types.null)), valueType, node)
+        // An async generator awaits the value it yields, null too.
+        if (fn.asyncGenerator) {
+            const awaited = awaitOperand(c, typed(value), null, node)
+            if (awaited.k !== "typed") return errorOperand
+            value = awaited.expr
+        }
     } else {
-        const v = checkExpr(c, operandNode, scope, valueType)
+        let v = checkExpr(c, operandNode, scope, valueType)
+        if (v.k === "error") return errorOperand
+        if (fn.asyncGenerator) v = awaitOperand(c, v, valueType, operandNode)
         if (v.k === "error") return errorOperand
         value = c.coerce(v, valueType, operandNode)
     }
@@ -315,6 +378,9 @@ function inferredYield(c: Checker, node: Node, scope: Scope, fn: FuncContext, yi
         value = checkExpr(c, operandNode, scope)
         if (value.k === "error") return errorOperand
     }
+    // An async generator yields the value awaited, as its type.
+    if (fn.asyncGenerator) value = awaitOperand(c, value, null, operandNode ?? node)
+    if (value.k === "error") return errorOperand
     if (value.k === "typed") yields.types.push(value.expr.type)
     else if (value.k === "untyped-float") yields.floats = true
     else yields.ints = true
@@ -340,6 +406,7 @@ function inferredDelegate(
     fn: FuncContext,
     yields: InferredYields,
 ): Operand {
+    if (fn.asyncGenerator) return asyncDelegate(c, node, operandNode, scope, fn)
     const self = fn.generator!
     const v = checkExpr(c, operandNode, scope)
     if (v.k === "error") return errorOperand
@@ -376,6 +443,7 @@ function inferredDelegate(
 /** `yield* iterable`: yields each value of the iterable; the value of the expression is a generator's return value. */
 function checkDelegate(c: Checker, node: Node, operandNode: Node, scope: Scope, genType: Type): Operand {
     const fn = c.fn!
+    if (fn.asyncGenerator) return asyncDelegate(c, node, operandNode, scope, fn)
     const self = fn.generator!
     const v = checkExpr(c, operandNode, scope)
     if (v.k === "error") return errorOperand
@@ -406,4 +474,91 @@ function sameElements(c: Checker, innerArgs: Type[], fn: FuncContext, node: Node
         return false
     }
     return true
+}
+
+/**
+ * `yield* iterable` in an async generator: of another async generator, whose
+ * values, the values sent with `next` and the return value pass as for a
+ * generator, or of anything else that `for await` takes, whose values it
+ * yields. In a generator whose types its body gives, the call is completed
+ * once they are known, as `inferredDelegate` does.
+ */
+function asyncDelegate(c: Checker, node: Node, operandNode: Node, scope: Scope, fn: FuncContext): Operand {
+    const self = fn.generator!
+    const yields = fn.yields
+    const v = checkExpr(c, operandNode, scope)
+    if (v.k === "error") return errorOperand
+    const inner = c.toDefault(v, operandNode)
+    const innerArgs = iteratorInstance(c, inner.type, "AsyncGenerator")
+    if (innerArgs !== null) {
+        const call = new Call(innerArgs[1], fn.closure!, [])
+        const complete = (): bool => {
+            if (!sameElements(c, innerArgs, fn, operandNode)) return false
+            const typeArgs = [fn.yieldType!, innerArgs[1], fn.result!, fn.nextType!]
+            const f = asyncIteratorFunc(c, "delegateAsync", typeArgs, node)
+            if (f === null) return false
+            call.func = f
+            call.args = [new LocalRef(self.type, self), inner]
+            return true
+        }
+        if (yields === null) return complete() ? typed(call) : errorOperand
+        yields.types.push(innerArgs[0])
+        yields.fixups.push(() => {
+            complete()
+        })
+        return typed(call)
+    }
+    const source = asyncSource(c, inner, operandNode)
+    if (source === null) return errorOperand
+    const elem = source.elem
+    const call = new Call(types.void, fn.closure!, [])
+    const complete = (): bool => {
+        const valueType = fn.yieldType!
+        if (!includesType(valueType, elem)) {
+            c.error(
+                operandNode,
+                `'yield*' yields values of type '${typeToString(elem)}', which type '${typeToString(valueType)}' does not include.`,
+            )
+            return false
+        }
+        const typeArgs = [inner.type, valueType, fn.result!, fn.nextType!]
+        const f = asyncIteratorFunc(c, "delegateIterable", typeArgs, node)
+        if (f === null) return false
+        call.func = f
+        call.args = [new LocalRef(self.type, self), inner]
+        return true
+    }
+    if (yields === null) return complete() ? typed(call) : errorOperand
+    yields.types.push(elem)
+    yields.fixups.push(() => {
+        complete()
+    })
+    return typed(call)
+}
+
+/** Whether the values of `part` are values of `whole`: the same type, or members of a union. */
+function includesType(whole: Type, part: Type): bool {
+    if (sameType(whole, part)) return true
+    const members = membersOf(whole)
+    return membersOf(part).every((m) => members.some((w) => sameType(w, m)))
+}
+
+/** `return value` in an async generator, which awaits the value first, as JavaScript does. */
+export function checkAsyncReturn(c: Checker, valueNode: Node, scope: Scope): ReturnStmt {
+    const fn = c.fn!
+    const current = fn.result
+    const expected = current !== null && current.kind !== "void" ? current : null
+    const v = awaitOperand(c, checkExpr(c, valueNode, scope, expected), expected, valueNode)
+    if (v.k === "error") return new ReturnStmt()
+    if (current === null) {
+        // Without a declared type, the first `return` gives TReturn.
+        const expr = c.toDefault(v, valueNode)
+        fn.result = expr.type
+        return new ReturnStmt(expr)
+    }
+    if (current.kind === "void") {
+        c.error(valueNode, "A function without a return type annotation cannot return a value.")
+        return new ReturnStmt()
+    }
+    return new ReturnStmt(c.coerce(v, current, valueNode))
 }

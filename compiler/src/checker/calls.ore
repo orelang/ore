@@ -1,8 +1,8 @@
 // Calls: functions, methods, closures, constructors, built-ins (including
 // `unsafe` and `JSON`), array and string methods.
 
-import { builtinIteratorOf, isProtocolIterable, iteratorFrom, toArray } from "./iteration"
-import { inferGenerator, isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
+import { asyncSource, builtinIteratorOf, isProtocolIterable, iteratorFrom, toArray } from "./iteration"
+import { asyncIteratorFunc, inferGenerator, isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
 import { compileRegExp } from "../../../runtime/core/regexp-syntax"
 import {
     type Expr,
@@ -812,6 +812,23 @@ function arrayStatic(c: Checker, name: string, node: Node, scope: Scope, expecte
     return typed(new ArrayMethod("map", arrayOf(cb.result), items, [cb.expr], cb.arity))
 }
 
+/**
+ * `Array.fromAsync(items)`: a promise of the values that `for await` takes
+ * from `items`, in an array, by the runtime's async `fromAsync`.
+ */
+function arrayFromAsync(c: Checker, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    if (args.length !== 1) return c.fail(node, `'Array.fromAsync' expects 1 argument(s), got ${args.length}.`)
+    const operand = checkExpr(c, args[0], scope)
+    if (operand.k === "error") return errorOperand
+    const value = c.toDefault(operand, args[0])
+    const source = asyncSource(c, value, args[0])
+    if (source === null) return errorOperand
+    const f = asyncIteratorFunc(c, "fromAsync", [value.type, source.elem], node)
+    if (f === null) return errorOperand
+    return typed(new Call(f.type.result, f, [value]))
+}
+
 /** `Array.from({ length: n }, (_, i) => ...)`: the function makes each element, given null and the index. */
 function arrayFromLength(c: Checker, node: Node, source: Node, scope: Scope): Operand {
     const props = properties(source)
@@ -997,6 +1014,7 @@ export function builtinCall(
     if (name === "internal.inspect") return inspectCall(c, name, node, scope)
     if (name === "Array.from" || name === "Array.of" || name === "Array.isArray")
         return arrayStatic(c, name, node, scope, expected)
+    if (name === "Array.fromAsync") return arrayFromAsync(c, node, scope)
     if (name.startsWith("Object.")) return objectCall(c, name, node, scope)
     const generic = typeParameters(decl).length > 0
     if (name.startsWith("unsafe.") && generic) return unsafeCall(c, name, node, scope)
@@ -2646,7 +2664,10 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
     }
     if (type.kind === "struct") {
         // `generator.next(value)` is its `send(value)`: the interface `Iterator` has a `next()` without arguments.
-        const sends = name === "next" && args.length === 1 && iteratorInstance(c, type, "Generator") !== null
+        const sends =
+            name === "next" &&
+            args.length === 1 &&
+            (iteratorInstance(c, type, "Generator") !== null || iteratorInstance(c, type, "AsyncGenerator") !== null)
         const method = findMethod(type, sends ? "send" : methodName)
         if (method !== null) {
             defineMember(c, nameId, type, name)

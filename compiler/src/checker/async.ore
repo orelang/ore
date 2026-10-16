@@ -125,17 +125,31 @@ export function checkAwait(c: Checker, node: Node, scope: Scope, expected: Type 
         return c.fail(node, "'await' is only allowed in async functions and in the top-level code of a module.")
     }
     const operandNode = expression(node)
-    const v = checkExpr(c, operandNode, scope, null)
+    return awaitOperand(c, checkExpr(c, operandNode, scope, null), expected, operandNode)
+}
+
+/**
+ * `await` of an operand checked already, at `node`: the value of a promise,
+ * or the value itself after a tick. An untyped constant takes the type
+ * `expected`, or its default type.
+ */
+export function awaitOperand(c: Checker, v: Operand, expected: Type | null, node: Node): Operand {
     if (v.k === "error") return errorOperand
-    const expr = v.k === "typed" ? v.expr : c.coerce(v, expected ?? c.defaultType(v), operandNode)
+    const expr = v.k === "typed" ? v.expr : c.coerce(v, expected ?? c.defaultType(v), node)
     const value = promiseValue(c, expr.type)
     if (value !== null) {
         const f = runtimeFunc(c, "awaitPromise", [value], node)
         return f !== null ? typed(new Call(value, f, [expr])) : errorOperand
     }
-    if (expr.type.kind === "void") return c.fail(operandNode, "An expression of type 'void' cannot be awaited.")
+    if (expr.type.kind === "void") return c.fail(node, "An expression of type 'void' cannot be awaited.")
     if (expr.type.kind === "union" && expr.type.members.some((m) => promiseValue(c, m) !== null))
-        return c.fail(operandNode, "A union of promises and other values cannot be awaited yet.")
+        return c.fail(node, "A union of promises and other values cannot be awaited yet.")
     const f = runtimeFunc(c, "awaitValue", [expr.type], node)
     return f !== null ? typed(new Call(expr.type, f, [expr])) : errorOperand
+}
+
+/** `await` of an expression, at `node`; null after an error. */
+export function awaitExpr(c: Checker, expr: Expr, node: Node): Expr | null {
+    const v = awaitOperand(c, typed(expr), null, node)
+    return v.k === "typed" ? v.expr : null
 }

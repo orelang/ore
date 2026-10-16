@@ -529,6 +529,8 @@ export class Parser {
 
     private forStatement(): Node {
         const start = this.next().start
+        // `for await (... of ...)`: the keyword is the loop's `awaitModifier`.
+        const awaitModifier = this.at("AwaitKeyword") ? this.tokenNode() : null
         this.expect("OpenParenToken")
         let initializer: Node | null = null
         if (!this.at("SemicolonToken")) {
@@ -545,6 +547,7 @@ export class Parser {
             initializer = declares ? this.variableDeclarationList() : this.expression()
             this.noIn = false
         }
+        if (awaitModifier !== null && !this.at("OfKeyword")) this.expect("OfKeyword")
         if (initializer !== null && (this.at("OfKeyword") || this.at("InKeyword"))) {
             const kind: NodeKind = this.at("OfKeyword") ? "ForOfStatement" : "ForInStatement"
             this.next()
@@ -552,6 +555,7 @@ export class Parser {
             this.expect("CloseParenToken")
             const body = this.statement()
             return this.make(kind, start)
+                .add(awaitModifier, "awaitModifier")
                 .add(initializer, "initializer")
                 .add(iterable, "expression")
                 .add(body, "statement")
@@ -1522,11 +1526,20 @@ export class Parser {
                     member.add(this.block(), "body")
                     node.add(this.finish(member, memberStart), "properties")
                 } else {
+                    // `async name() { ... }`, `async *name() { ... }`: an async method.
+                    const asyncMethod =
+                        this.at("AsyncKeyword") &&
+                        !next.newline &&
+                        (next.kind === "AsteriskToken" || this.isPropertyNameStart(next.kind))
+                    const modifier = asyncMethod ? this.tokenNode() : null
                     // `*name() { ... }`: a generator method.
                     const asterisk = this.at("AsteriskToken") ? this.tokenNode() : null
                     const name = this.propertyName()
-                    if (asterisk !== null || this.at("OpenParenToken") || this.at("LessThanToken")) {
+                    const method =
+                        modifier !== null || asterisk !== null || this.at("OpenParenToken") || this.at("LessThanToken")
+                    if (method) {
                         const member = new Node("MethodDeclaration", memberStart, memberStart)
+                            .add(modifier, "modifiers")
                             .add(asterisk, "asteriskToken")
                             .add(name, "name")
                         this.signature(member)

@@ -243,7 +243,9 @@ an LLVM coroutine. Left:
   its end keeps a parked stack until the program ends: the collector could
   free the fibers of unreachable generators. Iterator helpers (done; the
   callback results of `flatMap` are iterated on a generator each, a fiber
-  per inner iterable). Async generators. Iterator objects of strings,
+  per inner iterable). Async generators and `for await` (done; an async
+  generator is a fiber too, and the async iterator helpers of a later
+  ECMAScript are not there). Iterator objects of strings,
   arrays, maps and sets from `[Symbol.iterator]()`, a lazy `matchAll` and
   JavaScript's `Iterator.from` (done).
 

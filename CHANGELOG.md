@@ -5,6 +5,32 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Async generators and `for await`, as in JavaScript: `async function*`
+  declarations and expressions, `async *method()` (also `async
+  *[Symbol.asyncIterator]()` and in object literals) return an
+  `AsyncGenerator<T, TReturn, TNext>`, whose `next()`, `next(value)` and
+  `return(value)` return promises of `{ value, done }`; the body may
+  `await`, `yield` and `return` await their values, and `yield*` takes
+  another async generator (passing the values sent, giving its return value)
+  or anything `for await` takes. Without an annotation the body gives the
+  type, as for a generator. Calls made before the body gets to them wait in
+  a queue, and the promises settle in the order and with the ticks of the
+  ECMAScript specification. `for await (const x of iterable)`, in async
+  functions and the top-level code, takes a value with
+  `[Symbol.asyncIterator]()` (`Symbol.asyncIterator` is a well-known
+  symbol) or any iterable of `for...of`, whose values (or the values of its
+  promises) it awaits, as JavaScript's async-from-sync iterator does; a loop
+  left early awaits the iterator's `return()`. The interfaces
+  `AsyncIterator`, `AsyncIterable` and `AsyncIterableIterator` are global,
+  and `Array.fromAsync(iterable)` is a promise of the values in an array.
+  [ORE5013](docs/errors/ORE5013.md) is no longer reported; new:
+  [ORE6084](docs/errors/ORE6084.md), [ORE6085](docs/errors/ORE6085.md),
+  [ORE7047](docs/errors/ORE7047.md), [ORE7048](docs/errors/ORE7048.md).
+  Object literals take `async` methods.
+- A top-level `await` resumes the top-level code as the microtask that its
+  promise's reaction is, as in JavaScript: the microtasks queued after it
+  run once the code awaits again or ends, where all of them ran first.
+
 - The timers of the web and Node are global names: `setTimeout(f, ms?,
   ...args)`, `setInterval`, `setImmediate`, `clearTimeout`,
   `clearInterval`, `clearImmediate` and `queueMicrotask`, over the queues

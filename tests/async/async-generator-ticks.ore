@@ -1,0 +1,135 @@
+// The order of an async generator's promises among other microtasks, as the
+// AsyncGeneratorQueue of the ECMAScript specification gives it: requests
+// wait in a queue, yield and return await their values, a return request
+// awaits its value. A ticker logs on every microtask.
+
+let tick = 0
+function ticker(n: int) {
+    tick = 0
+    let left = n
+    const step = () => {
+        tick++
+        console.log(`tick ${tick}`)
+        left--
+        if (left > 0) task.microtask(step)
+    }
+    task.microtask(step)
+}
+
+function show(label: string, r: IteratorResult<int, void>) {
+    if (r.done) console.log(label, "done")
+    else console.log(label, r.value)
+}
+
+async function* queued(): AsyncGenerator<int> {
+    console.log("body starts")
+    yield 1
+    console.log("after 1")
+    await null
+    yield 2
+    console.log("after 2")
+    yield 3
+    console.log("body ends")
+}
+
+console.log("-- requests made at once wait in order")
+ticker(14)
+const q = queued()
+q.next().then((r) => show("first", r))
+q.next().then((r) => show("second", r))
+q.next().then((r) => show("third", r))
+q.next().then((r) => show("fourth", r))
+q.return().then((r) => show("return", r))
+q.next().then((r) => show("after return", r))
+console.log("sync end")
+await time.delay(1 * time.millisecond)
+
+console.log("-- yield of a promise waits for it")
+let release: (value: int) => void = (v) => {}
+const later = new Promise<int>((resolve) => {
+    release = resolve
+})
+async function* waiting(): AsyncGenerator<int> {
+    yield later
+    yield 2
+}
+ticker(8)
+const w = waiting()
+w.next().then((r) => show("waited", r))
+w.next().then((r) => show("next", r))
+task.microtask(() => {
+    console.log("releasing")
+    release(1)
+})
+await time.delay(1 * time.millisecond)
+
+console.log("-- return requests")
+async function* two(): AsyncGenerator<int, int> {
+    yield 1
+    yield 2
+    return 3
+}
+ticker(10)
+const notStarted = two()
+notStarted.return(10).then((r) => console.log("return before start", r))
+const running = two()
+running.next().then((r) => console.log("running next", r))
+running.return(20).then((r) => console.log("return while running", r))
+running.next().then((r) => console.log("next after return", r.done))
+const promisedReturn = two()
+promisedReturn.next().then((r) => console.log("promised next", r))
+promisedReturn.return(30).then((r) => console.log("return of a value", r))
+Promise.resolve(0).then(() => console.log("plain then"))
+await time.delay(1 * time.millisecond)
+
+console.log("-- return statements await their value")
+async function* returns(): AsyncGenerator<int, string> {
+    yield 1
+    return "done"
+}
+async function* returnsPromise(): AsyncGenerator<int, string> {
+    return Promise.resolve("promised")
+}
+ticker(8)
+const rv = returns()
+rv.next().then((r) => console.log("returns next", r))
+rv.next().then((r) => console.log("returns end", r))
+returnsPromise()
+    .next()
+    .then((r) => console.log("returns promise", r))
+await time.delay(1 * time.millisecond)
+
+console.log("-- yield* of an async generator")
+async function* inner(): AsyncGenerator<int> {
+    yield 1
+    await null
+    yield 2
+}
+async function* outer(): AsyncGenerator<int> {
+    yield* inner()
+    yield 3
+}
+ticker(16)
+const d = outer()
+d.next().then((r) => show("delegated", r))
+d.next().then((r) => show("delegated", r))
+d.next().then((r) => show("delegated", r))
+d.next().then((r) => show("delegated", r))
+await time.delay(1 * time.millisecond)
+
+console.log("-- a return while yield* waits ends the inner generator first")
+async function* traced(): AsyncGenerator<int> {
+    console.log("traced starts")
+    yield 1
+    console.log("never")
+}
+async function* wrapper(): AsyncGenerator<int> {
+    yield* traced()
+    console.log("never either")
+}
+ticker(10)
+const wr = wrapper()
+wr.next().then((r) => show("wrapped", r))
+wr.return().then((r) => show("wrapped return", r))
+wr.next().then((r) => show("wrapped after", r))
+await time.delay(1 * time.millisecond)

@@ -87,7 +87,9 @@ console.log(counts) // [ 1, 3 ]
 - `await p` suspends an async function until `p` is fulfilled and gives its
   value; `await value` of anything else takes one tick, as for a fulfilled
   promise. The top-level code of a module may `await` too: it runs the
-  event loop until the promise is fulfilled. A top-level `await` that
+  event loop until the promise is fulfilled, and goes on as the microtask
+  of its reaction, as in JavaScript, the microtasks queued after it waiting
+  until it awaits again or ends. A top-level `await` that
   nothing can settle any more (no timer but those unref'd, no task left
   that could) ends the program with "Warning: unsettled top-level await"
   and status 13, as in Node.
@@ -138,6 +140,11 @@ console.log(counts) // [ 1, 3 ]
 - Each call of an async function runs as a fiber: a task with its own stack
   that only the event loop resumes, so suspending it costs a switch of
   stacks, and a call that awaits forever keeps its stack.
+- Async generators (`async function*`) and `for await` are JavaScript's
+  (see [Async iteration](04-functions.md#async-iteration)): the body of an
+  async generator runs on a fiber of its own, which awaits as an async
+  function's does, and its `next()`, `return()` and the end of its body
+  settle their promises in the order of JavaScript's AsyncGeneratorQueue.
 
 The standard module `ore:sync` provides `Mutex` (`lock`, `unlock`, and
 `acquire()` for `using guard = mutex.acquire()`) and `WaitGroup` (`add`,
