@@ -5,6 +5,12 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Tagged templates: `` tag`a${x}b` `` calls the tag with a
+  `TemplateStringsArray` (the cooked strings, `null` for an invalid escape,
+  and their `raw` text) and the substitutions, checked as a call against
+  the tag's parameters. Each site passes the same strings object every
+  time. `String.raw` works as a tag and as a function of `{ raw }` and
+  strings.
 - Promises and async functions, in JavaScript's order of microtasks and
   timers, without rejections: `Promise<T>` (`then`, `finally`,
   `Promise.resolve`, `all`, `race`, `any`), `async` functions, methods and
