@@ -3,6 +3,12 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
+## Unreleased
+
+- `reduce` and `reduceRight` with a number as the initial value give the
+  accumulator the element's type when the number fits it, as TypeScript
+  does: `xs.reduce((a, b) => a + b, 0)` of a `number[]` is a `number`.
+
 ## 0.5.0
 
 Dictionaries and Object, type predicates, generators and iterators, globalThis, URL, TextEncoder, structuredClone, as const, tuple forms, the this type, and class features.

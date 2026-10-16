@@ -407,10 +407,14 @@ export function arrayMethod(
                 const cb = callback(c, args[0], scope, [T, T, types.i64, type], T)
                 return cb !== null ? typed(new ArrayMethod(name, T, array, [cb.expr], cb.arity)) : errorOperand
             }
-            // The accumulator has the type of the initial value.
+            // The accumulator has the type of the initial value, the element's for a
+            // number that fits it, as TypeScript tries `reduce(f, initial: T)` first:
+            // `xs.reduce((a, b) => a + b, 0)` of a `number[]` is a `number`.
             const initial = checkExpr(c, args[1], scope)
             if (initial.k === "error") return errorOperand
-            const init = c.toDefault(initial, args[1])
+            const fits =
+                (initial.k === "untyped-int" && isNumeric(T)) || (initial.k === "untyped-float" && T.kind === "float")
+            const init = fits ? c.coerce(initial, T, args[1]) : c.toDefault(initial, args[1])
             const cb = callback(c, args[0], scope, [init.type, T, types.i64, type], init.type)
             return cb !== null
                 ? typed(new ArrayMethod(name, init.type, array, [cb.expr, init], cb.arity))
