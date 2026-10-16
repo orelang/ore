@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Runs the benchmarks in bench/<name>/ with Ore, Bun, Node and Go, checks that
-# every runtime prints the same output, and prints a markdown table of times
-# and one of peak memory.
+# Runs the benchmarks in bench/<name>/ with Ore, C, Go, Bun and Node, checks
+# that every runtime prints the same output, and prints markdown: a header
+# describing the machine, the toolchains and the method, a table of times and
+# one of peak memory.
 #
-# Usage: bench/run.sh [filter...]
+# Usage: bench/run.sh [-o path] [filter...]
 #   filter      run only the benchmarks whose name contains one of the filters
+#   -o path     also write the markdown to a file (the same as RESULTS=path)
 #   ORE=path    the Ore compiler (default: ore on the PATH)
+#   CC=path     the C compiler (default: cc)
 #   RUNS=n      timed runs per benchmark and runtime (default: 5)
-#   RUNTIMES    the runtimes to try (default: "ore bun node go")
+#   RUNTIMES    the runtimes to try (default: "ore c go bun node"); the
+#               columns are always in that order
+#   RESULTS     a file to write the markdown to as well
 #   ALL=1       also run the benchmarks that have a SKIP file
 #
 # Times are the best of RUNS runs in milliseconds, measured with hyperfine when
@@ -18,31 +23,70 @@
 # reported and left out of the table. A benchmark whose directory has a SKIP
 # file (its first line says why) runs only with ALL=1 or when a filter is its
 # exact name.
+#
+# The C programs are built with $CC -std=c17 -O2 -march=native -pthread.
+# The markdown starts with the date, the machine (CPU, cores and threads,
+# memory, OS and kernel), the version of each toolchain and the timing
+# method, so that a run can be committed as it is under bench/results/.
 set -u
 
 root=$(cd "$(dirname "$0")" && pwd)
 ore=${ORE:-ore}
+cc=${CC:-cc}
 runs=${RUNS:-5}
-runtimes=${RUNTIMES:-ore bun node go}
+runtimes=${RUNTIMES:-ore c go bun node}
+results=${RESULTS:-}
 work=$(mktemp -d "${TMPDIR:-/tmp}/ore-bench.XXXXXX") || exit 1
 trap 'rm -f "$work"/*; rmdir "$work"' EXIT
 
 say() { printf '%s\n' "$*" >&2; }
 
-# The runtimes that exist on this machine.
-available=""
+# The options, anywhere among the filters.
+filters=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        -o)
+            [ $# -ge 2 ] || { say "-o needs a path"; exit 2; }
+            results=$2
+            shift 2
+            ;;
+        -o*)
+            results=${1#-o}
+            shift
+            ;;
+        --)
+            shift
+            filters+=("$@")
+            break
+            ;;
+        *)
+            filters+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- ${filters[@]+"${filters[@]}"}
+
+# The runtimes that exist on this machine, in the order of the columns.
 for runtime in $runtimes; do
     case $runtime in
-        ore) command -v "$ore" >/dev/null 2>&1 && available="$available ore" ;;
-        bun | node | go) command -v "$runtime" >/dev/null 2>&1 && available="$available $runtime" ;;
+        ore | c | go | bun | node) ;;
         *) say "unknown runtime '$runtime'" ;;
     esac
 done
-for runtime in $runtimes; do
-    case " $available " in
-        *" $runtime "*) ;;
-        *) say "skipping $runtime: not installed" ;;
+available=""
+for runtime in ore c go bun node; do
+    case " $runtimes " in *" $runtime "*) ;; *) continue ;; esac
+    case $runtime in
+        ore) program=$ore ;;
+        c) program=$cc ;;
+        *) program=$runtime ;;
     esac
+    if command -v "$program" >/dev/null 2>&1; then
+        available="$available $runtime"
+    else
+        say "skipping $runtime: $program is not installed"
+    fi
 done
 [ -n "$available" ] || { say "no runtime to run"; exit 1; }
 
@@ -110,11 +154,95 @@ run_once() {
 # Quotes a string for sh -c.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
+cflags="-std=c17 -O2 -march=native -pthread"
+
+# The first line a command prints, or "unknown".
+first() {
+    line=$("$@" 2>&1 | sed -n '/./{p;q;}')
+    printf '%s\n' "${line:-unknown}"
+}
+
+# Prints a number of bytes in gibibytes.
+gib() { awk -v bytes="$1" 'BEGIN { printf "%.0f GiB\n", bytes / 1073741824 }'; }
+
+# Prints the machine: the CPU, its cores and threads, the memory, the OS and
+# the kernel, as markdown list items.
+machine() {
+    case $(uname -s) in
+        Darwin)
+            cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
+            cores="$(sysctl -n hw.physicalcpu 2>/dev/null) cores"
+            threads=$(sysctl -n hw.logicalcpu 2>/dev/null)
+            performance=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null)
+            efficiency=$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null)
+            if [ -n "$performance" ] && [ -n "$efficiency" ]; then
+                cores="$cores ($performance performance, $efficiency efficiency)"
+            fi
+            memory=$(gib "$(sysctl -n hw.memsize 2>/dev/null)")
+            system="$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null) ($(sw_vers -buildVersion 2>/dev/null))"
+            ;;
+        Linux)
+            cpu=""
+            command -v lscpu >/dev/null 2>&1 && cpu=$(LC_ALL=C lscpu | sed -n 's/^Model name: *//p' | head -n 1)
+            [ -n "$cpu" ] || cpu=$(sed -n 's/^model name[[:space:]]*: *//p' /proc/cpuinfo | head -n 1)
+            threads=$(getconf _NPROCESSORS_ONLN 2>/dev/null || grep -c '^processor' /proc/cpuinfo)
+            if command -v lscpu >/dev/null 2>&1; then
+                cores=$(lscpu -p=core,socket 2>/dev/null | grep -v '^#' | sort -u | wc -l | tr -d ' ')
+            else
+                cores=$(awk -F: '/^physical id/ { s = $2 } /^core id/ { print s "/" $2 }' /proc/cpuinfo | sort -u | wc -l | tr -d ' ')
+            fi
+            [ "${cores:-0}" -gt 0 ] || cores=$threads
+            cores="$cores cores"
+            memory=$(gib "$(awk '/^MemTotal:/ { print $2 * 1024 }' /proc/meminfo)")
+            system=$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-Linux}")
+            ;;
+        *)
+            cpu=$(uname -p)
+            cores="unknown cores"
+            threads=unknown
+            memory=unknown
+            system=$(uname -s)
+            ;;
+    esac
+    echo "- Machine: ${cpu:-unknown CPU}, $cores, $threads threads, $memory memory"
+    echo "- OS: ${system:-unknown}, kernel $(uname -s) $(uname -r)"
+}
+
+# Prints the version of a runtime.
+version() {
+    case $1 in
+        ore) echo "ore $(first "$ore" version) ($(command -v "$ore"))" ;;
+        c) echo "$(first "$cc" --version) (\`$cc $cflags\`)" ;;
+        go) first go version ;;
+        bun) echo "bun $(first bun --version)" ;;
+        node) echo "node $(first node --version) (\`--experimental-strip-types\`)" ;;
+    esac
+}
+
 if command -v hyperfine >/dev/null 2>&1; then
-    say "timing with hyperfine, best of $runs runs"
+    method="the best of $runs runs after one warmup run, timed by $(first hyperfine --version)"
 else
-    say "timing without hyperfine, best of $runs runs"
+    method="the best of $runs runs, timed by the shell's clock (no hyperfine)"
 fi
+if [ -n "$timeflag" ]; then
+    method="$method; peak memory is the maximum resident set size of the run that checks the output, from \`/usr/bin/time $timeflag\`"
+else
+    method="$method; peak memory not measured (no \`/usr/bin/time\` with -l or -v)"
+fi
+
+report="# Benchmarks
+
+- Date: $(date -u '+%Y-%m-%d %H:%M UTC')
+$(machine)
+- Commit: $(git -C "$root" describe --always --dirty 2>/dev/null || echo unknown)
+- Runs: $method
+
+| runtime | version |
+|---|---|
+$(for runtime in $available; do echo "| $runtime | $(version "$runtime") |"; done)
+"
+printf '%s\n' "$report"
+say "timing: $method"
 
 # Prints the cells of a table row: each number with a unit and its ratio to
 # the smallest number of the row, anything else as it is.
@@ -168,6 +296,15 @@ for dir in "$root"/*/; do
                     command="$(quote "$work/$name-ore") $size"
                 else
                     say "  ore: build failed"
+                    sed 's/^/    /' "$work/build.log" >&2
+                fi
+                ;;
+            c)
+                # shellcheck disable=SC2086
+                if "$cc" $cflags -o "$work/$name-c" "$dir/main.c" -lm >"$work/build.log" 2>&1; then
+                    command="$(quote "$work/$name-c") $size"
+                else
+                    say "  c: build failed"
                     sed 's/^/    /' "$work/build.log" >&2
                 fi
                 ;;
@@ -233,16 +370,23 @@ for runtime in $available; do
     header="$header $runtime |"
     rule="$rule---:|"
 done
-echo
-echo "Time (best of $runs runs):"
-echo
-echo "$header"
-echo "$rule"
-printf '%s' "$table"
-echo
-echo "Peak memory (maximum resident set size):"
-echo
-echo "$header"
-echo "$rule"
-printf '%s' "$memtable"
+tables="## Time (best of $runs runs)
+
+$header
+$rule
+$table
+## Peak memory (maximum resident set size)
+
+$header
+$rule
+$memtable"
+printf '\n%s' "$tables"
+if [ -n "$results" ]; then
+    if printf '%s\n%s' "$report" "$tables" >"$results"; then
+        say "wrote $results"
+    else
+        say "could not write $results"
+        failed=1
+    fi
+fi
 exit $failed

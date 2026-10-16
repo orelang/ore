@@ -5,6 +5,14 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
+  for every benchmark, C17 and libc only (pthreads for `channels` and
+  `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with
+  `$CC -O2 -march=native`. The script's markdown now starts with the date,
+  the machine (CPU, cores and threads, memory, OS and kernel), the version
+  of each toolchain and the timing method; `-o path` or `RESULTS=path`
+  writes it to a file as well, and the columns are always ore, c, go, bun,
+  node.
 - Each worker thread has its own run queue, as in Go: a lock-free ring that
   tasks it spawns or wakes go to, with a slot for the task the running one
   woke last (so two tasks that wake each other run in turn on one thread),
