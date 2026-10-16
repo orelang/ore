@@ -54,8 +54,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   - object spread `{ ...o }` (done);
   - methods and accessors in object literals (done; accessors implement
     interface fields, in classes too);
-  - `static` members of classes (done; generic classes have static
-    methods, generic ones too, but no static fields yet);
+  - `static` members of classes (done, in generic classes too: one
+    static field for all the instances of the class, as in JavaScript);
   - default values in destructuring, and `...rest` in object destructuring
     (done), optional properties of object types (done);
   - optional, default and rest parameters of closures (done);
