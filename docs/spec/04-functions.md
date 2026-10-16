@@ -161,7 +161,10 @@ The iteration protocol is JavaScript's. A value is iterable when it has a
 discriminated union narrowed by `done` (`if (!r.done) use(r.value)`).
 `Symbol.iterator`, like `Symbol.dispose`, is a well-known symbol usable
 as a computed method name of classes and interfaces, and in
-`x[Symbol.iterator]()`; there are no other symbols.
+`x[Symbol.iterator]()`; there are no other symbols. `x[Symbol.iterator]()`
+of a string, an array, a map or a set is the iterator `for...of` would
+use, with the iterator helpers (a string's gives its characters as
+strings, see [Strings](02-types.md#strings)).
 
 - The global interfaces `Iterator<T, TReturn = void, TNext = null>`
   (`next()`), `Iterable<T>` (`[Symbol.iterator](): Iterator<T>`) and
@@ -213,11 +216,15 @@ as a computed method name of classes and interfaces, and in
   initial value` when there is none. A class may extend `IteratorObject<T>`
   with a `next()` of its own, as a JavaScript class extends `Iterator`, and
   override `close()` (which does nothing by default) to be ended early.
-- `Iterator.from(iterable)` is an `IteratorObject` of the values of an
-  array, a set, a map's entries or an iterator with the helpers, read
-  lazily as `yield*` reads them; unlike JavaScript, it wraps an iterator
-  that has the helpers already, and does not take an object that has only
-  `next()`.
+- `Iterator.from(x)` is an `IteratorObject` of the values of `x`, as in
+  JavaScript: for a string, an array, a set or a map, the iterator its
+  `[Symbol.iterator]()` makes; an iterator that has the helpers already (a
+  generator, an iterator of the runtime or of a class extending
+  `IteratorObject`) is returned as it is (`Iterator.from(g) === g`);
+  otherwise the iterator of `x[Symbol.iterator]()`, or `x` itself when it
+  has only `next()`, is wrapped in an iterator with the helpers
+  (`[object Iterator]`) whose `next()` is its own and whose `return()`
+  calls its `return()`, when it has one without parameters.
 - A generator function `function* f(): Generator<T, TReturn, TNext>`, a
   generator method `*m()` (also `*[Symbol.iterator]()`) or a generator
   function expression returns a `Generator<T, TReturn = void, TNext = null>`

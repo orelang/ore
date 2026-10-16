@@ -10,6 +10,7 @@
 // everywhere in strings.
 
 import { type Inspection, begin, end, entry, field, paint, quote } from "ore:runtime/inspect"
+import { IteratorObject } from "ore:runtime/iterator"
 import {
     type Program,
     canonicalize,
@@ -488,6 +489,41 @@ class Matcher {
 }
 
 /**
+ * The iterator of `s.matchAll(re)`, JavaScript's `%RegExpStringIteratorPrototype%`:
+ * each step searches for the next match, from the end of the last one (past
+ * the next character after an empty one), on a matcher of its own, so that
+ * `re` and its `lastIndex` stay as they are. Once done, it stays done.
+ */
+export class RegExpStringIterator extends IteratorObject<RegExpMatch> {
+    private done = false
+
+    constructor(
+        private readonly matcher: Matcher,
+        private at: int,
+        private readonly sticky: bool,
+    ) {
+        super()
+    }
+
+    next(): IteratorResult<RegExpMatch, void> {
+        const matcher = this.matcher
+        if (this.done || !matcher.search(this.at, this.sticky)) {
+            this.done = true
+            return { value: null, done: true }
+        }
+        const match = matcher.result()
+        this.at = matcher.slots[1]
+        if (this.at === matcher.slots[0]) this.at = matcher.advance(this.at)
+        return { value: match, done: false }
+    }
+
+    /** `[object RegExp String Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object RegExp String Iterator]"
+    }
+}
+
+/**
  * A match of a regular expression: what `exec` returns. Like JavaScript's
  * match arrays, `m[0]` (or `at(0)`) is the matched text and `m[i]` the text
  * of group `i`, `index` is where the match starts and `groups` holds the
@@ -805,14 +841,15 @@ export class RegExp {
         return new RegExpMatch(texts, -1, s, [])
     }
 
-    /** `s.matchAll(re)`: every match, from `lastIndex`; `re` must have the `g` flag. */
-    private stringMatchAll(s: string): RegExpMatch[] {
-        if (!this.global) process.panic("String.prototype.matchAll called with a non-global RegExp argument")
-        const out: RegExpMatch[] = []
-        this.all(s, this.lastIndex < 0 ? 0 : this.lastIndex, (matcher) => {
-            out.push(matcher.result())
-        })
-        return out
+    /**
+     * `s.matchAll(re)`: an iterator of the matches from `lastIndex` on,
+     * found one at a time as it is stepped; `re` must have the `g` flag
+     * (JavaScript's `TypeError`), and its `lastIndex` is left as it was.
+     */
+    private stringMatchAll(s: string): RegExpStringIterator {
+        if (!this.global) process.panic("TypeError: String.prototype.matchAll called with a non-global RegExp argument")
+        const start = this.lastIndex < 0 ? 0 : this.lastIndex
+        return new RegExpStringIterator(new Matcher(this.program, s), start, this.sticky)
     }
 
     /** `s.search(re)`: the offset of the first match, or -1; `lastIndex` is left as it was. */

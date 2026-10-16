@@ -344,6 +344,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE4095](ORE4095.md) | '…' takes an iterable (an array, a string, a set, a map, a generator...), got '…'. |
 | [ORE4096](ORE4096.md) | 'Object.fromEntries' takes [string, value] pairs, got '…'. |
 | [ORE4097](ORE4097.md) | A dictionary is not iterable: use 'Object.entries(d)'. |
+| [ORE4098](ORE4098.md) | Type '…' has no '[Symbol.iterator]' method. |
 
 ## ORE5xxx: Classes and interfaces
 

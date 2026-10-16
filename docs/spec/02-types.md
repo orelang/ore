@@ -610,6 +610,14 @@ functions.
 - `<`, `<=`, `>`, `>=` compare strings byte-wise; `===` compares contents.
 - `for (const r of s)` iterates runes as `i32`. Invalid UTF-8 yields
   U+FFFD (65533) for each invalid byte.
+- `s[Symbol.iterator]()` is a `StringIterator`, an `IteratorObject<string>`
+  with the iterator helpers, of the characters as JavaScript's gives them:
+  strings of one code point (`"aé😀"[Symbol.iterator]().toArray()` is
+  `["a", "é", "😀"]`), a byte where no valid character starts being a
+  string of that byte. `[...s]`, `Array.from(s)`, `Iterator.from(s)` and
+  `yield* s` give the same strings; only `for...of` over a string itself
+  gives runes, the cheaper loop (`for (const c of s[Symbol.iterator]())`
+  gives the strings).
 - The methods of `String.prototype` are JavaScript's, with byte offsets for
   positions and lengths (JavaScript counts UTF-16 code units):
   `at(i?)`, `charAt(i?)`, `charCodeAt(i?)`, `codePointAt(i?)`,
@@ -753,8 +761,13 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
 - String methods that take a regular expression:
   - `s.match(re)` is `re.exec(s)`; with `g` it is a `RegExpMatch` of every
     matched text (`at(i)`, `length`; `index` is -1), or `null`.
-  - `s.matchAll(re)` is an array of the matches from `re.lastIndex` on;
-    `re` must have the `g` flag (a panic, as JavaScript's `TypeError`).
+  - `s.matchAll(re)` is a lazy iterator of the matches from `re.lastIndex`
+    on, a `RegExpStringIterator` (an `IteratorObject<RegExpMatch>` with the
+    iterator helpers, as JavaScript's): each step finds the next match, past
+    the next character after an empty one, and `re` and its `lastIndex` are
+    left as they are. `re` must have the `g` flag: without it the call
+    panics with `TypeError: String.prototype.matchAll called with a
+    non-global RegExp argument`, as JavaScript throws.
   - `s.replace(re, replacement)` replaces the first match, or every one
     with `g`; `s.replaceAll(re, replacement)` requires `g`. In the
     replacement, `$&` is the match, `$1`..`$99` and `$<name>` the groups,

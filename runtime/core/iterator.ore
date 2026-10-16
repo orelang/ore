@@ -1,6 +1,6 @@
 //ore:internal
 // The iteration protocol of JavaScript, generators, and the iterators of
-// arrays, maps and sets.
+// arrays, maps, sets and strings.
 //
 // `for...of`, spread, `Array.from`, `new Map`, `new Set` and `yield*` take
 // any value with a `[Symbol.iterator]()` method, whose iterator's `next()`
@@ -8,8 +8,8 @@
 // The classes and interfaces `Generator`, `Iterator`, `Iterable`,
 // `IterableIterator` and `IteratorObject` are global names.
 //
-// Generators, the iterators of arrays, maps and sets, and the iterator
-// helpers' results extend `IteratorObject`, which has the iterator helpers
+// Generators, the iterators of arrays, maps, sets and strings, and the
+// iterator helpers' results extend `IteratorObject`, which has the iterator helpers
 // of ES2025 (`map`, `filter`, `take`... of JavaScript's `Iterator.prototype`):
 // lazy, they step their source only when they are stepped, and close it
 // (`close()`, a generator's `return()`) when they end before it does.
@@ -583,6 +583,83 @@ export class SetIterator<E, T> extends IteratorObject<T> {
     toString(): string {
         return "[object Set Iterator]"
     }
+}
+
+/**
+ * The iterator of a string's `[Symbol.iterator]()`: its characters, each a
+ * string of one code point, as JavaScript's (whose `for...of` gives the
+ * same; Ore's gives runes). A byte where no valid UTF-8 character starts is
+ * a string of that byte, as `[...s]` and `s.split("")` give it.
+ */
+export class StringIterator extends IteratorObject<string> {
+    private index = 0
+
+    constructor(private readonly text: string) {
+        super()
+    }
+
+    next(): IteratorResult<string, void> {
+        if (this.index >= this.text.length) return { value: null, done: true }
+        const value = this.text.charAt(this.index)
+        this.index += value.length
+        return { value, done: false }
+    }
+
+    /** `[object String Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object String Iterator]"
+    }
+}
+
+/**
+ * What `Iterator.from` makes of an iterator without the helpers (an object
+ * with `next()`, or what a `[Symbol.iterator]()` returns), JavaScript's
+ * `%WrapForValidIteratorPrototype%`: `next()` is the iterator's, and
+ * `close()` calls `returning`, the iterator's `return()` when it has one.
+ */
+export class WrappedIterator<T> extends IteratorObject<T> {
+    constructor(
+        private readonly iterator: Iterator<T>,
+        private readonly returning: () => void,
+    ) {
+        super()
+    }
+
+    next(): IteratorResult<T, void> {
+        return this.iterator.next()
+    }
+
+    /** Calls the iterator's `return()`, if it has one, and is done. */
+    return(): IteratorResult<T, void> {
+        this.returning()
+        return { value: null, done: true }
+    }
+
+    close(): void {
+        this.returning()
+    }
+
+    /** `[object Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Iterator]"
+    }
+}
+
+/** `Iterator.from(iterator)` of an iterator without the helpers or a `return()`. */
+export function wrapIterator<T>(iterator: Iterator<T>): WrappedIterator<T> {
+    return new WrappedIterator<T>(iterator, () => {})
+}
+
+/** `Iterator.from(iterator)` of an iterator without the helpers whose `return()` is `returning`. */
+export function wrapReturning<T, R>(iterator: Iterator<T>, returning: () => R): WrappedIterator<T> {
+    return new WrappedIterator<T>(iterator, () => {
+        returning()
+    })
+}
+
+/** A string's `[Symbol.iterator]()`. */
+export function stringValues(s: string): StringIterator {
+    return new StringIterator(s)
 }
 
 /** `array.values()`, also an array's `[Symbol.iterator]()`. */

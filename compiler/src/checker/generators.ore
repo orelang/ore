@@ -30,7 +30,7 @@ import { canBeNull, typed } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
 import { iteratorOf, iteratorValue } from "./iteration"
 import { checkBlock } from "./statements"
-import { GenericFuncSymbol, Scope } from "./symbols"
+import { FuncSymbol, GenericFuncSymbol, Scope } from "./symbols"
 
 export const iteratorModule = "ore:runtime/iterator"
 
@@ -103,6 +103,7 @@ export function iteratorFunc(c: Checker, name: string, typeArgs: Type[], node: N
     for (const [source, info] of c.modules) {
         if (source.path !== iteratorModule) continue
         const symbol = info.scope.ownValue(name)
+        if (symbol instanceof FuncSymbol) return symbol.func
         if (!(symbol instanceof GenericFuncSymbol)) process.panic(`generators: no function ${name}`)
         const found = instantiate(c, symbol.generic, typeArgs, node)
         if (found instanceof Func) return found

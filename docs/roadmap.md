@@ -239,9 +239,9 @@ an LLVM coroutine. Left:
   its end keeps a parked stack until the program ends: the collector could
   free the fibers of unreachable generators. Iterator helpers (done; the
   callback results of `flatMap` are iterated on a generator each, a fiber
-  per inner iterable). Async generators. Strings have no iterator objects
-  (`s[Symbol.iterator]()`, nor `[Symbol.iterator]()` of arrays, maps and
-  sets), and `s.matchAll(re)` is an array, not a lazy iterator.
+  per inner iterable). Async generators. Iterator objects of strings,
+  arrays, maps and sets from `[Symbol.iterator]()`, a lazy `matchAll` and
+  JavaScript's `Iterator.from` (done).
 
 ## 7. Web APIs
 

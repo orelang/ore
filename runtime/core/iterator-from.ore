@@ -5,9 +5,13 @@
 import { type IteratedOf, flatten } from "ore:runtime/iterator"
 
 /**
- * Iterator.from: the values of an iterable (an array, a set, a map's
- * entries, a generator or any object with `[Symbol.iterator]()`) as an
- * iterator with the iterator helpers, iterated lazily as `yield*` does.
+ * Iterator.from: the values of an iterable (a string, an array, a set, a
+ * map's entries, a generator or any object with `[Symbol.iterator]()`) or
+ * of an object with only `next()`, as an iterator with the helpers. The
+ * compiler checks a call of it (`iteratorFrom` in checker/iteration.ore),
+ * as JavaScript's: an iterator that has the helpers already is returned as
+ * it is, the iterator of a string, an array, a set or a map is the one its
+ * `[Symbol.iterator]()` makes, and another is wrapped in a `WrappedIterator`.
  */
 export function from<R extends object>(iterable: R): IteratorObject<IteratedOf<R>> {
     return flatten<R>(iterable)

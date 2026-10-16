@@ -1,8 +1,14 @@
 const it = [1, 2, 3].values()
 
-// flatMap takes iterables, which strings are not, as in JavaScript.
+// flatMap takes iterables, which strings are not, as in JavaScript; Iterator.from takes them.
 it.flatMap((x) => "ab") // error: Type 'string' does not satisfy the constraint 'object' of 'R'.
-Iterator.from("ab") // error: Type 'string' does not satisfy the constraint 'object' of 'R'.
+Iterator.from("ab")
+Iterator.from(1) // error: Type 'i64' is not iterable: it needs a '[Symbol.iterator]()' method.
+Iterator.from({ size: 1 }) // error: Type '{ size: i64 }' is not iterable: it needs a '[Symbol.iterator]()' method.
+const d: { [key: string]: int } = {}
+d[Symbol.iterator]() // error: A dictionary is not iterable: use 'Object.entries(d)'.
+const flag = true
+flag[Symbol.iterator]() // error: Type 'bool' has no '[Symbol.iterator]' method.
 
 // reduce without an initial value accumulates in the type of the values.
 it.reduce((a: string, x) => a) // error: Parameter type 'string' does not match the expected 'i64'.

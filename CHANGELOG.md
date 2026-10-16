@@ -141,6 +141,23 @@ before 1.0, a minor version may change the language.
   `getEntriesByType`, `clearMarks`, `clearMeasures` and `toJSON` follow
   the User Timing API as Node has it, with the global classes
   `PerformanceEntry`, `PerformanceMark` and `PerformanceMeasure`.
+- `[Symbol.iterator]()` of strings, arrays, maps and sets is callable, as in
+  JavaScript, and returns the iterators of the runtime with the iterator
+  helpers. A string's, a `StringIterator`, gives its characters as strings
+  of one code point (`"aé"[Symbol.iterator]().toArray()` is `["a", "é"]`),
+  as `[...s]`, `Array.from(s)`, `Iterator.from(s)` and now `yield* s` do;
+  `for (const r of s)` still gives runes (`i32`).
+- `s.matchAll(re)` is a lazy `RegExpStringIterator` (an `IteratorObject` of
+  `RegExpMatch`), as in JavaScript, not an array: each step finds the next
+  match, from `re.lastIndex` on, without changing `re`; `for...of`, spread
+  and `Array.from` take it as before. Without the `g` flag it panics with
+  `TypeError: String.prototype.matchAll called with a non-global RegExp
+  argument`, at the call.
+- `Iterator.from(x)` is JavaScript's: it takes a string, and an object that
+  has only `next()`; it returns an iterator that has the helpers already
+  (a generator, an iterator of the runtime or a class extending
+  `IteratorObject`) as it is, and wraps another one in an iterator whose
+  `return()` calls its `return()`.
 
 ## 0.5.0
 

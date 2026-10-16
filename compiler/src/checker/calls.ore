@@ -1,7 +1,7 @@
 // Calls: functions, methods, closures, constructors, built-ins (including
 // `unsafe` and `JSON`), array and string methods.
 
-import { isProtocolIterable, toArray } from "./iteration"
+import { builtinIteratorOf, isProtocolIterable, iteratorFrom, toArray } from "./iteration"
 import { inferGenerator, isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
 import { compileRegExp } from "../../../runtime/core/regexp-syntax"
 import {
@@ -131,6 +131,7 @@ import {
 import {
     arrayMethods,
     hasZeroValue,
+    iteratorName,
     numericType,
     wellKnownSymbol,
     stringMethods,
@@ -156,6 +157,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
     if (symbolOfCallee !== null && symbolOfCallee.k === "generic-func") {
         if (isIdentifier(callee)) c.info.definitions.set(callee, symbolOfCallee.decl)
         const generic = symbolOfCallee.generic
+        if (c.sourceOf(generic.decl).path === "ore:runtime/iterator-from") return iteratorFromCall(c, node, scope)
         // The first argument of `Object.fromEntries` and the `groupBy`s, an iterable, as an array;
         // an array literal is checked with the call, for the type of its elements.
         const checked: (Operand | null)[] = []
@@ -221,14 +223,19 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
         // `x[Symbol.dispose]()`, `x[Symbol.iterator]()`.
         if (args.length > 0) return c.fail(node, `'${symbolName}' takes no arguments.`)
         const target = checkExpr(c, expression(callee), scope)
-        if (target.k !== "typed")
-            return target.k === "error"
-                ? target
-                : c.fail(expression(callee), `A constant has no '${symbolName}' method.`)
+        if (target.k === "error") return target
+        if (symbolName === iteratorName) {
+            // The iterator of an array, a string, a set or a map, as for...of would make it.
+            const builtin = builtinIteratorOf(c, c.toDefault(target, expression(callee)), callee)
+            if (builtin !== null) return typed(builtin)
+        }
+        if (target.k !== "typed") return c.fail(expression(callee), `A constant has no '${symbolName}' method.`)
+        const type = target.expr.type
+        if (symbolName === iteratorName && type.kind === "map" && type.dict)
+            return c.fail(callee, `A dictionary is not iterable: use 'Object.entries(d)'.`)
         const call = symbolMethodCall(c, target.expr, symbolName)
-        return call !== null
-            ? typed(call)
-            : c.fail(callee, `Type '${typeToString(target.expr.type)}' has no '${symbolName}' method.`)
+        if (call !== null) return typed(call)
+        return c.fail(callee, `Type '${typeToString(type)}' has no '${symbolName}' method.`)
     }
     if (callee.kind === "PropertyAccessExpression" && symbolOfCallee !== null) {
         // `m.f(...)`: an export of a module imported as `* as m`.
@@ -964,6 +971,16 @@ function minMax(c: Checker, name: string, node: Node, scope: Scope, expected: Ty
     }
     const call = new BuiltinCall(t, name, values, null, null, spread.some((x) => x) ? spread : null)
     return bindAround(locals, typed(call))
+}
+
+/** `Iterator.from(x)`, which takes what a generic function cannot: see `iteratorFrom`. */
+function iteratorFromCall(c: Checker, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    if (args.length !== 1) return c.fail(node, `'Iterator.from' expects 1 argument(s), got ${args.length}.`)
+    const operand = checkExpr(c, args[0], scope)
+    if (operand.k === "error") return errorOperand
+    const iterator = iteratorFrom(c, c.toDefault(operand, args[0]), args[0])
+    return iterator !== null ? typed(iterator) : errorOperand
 }
 
 export function builtinCall(

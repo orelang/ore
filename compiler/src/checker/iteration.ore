@@ -1,16 +1,20 @@
 // The iteration protocol: `for...of`, spread, `Array.from`, `new Map`,
 // `new Set` and `yield*` over values with a `[Symbol.iterator]()` method,
 // whose iterator's `next()` returns an `IteratorResult` until it is done.
-// Arrays, strings, maps, sets and channels keep their own loops; a
-// generator is advanced by its `advance()` and `current()`, without the
-// result objects of `next()`.
+// Arrays, strings, maps, sets and channels keep their own loops (their
+// `[Symbol.iterator]()` makes an iterator of the runtime, see
+// `builtinIteratorOf`); a generator is advanced by its `advance()` and
+// `current()`, without the result objects of `next()`.
 
 import {
     type Expr,
     type Stmt,
     Assign,
+    Bind,
+    BindLocal,
     Block,
     BoolLit,
+    BoundMethod,
     BreakStmt,
     Call,
     ExprStmt,
@@ -31,9 +35,10 @@ import {
     UnionField,
     UsingStmt,
 } from "../ir/nodes"
-import { type Type, arrayOf, findField, findMethod, types, typeToString } from "../ir/types"
+import { type Type, arrayOf, findField, findMethod, isStringLike, sameType, types, typeToString } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Checker } from "./base"
+import { dispatch } from "./classes"
 import { isIteratorObject, iteratorFunc, iteratorInstance } from "./generators"
 import { iteratorName, typed } from "./helpers"
 import { symbolMethodCall } from "./statements"
@@ -83,16 +88,95 @@ export function iteratorValue(c: Checker, iterator: Type): Type | null {
 export function iteratorOf(c: Checker, value: Expr, node: Node): Expr | null {
     const type = value.type
     if (iteratorInstance(c, type, "Generator") !== null || isIteratorObject(c, type)) return value
-    let builtin: Func | null = null
-    if (type.kind === "array") builtin = iteratorFunc(c, "arrayValues", [type.elem], node)
-    else if (type.kind === "set") builtin = iteratorFunc(c, "setValues", [type.elem], node)
-    else if (type.kind === "map") builtin = iteratorFunc(c, "mapEntries", [type.key, type.value], node)
-    if (builtin !== null) return new Call(builtin.type.result, builtin, [value])
+    const builtin = builtinIteratorOf(c, value, node)
+    if (builtin !== null) return builtin
     if (type.kind === "struct" || type.kind === "interface") {
         const call = symbolMethodCall(c, value, iteratorName)
         if (call !== null && iteratorValue(c, call.type) !== null) return call
     }
     c.error(node, `Type '${typeToString(type)}' is not iterable: it needs a '[Symbol.iterator]()' method.`)
+    return null
+}
+
+/**
+ * The `[Symbol.iterator]()` of an array, a string, a set or a map (not a
+ * dictionary), an `IteratorObject` of the runtime: `ArrayIterator`,
+ * `StringIterator` (the characters as strings), `SetIterator` or
+ * `MapIterator` (the entries). Null for any other value.
+ */
+export function builtinIteratorOf(c: Checker, value: Expr, node: Node): Expr | null {
+    const type = value.type
+    let builtin: Func | null = null
+    let arg = value
+    if (type.kind === "array") builtin = iteratorFunc(c, "arrayValues", [type.elem], node)
+    else if (type.kind === "set") builtin = iteratorFunc(c, "setValues", [type.elem], node)
+    else if (type.kind === "map" && !type.dict) builtin = iteratorFunc(c, "mapEntries", [type.key, type.value], node)
+    else if (isStringLike(type) || (type.kind === "union" && type.members.every(isStringLike))) {
+        builtin = iteratorFunc(c, "stringValues", [], node)
+        if (!sameType(type, types.string)) arg = new Recast(types.string, value)
+    }
+    return builtin !== null ? new Call(builtin.type.result, builtin, [arg]) : null
+}
+
+/**
+ * `Iterator.from(value)`, as JavaScript's: the iterator of a string, an
+ * array, a set or a map; an `IteratorObject` itself (a generator, an
+ * iterator of the runtime or of a class that extends it); else the
+ * iterator of its `[Symbol.iterator]()`, or the value itself when it has
+ * only `next()`, which when it is not an `IteratorObject` is wrapped in one
+ * whose `close()` calls its `return()`. Reports a value that is neither.
+ */
+export function iteratorFrom(c: Checker, value: Expr, node: Node): Expr | null {
+    const builtin = builtinIteratorOf(c, value, node)
+    if (builtin !== null) return builtin
+    if (!isProtocolIterable(value.type)) {
+        c.error(node, `Type '${typeToString(value.type)}' is not iterable: it needs a '[Symbol.iterator]()' method.`)
+        return null
+    }
+    let iterator: Expr = value
+    if (iteratorInstance(c, value.type, "Generator") === null && !isIteratorObject(c, value.type)) {
+        const call = symbolMethodCall(c, value, iteratorName)
+        if (call !== null) iterator = call
+    }
+    const type = iterator.type
+    if (iteratorInstance(c, type, "Generator") !== null || isIteratorObject(c, type)) return iterator
+    const elem = iteratorValue(c, type)
+    if (elem === null) {
+        c.error(node, `Type '${typeToString(value.type)}' is not iterable: it needs a '[Symbol.iterator]()' method.`)
+        return null
+    }
+    // The iterator is wrapped, and its `return()`, when it has one, called by the wrapper's.
+    const local = c.newLocal("iterator", type, false)
+    const ref: Expr = new LocalRef(type, local)
+    const returning = boundReturn(c, ref)
+    const f =
+        returning !== null
+            ? iteratorFunc(c, "wrapReturning", [elem, returning.type.result], node)
+            : iteratorFunc(c, "wrapIterator", [elem], node)
+    if (f === null) return null
+    const args: Expr[] = [c.coerce(typed(ref), f.type.params[0], node)]
+    if (returning !== null) args.push(returning)
+    return new Bind(f.type.result, [new BindLocal(local, iterator)], new Call(f.type.result, f, args))
+}
+
+/** An iterator's `return()` without parameters, as a function value, or null when it has none. */
+function boundReturn(c: Checker, iterator: Expr): BoundMethod | null {
+    const type = iterator.type
+    if (type.kind === "struct") {
+        const method = findMethod(type, "return")
+        if (method === null || method.func.params.length !== 0) return null
+        const bound = new BoundMethod(method.func.type, iterator, method.func)
+        dispatch(c, bound, "return")
+        return bound
+    }
+    if (type.kind === "interface") {
+        for (let index = 0; index < type.members.length; index++) {
+            const m = type.members[index]
+            if (m.name !== "return") continue
+            if (m.k === "method" && m.type.params.length === 0) return new BoundMethod(m.type, iterator, null, index)
+            return null
+        }
+    }
     return null
 }
 

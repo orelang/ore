@@ -20,7 +20,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 |---|---|---|
 | order of an object's properties (printing, JSON, `Object.keys`) | the order they were added to each object | the same for literals, spreads and rests; an optional property assigned after the object was made has the place it had as null, not the last; a spread of an interface value adds its fields by name, and one in a literal with methods or accessors in the order of the spread object's type; `JSON.parse<T>` takes the text's order only when the program makes objects of `T` in it, otherwise the type's |
 | `"abc".length` | UTF-16 code units | bytes |
-| `for (const c of s)` | code points as strings | runes (`i32`) |
+| `for (const c of s)` | code points as strings | runes (`i32`); `s[Symbol.iterator]()`, spread, `Array.from(s)`, `Iterator.from(s)` and `yield* s` give code points as strings, as in JavaScript |
 | `7 / 2` | `3.5` | `3` (integer division) |
 | `1 / 0` | `Infinity` | compile error for constants, panic for integers, `Infinity` for floats |
 | `2 ** 63` in `int` | float | wraps |

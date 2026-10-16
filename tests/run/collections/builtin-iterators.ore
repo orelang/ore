@@ -1,0 +1,109 @@
+// [Symbol.iterator]() of strings, arrays, maps and sets makes the iterators
+// of the runtime, with the iterator helpers; a string's gives its characters
+// as strings of one code point, as spread and Array.from give them.
+const s = "aé😀b"
+const chars = s[Symbol.iterator]()
+console.log(chars.next().value, chars.next().value, chars.toString())
+console.log(chars.toArray(), chars.next().done)
+const upper = "héllo"[Symbol.iterator]().map((c) => c.toUpperCase())
+console.log(upper.toArray())
+for (const c of "xé"[Symbol.iterator]()) console.log(c, c === "é")
+console.log([...s], Array.from(s), Iterator.from(s).toArray())
+
+// yield* over a string yields its characters too.
+function* letters(): Generator<string> {
+    yield* "hi"
+    yield "!"
+}
+console.log([...letters()])
+
+const a = [1, 2, 3]
+const ai = a[Symbol.iterator]()
+console.log(ai.next().value, ai.toString())
+console.log(ai.map((x) => x * 10).toArray())
+const m = new Map([
+    ["k", 1],
+    ["l", 2],
+])
+console.log(m[Symbol.iterator]().toArray(), m[Symbol.iterator]().toString())
+for (const [k, v] of m[Symbol.iterator]()) console.log(k, v)
+const set = new Set(["p", "q", "r"])
+console.log(set[Symbol.iterator]().drop(1).toArray(), set[Symbol.iterator]().toString())
+
+// Iterator.from returns an iterator that has the helpers as it is.
+function* two(): Generator<int> {
+    yield 1
+    yield 2
+}
+const g = two()
+console.log(Iterator.from(g) === g)
+const values = [7, 8].values()
+console.log(Iterator.from(values) === values, Iterator.from(values).toArray())
+
+// An object with only next() is wrapped, and the wrapper's return() calls its own.
+class Counter {
+    n = 0
+
+    next(): IteratorResult<int> {
+        this.n++
+        if (this.n > 3) return { value: null, done: true }
+        return { value: this.n, done: false }
+    }
+
+    return(): IteratorResult<int> {
+        console.log("return at", this.n)
+        return { value: null, done: true }
+    }
+}
+const wrapped = Iterator.from(new Counter())
+console.log(wrapped.toString())
+console.log(wrapped.map((x) => x * 2).toArray())
+console.log(Iterator.from(new Counter()).take(1).toArray())
+for (const x of Iterator.from(new Counter())) if (x === 2) break
+console.log(Iterator.from(new Counter()).find((x) => x === 3))
+
+let left = 2
+const bare: Iterator<string> = {
+    next(): IteratorResult<string> {
+        if (left === 0) return { value: null, done: true }
+        left--
+        return { value: `v${left}`, done: false }
+    },
+}
+console.log(Iterator.from(bare).toArray())
+
+// A class whose [Symbol.iterator]() returns an iterator without the helpers.
+class Countdown {
+    constructor(private from: int) {}
+
+    [Symbol.iterator](): Iterator<int> {
+        let n = this.from
+        return {
+            next(): IteratorResult<int> {
+                if (n === 0) return { value: null, done: true }
+                n--
+                return { value: n + 1, done: false }
+            },
+        }
+    }
+}
+const even = Iterator.from(new Countdown(4)).filter((x) => x % 2 === 0)
+console.log(even.toArray())
+
+// s.matchAll(re) is a lazy iterator of the matches, on a copy of re: re's lastIndex stays.
+const digit = /(\d)/g
+const matches = "a1b2c3".matchAll(digit)
+console.log(matches.toString())
+const first = matches.next()
+if (!first.done) console.log(first.value[0], first.value.index, digit.lastIndex)
+const rest = [...matches].map((x) => x[1])
+console.log(rest, matches.next().done)
+console.log(Array.from("x1y22".matchAll(/\d+/g), (x) => x[0]))
+const firstTwo = "aaa".matchAll(/a/g).take(2)
+console.log(firstTwo.map((x) => x.index).toArray())
+const from = /\d/g
+from.lastIndex = 3
+const indexes = [..."1a2b3".matchAll(from)].map((x) => x.index)
+console.log(indexes, from.lastIndex)
+for (const [all, letter] of "x1y2".matchAll(/([a-z])\d/g)) console.log(all, letter)
+console.log("a-b".matchAll("-").toArray().length, [..."".matchAll(/x*/g)].length)
