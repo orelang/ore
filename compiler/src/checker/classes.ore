@@ -1125,11 +1125,25 @@ export function checkImplements(c: Checker, info: ClassInfo, scope: Scope) {
             const target = expression(ref)
             const type = isIdentifier(target) ? scope.lookupType(target.text) : null
             if (isIdentifier(target) && type !== null) c.info.definitions.set(target, type.decl)
-            if (type === null || type.type.kind !== "interface") {
+            let found: Type | null = type === null ? null : type.type
+            // A generic interface with type arguments: `implements Iterator<T>`.
+            const generic = type === null ? null : type.generic
+            if (generic !== null) {
+                const resolved: Type[] = []
+                for (const a of typeArguments(ref)) {
+                    const arg = c.resolveTypeArgument(a, scope)
+                    if (arg !== null) resolved.push(arg)
+                }
+                if (resolved.length < typeArguments(ref).length) continue
+                const instance = instantiate(c, generic, resolved, ref)
+                if (instance === null) continue
+                found = instance instanceof Func ? null : instance
+            }
+            if (found === null || found.kind !== "interface") {
                 c.error(ref, `'${c.text(target)}' is not an interface.`)
                 continue
             }
-            const iface = type.type
+            const iface = found
             const result = conformance(c, info.type, iface)
             if (result.reason !== null) {
                 c.error(ref, `Class '${info.type.name}' does not implement '${iface.name}': ${result.reason}.`)

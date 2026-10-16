@@ -99,7 +99,8 @@
   of the class that declares them.
 - Methods are called on instances; `obj.method` without a call is a
   function value bound to `obj`.
-- `class C implements I` checks that `C` has the members of `I`.
+- `class C implements I` checks that `C` has the members of `I`; `I` may be
+  an instance of a generic interface, `class C implements It<int>`.
 
 ## Inheritance
 
