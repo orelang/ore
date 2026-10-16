@@ -11,6 +11,9 @@ import {
     BigIntLit,
     Arith,
     Bind,
+    Downcast,
+    IfaceCall,
+    MethodCall,
     BindLocal,
     BoolLit,
     BoundMethod,
@@ -1738,13 +1741,64 @@ export function checkTemplate(c: Checker, node: Node, scope: Scope): Operand {
         const e = expression(span)
         const value = checkExpr(c, e, scope)
         if (value.k !== "error") {
-            const expr = c.toDefault(value, e)
+            const expr = stringified(c, c.toDefault(value, e))
             if (printable(c, expr, e)) parts.push(expr)
         }
         const text = templateText(literal(span))
         if (text !== "") parts.push(new StringLit(types.string, text))
     }
     return typed(new Concat(types.string, parts))
+}
+
+/**
+ * An object in a template, converted as JavaScript does: a class or an
+ * interface with a `toString(): string` method calls it, so an instance of
+ * the Error class gives "Name: message"; an `Error` interface value calls
+ * the method of the Error class it holds, or gives "Error: message" for
+ * another class. Other values are returned as they are.
+ */
+function stringified(c: Checker, expr: Expr): Expr {
+    const type = expr.type
+    if (type.kind === "struct" && type.nominal) {
+        const method = findMethod(type, "toString")
+        if (method !== null && !method.private) {
+            const ft = method.func.type
+            if (ft.params.length === 0 && ft.result.kind === "string") {
+                const call = new MethodCall(types.string, method.func, expr, [])
+                dispatch(c, call, "toString")
+                return call
+            }
+        }
+        return expr
+    }
+    if (type.kind !== "interface") return expr
+    for (let i = 0; i < type.members.length; i++) {
+        const m = type.members[i]
+        if (m.k === "method" && m.name === "toString") {
+            if (m.type.params.length === 0 && m.type.result.kind === "string")
+                return new IfaceCall(types.string, expr, i, m.type, [])
+        }
+    }
+    const basic = c.basicError
+    const errorType = c.errorType
+    if (type !== errorType || basic === null) return expr
+    const toString = findMethod(basic, "toString")
+    let messageIndex = -1
+    for (let i = 0; i < type.members.length; i++) if (type.members[i].name === "message") messageIndex = i
+    if (toString === null || messageIndex === -1) return expr
+    const local = c.newLocal("error", type, false)
+    const ref = new LocalRef(type, local)
+    const call = new MethodCall(types.string, toString.func, new Downcast(basic, ref), [])
+    dispatch(c, call, "toString")
+    const plain = new Concat(types.string, [
+        new StringLit(types.string, "Error: "),
+        new IfaceField(types.string, ref, messageIndex),
+    ])
+    return new Bind(
+        types.string,
+        [new BindLocal(local, expr)],
+        new Conditional(types.string, new Is(types.bool, ref, basic), call, plain),
+    )
 }
 
 /** Whether a value can be printed or interpolated; reports an error if not. */

@@ -483,7 +483,12 @@ functions.
 - A `string` is an immutable sequence of UTF-8 bytes.
 - `a + b` and `+=` concatenate two strings. A string and a non-string cannot
   be added: use a template literal, `` `${a}${b}` ``, which formats numbers
-  and `bool` as `console.log` prints them.
+  and `bool` as `console.log` prints them. An object whose class or
+  interface has a `toString(): string` method is formatted by calling it,
+  as in JavaScript, so an error of the `Error` class gives `"Name: message"`
+  (an `Error` interface value of another class gives `"Error: message"`).
+  Other objects cannot be formatted in a template, where JavaScript gives
+  `"[object Object]"`.
 - `s.length` is the length in bytes. `s[i]` is the byte at `i` as `u8`;
   an index out of range panics.
 - `s.slice(start?, end?)` takes byte offsets with JavaScript rules: negative

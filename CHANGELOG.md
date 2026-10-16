@@ -5,6 +5,9 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- A template literal calls `toString()`: `` `${obj}` `` of a class or an
+  interface with a `toString(): string` method gives what it returns, and
+  of an error `"Name: message"`, instead of reporting ORE3060.
 - `Error` is a class to extend, as in JavaScript: `class NotFound extends
   Error` calls `super(message)` and sets `this.name`; `new Error(message,
   { cause })` keeps the cause; errors have `name`, `message`, `cause` and
