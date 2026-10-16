@@ -472,17 +472,9 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
         default: {
             // sort, in place, and toSorted, of a copy.
             const target = m === "toSorted" ? copyArray(g, array, size) : array
-            if (fn === null) {
-                g.rt("ore_rt_array_sort", [
-                    target,
-                    size,
-                    { ty: "ptr", v: naturalOrder(g, T) },
-                    { ty: "ptr", v: "null" },
-                ])
-                return target
-            }
-            const ctx = g.spill(fn)
-            g.rt("ore_rt_array_sort", [target, size, { ty: "ptr", v: comparator(g, ft) }, { ty: "ptr", v: ctx }])
+            const compare = fn === null ? naturalOrder(g, T) : comparator(g, ft)
+            const ctx = fn === null ? "null" : g.spill(fn)
+            g.b.emit(`call void ${sorter(g, compare, size)}(ptr ${target.v}, ptr ${ctx})`)
             return target
         }
     }
@@ -512,6 +504,30 @@ export function arrayBuiltin(g: Emitter, e: BuiltinCall): V {
         g.store(r, elementPtr(g, out, elem, i), T)
     })
     return out
+}
+
+/**
+ * A sort of arrays with the comparison `compare` (a function made by
+ * `comparator` or `naturalOrder`), as a function `(array, ctx)` of its own.
+ * The runtime's sort is inlined into it, with the size of the elements and
+ * the comparison as constants, so that the comparison is inlined in turn;
+ * the function itself is not inlined, so that the sort's buffers and
+ * locals do not stay in the frame of the caller, where the collector would
+ * keep finding them.
+ */
+function sorter(g: Emitter, compare: string, size: V): string {
+    const name = `${compare}.sort`
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    helper(g, name, `define internal void ${name}(ptr %array, ptr %ctx) noinline`, (e) => {
+        const before = e.aggregate(FN, [
+            { ty: "ptr", v: compare },
+            { ty: "ptr", v: "%ctx" },
+        ])
+        e.rt("ore_rt_array_sort", [{ ty: "ptr", v: "%array" }, size, before])
+        e.b.terminate("ret void")
+    })
+    return name
 }
 
 /** A C sort comparison calling a comparator closure, whose number result gives the order. */

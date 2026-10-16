@@ -401,6 +401,19 @@ before 1.0, a minor version may change the language.
   Abstract methods have overload signatures too, and a method with
   overload signatures is called on a union of classes that have the same
   ones. [ORE5066](docs/errors/ORE5066.md) is now about optional methods.
+- `Array.prototype.sort` is faster: still a stable merge sort, now with
+  insertion-sorted runs of 16, merges that skip runs already in order and a
+  buffer for half the elements instead of all of them, and inlined into a
+  function of its own for each comparison, so that the element size is a
+  constant, elements move by loads and stores instead of `memmove`, and
+  the comparison (the default order or the comparator's closure) is inlined
+  too. `bench/sort` takes a third less time and memory.
+- bigint arithmetic is faster: addition and subtraction work two limbs at a
+  time, multiplication runs its long operand in the inner loop, has a path
+  for a one-limb operand and uses Karatsuba's algorithm when both operands
+  have 40 limbs or more, and `toString()` in decimal divides by a constant.
+  `bench/bigint` takes 20% less CPU time; its wall time is mostly
+  allocation of the immutable results.
 
 ## 0.5.0
 
