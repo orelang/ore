@@ -1,0 +1,65 @@
+import { randomUUIDv4, randomUUIDv7 } from "ore:crypto"
+
+// Random UUIDs (RFC 9562): the format, the version and variant bits, and
+// the order of version 7. Only what does not depend on the random bits is
+// printed.
+
+const shape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+function check(id: string, version: string): bool {
+    return shape.test(id) && id.slice(14, 15) === version && "89ab".includes(id.slice(19, 20))
+}
+
+const v4: string[] = []
+for (let i = 0; i < 1000; i++) v4.push(randomUUIDv4())
+console.log(
+    v4.every((id) => check(id, "4")),
+    new Set(v4).size,
+)
+console.log(
+    v4[0].length,
+    v4[0].slice(14, 15),
+    v4[0].split("-").map((part) => part.length),
+)
+
+// All four values of the variant digit show up.
+const variants = new Set<string>()
+for (const id of v4) variants.add(id.slice(19, 20))
+const seen: string[] = []
+for (const v of variants) seen.push(v)
+console.log(seen.sort().join(""))
+
+// Version 7: the first 48 bits are the Unix time in milliseconds, and the
+// UUIDs of a process increase strictly, as text too.
+const start = Date.now()
+const v7: string[] = []
+for (let i = 0; i < 10000; i++) v7.push(randomUUIDv7())
+const end = Date.now()
+console.log(
+    v7.every((id) => check(id, "7")),
+    new Set(v7).size,
+)
+let increasing = true
+for (let i = 1; i < v7.length; i++) if (!(v7[i - 1] < v7[i])) increasing = false
+console.log(increasing)
+const first = Number.parseInt(v7[0].slice(0, 8) + v7[0].slice(9, 13), 16)!
+const last = Number.parseInt(v7[v7.length - 1].slice(0, 8) + v7[v7.length - 1].slice(9, 13), 16)!
+console.log(first >= start && last <= end + 1 && first <= last)
+
+// Tasks running in parallel still get distinct, valid UUIDs.
+const results = new Chan<string[]>(4)
+for (let t = 0; t < 4; t++) {
+    task.spawn(() => {
+        const mine: string[] = []
+        for (let i = 0; i < 1000; i++) mine.push(randomUUIDv7())
+        results.send(mine)
+    })
+}
+const all = new Set<string>()
+let ordered = true
+for (let t = 0; t < 4; t++) {
+    const mine = results.receive()!
+    for (let i = 1; i < mine.length; i++) if (!(mine[i - 1] < mine[i])) ordered = false
+    for (const id of mine) all.add(id)
+}
+console.log(all.size, ordered)
