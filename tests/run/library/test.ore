@@ -1,0 +1,115 @@
+// exit: 1
+
+// The matchers, groups and hooks of "ore:test", passing and failing: each failure
+// shows the matcher and the expected and received values, as a diff when they
+// take several lines.
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, fail, skip, test, todo } from "ore:test"
+
+class Point {
+    constructor(
+        readonly x: int,
+        readonly y: int,
+    ) {}
+}
+
+const log: string[] = []
+
+test("plain", () => {
+    expect(1 + 2).toBe(3)
+    expect(1 + 2).not.toBe(4)
+    expect([1, 2]).toEqual([1, 2])
+    expect(new Map([["a", [1]]])).toEqual(new Map([["a", [1]]]))
+    expect(new Set(["a"])).not.toEqual(new Set(["b"]))
+    expect(new Point(1, 2)).toEqual(new Point(1, 2))
+    const missing: string | null = null
+    expect(missing).toBeNull()
+    expect("x").not.toBeNull()
+    expect(1).toBeTruthy()
+    expect("").toBeFalsy()
+    expect([1, 2, 3]).toContain(2)
+    expect("hello").toContain("ell")
+    expect([1.5]).not.toContain(2)
+    expect("abc").toHaveLength(3)
+    expect([1]).toHaveLength(1)
+    expect(2.5).toBeGreaterThan(2)
+    expect(2).toBeGreaterThanOrEqual(2)
+    expect(5n).toBeLessThan(6n)
+    expect(i32(1)).toBeLessThanOrEqual(1)
+    expect(0.1 + 0.2).toBeCloseTo(0.3)
+    expect(0.1).not.toBeCloseTo(0.2, 5)
+    expect("2026-10-16").toMatch(/^\d{4}-\d\d-\d\d$/)
+    expect("hello").toMatch("ll")
+    expect(() => process.panic("boom here")).toPanic()
+    expect(() => process.panic("boom here")).toPanic("boom")
+    expect(() => process.panic("boom here")).toPanic(/b.*h/)
+    expect(() => {}).not.toPanic()
+})
+
+describe("outer", () => {
+    beforeAll(() => log.push("beforeAll"))
+    beforeEach(() => log.push("outer before"))
+    afterEach(() => log.push("outer after"))
+    afterAll(() => console.log(log.join(", ")))
+
+    test("one", () => {
+        log.push("one")
+    })
+
+    describe("inner", () => {
+        beforeEach(() => log.push("inner before"))
+        afterEach(() => log.push("inner after"))
+        test("two", () => {
+            log.push("two")
+        })
+    })
+
+    skip("skipped", () => fail("runs"))
+    todo("later")
+})
+
+describe("failing", () => {
+    test("toBe", () => expect(1 + 1).toBe(3))
+    test("not.toBe", () => expect(2).not.toBe(2))
+    test("toEqual", () => expect([1, 2, 3, 4, 5, 6, 7, 8, 9]).toEqual([1, 2, 3, 4, 0, 6, 7, 8, 9]))
+    test("toEqual, short", () => expect({ x: 1, y: "a" }).toEqual({ x: 1, y: "b" }))
+    test("strings", () => expect("a\nb\nc").toBe("a\nB\nc"))
+    test("toContain", () => expect([1, 2]).toContain(3))
+    test("toHaveLength", () => expect("ab").toHaveLength(3))
+    test("toBeGreaterThan", () => expect(1).toBeGreaterThan(2))
+    test("toBeCloseTo", () => expect(0.5).toBeCloseTo(0.6))
+    test("toMatch", () => expect("abc").toMatch(/^b/))
+    test("toPanic", () => expect(() => {}).toPanic())
+    test("toPanic message", () => expect(() => process.panic("other")).toPanic("boom"))
+    test("not.toPanic", () => expect(() => process.panic("boom")).not.toPanic())
+    test("toBeNull", () => expect(5).toBeNull())
+    test("fail", () => fail("by hand"))
+    // Every level and every element are compared.
+    test("deep", () => expect({ a: { b: { c: { d: [1] } } } }).toEqual({ a: { b: { c: { d: [2] } } } }))
+    test("long", () => {
+        const xs: int[] = []
+        for (let i = 0; i < 150; i++) xs.push(i)
+        const ys = xs.slice()
+        ys[149] = 0
+        expect(xs).toEqual(ys)
+    })
+})
+
+describe("hooks that fail", () => {
+    describe("beforeAll", () => {
+        beforeAll(() => fail("no database"))
+        test("skipped by it", () => {})
+    })
+    describe("afterEach", () => {
+        afterEach(() => fail("cleanup"))
+        test("passes, then its hook fails", () => {})
+    })
+    afterAll(() => fail("at the end"))
+})
+
+// A test declared while another runs runs at once.
+test("declares another", () => {
+    test("declared inside", () => expect(true).toBeTruthy())
+})
+
+console.log("top-level code ends before the tests run")

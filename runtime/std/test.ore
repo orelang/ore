@@ -1,15 +1,107 @@
 //ore:internal
 // The "ore:test" module: tests in *.test.ore files, run by `ore test`.
 //
-//   import { test, expect } from "ore:test"
+//   import { describe, expect, test } from "ore:test"
 //
-//   test("adds", () => {
-//     expect(1 + 2).toBe(3)
+//   describe("math", () => {
+//       test("adds", () => {
+//           expect(1 + 2).toBe(3)
+//       })
 //   })
+//
+// The tests, groups and hooks that a file's top-level code declares are
+// collected, and run when that code ends (the runtime calls `runCollected`
+// then): each test in a task of its own, whose panic is its failure. A test
+// declared in another task, or inside a running test, runs at once. Each
+// test prints `✓ name`, `✗ name` and its failure, or `○ name (skipped)`;
+// the runtime prints the counts at the end and exits with status 1 if a
+// test failed (runtime/core/program.ore and io.ore).
 
-/** Runs a test. It fails if it panics, for example in a failed expectation. */
+/** How a test or a group runs: normally, skipped, alone with the other `only` ones, or as a test still to write. */
+type Mode = "run" | "skip" | "only" | "todo"
+
+/** A test of a file. */
+class Case {
+    constructor(
+        readonly name: string,
+        readonly body: () => void,
+        readonly mode: Mode,
+    ) {}
+}
+
+/** A group of tests (`describe`), with the hooks around them; the file itself is the outermost one. */
+class Suite {
+    readonly items: (Case | Suite)[] = []
+    readonly beforeAll: (() => void)[] = []
+    readonly afterAll: (() => void)[] = []
+    readonly beforeEach: (() => void)[] = []
+    readonly afterEach: (() => void)[] = []
+
+    constructor(
+        readonly name: string,
+        readonly mode: Mode,
+    ) {}
+}
+
+/** The tests of the file. */
+const root = new Suite("", "run")
+/** The group whose declarations are being collected; null once the top-level code has ended. */
+let collecting: Suite | null = root
+/** Whether `ORE_TEST_NAME_PATTERN` was read into `pattern`. */
+let patternRead = false
+/** The tests to run by their full names, from `ore test -t <pattern>`. */
+let pattern: RegExp | null = null
+
+internal.atMainEnd(runCollected)
+
+/** Runs a test: it fails if it panics, for example in a failed expectation. */
 export function test(name: string, body: () => void): void {
-    internal.runTest(name, body)
+    declare(name, body, "run")
+}
+
+/** Declares a test that does not run; it is reported as skipped. */
+export function skip(name: string, body: () => void): void {
+    declare(name, body, "skip")
+}
+
+/** Declares a test that runs alone: when a file has `only` tests or groups, its other tests do not run. */
+export function only(name: string, body: () => void): void {
+    declare(name, body, "only")
+}
+
+/** Declares a test still to write; it is reported as todo. */
+export function todo(name: string): void {
+    declare(name, () => {}, "todo")
+}
+
+/** Groups tests under a name, which prefixes theirs (`math > adds`); hooks declared in `body` apply to them. */
+export function describe(name: string, body: () => void): void {
+    const parent = collector("describe")
+    const suite = new Suite(name, "run")
+    parent.items.push(suite)
+    collecting = suite
+    body()
+    collecting = parent
+}
+
+/** Runs `body` once before the tests of the enclosing group (or file). */
+export function beforeAll(body: () => void): void {
+    collector("beforeAll").beforeAll.push(body)
+}
+
+/** Runs `body` once after the tests of the enclosing group (or file). */
+export function afterAll(body: () => void): void {
+    collector("afterAll").afterAll.push(body)
+}
+
+/** Runs `body` before each test of the enclosing group (or file), after the hooks of the groups around it. */
+export function beforeEach(body: () => void): void {
+    collector("beforeEach").beforeEach.push(body)
+}
+
+/** Runs `body` after each test of the enclosing group (or file), before the hooks of the groups around it. */
+export function afterEach(body: () => void): void {
+    collector("afterEach").afterEach.push(body)
 }
 
 /** Fails the current test with a message. */
@@ -17,17 +109,424 @@ export function fail(message: string): never {
     process.panic(message)
 }
 
-export class Expectation<T> {
-    constructor(private actual: T) {}
+/** The group being collected, for a declaration made in the top-level code; null elsewhere. */
+function collectingHere(): Suite | null {
+    return internal.inMainTask() ? collecting : null
+}
 
-    /** Expects the value to be `===` to `expected`. */
-    toBe(expected: T): void {
-        if (this.actual !== expected) process.panic(`expected ${expected}, got ${this.actual}`)
+/** The group being collected, for `what`, which only the top-level code of a test file may call. */
+function collector(what: string): Suite {
+    const suite = collectingHere()
+    if (suite === null) process.panic(`${what}() can only be called by the top-level code of a test file`)
+    return suite
+}
+
+/** Adds a test to the group being collected, or runs it now. */
+function declare(name: string, body: () => void, mode: Mode): void {
+    const suite = collectingHere()
+    if (suite !== null) suite.items.push(new Case(name, body, mode))
+    else if (selected(name)) runCase(name, body, mode === "only" ? "run" : mode, [], [], null)
+}
+
+/** Whether a test's full name matches the pattern of `ore test -t`, if any. */
+function selected(name: string): bool {
+    if (!patternRead) {
+        patternRead = true
+        const given = process.getenv("ORE_TEST_NAME_PATTERN")
+        if (given !== null && given !== "") pattern = new RegExp(given)
+    }
+    const p = pattern
+    return p === null || p.test(name)
+}
+
+/** Runs the tests collected from the top-level code, which has just ended. */
+function runCollected(): void {
+    collecting = null
+    runSuite(root, "", [], [], hasOnly(root), false, false)
+}
+
+/** Whether a group has a test or a group marked `only`. */
+function hasOnly(suite: Suite): bool {
+    for (const item of suite.items) {
+        if (item.mode === "only") return true
+        if (item instanceof Suite && hasOnly(item)) return true
+    }
+    return false
+}
+
+/** The full name of a test or group in a group named `prefix`. */
+function fullName(prefix: string, name: string): string {
+    return prefix === "" ? name : `${prefix} > ${name}`
+}
+
+/** Whether a group has a test to report, given the `only` and name filters. */
+function hasSelected(suite: Suite, prefix: string, focused: bool, inOnly: bool): bool {
+    for (const item of suite.items) {
+        const name = fullName(prefix, item.name)
+        const marked = inOnly || item.mode === "only"
+        if (item instanceof Suite) {
+            if (hasSelected(item, name, focused, marked)) return true
+        } else if ((!focused || marked) && selected(name)) {
+            return true
+        }
+    }
+    return false
+}
+
+/** `list` with `more` after its items. */
+function joined(list: (() => void)[], more: (() => void)[]): (() => void)[] {
+    const all = list.slice()
+    for (const f of more) all.push(f)
+    return all
+}
+
+/**
+ * Runs the tests of a group: its `beforeAll` hooks, its tests and groups in
+ * order with the `beforeEach` and `afterEach` hooks around each test, then
+ * its `afterAll` hooks. `failure` fails every test without running it (a
+ * `beforeAll` hook of a group around it failed).
+ */
+function runSuite(
+    suite: Suite,
+    prefix: string,
+    befores: (() => void)[],
+    afters: (() => void)[],
+    focused: bool,
+    inOnly: bool,
+    skipped: bool,
+): void {
+    if (!hasSelected(suite, prefix, focused, inOnly)) return
+    let failure: string | null = null
+    if (!skipped) {
+        for (const hook of suite.beforeAll) {
+            const f = internal.catchPanic(hook)
+            if (f !== null && failure === null) failure = `beforeAll failed: ${f}`
+        }
+    }
+    runItems(suite, prefix, befores, afters, focused, inOnly, skipped, failure)
+    if (skipped) return
+    for (const hook of suite.afterAll) {
+        const f = internal.catchPanic(hook)
+        if (f !== null) report(fullName(prefix, "afterAll"), `afterAll failed: ${f}`)
+    }
+}
+
+/** The tests and groups of `suite`, run as `runSuite` says. */
+function runItems(
+    suite: Suite,
+    prefix: string,
+    befores: (() => void)[],
+    afters: (() => void)[],
+    focused: bool,
+    inOnly: bool,
+    skipped: bool,
+    failure: string | null,
+): void {
+    const before = joined(befores, suite.beforeEach)
+    const after = joined(suite.afterEach, afters)
+    for (const item of suite.items) {
+        const name = fullName(prefix, item.name)
+        const marked = inOnly || item.mode === "only"
+        const skip = skipped || item.mode === "skip"
+        if (item instanceof Suite) {
+            if (failure !== null) runFailed(item, name, failure, focused, marked)
+            else runSuite(item, name, before, after, focused, marked, skip)
+            continue
+        }
+        if ((focused && !marked) || !selected(name)) continue
+        runCase(name, item.body, skip ? "skip" : item.mode, before, after, failure)
+    }
+}
+
+/** Reports the selected tests of a group as failed with `failure`, without running them or its hooks. */
+function runFailed(suite: Suite, prefix: string, failure: string, focused: bool, inOnly: bool): void {
+    runItems(suite, prefix, [], [], focused, inOnly, false, failure)
+}
+
+/** Runs one test with the hooks around it, and reports it. */
+function runCase(
+    name: string,
+    body: () => void,
+    mode: Mode,
+    before: (() => void)[],
+    after: (() => void)[],
+    setup: string | null,
+): void {
+    if (mode === "todo" || mode === "skip") {
+        console.log(`  ○ ${name} (${mode === "todo" ? "todo" : "skipped"})`)
+        internal.countTest(mode === "todo" ? 3 : 2)
+        return
+    }
+    let failure = setup
+    if (failure === null) {
+        failure = internal.catchPanic(() => {
+            for (const hook of before) hook()
+            body()
+        })
+        for (const hook of after) {
+            const f = internal.catchPanic(hook)
+            if (f !== null && failure === null) failure = `afterEach failed: ${f}`
+        }
+    }
+    if (failure === null) {
+        console.log(`  ✓ ${name}`)
+        internal.countTest(0)
+    } else {
+        report(name, failure)
+    }
+}
+
+/** Reports a failed test, with each line of its failure indented under it. */
+function report(name: string, failure: string): void {
+    console.log(`  ✗ ${name}\n      ${failure.split("\n").join("\n      ").replaceAll("\n      \n", "\n\n")}`)
+    internal.countTest(1)
+}
+
+// ---------------------------------------------------------------------------
+// Expectations
+
+/** A value as a failure shows it: as inside an array, wholly. */
+function show<T>(value: T): string {
+    return internal.inspect(value, true)
+}
+
+/**
+ * The expected and the received value of a failure: on a line each, or as
+ * the lines of a diff when either has several (`- ` only expected, `+ `
+ * only received).
+ */
+function compared(expected: string, received: string): string {
+    if (!expected.includes("\n") && !received.includes("\n")) return `Expected: ${expected}\nReceived: ${received}`
+    const a = expected.split("\n")
+    const b = received.split("\n")
+    // The longest common subsequence of the lines after each pair of positions.
+    const common: int[][] = []
+    for (let i = 0; i <= a.length; i++) {
+        const row: int[] = []
+        for (let j = 0; j <= b.length; j++) row.push(0)
+        common.push(row)
+    }
+    for (let i = a.length - 1; i >= 0; i--)
+        for (let j = b.length - 1; j >= 0; j--)
+            common[i][j] = a[i] === b[j] ? common[i + 1][j + 1] + 1 : Math.max(common[i + 1][j], common[i][j + 1])
+    const diff: string[] = []
+    let i = 0
+    let j = 0
+    while (i < a.length || j < b.length) {
+        if (i < a.length && j < b.length && a[i] === b[j]) {
+            diff.push(`  ${a[i]}`)
+            i++
+            j++
+        } else if (j >= b.length || (i < a.length && common[i + 1][j] >= common[i][j + 1])) {
+            diff.push(`- ${a[i]}`)
+            i++
+        } else {
+            diff.push(`+ ${b[j]}`)
+            j++
+        }
+    }
+    // The lines that differ, with up to `context` equal lines around them; `...` for the others.
+    const context = 3
+    const near: bool[] = diff.map(() => false)
+    for (let k = 0; k < diff.length; k++) {
+        if (diff[k].startsWith("  ")) continue
+        for (let m = Math.max(0, k - context); m <= Math.min(diff.length - 1, k + context); m++) near[m] = true
+    }
+    const lines = ["- Expected", "+ Received", ""]
+    for (let k = 0; k < diff.length; k++) {
+        if (near[k]) lines.push(diff[k])
+        else if (k === 0 || near[k - 1]) lines.push("  ...")
+    }
+    return lines.join("\n")
+}
+
+/** `compared` for two values; strings of several lines are compared by their lines. */
+function comparedValues<T>(expected: T, received: T): string {
+    const e: unknown = expected
+    const r: unknown = received
+    if (typeof e === "string" && typeof r === "string" && (e.includes("\n") || r.includes("\n"))) return compared(e, r)
+    return compared(show(expected), show(received))
+}
+
+/** Whether a value is truthy as in JavaScript: not null, false, 0, NaN, 0n or "". */
+function truthy(value: unknown): bool {
+    if (value === null) return false
+    if (typeof value === "boolean") return value
+    if (typeof value === "string") return value !== ""
+    if (typeof value === "number") return value !== 0 && value === value
+    if (typeof value === "bigint") return value !== 0n
+    return true
+}
+
+/**
+ * The element type of what `toContain` looks in: an array's elements, or
+ * the parts of a string.
+ */
+type ElementOf<T> = T extends (infer E)[] ? E : T extends string ? string : never
+
+/**
+ * An expectation about a value, made with `expect(value)`. A matcher fails
+ * the test when the value does not match, and `.not` fails it when it does.
+ * The matchers that only apply to some values (`toHaveLength`, `toPanic`,
+ * ...) are checked where they are called, as the generic methods they are:
+ * on another value, they are a compile-time error.
+ */
+export class Expectation<T> {
+    constructor(
+        private actual: T,
+        private negated: bool = false,
+    ) {}
+
+    /** The same expectation, inverted: `expect(x).not.toBe(y)`. */
+    get not(): Expectation<T> {
+        return new Expectation(this.actual, !this.negated)
     }
 
-    /** Expects the value not to be `===` to `other`. */
-    notToBe(other: T): void {
-        if (this.actual === other) process.panic(`expected a value other than ${other}`)
+    /** Fails unless `pass` (if `.not`: if `pass`), with the matcher and the details of the failure. */
+    private check(pass: bool, matcher: string, details: () => string): void {
+        if (pass === this.negated) {
+            const call = `expect(received).${this.negated ? "not." : ""}${matcher}`
+            const text = details()
+            process.panic(text === "" ? call : `${call}\n\n${text}`)
+        }
+    }
+
+    /** The details of a failed comparison with `expected`. */
+    private against<U = T>(expected: T): string {
+        if (this.negated) return `Expected: not ${show(expected)}`
+        return comparedValues(expected, this.actual)
+    }
+
+    /** The details of a failure that only shows the received value. */
+    private received<U = T>(): string {
+        return `Received: ${show(this.actual)}`
+    }
+
+    /** Expects the value to be `===` to `expected`. */
+    toBe<U = T>(expected: T): void {
+        this.check(this.actual === expected, "toBe(expected)", () => this.against(expected))
+    }
+
+    /** Expects the value not to be `===` to `other`, as `.not.toBe(other)`. */
+    notToBe<U = T>(other: T): void {
+        this.not.toBe(other)
+    }
+
+    /**
+     * Expects the value to equal `expected` deeply: arrays, maps, sets and
+     * objects with equal entries in the same order, compared as they are
+     * printed.
+     */
+    toEqual<U = T>(expected: T): void {
+        this.check(show(this.actual) === show(expected), "toEqual(expected)", () => this.against(expected))
+    }
+
+    /** Expects the value to be null. */
+    toBeNull<U = T>(): void {
+        const value: unknown = this.actual
+        this.check(value === null, "toBeNull()", () => this.received())
+    }
+
+    /** Expects the value to be truthy: not null, false, 0, NaN, 0n or "". */
+    toBeTruthy<U = T>(): void {
+        this.check(truthy(this.actual), "toBeTruthy()", () => this.received())
+    }
+
+    /** Expects the value to be falsy: null, false, 0, NaN, 0n or "". */
+    toBeFalsy<U = T>(): void {
+        this.check(!truthy(this.actual), "toBeFalsy()", () => this.received())
+    }
+
+    /** Expects the array to have an element `===` to `item`, or the string to contain `item`. */
+    toContain<U = T>(item: ElementOf<U>): void {
+        this.check(
+            this.actual.includes(item),
+            "toContain(expected)",
+            () => `Expected to ${this.negated ? "not " : ""}contain: ${show(item)}\nReceived: ${show(this.actual)}`,
+        )
+    }
+
+    /** Expects the array or the string to have this length. */
+    toHaveLength<U = T>(length: int): void {
+        const actual = this.actual.length
+        this.check(
+            actual === length,
+            "toHaveLength(expected)",
+            () => `Expected length: ${this.negated ? "not " : ""}${length}\nReceived length: ${actual}`,
+        )
+    }
+
+    /** Expects the number to be greater than `n`. */
+    toBeGreaterThan<U = T>(n: T): void {
+        this.check(this.actual > n, "toBeGreaterThan(expected)", () => this.bound(">", n))
+    }
+
+    /** Expects the number to be greater than or equal to `n`. */
+    toBeGreaterThanOrEqual<U = T>(n: T): void {
+        this.check(this.actual >= n, "toBeGreaterThanOrEqual(expected)", () => this.bound(">=", n))
+    }
+
+    /** Expects the number to be less than `n`. */
+    toBeLessThan<U = T>(n: T): void {
+        this.check(this.actual < n, "toBeLessThan(expected)", () => this.bound("<", n))
+    }
+
+    /** Expects the number to be less than or equal to `n`. */
+    toBeLessThanOrEqual<U = T>(n: T): void {
+        this.check(this.actual <= n, "toBeLessThanOrEqual(expected)", () => this.bound("<=", n))
+    }
+
+    /** The details of a failed comparison with a bound. */
+    private bound<U = T>(op: string, n: T): string {
+        return `Expected: ${this.negated ? "not " : ""}${op} ${show(n)}\nReceived: ${show(this.actual)}`
+    }
+
+    /** Expects the number to be within half a unit of the `digits`th decimal digit of `expected`. */
+    toBeCloseTo<U = T>(expected: T, digits: int = 2): void {
+        const difference = Math.abs(f64(this.actual) - f64(expected))
+        const limit = Math.pow(10, f64(-digits)) / 2
+        this.check(
+            difference < limit,
+            "toBeCloseTo(expected, digits)",
+            () =>
+                `Expected: ${this.negated ? "not " : ""}${show(expected)}\nReceived: ${show(this.actual)}\n\nExpected difference: ${this.negated ? ">=" : "<"} ${limit}\nReceived difference: ${difference}`,
+        )
+    }
+
+    /** Expects the string to match a regular expression, or to contain a string. */
+    toMatch<U = T>(expected: RegExp | string): void {
+        const actual: string = this.actual
+        const matches = typeof expected === "string" ? actual.includes(expected) : expected.test(actual)
+        const what =
+            typeof expected === "string"
+                ? `substring: ${show(expected)}`
+                : `pattern: /${expected.source}/${expected.flags}`
+        this.check(matches, "toMatch(expected)", () => `Expected ${what}\nReceived string: ${show(actual)}`)
+    }
+
+    /**
+     * Expects the function to panic when called, with a message that
+     * contains `expected` or matches it: `expect(() => parse("")).toPanic()`.
+     */
+    toPanic<U = T>(expected: RegExp | string | null = null): void {
+        const body = this.actual
+        const failure = internal.catchPanic(() => {
+            body()
+        })
+        let matches = failure !== null
+        if (failure !== null && expected !== null)
+            matches = typeof expected === "string" ? failure.includes(expected) : expected.test(failure)
+        const wanted =
+            expected === null
+                ? ""
+                : typeof expected === "string"
+                  ? `Expected message: ${this.negated ? "not " : ""}${show(expected)}\n`
+                  : `Expected pattern: ${this.negated ? "not " : ""}/${expected.source}/${expected.flags}\n`
+        this.check(matches, expected === null ? "toPanic()" : "toPanic(expected)", () =>
+            failure === null
+                ? `${wanted}Received function did not panic`
+                : `${wanted}Received message: ${show(failure)}`,
+        )
     }
 }
 

@@ -663,6 +663,7 @@ export function builtinCall(
 ): Operand {
     if (name === "JSON.stringify" || name === "JSON.parse") return jsonCall(c, name, node, scope)
     if (name === "Math.min" || name === "Math.max") return minMax(c, name, node, scope, expected)
+    if (name === "internal.inspect") return inspectCall(c, name, node, scope)
     const generic = typeParameters(decl).length > 0
     if (name.startsWith("unsafe.") && generic) return unsafeCall(c, name, node, scope)
     const args = argsOf(node)
@@ -706,6 +707,18 @@ export function builtinCall(
     const errorType = c.errorType
     const error = errorType !== null && membersOf(result).some((m) => m === errorType) ? basicErrorOf(c) : null
     return typed(new BuiltinCall(result, name, values, error))
+}
+
+/** `internal.inspect(value, whole)` of "ore:test", whose code is generated per type as console.log's. */
+function inspectCall(c: Checker, name: string, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    if (args.length !== 2) return c.fail(node, `'${name}' expects 2 argument(s), got ${args.length}.`)
+    const operand = checkExpr(c, args[0], scope)
+    if (operand.k === "error") return operand
+    const value = c.toDefault(operand, args[0])
+    if (!inspectable(c, value, args[0])) return errorOperand
+    const whole = c.coerce(checkExpr(c, args[1], scope, types.bool), types.bool, args[1])
+    return typed(new BuiltinCall(types.string, name, [value, whole]))
 }
 
 /** How a built-in creates the basic `Error`. */

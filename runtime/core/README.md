@@ -43,4 +43,4 @@ Rules for this code:
 | `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |
 | `net.ore` | TCP on non-blocking sockets: listen, connect, accept, read, write, with the socket layouts and constants of each platform |
 | `io.ore` | Printing through one shared buffer, and the end of the program |
-| `program.ore` | The entry point (`main`), arguments, panics with their stack trace, and the `ore test` runner |
+| `program.ore` | The entry point (`main`), arguments, panics with their stack trace, and what `ore:test` needs: a body run in a task whose panic is caught, and a call when the top-level code ends |

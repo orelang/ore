@@ -28,7 +28,7 @@ The standard library.
     poller.
 - Modules imported as `ore:<name>`: `ore:sync` (`Mutex`, `WaitGroup`),
   `ore:net` (TCP `listen`, `Listener`, `Conn`), `ore:test` (`test`,
-  `expect`, used by `ore test`), `ore:crypto` (`sha256`, the incremental
+  `describe`, the hooks, `expect` and its matchers, used by `ore test`), `ore:crypto` (`sha256`, the incremental
   `Sha256`), `ore:path` (`join`, `dirname`, `basename`, `extname`,
   `normalize`, `isAbsolute`, `resolve`, `relative`, `sep`, `delimiter`,
   with the POSIX semantics of Node's `node:path`).

@@ -314,6 +314,7 @@ ore run --watch          # and again whenever a file of the program changes
 ore build --release      # an optimized binary named after the package
 ore check                # report errors without building
 ore test                 # run the tests in *.test.ore files
+ore test -t "math > add" # only the tests whose names match
 ore fmt                  # format .ore files: 4 spaces, no semicolons
 ore doc src/lib.ore      # the API of a module from its exports and JSDoc (--md, --json)
 ```

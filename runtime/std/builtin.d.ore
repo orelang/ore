@@ -345,8 +345,17 @@ declare namespace unsafe {
 
 /** Functions only for the standard library modules ("ore:..."). */
 declare namespace internal {
-    /** Runs a test body, reporting whether it panics. */
-    function runTest(name: string, body: () => void): void
+    // The tests of "ore:test".
+    /** Runs a body in a task of its own; returns the message of the panic that ends it, or null. */
+    function catchPanic(body: () => void): string | null
+    /** Counts a test for the summary at the end of the program: 0 passed, 1 failed, 2 skipped, 3 todo. */
+    function countTest(outcome: int): void
+    /** Whether the current task runs the program's top-level code. */
+    function inMainTask(): bool
+    /** Calls `body` when the program's top-level code ends, before the program does. */
+    function atMainEnd(body: () => void): void
+    /** A value as console.log formats it inside an array, without colors; with `whole`, every level and entry. */
+    function inspect<T>(value: T, whole: bool): string
 
     // TCP sockets by file descriptor, for "ore:net".
     function netListen(host: string, port: int): int | Error

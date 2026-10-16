@@ -4,7 +4,7 @@
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
 import { intRange, isNumberLiterals, type FuncType, type Type, type UnionType } from "../ir/types"
 import { counted, json } from "./json"
-import { inspectTop, printYellow } from "./inspect"
+import { inspectAt, inspectTop, printYellow } from "./inspect"
 import { ARRAY, FN, IFACE, STR } from "./context"
 import { Emitter } from "./base"
 import { choose, expr, inject, payload, slotTest, unionOf } from "./expressions"
@@ -519,9 +519,18 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
             return g.rt("ore_rt_getenv", [a[0]])
         case "process.cwd":
             return g.rt("ore_rt_cwd", [])
-        case "internal.runTest":
-            g.rt("ore_rt_run_test", [a[0], a[1]])
+        case "internal.catchPanic":
+            return g.rt("ore_rt_catch_panic", [a[0]])
+        case "internal.countTest":
+            g.rt("ore_rt_count_test", [a[0]])
             return voidValue
+        case "internal.inMainTask":
+            return g.rtBool("ore_rt_in_main_task", [])
+        case "internal.atMainEnd":
+            g.rt("ore_rt_at_main_end", [a[0]])
+            return voidValue
+        case "internal.inspect":
+            return inspectAt(g, a[0], e.args[0].type, g.rt("ore_rt_inspect_plain", [a[1]]), g.i64(0))
         case "internal.netListen":
             return fallibleValue(g, e, (v, m) => g.rtBool("ore_rt_net_listen", [a[0], a[1], v, m]))
         case "internal.netConnect":

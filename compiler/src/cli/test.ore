@@ -1,11 +1,14 @@
-// `ore test [--watch] [paths...]`: builds and runs the *.test.ore files below
-// the paths (default: "."), and reports which failed; with `--watch`, again
-// after each change of the files the test programs are made of (watch.ore).
+// `ore test [--watch] [-t pattern] [paths...]`: builds and runs the
+// *.test.ore files below the paths (default: "."), and reports which failed;
+// with `--watch`, again after each change of the files the test programs are
+// made of (watch.ore); with `-t`, only the tests whose full names match the
+// regular expression, which the test programs read from
+// ORE_TEST_NAME_PATTERN.
 //
-// A test file is a program whose `test(...)` calls (ore:test) run each test
-// in its own task and print `✓ name` or `✗ name` and the failure; its
-// runtime prints the counts at the end and exits with status 1 if a test
-// failed (runtime/core/program.ore and io.ore). The files are built and run
+// A test file is a program whose tests (ore:test, runtime/std/test.ore) run
+// each in its own task and print `✓ name`, `✗ name` and the failure, or
+// `○ name (skipped)`; its runtime prints the counts at the end and exits with
+// status 1 if a test failed (runtime/core/program.ore and io.ore). The files are built and run
 // in parallel, one task per CPU, each building in a child process of this
 // same compiler (the checker keeps state that tasks would share); their
 // outputs are printed in the order of the files.
@@ -28,12 +31,26 @@ class FileResult {
 }
 
 export function testCommand(args: string[]): i32 {
-    const paths = args.filter((a) => a !== "--watch" && a !== "-w")
-    if (paths.length === args.length) return runTests(paths)
+    const paths: string[] = []
+    let watch = false
+    let pattern = ""
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i]
+        if (a === "--watch" || a === "-w") watch = true
+        else if (a === "-t" || a === "--test-name-pattern") {
+            if (i + 1 >= args.length) {
+                console.error(`ore: ${a} needs a pattern`)
+                return 2
+            }
+            i++
+            pattern = args[i]
+        } else paths.push(a)
+    }
+    if (!watch) return runTests(paths, pattern)
     let files: string[] = []
     while (true) {
         const before = stamps(files)
-        const status = runTests(paths)
+        const status = runTests(paths, pattern)
         const tested = testedFiles(paths)
         if (tested.length === 0) return status
         files = watched(tested, files)
@@ -55,8 +72,8 @@ function testedFiles(paths: string[]): string[] {
     return files
 }
 
-/** Builds and runs the test files below the paths, and prints the results. */
-function runTests(paths: string[]): i32 {
+/** Builds and runs the test files below the paths, the tests matching `pattern` if not "", and prints the results. */
+function runTests(paths: string[], pattern: string): i32 {
     const files = oreFiles(paths, true)
     if (files instanceof Error) return toolError(files)
     if (files.length === 0) {
@@ -80,7 +97,7 @@ function runTests(paths: string[]): i32 {
     for (let w = 0; w < workers; w++) {
         task.spawn(() => {
             for (const i of queue) {
-                results[i] = testFile(ore, files[i], join(dir, `test${i}`))
+                results[i] = testFile(ore, files[i], join(dir, `test${i}`), pattern)
                 done.send(i)
             }
         })
@@ -109,24 +126,28 @@ function runTests(paths: string[]): i32 {
     return failed === 0 ? 0 : 1
 }
 
-/** A test program's output with its marks in color, `✓` in the success color and `✗` in the error color, when stdout shows colors. */
+/** A test program's output with its marks in color, `✓` in the success color, `✗` in the error color and `○` in the warning color, when stdout shows colors. */
 function styledMarks(output: string): string {
     if (!stdout.enabled) return output
     const lines: string[] = []
     for (const line of output.split("\n")) {
         if (line.startsWith("  ✓ ")) lines.push(`  ${stdout.success("✓")}${line.slice("  ✓".length)}`)
         else if (line.startsWith("  ✗ ")) lines.push(`  ${stdout.error("✗")}${line.slice("  ✗".length)}`)
+        else if (line.startsWith("  ○ ")) lines.push(`  ${stdout.warning("○")}${line.slice("  ○".length)}`)
         else lines.push(line)
     }
     return lines.join("\n")
 }
 
-/** Builds a test file into `output` with `ore build`, and runs it. */
-function testFile(ore: string, file: string, output: string): FileResult {
+/** Builds a test file into `output` with `ore build`, and runs it with the pattern of its tests to run, if not "". */
+function testFile(ore: string, file: string, output: string, pattern: string): FileResult {
     const built = process.output(ore, ["build", file, "-o", output])
     if (built instanceof Error) return new FileResult("", `ore: ${built.message}`, false)
     if (!built.ok) return new FileResult(built.stdout, built.stderr, false)
-    const ran = process.output(output)
+    // The pattern goes in the environment by env(1): the compiler is built by
+    // the stage-0 one, which has no process.command.
+    const ran =
+        pattern === "" ? process.output(output) : process.output("env", [`ORE_TEST_NAME_PATTERN=${pattern}`, output])
     if (ran instanceof Error) return new FileResult("", `${built.stderr}ore: ${ran.message}`, false)
     return new FileResult(ran.stdout, `${built.stderr}${ran.stderr}`, ran.ok)
 }

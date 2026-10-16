@@ -387,8 +387,13 @@ function taskMain(self: ptr): void {
     exitSwitch()
     const t = unsafe.fromAddress<Task>(self)
     t.body()
-    // The program ends with its top-level code.
-    if (t === s.mainTask) exitProgram(0)
+    // The program ends with its top-level code, after what "ore:test" runs then.
+    if (t === s.mainTask) {
+        const end = mainEnd
+        mainEnd = null
+        if (end !== null) end()
+        exitProgram(0)
+    }
     endTask()
 }
 
@@ -401,6 +406,18 @@ export function endTask(): void {
 //ore:runtime ore_rt_spawn
 function spawn(body: () => void): void {
     enqueue(newTask(body, taskStackSize))
+}
+
+/** What runs when the program's top-level code ends: the tests that "ore:test" collected. */
+let mainEnd: (() => void) | null = null
+
+export function setMainEnd(body: () => void): void {
+    mainEnd = body
+}
+
+/** Whether the current task runs the program's top-level code. */
+export function isMainTask(): bool {
+    return current() === scheduler().mainTask
 }
 
 /**

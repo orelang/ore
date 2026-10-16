@@ -40,12 +40,22 @@ class Inspection {
     entries: string[][] = []
     /** Whether values are colored. */
     colors = false
+    /** Whether every level and every entry is formatted, arrays not in columns, for "ore:test": no `[Object]` and no `... more items`. */
+    whole = false
 }
 
 //ore:runtime ore_rt_inspect_new
 function inspectNew(): Inspection {
     const s = new Inspection()
     s.colors = printColors()
+    return s
+}
+
+/** The state of formatting a value without colors, wholly when `whole`, for "ore:test". */
+//ore:runtime ore_rt_inspect_plain
+function inspectPlain(whole: bool): Inspection {
+    const s = new Inspection()
+    s.whole = whole
     return s
 }
 
@@ -96,7 +106,7 @@ function begin(s: Inspection, p: ptr, count: int, depth: int, open: string, clos
         }
     }
     if (count === 0) return `${open}${close}`
-    if (depth > depthLimit) return special(s, short)
+    if (depth > depthLimit && !s.whole) return special(s, short)
     s.seen.push(p)
     s.entries.push([])
     s.currentDepth = depth + 1
@@ -124,14 +134,14 @@ function pair(s: Inspection, key: string, value: string): void {
 /** Adds `... 2 more items` for the entries past the first 100 of `count`. */
 //ore:runtime ore_rt_inspect_more
 function more(s: Inspection, count: int): void {
-    const rest = count - maxEntries
+    const rest = count - shown(s, count)
     if (rest > 0) entry(s, `... ${rest} more item${rest > 1 ? "s" : ""}`)
 }
 
 /** How many entries of `count` to show. */
 //ore:runtime ore_rt_inspect_shown
-function shown(count: int): int {
-    return count < maxEntries ? count : maxEntries
+function shown(s: Inspection, count: int): int {
+    return count < maxEntries || s.whole ? count : maxEntries
 }
 
 /**
@@ -147,7 +157,7 @@ function end(s: Inspection, open: string, close: string, depth: int, array: bool
     const base = index >= 0 ? special(s, `<ref *${index + 1}>`) : ""
     const indentation = depth * 2
     const entries = output.length
-    if (array && entries > 6) output = group(s, output, indentation, numbers)
+    if (array && entries > 6 && !s.whole) output = group(s, output, indentation, numbers)
     const prefix = base !== "" ? `${base} ` : ""
     if (s.currentDepth - (depth + 1) < compact && entries === output.length) {
         // On one line, if it fits. As in Node, the start counts the colors of `<ref *1>`.

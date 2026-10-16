@@ -277,12 +277,16 @@ function printNewline(): void {
 /** Tests run by `ore test`, reported when the program ends. */
 let testsPassed: int
 let testsFailed: int
+let testsSkipped: int
+let testsTodo: int
 
-/** Counts a test that ended; tests may end on several threads at once. */
-export function countTest(passed: bool): void {
+/** Counts a test that ended (0 passed, 1 failed, 2 skipped, 3 todo); tests may end on several threads at once. */
+export function countTest(outcome: int): void {
     lock(outputLock)
-    if (passed) testsPassed++
-    else testsFailed++
+    if (outcome === 0) testsPassed++
+    else if (outcome === 1) testsFailed++
+    else if (outcome === 2) testsSkipped++
+    else testsTodo++
     unlock(outputLock)
 }
 
@@ -290,8 +294,11 @@ export function countTest(passed: bool): void {
 //ore:runtime ore_rt_exit
 export function exitProgram(code: i32): void {
     let status = code
-    if (testsPassed + testsFailed > 0) {
-        writeString(1, `\n${testsPassed} passed, ${testsFailed} failed\n`)
+    if (testsPassed + testsFailed + testsSkipped + testsTodo > 0) {
+        let summary = `\n${testsPassed} passed, ${testsFailed} failed`
+        if (testsSkipped > 0) summary += `, ${testsSkipped} skipped`
+        if (testsTodo > 0) summary += `, ${testsTodo} todo`
+        writeString(1, `${summary}\n`)
         if (testsFailed > 0) status = 1
     }
     flushOutput()

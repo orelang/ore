@@ -19,6 +19,19 @@ before 1.0, a minor version may change the language.
   comment the module starts with. On a terminal it is a colored listing;
   `--md` makes Markdown (with `-o dir`, a file per module and an
   `index.md`), `--json` a JSON dump for tools.
+- `ore:test` grows toward `bun:test`: `describe` groups (their names prefix
+  their tests', `math > adds`), the hooks `beforeAll`, `afterAll`,
+  `beforeEach` and `afterEach`, `skip`, `only` and `todo` (Ore functions
+  have no properties, so not `test.skip`), `.not`, and the matchers
+  `toEqual` (deep), `toBeNull`, `toBeTruthy`, `toBeFalsy`, `toContain`,
+  `toHaveLength`, `toBeGreaterThan(OrEqual)`, `toBeLessThan(OrEqual)`,
+  `toBeCloseTo`, `toMatch` and `toPanic` (Ore's `toThrow`: the function
+  runs in a task whose panic is caught). Failures show the matcher and the
+  expected and received values, as a diff of lines when they take several.
+  The tests of a file now run when its top-level code ends, so that `only`
+  can apply; a test declared in another task still runs at once. `ore test
+  -t <pattern>` runs only the tests whose full names match. The summary
+  counts skipped and todo tests.
 - The type parameters of generic methods may have defaults
   (`size<U = T>(): int`), as those of functions do; ORE5019 is no longer
   reported. A generic method is checked only for the calls it has, so such

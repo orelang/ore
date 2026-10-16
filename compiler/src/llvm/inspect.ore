@@ -239,7 +239,7 @@ function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
             )
             const deeper = g.b.value("i64", `add i64 %depth, 1`)
             const elem = t.elem
-            counted(g, g.rt("ore_rt_inspect_shown", [n]), (i) => {
+            counted(g, g.rt("ore_rt_inspect_shown", [s, n]), (i) => {
                 const data = g.b.value("ptr", `load ptr, ptr ${g.field(v.v, ARRAY, 0)}`)
                 const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${i.v}`)
                 g.rt("ore_rt_inspect_entry", [s, inspectAt(g, g.load(place.v, elem), elem, s, deeper)])
@@ -272,7 +272,7 @@ function inspectEntries(g: Emitter, v: V, keyType: Type, valueType: Type | null,
     const open = g.rt("ore_rt_inspect_sized", [g.str(kind), n])
     returnUnlessEmpty(g, g.rt("ore_rt_inspect_begin", [s, v, n, depth, open, g.str("}"), g.str(`[${kind}]`)]))
     const deeper = g.b.value("i64", `add i64 %depth, 1`)
-    const shown = g.rt("ore_rt_inspect_shown", [n])
+    const shown = g.rt("ore_rt_inspect_shown", [s, n])
     const written = g.b.alloca("i64")
     g.b.emit(`store i64 0, ptr ${written}`)
     const slots = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 6)}`)
