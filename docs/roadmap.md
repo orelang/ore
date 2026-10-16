@@ -110,7 +110,13 @@ exports, type assertions (Ore converts: `i32(x)`).
   downloaded again when it is missing or when the head of the repository's
   main branch has a new commit (the hash is checked). The language server
   downloads it as soon as the import is written, showing the progress in the
-  editor's status bar (`$/progress`) and in the hover of the import.
+  editor's status bar (`$/progress`) and in the hover of the import. Done:
+  the compiler's part
+  ([`compiler/src/project/remote.ore`](../compiler/src/project/remote.ore),
+  [Modules from GitHub](spec/07-modules.md#modules-from-github)): URLs with
+  a path and `/tree/<ref>`, downloads by commit with git, the check of the
+  head, offline use with a warning, `ore cache clean`. Left: the language
+  server's downloads with progress.
 - Diagnostics with codes (`ORE1234`) and a page per code in the
   documentation, linked from the editor (`codeDescription`) and printed by
   the command line; messages that explain the cause and the fix, with the

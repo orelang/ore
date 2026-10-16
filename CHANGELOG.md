@@ -19,6 +19,13 @@ before 1.0, a minor version may change the language.
   `fib`, `binary-trees` and `nbody` to start with.
 - Arrays have `shift()`, `unshift(...values)` and `splice(start, count?,
   ...values)` as in JavaScript; `shift` panics on an empty array, like `pop`.
+- Modules from GitHub: `import { x } from "https://github.com/owner/repo"`,
+  with a path in the repository and `/tree/<ref>` for a branch, tag or
+  commit. The repository is downloaded with git into the cache
+  (`~/.cache/ore/modules/github/<owner>/<repo>/<commit>`), and again when
+  its branch has a new commit; offline, the cached commit is used with a
+  warning. `ore cache` counts the downloaded modules, `ore cache clean`
+  removes them.
 - `ore run --watch` builds and runs the program again whenever one of its
   files changes (its modules, the files they import as text, package.json),
   stopping the one that runs; a build error is printed and the next change
