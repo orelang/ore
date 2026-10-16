@@ -529,11 +529,6 @@ export function compare(
     // A member compares with a union containing it.
     else if (!sameType(le.type, re.type) && re.type.kind === "union") le = c.coerce(typed(le), re.type, leftNode)
     else if (!sameType(le.type, re.type) && le.type.kind === "union") re = c.coerce(typed(re), le.type, rightNode)
-    // `true` and `false` compare with any boolean, as `bool`.
-    if (le.type.kind === "bool" && re.type.kind === "bool" && le.type !== re.type) {
-        if (le.type !== types.bool) le = new Recast(types.bool, le)
-        if (re.type !== types.bool) re = new Recast(types.bool, re)
-    }
     const type = typeOf(le)
     // Instances of a class and of a subclass compare by identity.
     const lt = le.type
@@ -1660,11 +1655,6 @@ function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, p
             props.every((p) => {
                 const type = fieldType(m, p.name)
                 if (type === null) return false
-                const k = p.value.kind
-                if (k === "TrueKeyword" || k === "FalseKeyword") {
-                    const value = k === "TrueKeyword" ? "true" : "false"
-                    return membersOf(type).some((t) => t.kind === "bool" && (t.value === "" || t.value === value))
-                }
                 if (!isStringLiteralNode(p.value)) return true
                 const lit = literalText(p.value)
                 return membersOf(type).some((t) => t.kind === "string" || (t.kind === "literal" && t.value === lit))
