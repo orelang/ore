@@ -1,5 +1,6 @@
 # A release of `ore` on a tag vX.Y.Z, whose commit sets that version in
-# compiler/package.json. On Linux (amd64, arm64) and macOS (arm64): the
+# compiler/package.json. On Linux (amd64, arm64; built in Ubuntu 20.04, so
+# that it runs where glibc is 2.31 or newer) and macOS (arm64): the
 # compiler bootstraps from the previous release (from the seed, the last
 # commit with the compiler in TypeScript, for the first one), checks that it
 # reproduces itself, passes the test suite, and is packed with its LLVM and
@@ -25,21 +26,35 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { runner: ubuntu-24.04, os: linux, arch: amd64 }
-          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
-          - { runner: macos-14, os: darwin, arch: arm64 }
+          - { runner: ubuntu-24.04, os: linux, arch: amd64, container: "ubuntu:20.04" }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64, container: "ubuntu:20.04" }
+          - { runner: macos-14, os: darwin, arch: arm64, container: "" }
     runs-on: ${{ matrix.runner }}
+    # The oldest glibc the Linux build is made with is the oldest it runs
+    # with: ore and the libraries packed with it need its version or newer.
+    container: ${{ matrix.container }}
     steps:
+      - name: Packages (Linux), git before the checkout so that it clones
+        if: matrix.os == 'linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends wget gnupg lsb-release software-properties-common \
+            ca-certificates git curl unzip patchelf xz-utils libc6-dev
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: LLVM, lld and patchelf (Linux)
+      - name: LLVM, lld and clang (Linux)
         if: matrix.os == 'linux'
         run: |
           wget -qO llvm.sh https://apt.llvm.org/llvm.sh
-          sudo bash llvm.sh 22
-          sudo apt-get install -y --no-install-recommends llvm-22-dev lld-22 clang patchelf
+          bash llvm.sh 22
+          apt-get install -y -qq --no-install-recommends llvm-22-dev lld-22 clang-22
+          ln -sf /usr/bin/clang-22 /usr/local/bin/clang
+          ln -sf /usr/bin/clang-22 /usr/local/bin/cc
           echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
 
       - name: LLVM and lld (macOS)
@@ -65,7 +80,16 @@ jobs:
       - name: Bootstrap
         env:
           ORE: ${{ steps.previous.outputs.ore }}
-        run: ci/bootstrap.sh dist
+        run: |
+          # The seed links without libdl, which glibc before 2.34 needs for
+          # dladdr: with clang (stage 0) and with lld (stage 1). Later stages
+          # link it themselves.
+          if [ -z "$ORE" ] && [ "$(uname -s)" = Linux ]; then
+            printf '#!/bin/sh\nexec ld.lld "$@" -ldl\n' > "$RUNNER_TEMP/ld-dl"
+            chmod +x "$RUNNER_TEMP/ld-dl"
+            export ORE_LD="$RUNNER_TEMP/ld-dl" CCC_OVERRIDE_OPTIONS=+-ldl
+          fi
+          ci/bootstrap.sh dist
 
       - name: The version is the tag's
         run: |
