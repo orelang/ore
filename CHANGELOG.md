@@ -19,6 +19,10 @@ before 1.0, a minor version may change the language.
   comment the module starts with. On a terminal it is a colored listing;
   `--md` makes Markdown (with `-o dir`, a file per module and an
   `index.md`), `--json` a JSON dump for tools.
+- The type parameters of generic methods may have defaults
+  (`size<U = T>(): int`), as those of functions do; ORE5019 is no longer
+  reported. A generic method is checked only for the calls it has, so such
+  a method of a generic class can use what only some of its instances have.
 - Diagnostics point at the places related to them: the first declaration of
   a name declared twice, the declaration of a variable read before it is
   assigned, the parameter, variable or field a value does not convert to,

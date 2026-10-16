@@ -75,3 +75,24 @@ const r = new Registry()
 const ada = r.register({ name: "ada", age: 36 })
 r.register({ name: "grace" })
 console.log(ada.age, r.all(), r.describe<f64>("floats", [1.5, 2.5]))
+
+// A default type argument that nothing binds: the method is checked only for
+// the instances that call it, so it can use what only they have.
+class Holder<T> {
+    constructor(readonly value: T) {}
+
+    size<U = T>(): int {
+        return this.value.length
+    }
+
+    above<U = T>(limit: T): bool {
+        return this.value > limit
+    }
+
+    wrapped<U = T[]>(): U {
+        return [this.value]
+    }
+}
+
+console.log(new Holder("four").size(), new Holder([1, 2]).size(), new Holder(1.5).above(1))
+console.log(new Holder(7).wrapped(), new Holder(7).wrapped<int[]>().length)

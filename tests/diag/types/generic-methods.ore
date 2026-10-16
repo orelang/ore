@@ -16,3 +16,15 @@ b.wrap<int>("no") // error: Type 'string' is not assignable to type 'i64'.
 interface Mapper {
     map<U>(x: int): int // error: Generic methods are not supported in interfaces
 }
+
+// A method with a default type argument is checked for the instances that call it.
+class Holder<T> {
+    constructor(readonly value: T) {}
+
+    size<U = T>(): int {
+        return this.value.length // error: Property 'length' does not exist on type 'i64'. (in 'size<i64>')
+    }
+}
+
+new Holder("ok").size()
+new Holder(5).size()

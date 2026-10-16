@@ -284,7 +284,11 @@ literal is exhaustive: like a `default`, it lets a function end without
 - Class methods can have their own type parameters
   (`map<U>(f: (x: T) => U): Box<U>`), instantiated per call like generic
   functions; they cannot be used as values, and interface methods cannot be
-  generic. Default type arguments are not supported.
+  generic. Their type parameters may have defaults, as those of functions.
+  Since a generic method is checked only for the calls it has, a method
+  with a parameter that nothing binds, such as `size<U = T>(): int`, can use
+  what only some instances of its class have (`this.value.length`); a call
+  on another instance is an error in that instance.
 - A function literal passed for a parameter like `f: (x: T) => U` gets its
   parameter types from the type arguments inferred from the other arguments,
   and its result binds the rest: `box.map((n) => n * 2)`.
