@@ -1113,7 +1113,8 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     else func.body = checkBlock(c, body(decl)!, scope)
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
-    checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
+    // A generator's body is a closure, checked on its own; the function returns the generator.
+    if (!isGenerator(decl)) checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
 }
 
 /** Checks that a class has the members of the interfaces it `implements`. */

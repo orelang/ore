@@ -2151,7 +2151,8 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     else func.body = checkBlock(c, body(decl)!, scope)
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
-    checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
+    // A generator's body is a closure, checked on its own; the function returns the generator.
+    if (!isGenerator(decl)) checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
     // Without a frame, a naked function can branch only on what is known at compile time.
     const attributes = func.attributes
     if (attributes !== null && attributes.naked) {

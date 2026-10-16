@@ -66,6 +66,8 @@ export function generatorTypes(c: Checker, result: Type, node: Node): GeneratorT
     if (args === null) args = iteratorInstance(c, result, "Iterator")
     if (args === null) args = iteratorInstance(c, result, "IterableIterator")
     if (args === null || args.length < 1) {
+        // Without an annotation, the error is reported already.
+        if (result.kind === "void") return null
         c.error(
             node,
             `The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '${typeToString(result)}'.`,

@@ -101,7 +101,7 @@ import {
     asteriskToken,
 } from "../syntax/nodes"
 import { asyncValue, checkAsyncBody, isAsync, promiseOf } from "./async"
-import { checkGeneratorBody, isGenerator } from "./generators"
+import { checkGeneratorBody, isGenerator, iteratorModule } from "./generators"
 import { isProtocolIterable, iteratorOf, iteratorValue, protocolLoop } from "./iteration"
 import { type Checker } from "./base"
 import { dispatch, initStatics } from "./classes"
@@ -1131,6 +1131,39 @@ export function checkFor(c: Checker, stmt: Node, outer: Scope): Stmt {
     return new Block(prelude)
 }
 
+/** A loop over a collection for one over the iterator of its `keys()`, `values()` or `entries()`. */
+class DirectIteration {
+    constructor(
+        readonly source: Expr,
+        /** The keys of a map, without its values. */
+        readonly keyOnly: bool,
+        /** The values of a map, without a key variable. */
+        readonly valueOnly: bool,
+    ) {}
+}
+
+/**
+ * For an iterable made by `array.values()`, `set.values()`, `set.keys()`,
+ * `map.keys()`, `map.values()` or `map.entries()` destructured as
+ * `[key, value]`: the collection to loop over instead, as the iterator
+ * would visit it.
+ */
+function directIteration(c: Checker, iterable: Expr, pattern: Node): DirectIteration | null {
+    if (iterable.k !== "call" || iterable.args.length !== 1) return null
+    const f = iterable.func
+    const file = f.file
+    if (file === null || !file.startsWith(iteratorModule)) return null
+    const name = f.sourceName
+    const source = iterable.args[0]
+    if (name.startsWith("arrayValues<") || name.startsWith("setValues<"))
+        return new DirectIteration(source, false, false)
+    if (name.startsWith("mapKeys<")) return new DirectIteration(source, true, false)
+    if (name.startsWith("mapValues<")) return new DirectIteration(source, false, true)
+    if (name.startsWith("mapEntries<") && pattern.kind === "ArrayBindingPattern")
+        return new DirectIteration(source, false, false)
+    return null
+}
+
 export function checkForOf(c: Checker, stmt: Node, outer: Scope): Stmt | null {
     const list = initializer(stmt)!
     const kind = list.kind === "VariableDeclarationList" ? declarationKind(list, c.sourceOf(list).text) : "var"
@@ -1145,7 +1178,10 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): Stmt | null {
 
     const value = checkExpr(c, expression(stmt), outer)
     if (value.k === "error") return null
-    const iterable = c.toDefault(value, expression(stmt))
+    let iterable = c.toDefault(value, expression(stmt))
+    // `values()`, `keys()` and `entries()` of a collection loop over the collection itself, as fast.
+    const direct = directIteration(c, iterable, nameNode(decl))
+    if (direct !== null) iterable = direct.source
     const type = iterable.type
     const mutable = kind === "let"
     // Names and types of the loop variables: one, or `[key, value]` for a map.
@@ -1153,7 +1189,16 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): Stmt | null {
     const elemTypes: Type[] = []
     // Of a class or interface: its iterator, by the iteration protocol.
     let iterator: Expr | null = null
-    if (isProtocolIterable(type)) {
+    if (direct !== null && direct.keyOnly) {
+        names.push(nameNode(decl))
+        elemTypes.push(type.kind === "map" ? type.key : types.void)
+    } else if (direct !== null && direct.valueOnly && type.kind === "map") {
+        // The key is a hidden loop variable.
+        names.push(nameNode(decl))
+        elemTypes.push(type.key)
+        names.push(nameNode(decl))
+        elemTypes.push(type.value)
+    } else if (isProtocolIterable(type)) {
         iterator = iteratorOf(c, iterable, expression(stmt))
         if (iterator === null) return null
         names.push(nameNode(decl))
@@ -1199,6 +1244,10 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): Stmt | null {
     for (let i = 0; i < names.length; i++) {
         const name = names[i]
         const t = elemTypes[i]
+        if (direct !== null && direct.valueOnly && type.kind === "map" && i === 0) {
+            locals.push(c.newLocal("key", t, false))
+            continue
+        }
         if (!isIdentifier(name)) {
             const local = c.newLocal("item", t, false)
             bindPattern(c, name, new LocalRef(t, local), mutable, scope, prologue)
