@@ -1,0 +1,42 @@
+// Runs the cases of tests/fuzz/strings/gen.mjs with Ore's strings and prints
+// them as it prints JavaScript's results.
+
+type Case = { s: string; t: string; p: string; i: int; j: int; n: int; plain: bool }
+
+const text = fs.readFile(process.args[0])
+if (text instanceof Error) process.panic(text.message)
+const out: string[] = []
+let k = 0
+for (const line of text.split("\n")) {
+    if (line === "") continue
+    const c = JSON.parse<Case>(line)
+    if (c instanceof Error) process.panic(c.message)
+    const { s, t, p, i, j, n } = c
+    out.push(`== ${k++}`)
+    out.push(`upper: ${JSON.stringify(s.toUpperCase())}`)
+    out.push(`lower: ${JSON.stringify(s.toLowerCase())}`)
+    out.push(`trim: ${JSON.stringify([s.trim(), s.trimStart(), s.trimEnd()])}`)
+    for (const form of ["NFC", "NFD", "NFKC", "NFKD"]) out.push(`${form}: ${JSON.stringify(s.normalize(form))}`)
+    out.push(`includes: ${JSON.stringify(s.includes(t))}`)
+    out.push(`starts: ${JSON.stringify([s.startsWith(t), s.endsWith(t)])}`)
+    out.push(`split: ${JSON.stringify(s.split(t))}`)
+    out.push(`replaceAll: ${JSON.stringify(s.replaceAll(t, p))}`)
+    out.push(`replace: ${JSON.stringify(s.replace(t, p))}`)
+    out.push(`concat: ${JSON.stringify(s.concat(t, p))}`)
+    out.push(`wellFormed: ${JSON.stringify(s.isWellFormed())}`)
+    if (!c.plain) continue
+    out.push(`slice: ${JSON.stringify([s.slice(i), s.slice(i, j)])}`)
+    out.push(`substring: ${JSON.stringify([s.substring(i), s.substring(i, j)])}`)
+    out.push(`substr: ${JSON.stringify([s.substr(i), s.substr(i, j)])}`)
+    out.push(`at: ${JSON.stringify([s.at(i), s.charAt(i)])}`)
+    out.push(`charCodeAt: ${JSON.stringify(s.charCodeAt(i))}`)
+    out.push(`codePointAt: ${JSON.stringify(s.codePointAt(i))}`)
+    out.push(`indexOf: ${JSON.stringify([s.indexOf(t), s.indexOf(t, i), s.lastIndexOf(t), s.lastIndexOf(t, i)])}`)
+    out.push(`includesFrom: ${JSON.stringify([s.includes(t, i), s.startsWith(t, i), s.endsWith(t, j)])}`)
+    out.push(`pad: ${JSON.stringify([s.padStart(n), s.padEnd(n), s.padStart(n, t), s.padEnd(n, t)])}`)
+    out.push(`repeat: ${JSON.stringify(s.repeat(n % 4))}`)
+    out.push(`splitLimit: ${JSON.stringify([s.split(t, n % 4), s.split(t, -1)])}`)
+    out.push(`replaceFn: ${JSON.stringify(s.replaceAll(t, (m: string, at: int) => `<${m}@${at}>`))}`)
+    out.push(`compare: ${JSON.stringify([s === t, s < t, s > t])}`)
+}
+console.log(out.join("\n"))
