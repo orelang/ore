@@ -2,7 +2,15 @@
 
 import { elementData, entryData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
-import { intRange, typeToString, unionRepr, type StructType, type Type, type UnionType } from "../ir/types"
+import {
+    displayFields,
+    intRange,
+    typeToString,
+    unionRepr,
+    type StructType,
+    type Type,
+    type UnionType,
+} from "../ir/types"
 import { error, helper } from "./calls"
 import { keyFunctions, keyKind } from "./collections"
 import {
@@ -283,11 +291,12 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
                 return
             }
             putc(g, b, "{")
+            const shown = displayFields(type)
             if (type.fields.some((f) => f.optional)) {
                 // Optional fields that are null are left out, as JavaScript leaves out undefined.
                 const written = g.b.alloca("i64")
                 g.b.emit(`store i64 0, ptr ${written}`)
-                for (const f of type.fields) {
+                for (const f of shown) {
                     const x = g.load(fieldPtr(g, v.v, type, f.name), f.type)
                     const ft = f.type
                     const skip = g.b.label("absent")
@@ -312,8 +321,8 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
                 putc(g, b, "}")
                 return
             }
-            for (let i = 0; i < type.fields.length; i++) {
-                const f = type.fields[i]
+            for (let i = 0; i < shown.length; i++) {
+                const f = shown[i]
                 if (i > 0) putc(g, b, ",")
                 newline(deeper)
                 put(g, b, `${JSON.stringify(f.name)}:`)

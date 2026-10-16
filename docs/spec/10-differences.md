@@ -16,6 +16,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 
 | Construct | TypeScript | Ore |
 |---|---|---|
+| order of an object's properties (printing, JSON, `Object.keys`) | the order they were added to each object | the order of the object type's declaration, or of the literal that made the type first; every value of a type shows the same order |
 | `"abc".length` | UTF-16 code units | bytes |
 | `for (const c of s)` | code points as strings | runes (`i32`) |
 | `7 / 2` | `3.5` | `3` (integer division) |

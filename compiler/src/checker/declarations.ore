@@ -905,8 +905,10 @@ export function declareTypeAliases(c: Checker, decls: Node[], scope: Scope) {
         for (const i of component) if (typeNode(plain[i])!.kind !== "TypeLiteral") declareTypeAlias(c, plain[i], scope)
         for (let k = 0; k < structs.length; k++) {
             const fields = c.literalFields(literals[k], scope)
+            const written = fields.slice()
             fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
             structs[k].fields = fields
+            if (written.some((f, i) => f !== fields[i])) structs[k].order = written
             c.memberDecls.set(structs[k], c.memberNodes(literals[k]))
             c.module.structs.push(structs[k])
         }
@@ -1337,8 +1339,10 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
             generic.instances.set(key, struct)
             c.instanceOf.set(struct, new InstanceInfo(generic, args))
             const fields = c.literalFields(literal, scope)
+            const written = fields.slice()
             fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
             struct.fields = fields
+            if (written.some((f, i) => f !== fields[i])) struct.order = written
             c.memberDecls.set(struct, c.memberNodes(literal))
             c.module.structs.push(struct)
             c.typeSite = outer

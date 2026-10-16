@@ -13,6 +13,7 @@ import {
     isNumeric,
     types,
     unionRepr,
+    displayFields,
 } from "../ir/types"
 import { counted, dateClass } from "./json"
 import { ARRAY, MAP, STR } from "./context"
@@ -406,7 +407,8 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
     g.b.emit(`store i64 0, ptr ${count}`)
     const values: V[] = []
     const present: (V | null)[] = []
-    for (const f of t.fields) {
+    const shown = displayFields(t)
+    for (const f of shown) {
         const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
         values.push(x)
         const ft = f.type
@@ -430,8 +432,8 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
     returnUnlessEmpty(g, g.rt("ore_rt_inspect_begin", [s, v, n, depth, g.str(open), g.str(close), g.str(short)]))
     const deeper = g.b.value("i64", `add i64 %depth, 1`)
     let numbers = true
-    for (let i = 0; i < t.fields.length; i++) {
-        const f = t.fields[i]
+    for (let i = 0; i < shown.length; i++) {
+        const f = shown[i]
         if (!numeric(f.type)) numbers = false
         const accessor = accessorOf(t, f)
         if (accessor === "set+") continue
@@ -588,8 +590,9 @@ export function table(g: Emitter, v: V, t: Type, only: V | null) {
             tableItem(g, tb, g.load(place.v, elem), elem)
         })
     } else if (t.kind === "struct") {
-        for (let i = 0; i < t.fields.length; i++) {
-            const f = t.fields[i]
+        const shown = displayFields(t)
+        for (let i = 0; i < shown.length; i++) {
+            const f = shown[i]
             g.rt("ore_rt_table_row", [tb, g.str(t.tuple ? `${i}` : f.name)])
             tableItem(g, tb, g.load(fieldPtr(g, v.v, t, f.name), f.type), f.type)
         }
@@ -629,8 +632,9 @@ function entriesTable(g: Emitter, tb: V, v: V, keyType: Type, valueType: Type | 
 /** The cells of a row of console.table for an entry: its properties or elements, or a primitive's value. */
 function tableItem(g: Emitter, tb: V, v: V, t: Type) {
     if (t.kind === "struct") {
-        for (let i = 0; i < t.fields.length; i++) {
-            const f = t.fields[i]
+        const shown = displayFields(t)
+        for (let i = 0; i < shown.length; i++) {
+            const f = shown[i]
             const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
             const ft = f.type
             // An optional property that is null is not there, as an undefined one in JavaScript.
