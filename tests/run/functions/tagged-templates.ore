@@ -1,0 +1,98 @@
+// Tagged templates: the tag gets the strings, with their raw text in `raw`,
+// and the substitutions, typed by its parameters.
+
+function show(strings: TemplateStringsArray, ...values: int[]): string {
+    const parts: string[] = []
+    for (let i = 0; i < strings.length; i++) {
+        parts.push(`${JSON.stringify(strings[i] ?? "<invalid>")}/${JSON.stringify(strings.raw[i])}`)
+        if (i < values.length) parts.push(`${values[i]}`)
+    }
+    return parts.join(" ")
+}
+
+const x = 1
+const y = 2
+console.log(show`a${x}b${y}c`)
+console.log(show`no substitutions`)
+console.log(show``)
+console.log(show`${x}${y}`)
+console.log(show`escapes \n\t\x41\u0042\u{1F600} \` \$`)
+console.log(show`line
+break`)
+
+// An invalid escape is allowed: its cooked string is null, its raw text stays.
+console.log(show`bad \unicode`)
+console.log(show`bad \xZ and \u{110000}${x} but \0 is fine`)
+console.log(show`octal \1 ${x} and \01`)
+
+// Fixed parameters type each substitution.
+function pair(strings: TemplateStringsArray, name: string, score: f64): string {
+    return `${strings[0]}${name.toUpperCase()}${strings[1]}${score * 2}${strings[2]}`
+}
+console.log(pair`<${"ada"}: ${1.5}>`)
+
+// A generic tag.
+function first<T>(strings: TemplateStringsArray, value: T): T {
+    return value
+}
+console.log(first`${[1, 2, 3]}`.length)
+
+// The same site passes the same strings each time it runs; another site, other strings.
+let last: TemplateStringsArray | null = null
+function same(strings: TemplateStringsArray): bool {
+    const result = last === strings
+    last = strings
+    return result
+}
+const seen: bool[] = []
+for (let i = 0; i < 3; i++) seen.push(same`site`)
+seen.push(same`site`)
+console.log(seen)
+
+// Methods and properties of an array.
+function words(strings: TemplateStringsArray, ...values: string[]): string[] {
+    const cooked = strings.map((s) => (s ?? "").trim()).filter((s) => s !== "")
+    const all: string[] = []
+    for (const w of cooked) all.push(w)
+    for (const v of values) all.push(v)
+    return all
+}
+console.log(words` one ${"two"} three ${"four"} `)
+
+// Tags as methods and closures.
+class Html {
+    escape(text: string): string {
+        return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    }
+    render(strings: TemplateStringsArray, ...values: string[]): string {
+        let out = strings[0] ?? ""
+        for (let i = 0; i < values.length; i++) out += this.escape(values[i]) + (strings[i + 1] ?? "")
+        return out
+    }
+}
+const html = new Html()
+console.log(html.render`<p>${"a < b & c"}</p>`)
+const upper = (strings: TemplateStringsArray, ...values: string[]): string =>
+    String.raw({ raw: strings.raw.map((s) => s.toUpperCase()) }, ...values)
+console.log(upper`a${"b"}c\n`)
+
+// String.raw: the raw strings with the substitutions between them.
+console.log(String.raw`C:\Users\${"ada"}\new`)
+console.log(String.raw`\u{1F600} ${x + y} \xZ`)
+console.log(String.raw`no substitutions\t`)
+console.log(String.raw({ raw: ["a", "b", "c"] }, "1", "2", "3"))
+console.log(String.raw({ raw: ["only"] }, "1"))
+console.log(String.raw({ raw: [] }, "1"))
+function raw(strings: TemplateStringsArray, ...values: string[]): string {
+    return String.raw(strings, ...values)
+}
+console.log(raw`x\ty${"!"}z`)
+
+// A TemplateStringsArray is an array of its strings.
+function strings(s: TemplateStringsArray, ...values: int[]): TemplateStringsArray {
+    return s
+}
+const parts = strings`p${1}q${2}r`
+const copy: (string | null)[] = parts
+const [head, ...rest] = parts
+console.log(copy, head, rest, parts.raw, [...parts].length)
