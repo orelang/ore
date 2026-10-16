@@ -27,6 +27,7 @@ Rules for this code:
 | `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript (Ryu for f64) |
 | `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |
 | `json.ore` | The string builder, the JSON parser and the helpers of the generated encoders and decoders |
+| `bigint.ore` | `bigint`: arithmetic, Knuth's division, shifts and bitwise operations in two's complement, comparison, hashing, conversions to and from numbers and text in radixes 2 to 36; the namespace `BigInt` |
 | `number.ore` | `parseInt`, `parseFloat` and `toFixed` as JavaScript computes them, `Math.round`, `Math.cbrt`, `process.getenv` |
 | `os.ore` | libc, pthreads and signals, with the sizes and constants of each platform |
 | `gc.ore` | The garbage collector: size-classed spans, per-thread allocation, stopping the world with a signal, mark and sweep; `ORE_GCTRACE=1` prints each collection |

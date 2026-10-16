@@ -1,0 +1,815 @@
+//ore:internal
+// `bigint`: integers of any size, as in JavaScript.
+//
+// A bigint is a pointer to an immutable block of collected memory that holds
+// no pointers: an i64 whose absolute value is the number of 32-bit limbs and
+// whose sign is the sign of the value, then the limbs, least significant
+// first, the last one not zero. 0n is the null pointer, so that zeroed memory
+// holds 0n, and no other value is null. The constants of a program are blocks
+// of the same layout in its read-only data.
+//
+// Generated code calls the functions marked `//ore:runtime`, which take and
+// return bigints as pointers. Values have at most 2^30 bits, as in V8: a
+// larger result panics. Division is schoolbook long division (Knuth's
+// algorithm D), multiplication schoolbook.
+//
+// The exports of this module are the members of the namespace `BigInt`.
+
+/** The bytes before the limbs: the signed number of limbs. */
+const HEADER = 8
+/** The most limbs of a value: 2^30 bits. */
+const MAX_LIMBS = 33554432
+const MASK: u64 = 0xffffffff
+
+function nil(): ptr {
+    return unsafe.fromInt(0)
+}
+
+function isNil(p: ptr): bool {
+    return unsafe.toInt(p) === 0
+}
+
+/** The number of limbs, negative for a negative value; 0 for 0n. */
+function sizeOf(b: ptr): int {
+    return isNil(b) ? 0 : unsafe.load<i64>(b)
+}
+
+function lengthOf(b: ptr): int {
+    const n = sizeOf(b)
+    return n < 0 ? -n : n
+}
+
+function isNegative(b: ptr): bool {
+    return sizeOf(b) < 0
+}
+
+/** The limbs of a value. */
+function digits(b: ptr): ptr {
+    return unsafe.add(b, HEADER)
+}
+
+function limb(p: ptr, i: int): u64 {
+    return u64(unsafe.load<u32>(unsafe.add(p, i * 4)))
+}
+
+function setLimb(p: ptr, i: int, v: u64) {
+    unsafe.store<u32>(unsafe.add(p, i * 4), u32(v & MASK))
+}
+
+function tooLarge(): never {
+    process.panic("Maximum BigInt size exceeded")
+}
+
+/** A zeroed block with room for `n` limbs. */
+function block(n: int): ptr {
+    if (n > MAX_LIMBS + 2) tooLarge()
+    return unsafe.allocBytes(HEADER + n * 4)
+}
+
+/** The value of a block whose first `n` limbs are set: without leading zero limbs, with its sign; 0n when all are zero. */
+function finish(p: ptr, n: int, negative: bool): ptr {
+    let k = n
+    const d = digits(p)
+    while (k > 0 && limb(d, k - 1) === 0) k--
+    if (k === 0) return nil()
+    if (k > MAX_LIMBS) tooLarge()
+    unsafe.store<i64>(p, negative ? -k : k)
+    return p
+}
+
+/** A value of magnitude `v`. */
+function fromMagnitude(v: u64, negative: bool): ptr {
+    if (v === 0) return nil()
+    const p = block(2)
+    setLimb(digits(p), 0, v)
+    setLimb(digits(p), 1, v >> 32)
+    return finish(p, 2, negative)
+}
+
+/** A value with the magnitude of `b` and the sign `negative`. */
+function withSign(b: ptr, negative: bool): ptr {
+    const n = lengthOf(b)
+    if (n === 0 || isNegative(b) === negative) return b
+    const p = block(n)
+    unsafe.copy(digits(p), digits(b), n * 4)
+    unsafe.store<i64>(p, negative ? -n : n)
+    return p
+}
+
+/** The number of bits of a magnitude of `n` limbs. */
+function bitLength(d: ptr, n: int): int {
+    if (n === 0) return 0
+    let top = limb(d, n - 1)
+    let bits = (n - 1) * 32
+    while (top !== 0) {
+        bits++
+        top >>= 1
+    }
+    return bits
+}
+
+/** -1, 0 or 1, as magnitude `a` is below, equal to or above magnitude `b`. */
+function compareMagnitudes(a: ptr, na: int, b: ptr, nb: int): int {
+    if (na !== nb) return na < nb ? -1 : 1
+    for (let i = na - 1; i >= 0; i--) {
+        const x = limb(a, i)
+        const y = limb(b, i)
+        if (x !== y) return x < y ? -1 : 1
+    }
+    return 0
+}
+
+/** |a| + |b|, with the sign `negative`. */
+function addMagnitudes(a: ptr, na: int, b: ptr, nb: int, negative: bool): ptr {
+    if (na < nb) return addMagnitudes(b, nb, a, na, negative)
+    const p = block(na + 1)
+    const d = digits(p)
+    let carry: u64 = 0
+    for (let i = 0; i < na; i++) {
+        const s = limb(a, i) + (i < nb ? limb(b, i) : 0) + carry
+        setLimb(d, i, s)
+        carry = s >> 32
+    }
+    setLimb(d, na, carry)
+    return finish(p, na + 1, negative)
+}
+
+/** |a| - |b| for |a| >= |b|, with the sign `negative`. */
+function subtractMagnitudes(a: ptr, na: int, b: ptr, nb: int, negative: bool): ptr {
+    const p = block(na)
+    const d = digits(p)
+    let borrow: u64 = 0
+    for (let i = 0; i < na; i++) {
+        const x = limb(a, i)
+        const y = (i < nb ? limb(b, i) : 0) + borrow
+        if (x >= y) {
+            setLimb(d, i, x - y)
+            borrow = 0
+        } else {
+            setLimb(d, i, x + 0x100000000 - y)
+            borrow = 1
+        }
+    }
+    return finish(p, na, negative)
+}
+
+/** x + y, or x - y when `minus`. */
+function addSigned(x: ptr, y: ptr, minus: bool): ptr {
+    const nx = lengthOf(x)
+    const ny = lengthOf(y)
+    if (ny === 0) return x
+    const yNegative = isNegative(y) !== minus
+    if (nx === 0) return withSign(y, yNegative)
+    const xNegative = isNegative(x)
+    if (xNegative === yNegative) return addMagnitudes(digits(x), nx, digits(y), ny, xNegative)
+    const c = compareMagnitudes(digits(x), nx, digits(y), ny)
+    if (c === 0) return nil()
+    if (c > 0) return subtractMagnitudes(digits(x), nx, digits(y), ny, xNegative)
+    return subtractMagnitudes(digits(y), ny, digits(x), nx, yNegative)
+}
+
+//ore:runtime ore_rt_big_add
+function add(x: ptr, y: ptr): ptr {
+    return addSigned(x, y, false)
+}
+
+//ore:runtime ore_rt_big_sub
+function subtract(x: ptr, y: ptr): ptr {
+    return addSigned(x, y, true)
+}
+
+//ore:runtime ore_rt_big_neg
+function negate(x: ptr): ptr {
+    return withSign(x, !isNegative(x))
+}
+
+/** ~x, which is -x - 1. */
+//ore:runtime ore_rt_big_not
+function not(x: ptr): ptr {
+    return addSigned(negate(x), fromMagnitude(1, false), true)
+}
+
+/** Adds the product of magnitudes `a` and `b` into `d`, zeroed, of `na + nb` limbs. */
+function multiplyInto(d: ptr, a: ptr, na: int, b: ptr, nb: int) {
+    for (let i = 0; i < na; i++) {
+        const ai = limb(a, i)
+        if (ai === 0) continue
+        let carry: u64 = 0
+        for (let j = 0; j < nb; j++) {
+            // At most (2^32 - 1)^2 + 2 (2^32 - 1) = 2^64 - 1.
+            const t = ai * limb(b, j) + limb(d, i + j) + carry
+            setLimb(d, i + j, t)
+            carry = t >> 32
+        }
+        setLimb(d, i + nb, carry)
+    }
+}
+
+//ore:runtime ore_rt_big_mul
+function multiply(x: ptr, y: ptr): ptr {
+    const nx = lengthOf(x)
+    const ny = lengthOf(y)
+    if (nx === 0 || ny === 0) return nil()
+    if (nx + ny > MAX_LIMBS + 1) tooLarge()
+    const p = block(nx + ny)
+    multiplyInto(digits(p), digits(x), nx, digits(y), ny)
+    return finish(p, nx + ny, isNegative(x) !== isNegative(y))
+}
+
+/** The number of zero bits above the highest set bit of a limb that is not 0. */
+function leadingZeros(v: u64): int {
+    let n = 0
+    let x = v
+    while ((x & 0x80000000) === 0) {
+        x <<= 1
+        n++
+    }
+    return n
+}
+
+/**
+ * Divides magnitude `a` by magnitude `b`, of `nb` limbs, the top one not 0,
+ * with `na >= nb`: the quotient into `q` (na - nb + 1 limbs) and the
+ * remainder into `r` (nb limbs), both zeroed. Knuth's algorithm D, as in
+ * Hacker's Delight (divmnu).
+ */
+function divideMagnitudes(a: ptr, na: int, b: ptr, nb: int, q: ptr, r: ptr) {
+    if (nb === 1) {
+        const v = limb(b, 0)
+        let rest: u64 = 0
+        for (let i = na - 1; i >= 0; i--) {
+            const cur = (rest << 32) | limb(a, i)
+            setLimb(q, i, cur / v)
+            rest = cur % v
+        }
+        setLimb(r, 0, rest)
+        return
+    }
+    // Normalized so that the top bit of the divisor is set.
+    const s = leadingZeros(limb(b, nb - 1))
+    const vn = unsafe.allocBytes(nb * 4)
+    for (let i = nb - 1; i > 0; i--) setLimb(vn, i, (limb(b, i) << u64(s)) | (limb(b, i - 1) >> u64(32 - s)))
+    setLimb(vn, 0, limb(b, 0) << u64(s))
+    const un = unsafe.allocBytes((na + 1) * 4)
+    setLimb(un, na, limb(a, na - 1) >> u64(32 - s))
+    for (let i = na - 1; i > 0; i--) setLimb(un, i, (limb(a, i) << u64(s)) | (limb(a, i - 1) >> u64(32 - s)))
+    setLimb(un, 0, limb(a, 0) << u64(s))
+    const top = limb(vn, nb - 1)
+    const next = limb(vn, nb - 2)
+    for (let j = na - nb; j >= 0; j--) {
+        // The estimate of the quotient digit, too large by at most 2, then corrected.
+        const num = (limb(un, j + nb) << 32) | limb(un, j + nb - 1)
+        let qhat = num / top
+        let rhat = num % top
+        while (qhat >= 0x100000000 || qhat * next > ((rhat << 32) | limb(un, j + nb - 2))) {
+            qhat--
+            rhat += top
+            if (rhat >= 0x100000000) break
+        }
+        // Multiplies and subtracts.
+        let k: i64 = 0
+        for (let i = 0; i < nb; i++) {
+            const p = qhat * limb(vn, i)
+            const t = i64(limb(un, i + j)) - k - i64(p & MASK)
+            setLimb(un, i + j, u64(t))
+            k = i64(p >> 32) - (t >> 32)
+        }
+        const t = i64(limb(un, j + nb)) - k
+        setLimb(un, j + nb, u64(t))
+        if (t < 0) {
+            // Subtracted too much: adds back.
+            qhat--
+            let carry: u64 = 0
+            for (let i = 0; i < nb; i++) {
+                const sum = limb(un, i + j) + limb(vn, i) + carry
+                setLimb(un, i + j, sum)
+                carry = sum >> 32
+            }
+            setLimb(un, j + nb, limb(un, j + nb) + carry)
+        }
+        setLimb(q, j, qhat)
+    }
+    // The remainder, unnormalized.
+    for (let i = 0; i < nb; i++) setLimb(r, i, (limb(un, i) >> u64(s)) | (limb(un, i + 1) << u64(32 - s)))
+}
+
+/** x / y truncated toward zero, or the remainder, which has the sign of x. */
+function divide(x: ptr, y: ptr, remainder: bool): ptr {
+    const ny = lengthOf(y)
+    if (ny === 0) process.panic("Division by zero")
+    const nx = lengthOf(x)
+    if (compareMagnitudes(digits(x), nx, digits(y), ny) < 0) return remainder ? x : nil()
+    const q = block(nx - ny + 1)
+    const r = block(ny)
+    divideMagnitudes(digits(x), nx, digits(y), ny, digits(q), digits(r))
+    if (remainder) return finish(r, ny, isNegative(x))
+    return finish(q, nx - ny + 1, isNegative(x) !== isNegative(y))
+}
+
+//ore:runtime ore_rt_big_div
+function quotient(x: ptr, y: ptr): ptr {
+    return divide(x, y, false)
+}
+
+//ore:runtime ore_rt_big_rem
+function remainderOf(x: ptr, y: ptr): ptr {
+    return divide(x, y, true)
+}
+
+/** x ** y; a negative exponent panics. */
+//ore:runtime ore_rt_big_pow
+function power(x: ptr, y: ptr): ptr {
+    if (isNegative(y)) process.panic("Exponent must be non-negative")
+    if (lengthOf(y) === 0) return fromMagnitude(1, false)
+    const nx = lengthOf(x)
+    if (nx === 0) return nil()
+    const odd = (limb(digits(y), 0) & 1) === 1
+    if (nx === 1 && limb(digits(x), 0) === 1) return isNegative(x) && !odd ? negate(x) : x
+    if (lengthOf(y) > 1) tooLarge()
+    let e = limb(digits(y), 0)
+    // The result has at least (bits - 1) * e + 1 bits.
+    if (i64(bitLength(digits(x), nx) - 1) * i64(e) >= i64(MAX_LIMBS) * 32) tooLarge()
+    let result = fromMagnitude(1, false)
+    let base = x
+    while (true) {
+        if ((e & 1) === 1) result = multiply(result, base)
+        e >>= 1
+        if (e === 0) break
+        base = multiply(base, base)
+    }
+    return result
+}
+
+/** |x| * 2^n with the sign of x, for n >= 0. */
+function shiftLeftBy(x: ptr, n: int): ptr {
+    const nx = lengthOf(x)
+    if (nx === 0 || n === 0) return x
+    if (n > MAX_LIMBS * 32) tooLarge()
+    const whole = n / 32
+    const bits = u64(n % 32)
+    const p = block(nx + whole + 1)
+    const d = digits(p)
+    const a = digits(x)
+    let carry: u64 = 0
+    for (let i = 0; i < nx; i++) {
+        const v = limb(a, i)
+        setLimb(d, i + whole, (v << bits) | carry)
+        carry = bits === 0 ? 0 : v >> (32 - bits)
+    }
+    setLimb(d, nx + whole, carry)
+    return finish(p, nx + whole + 1, isNegative(x))
+}
+
+/** floor(x / 2^n), for n >= 0. */
+function shiftRightBy(x: ptr, n: int): ptr {
+    const nx = lengthOf(x)
+    if (nx === 0 || n === 0) return x
+    const negative = isNegative(x)
+    const whole = n / 32
+    const bits = u64(n % 32)
+    if (whole >= nx) return negative ? fromMagnitude(1, true) : nil()
+    const a = digits(x)
+    // Whether bits that are shifted out are set: a negative value then rounds down, away from zero.
+    let lost = bits !== 0 && (limb(a, whole) & ((u64(1) << bits) - 1)) !== 0
+    for (let i = 0; i < whole && !lost; i++) if (limb(a, i) !== 0) lost = true
+    const m = nx - whole
+    const p = block(m + 1)
+    const d = digits(p)
+    for (let i = 0; i < m; i++) {
+        const high = i + whole + 1 < nx ? limb(a, i + whole + 1) << (32 - bits) : 0
+        setLimb(d, i, (limb(a, i + whole) >> bits) | high)
+    }
+    if (negative && lost) {
+        let carry: u64 = 1
+        for (let i = 0; i <= m && carry !== 0; i++) {
+            const s = limb(d, i) + carry
+            setLimb(d, i, s)
+            carry = s >> 32
+        }
+    }
+    return finish(p, m + 1, negative)
+}
+
+/** A shift by a bigint count: a negative count shifts the other way, as in JavaScript. */
+function shift(x: ptr, y: ptr, left: bool): ptr {
+    const ny = lengthOf(y)
+    if (ny === 0) return x
+    const toLeft = left !== isNegative(y)
+    if (ny > 1 || limb(digits(y), 0) > u64(MAX_LIMBS) * 32) {
+        // A count of more than 2^30 bits.
+        if (lengthOf(x) === 0) return x
+        if (toLeft) tooLarge()
+        return isNegative(x) ? fromMagnitude(1, true) : nil()
+    }
+    const n = i64(limb(digits(y), 0))
+    return toLeft ? shiftLeftBy(x, n) : shiftRightBy(x, n)
+}
+
+//ore:runtime ore_rt_big_shl
+function shiftLeft(x: ptr, y: ptr): ptr {
+    return shift(x, y, true)
+}
+
+//ore:runtime ore_rt_big_shr
+function shiftRight(x: ptr, y: ptr): ptr {
+    return shift(x, y, false)
+}
+
+const AND = 0
+const OR = 1
+const XOR = 2
+
+/**
+ * A bitwise operation on the values in two's complement, as if they had
+ * infinitely many sign bits: each operand and the result are converted
+ * limb by limb (~m + 1 of a negative magnitude m).
+ */
+function bitwise(op: int, x: ptr, y: ptr): ptr {
+    const nx = lengthOf(x)
+    const ny = lengthOf(y)
+    const xNegative = isNegative(x)
+    const yNegative = isNegative(y)
+    let negative = xNegative !== yNegative
+    if (op === AND) negative = xNegative && yNegative
+    else if (op === OR) negative = xNegative || yNegative
+    const w = (nx > ny ? nx : ny) + 1
+    const p = block(w)
+    const d = digits(p)
+    let cx: u64 = 1
+    let cy: u64 = 1
+    let cr: u64 = 1
+    for (let i = 0; i < w; i++) {
+        let a: u64 = i < nx ? limb(digits(x), i) : 0
+        if (xNegative) {
+            a = (~a & MASK) + cx
+            cx = a >> 32
+            a &= MASK
+        }
+        let b: u64 = i < ny ? limb(digits(y), i) : 0
+        if (yNegative) {
+            b = (~b & MASK) + cy
+            cy = b >> 32
+            b &= MASK
+        }
+        let v = op === AND ? a & b : op === OR ? a | b : a ^ b
+        if (negative) {
+            v = (~v & MASK) + cr
+            cr = v >> 32
+        }
+        setLimb(d, i, v)
+    }
+    return finish(p, w, negative)
+}
+
+//ore:runtime ore_rt_big_and
+function and(x: ptr, y: ptr): ptr {
+    return bitwise(AND, x, y)
+}
+
+//ore:runtime ore_rt_big_or
+function or(x: ptr, y: ptr): ptr {
+    return bitwise(OR, x, y)
+}
+
+//ore:runtime ore_rt_big_xor
+function xor(x: ptr, y: ptr): ptr {
+    return bitwise(XOR, x, y)
+}
+
+/** -1, 0 or 1. */
+//ore:runtime ore_rt_big_cmp
+function compare(x: ptr, y: ptr): i32 {
+    const sx = sizeOf(x)
+    const sy = sizeOf(y)
+    if (sx < 0 !== sy < 0) return sx < 0 ? -1 : 1
+    const c = compareMagnitudes(digits(x), lengthOf(x), digits(y), lengthOf(y))
+    return i32(sx < 0 ? -c : c)
+}
+
+//ore:runtime ore_rt_big_eq
+function equals(x: ptr, y: ptr): bool {
+    if (x === y) return true
+    const n = sizeOf(x)
+    if (n !== sizeOf(y)) return false
+    const length = n < 0 ? -n : n
+    return unsafe.compare(digits(x), digits(y), length * 4) === 0
+}
+
+/** The hash of a value, for maps and sets: FNV-1a over the size and the limbs, then mixed. */
+//ore:runtime ore_rt_big_hash
+function hash(x: ptr): u64 {
+    let h: u64 = 0xcbf29ce484222325
+    h = (h ^ u64(sizeOf(x))) * 0x100000001b3
+    const n = lengthOf(x)
+    for (let i = 0; i < n; i++) h = (h ^ limb(digits(x), i)) * 0x100000001b3
+    // The splitmix64 finalizer.
+    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9
+    h = (h ^ (h >> 27)) * 0x94d049bb133111eb
+    return h ^ (h >> 31)
+}
+
+//ore:runtime ore_rt_big_from_i64
+function fromI64(v: i64): ptr {
+    // The magnitude as u64, which also holds that of the smallest i64.
+    return v < 0 ? fromMagnitude(u64(0) - u64(v), true) : fromMagnitude(u64(v), false)
+}
+
+//ore:runtime ore_rt_big_from_u64
+function fromU64(v: u64): ptr {
+    return fromMagnitude(v, false)
+}
+
+/** BigInt(x) of a float: an integer, else a panic as JavaScript's RangeError. */
+//ore:runtime ore_rt_big_from_f64
+function fromF64(x: f64): ptr {
+    if (x - x !== 0 || Math.trunc(x) !== x)
+        process.panic(`The number ${x} cannot be converted to a BigInt because it is not an integer`)
+    const bits = unsafe.bitcast<u64>(x)
+    const biased = i64((bits >> 52) & 0x7ff)
+    if (biased === 0) return nil()
+    // x = mantissa * 2^e exactly.
+    const mantissa = (bits & 0xfffffffffffff) | (u64(1) << 52)
+    const e = biased - 1075
+    const negative = bits >> 63 === 1
+    if (e < 0) return fromMagnitude(mantissa >> u64(-e), negative)
+    return shiftLeftBy(fromMagnitude(mantissa, negative), e)
+}
+
+/** The low 64 bits of the magnitude of x. */
+function low64(x: ptr): u64 {
+    const n = lengthOf(x)
+    let m: u64 = 0
+    if (n > 0) m = limb(digits(x), 0)
+    if (n > 1) m |= limb(digits(x), 1) << 32
+    return m
+}
+
+/** The low 64 bits of x in two's complement, as `i64(x)` and `u64(x)` keep them (`BigInt.asUintN(64, x)`). */
+//ore:runtime ore_rt_big_to_u64
+function toU64(x: ptr): u64 {
+    const m = low64(x)
+    return isNegative(x) ? u64(0) - m : m
+}
+
+/**
+ * The nearest float with `float32` the nearest f32, as an f64: the top 64
+ * bits, with the lowest set when a bit below them is (enough to round
+ * once, correctly), converted, then scaled by a power of two.
+ */
+function toFloat(x: ptr, float32: bool): f64 {
+    const n = lengthOf(x)
+    const d = digits(x)
+    const bits = bitLength(d, n)
+    let top: u64 = 0
+    let shift = 0
+    if (bits <= 64) top = low64(x)
+    else {
+        shift = bits - 64
+        const whole = shift / 32
+        const rest = u64(shift % 32)
+        // Bits [shift, shift + 64) of the magnitude: from limbs whole .. whole + 2.
+        for (let i = 2; i >= 0; i--) {
+            const k = whole + i
+            const v = k < n ? limb(d, k) : 0
+            if (i === 2) top = rest === 0 ? 0 : v << (64 - rest)
+            else if (i === 1) top |= rest === 0 ? v << 32 : v << (32 - rest)
+            else top |= v >> rest
+        }
+        let lost = rest !== 0 && (limb(d, whole) & ((u64(1) << rest) - 1)) !== 0
+        for (let i = 0; i < whole && !lost; i++) if (limb(d, i) !== 0) lost = true
+        if (lost) top |= 1
+    }
+    let m = float32 ? f64(f32(top)) : f64(top)
+    if (shift > 0) m *= Math.pow(2, f64(shift))
+    return isNegative(x) ? -m : m
+}
+
+//ore:runtime ore_rt_big_to_f64
+function toF64(x: ptr): f64 {
+    return toFloat(x, false)
+}
+
+/** The nearest f32, as an f64 that converts to it exactly. */
+//ore:runtime ore_rt_big_to_f32
+function toF32(x: ptr): f64 {
+    return toFloat(x, true)
+}
+
+const DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+/** The text of x in a radix from 2 to 36, as `x.toString(radix)`; another radix panics. */
+//ore:runtime ore_rt_big_to_string
+function toText(x: ptr, radix: int): string {
+    if (radix < 2 || radix > 36) process.panic("toString() radix must be between 2 and 36")
+    const n = lengthOf(x)
+    if (n === 0) return "0"
+    // The largest power of the radix in a limb, and its digits: each division by it gives that many digits.
+    let chunk: u64 = u64(radix)
+    let per = 1
+    while (chunk * u64(radix) <= MASK) {
+        chunk *= u64(radix)
+        per++
+    }
+    // At least one bit per digit.
+    const size = bitLength(digits(x), n) + 2
+    const out = unsafe.allocBytes(size)
+    let at = size
+    const rest = unsafe.allocBytes(n * 4)
+    unsafe.copy(rest, digits(x), n * 4)
+    let m = n
+    const table = unsafe.stringData(DIGITS)
+    while (m > 0) {
+        // rest = rest / chunk, the remainder gives the next `per` digits.
+        let r: u64 = 0
+        for (let i = m - 1; i >= 0; i--) {
+            const cur = (r << 32) | limb(rest, i)
+            setLimb(rest, i, cur / chunk)
+            r = cur % chunk
+        }
+        while (m > 0 && limb(rest, m - 1) === 0) m--
+        for (let k = 0; k < per && (m > 0 || r !== 0); k++) {
+            at--
+            unsafe.store<u8>(unsafe.add(out, at), unsafe.load<u8>(unsafe.add(table, i64(r % u64(radix)))))
+            r /= u64(radix)
+        }
+    }
+    if (isNegative(x)) {
+        at--
+        unsafe.store<u8>(unsafe.add(out, at), 0x2d)
+    }
+    return unsafe.makeString(unsafe.add(out, at), size - at)
+}
+
+/** The value of a digit in radixes up to 36, or 99. */
+function digitValue(c: u8): int {
+    if (c >= 0x30 && c <= 0x39) return i64(c - 0x30)
+    if (c >= 0x61 && c <= 0x7a) return i64(c - 0x61) + 10
+    if (c >= 0x41 && c <= 0x5a) return i64(c - 0x41) + 10
+    return 99
+}
+
+/** The length of the white space or line terminator at `i`, as JavaScript's `trim` removes them, or 0. */
+function spaceAt(s: string, i: int): int {
+    const c = s[i]
+    if (c === 0x20 || (c >= 0x09 && c <= 0x0d)) return 1
+    const rest = s.length - i
+    if (c === 0xc2 && rest >= 2 && s[i + 1] === 0xa0) return 2
+    if (rest < 3) return 0
+    const b = s[i + 1]
+    const d = s[i + 2]
+    if (c === 0xe1 && b === 0x9a && d === 0x80) return 3
+    if (c === 0xe2 && b === 0x80 && (d <= 0x8a || d === 0xa8 || d === 0xa9 || d === 0xaf)) return 3
+    if (c === 0xe2 && b === 0x81 && d === 0x9f) return 3
+    if (c === 0xe3 && b === 0x80 && d === 0x80) return 3
+    if (c === 0xef && b === 0xbb && d === 0xbf) return 3
+    return 0
+}
+
+/** Whether `s[i]` starts white space that runs to the end. */
+function spaceToEnd(s: string, from: int): bool {
+    let i = from
+    while (i < s.length) {
+        const n = spaceAt(s, i)
+        if (n === 0) return false
+        i += n
+    }
+    return true
+}
+
+/**
+ * The digits `s[start, end)` in `radix`, all of them digits, into `out`
+ * with the sign `negative`; false when there are none or one is not a
+ * digit.
+ */
+function readDigits(s: string, start: int, end: int, radix: int, negative: bool, out: ptr): bool {
+    if (start >= end) return false
+    for (let i = start; i < end; i++) if (digitValue(s[i]) >= radix) return false
+    // log2(radix) <= 6 bits per digit.
+    let bitsPerDigit = 1
+    while (1 << bitsPerDigit < radix) bitsPerDigit++
+    const capacity = ((end - start) * bitsPerDigit) / 32 + 2
+    const p = block(capacity)
+    const d = digits(p)
+    let n = 0
+    let i = start
+    while (i < end) {
+        // Up to the digits of one limb at a time: value = value * radix^k + chunk.
+        let scale: u64 = 1
+        let chunk: u64 = 0
+        while (i < end && scale * u64(radix) <= MASK) {
+            chunk = chunk * u64(radix) + u64(digitValue(s[i]))
+            scale *= u64(radix)
+            i++
+        }
+        let carry = chunk
+        for (let k = 0; k < n; k++) {
+            const t = limb(d, k) * scale + carry
+            setLimb(d, k, t)
+            carry = t >> 32
+        }
+        if (carry !== 0) {
+            setLimb(d, n, carry)
+            n++
+        }
+    }
+    unsafe.store<ptr>(out, finish(p, capacity, negative))
+    return true
+}
+
+/**
+ * Reads a bigint into `out` as JavaScript's `BigInt(string)`: white space
+ * around it, then digits with a "0x", "0o" or "0b" prefix, or decimal
+ * digits after an optional sign; only white space is 0n. With a radix from
+ * 2 to 36, a sign and digits in it. False when the text is not one.
+ */
+function read(s: string, radix: int, out: ptr): bool {
+    let start = 0
+    while (start < s.length && spaceAt(s, start) > 0) start += spaceAt(s, start)
+    let end = start
+    while (end < s.length && spaceAt(s, end) === 0) end++
+    if (!spaceToEnd(s, end)) return false
+    if (radix !== 0) {
+        if (radix < 2 || radix > 36) return false
+        let negative = false
+        if (start < end && (s[start] === 0x2b || s[start] === 0x2d)) {
+            negative = s[start] === 0x2d
+            start++
+        }
+        return readDigits(s, start, end, radix, negative, out)
+    }
+    if (start === end) {
+        unsafe.store<ptr>(out, nil())
+        return true
+    }
+    if (end - start > 2 && s[start] === 0x30) {
+        const p = s[start + 1]
+        let prefixed = 0
+        if (p === 0x78 || p === 0x58) prefixed = 16
+        else if (p === 0x6f || p === 0x4f) prefixed = 8
+        else if (p === 0x62 || p === 0x42) prefixed = 2
+        if (prefixed !== 0) return readDigits(s, start + 2, end, prefixed, false, out)
+    }
+    let negative = false
+    if (s[start] === 0x2b || s[start] === 0x2d) {
+        negative = s[start] === 0x2d
+        start++
+    }
+    return readDigits(s, start, end, 10, negative, out)
+}
+
+/** BigInt(s): the text read as JavaScript reads it, else a panic as its SyntaxError. */
+//ore:runtime ore_rt_big_from_string
+function fromString(s: string): ptr {
+    const out = unsafe.alloc(8)
+    if (!read(s, 0, out)) process.panic(`Cannot convert ${s} to a BigInt`)
+    return unsafe.load<ptr>(out)
+}
+
+/**
+ * Reads a bigint: as `BigInt(s)` without a radix (a "0x", "0o" or "0b"
+ * prefix, or decimal digits with a sign; white space around), with a radix
+ * from 2 to 36 a sign and digits in it. Null when `s` is not one.
+ */
+export function parse(s: string, radix: int = 0): bigint | null {
+    const out = unsafe.alloc(8)
+    if (!read(s, radix, out)) return null
+    return unsafe.fromAddress<bigint>(unsafe.load<ptr>(out))
+}
+
+/** The low `bits` bits of x in two's complement, as a value from 0 to 2^bits - 1. */
+function lowBits(x: ptr, bits: int): ptr {
+    if (bits < 0 || bits > 9007199254740991) process.panic("Invalid value: not (convertible to) a safe integer")
+    const n = lengthOf(x)
+    if (n === 0 || bits === 0) return nil()
+    if (!isNegative(x) && bitLength(digits(x), n) <= bits) return x
+    if (bits > MAX_LIMBS * 32) tooLarge()
+    const w = (bits + 31) / 32
+    const p = block(w)
+    const d = digits(p)
+    let carry: u64 = 1
+    for (let i = 0; i < w; i++) {
+        let v: u64 = i < n ? limb(digits(x), i) : 0
+        if (isNegative(x)) {
+            v = (~v & MASK) + carry
+            carry = v >> 32
+        }
+        setLimb(d, i, v)
+    }
+    const rest = bits % 32
+    if (rest !== 0) setLimb(d, w - 1, limb(d, w - 1) & ((u64(1) << u64(rest)) - 1))
+    return finish(p, w, false)
+}
+
+/** `value` modulo 2^bits, from 0 to 2^bits - 1, as JavaScript's `BigInt.asUintN`. */
+export function asUintN(bits: int, value: bigint): bigint {
+    return unsafe.fromAddress<bigint>(lowBits(unsafe.addressOf(value), bits))
+}
+
+/** `value` modulo 2^bits, from -2^(bits - 1) to 2^(bits - 1) - 1, as JavaScript's `BigInt.asIntN`. */
+export function asIntN(bits: int, value: bigint): bigint {
+    const u = lowBits(unsafe.addressOf(value), bits)
+    const n = lengthOf(u)
+    // Negative when bit `bits - 1` is set: then u - 2^bits.
+    if (n === 0 || bitLength(digits(u), n) < bits) return unsafe.fromAddress<bigint>(u)
+    return unsafe.fromAddress<bigint>(subtract(u, shiftLeftBy(fromMagnitude(1, false), bits)))
+}
