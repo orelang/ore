@@ -1,0 +1,58 @@
+// structuredClone: a deep copy that keeps shared references and cycles.
+
+type Node = { name: string; next: Node | null; tags: string[] }
+
+const a: Node = { name: "a", next: null, tags: ["x"] }
+a.next = a
+const c = structuredClone(a)
+console.log(c.name, c.next === c, c === a, c.tags === a.tags)
+c.tags.push("y")
+console.log(a.tags, c.tags)
+
+// An object reached twice is copied once.
+const shared = [1, 2]
+const pair = { left: shared, right: shared }
+const p2 = structuredClone(pair)
+console.log(p2.left === p2.right, p2.left === shared)
+p2.left.push(3)
+console.log(p2.right, shared)
+
+const m = new Map<string, number[]>([
+    ["a", [1]],
+    ["b", [2, 3]],
+])
+const m2 = structuredClone(m)
+m2.get("a")!.push(9)
+console.log(m, m2)
+
+const s = new Set<number[]>([[1], [2]])
+const s2 = structuredClone(s)
+console.log(s2, s2.size, s2 === s)
+
+const d = new Date(0)
+const d2 = structuredClone(d)
+d2.setUTCFullYear(2000)
+console.log(d.toISOString(), d2.toISOString(), d === d2)
+
+const grid = [
+    [1, 2],
+    [3, 4],
+]
+const g2 = structuredClone(grid)
+g2[0][0] = 100
+console.log(grid, g2)
+
+const t: [number, string[]] = [1, ["q"]]
+const t2 = structuredClone(t)
+t2[1].push("r")
+console.log(t, t2)
+
+const u: number[] | string = [1]
+console.log(structuredClone(u))
+console.log(
+    structuredClone(10n),
+    structuredClone("s"),
+    structuredClone(null),
+    structuredClone(true),
+    structuredClone(1.5),
+)

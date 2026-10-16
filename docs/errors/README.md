@@ -310,6 +310,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE4082](ORE4082.md) | 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '…'. |
 | [ORE4083](ORE4083.md) | 'Array.from' takes an object only as '{ length: n }'. |
 | [ORE4084](ORE4084.md) | 'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'. |
+| [ORE4085](ORE4085.md) | structuredClone cannot clone a function: '…' could not be cloned. |
+| [ORE4086](ORE4086.md) | structuredClone cannot clone '…': an instance of a class with methods would lose them, as JavaScript copies it into a plain object. |
+| [ORE4087](ORE4087.md) | structuredClone cannot clone '…': its values could not be cloned. |
 
 ## ORE5xxx: Classes and interfaces
 

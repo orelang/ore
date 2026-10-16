@@ -1,0 +1,91 @@
+// structuredClone: a deep copy, whose code is generated per type (llvm/clone.ore).
+
+import { BuiltinCall } from "../ir/nodes"
+import { type StructType, type Type, typeToString } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { args as argsOf } from "../syntax/nodes"
+import { type Checker } from "./base"
+import { checkExpr } from "./expressions"
+import { typed } from "./helpers"
+import { type Operand } from "./operand"
+import { type Scope } from "./symbols"
+
+/** The runtime's class `Date`, a global name, or null without the runtime. */
+function dateType(c: Checker): StructType | null {
+    const builtins = c.builtins
+    const symbol = builtins !== null ? builtins.lookupType("Date") : null
+    if (symbol === null) return null
+    const type = symbol.type
+    return type.kind === "struct" ? type : null
+}
+
+/**
+ * Why values of a type cannot be cloned, if they cannot. JavaScript throws
+ * a DataCloneError for a function at run time; here the type tells.
+ */
+export function cloneProblem(c: Checker, type: Type, seen: Set<StructType> | null = null): string | null {
+    const visited = seen ?? new Set<StructType>()
+    switch (type.kind) {
+        case "int":
+        case "float":
+        case "bool":
+        case "string":
+        case "bigint":
+        case "literal":
+        case "number-literal":
+        case "null":
+            return null
+        case "func":
+            return `structuredClone cannot clone a function: '${typeToString(type)}' could not be cloned.`
+        case "array":
+            if (type.template)
+                return `structuredClone cannot clone '${typeToString(type)}': its values could not be cloned.`
+            return cloneProblem(c, type.elem, visited)
+        case "set":
+            return cloneProblem(c, type.elem, visited)
+        case "map": {
+            const problem = cloneProblem(c, type.key, visited)
+            if (problem !== null) return problem
+            return cloneProblem(c, type.value, visited)
+        }
+        case "union": {
+            for (const m of type.members) {
+                const problem = cloneProblem(c, m, visited)
+                if (problem !== null) return problem
+            }
+            return null
+        }
+        case "struct": {
+            if (visited.has(type)) return null
+            visited.add(type)
+            const date = dateType(c)
+            if (date !== null && date.id === type.id) return null
+            // JavaScript copies an instance into a plain object, which has none of its methods.
+            if (type.nominal && !type.tuple && type.methods.length > 0)
+                return `structuredClone cannot clone '${typeToString(type)}': an instance of a class with methods would lose them, as JavaScript copies it into a plain object.`
+            for (const f of type.fields) {
+                const problem = cloneProblem(c, f.type, visited)
+                if (problem !== null) return problem
+            }
+            return null
+        }
+        default:
+            return `structuredClone cannot clone '${typeToString(type)}': its values could not be cloned.`
+    }
+}
+
+/** `structuredClone(value)`: a deep copy of a value of a type that can be cloned. */
+export function cloneCall(c: Checker, name: string, node: Node, scope: Scope, expected: Type | null): Operand {
+    const args = argsOf(node)
+    if (args.length !== 1) return c.fail(node, `'${name}' expects 1 argument(s), got ${args.length}.`)
+    const operand = checkExpr(c, args[0], scope, expected)
+    if (operand.k === "error") return operand
+    // A constant takes the type the result is expected to have, if any.
+    const value =
+        expected !== null && operand.k !== "typed"
+            ? c.coerce(operand, expected, args[0])
+            : c.toDefault(operand, args[0])
+    const problem = cloneProblem(c, value.type)
+    if (problem !== null) return c.fail(args[0], problem)
+    return typed(new BuiltinCall(value.type, name, [value]))
+}

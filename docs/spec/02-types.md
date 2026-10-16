@@ -247,6 +247,7 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `time.parse(text)`, `time.format(ns, options?)` | a duration as text and back, after the npm package `ms`, in nanoseconds (see [time](#time)) |
 | `JSON.stringify(value, null?, space?)` | the JSON text of a value, indented by `space` spaces per level; the replacer must be null |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
+| `structuredClone(value)` | a deep copy of a value, keeping shared references and cycles: a global function, as in JavaScript |
 
 Numbers of every numeric type have the methods of JavaScript's
 `Number.prototype`: `toString(radix?)` (2 to 36, fractions of floats as
@@ -490,6 +491,22 @@ type must match, and a field must be present unless its type includes
 `JSON: expected a string, got a number at .tags[1]`. Fields of object types
 are written in alphabetical order, fields of classes in declaration order;
 non-finite floats are written as `null`.
+
+`structuredClone(value)` is JavaScript's deep copy, a global name as there,
+whose code is generated for the type as JSON's is. Numbers, `bool`,
+strings, bigints, `null`, arrays, tuples, `Map`s, `Set`s, `Date`s, object
+types, classes with only fields and unions of these are copied; strings
+and bigints, which never change, are shared. An object reached twice is
+copied once, so shared references and cycles hold in the copy (`a.self ===
+a` gives `copy.self === copy`), and maps and sets are rebuilt by inserting
+the copied keys in order. A type holding a function is an error (ORE4085),
+where JavaScript throws a `DataCloneError` at run time. A class with
+methods is an error too (ORE4086): JavaScript would copy an instance into a
+plain object without them, which the class type cannot describe; so are
+`RegExp`, `Promise`, interfaces, `unknown`, channels and `ptr` (ORE4087).
+A class with only fields is copied as an instance of the same class (an
+instance of a subclass as one of the subclass), where JavaScript makes a
+plain object.
 
 Numeric conversions (`i32(x)`, `f64(x)`) are type names, not namespaced
 functions.
