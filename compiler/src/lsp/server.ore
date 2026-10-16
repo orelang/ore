@@ -260,6 +260,9 @@ export class Server {
             case "textDocument/didClose":
                 this.didClose(m)
                 return
+            case "textDocument/didSave":
+                this.didSave(m)
+                return
             case "textDocument/hover":
                 this.hover(m)
                 return
@@ -316,7 +319,7 @@ export class Server {
                 this.rename(m)
                 return
         }
-        // Notifications the server does not handle, such as didSave and `$/...`, are ignored.
+        // Notifications the server does not handle, such as `$/...`, are ignored.
         if (request) this.connection.respondError(m.id, MethodNotFound, `Unhandled method ${m.method}`)
     }
 
@@ -352,7 +355,7 @@ export class Server {
         this.initialized = true
         const result = {
             capabilities: {
-                textDocumentSync: syncIncremental,
+                textDocumentSync: { openClose: true, change: syncIncremental, save: true },
                 hoverProvider: true,
                 definitionProvider: true,
                 referencesProvider: true,
@@ -405,6 +408,32 @@ export class Server {
         this.documents.delete(uri)
         this.analyses.delete(uri)
         this.publish(uri, [])
+    }
+
+    /**
+     * A saved document: the repositories it imports from GitHub that could
+     * not be downloaded are tried again, and it is analyzed again if any is.
+     */
+    private didSave(m: Message): void {
+        const p = params<{ textDocument: TextDocumentIdentifier }>(m)
+        if (p instanceof Error) return this.invalid(m, p)
+        const document = this.documents.get(p.textDocument.uri)
+        if (document === null || !document.text.includes("https://github.com/")) return
+        const parsed = parseFile(uriToPath(document.uri), document.text)
+        let retried = false
+        for (const stmt of parsed.source.ast.list("statements")) {
+            const specifier = moduleSpecifier(stmt)
+            if (specifier === null) continue
+            const url = stringValue(specifier)
+            if (!isGithubUrl(url)) continue
+            const module = parseGithubUrl(url)
+            if (module instanceof Error) continue
+            const key = repositoryKey(module)
+            if (!(known.found.get(key) instanceof Error)) continue
+            known.retry(key)
+            retried = true
+        }
+        if (retried) this.update(document)
     }
 
     /** The analysis of an open document, brought up to date if it is stale. */
@@ -509,7 +538,9 @@ export class Server {
         known.wanted = []
         for (const module of wanted) {
             const key = repositoryKey(module)
-            if (this.remotes.has(key)) continue
+            // A repository is downloaded again only after a failure.
+            const existing = this.remotes.get(key)
+            if (existing !== null && existing.phase !== "failed") continue
             const remote = new Remote(module, `ore/github/${this.progressTokens}`)
             this.progressTokens++
             this.remotes.set(key, remote)
@@ -599,7 +630,7 @@ export class Server {
         if (failed) {
             const error = p.error ?? ""
             remote.error = error
-            known.found.set(p.key, new Error(error))
+            known.fail(p.key, new Error(error), Date.now())
             message = error
         } else {
             const fetched = new Fetched(p.dir, p.commit, p.warning)

@@ -3,7 +3,17 @@
 
 import { test, expect, fail } from "ore:test"
 import { join } from "ore:path"
-import { commitDir, fetchRepository, githubDir, parseGithubUrl, refFile, repositoryDir } from "../src/project/remote"
+import {
+    commitDir,
+    fetchRepository,
+    githubDir,
+    KnownRepositories,
+    parseGithubUrl,
+    refFile,
+    repositoryDir,
+    repositoryKey,
+    retryAfter,
+} from "../src/project/remote"
 
 /** A parsed URL as text: owner, repo, ref and path, or the error. */
 function parsed(url: string): string {
@@ -64,4 +74,30 @@ test("needs the cache", () => {
     if (module instanceof Error) fail(module.message)
     const result = fetchRepository("", module, (phase: string, percent: int) => {})
     expect(result instanceof Error).toBe(true)
+})
+
+test("tries a repository that could not be downloaded again, after a while or when asked", () => {
+    const module = parseGithubUrl("https://github.com/acme/geo")
+    if (module instanceof Error) fail(module.message)
+    const key = repositoryKey(module)
+    const known = new KnownRepositories()
+    known.want(module)
+    known.want(module)
+    expect(known.wanted.length).toBe(1)
+    known.wanted = []
+    // A failure is kept, and not wanted again, until `retryAfter` has passed.
+    known.fail(key, new Error("offline"), 1000)
+    expect(known.lookup(key, 1000 + retryAfter - 1) instanceof Error).toBe(true)
+    known.want(module)
+    expect(known.wanted.length).toBe(0)
+    expect(known.lookup(key, 1000 + retryAfter) === null).toBe(true)
+    known.want(module)
+    expect(known.wanted.length).toBe(1)
+    known.wanted = []
+    // `retry` forgets a failure at once (a save of a document that imports it).
+    known.fail(key, new Error("offline"), 5000)
+    known.retry(key)
+    expect(known.lookup(key, 5000) === null).toBe(true)
+    known.want(module)
+    expect(known.wanted.length).toBe(1)
 })

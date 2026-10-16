@@ -37,6 +37,9 @@ before 1.0, a minor version may change the language.
   with interface members) call them. Fields of names that no accessor
   implements are read and written through interfaces as before; the others
   test the table entry first.
+- The language server tries a GitHub repository whose download failed
+  again a minute later, or at once when a document importing it is saved,
+  instead of never in the session.
 - `Math.min()` and `Math.max()` with no arguments are `Infinity` and
   `-Infinity`, as in JavaScript (they were ORE4019), or the extreme of the
   integer type expected, as with only empty arrays spread in.

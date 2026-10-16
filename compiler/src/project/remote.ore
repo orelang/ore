@@ -279,7 +279,8 @@ export function fetchRepository(root: string, module: GithubModule, progress: Pr
  * records here what it found. When `enabled`, `fetchModule` never downloads:
  * it takes a repository from `found`; otherwise it adds the module to
  * `wanted` and takes the commit the cache has (its ref resolved to last),
- * or fails.
+ * or fails. A repository that could not be downloaded is wanted again once
+ * `retryAfter` has passed, or when `retry` forgets it.
  */
 export class KnownRepositories {
     enabled = false
@@ -288,6 +289,8 @@ export class KnownRepositories {
     /** The modules looked up that are not in `found`, once per repository, for the downloader to take. */
     wanted: GithubModule[] = []
     private readonly asked = new Set<string>()
+    /** When each repository that could not be downloaded failed, in milliseconds (`Date.now()`). */
+    private readonly failedAt = new Map<string, int>()
 
     /** Adds a module to `wanted`, unless its repository was asked for already. */
     want(module: GithubModule): void {
@@ -296,7 +299,35 @@ export class KnownRepositories {
         this.asked.add(key)
         this.wanted.push(module)
     }
+
+    /** Records a repository that could not be downloaded, at a time in milliseconds. */
+    fail(key: string, error: Error, at: int): void {
+        this.found.set(key, error)
+        this.failedAt.set(key, at)
+    }
+
+    /** Forgets a repository that could not be downloaded, so that the next lookup wants it again. */
+    retry(key: string): void {
+        if (!this.failedAt.has(key)) return
+        this.found.delete(key)
+        this.failedAt.delete(key)
+        this.asked.delete(key)
+    }
+
+    /**
+     * The repository found for a key, or null when there is none: also when
+     * its download failed `retryAfter` or more before `now`, which is
+     * forgotten to be tried again.
+     */
+    lookup(key: string, now: int): Fetched | Error | null {
+        const at = this.failedAt.get(key)
+        if (at !== null && now - at >= retryAfter) this.retry(key)
+        return this.found.get(key)
+    }
 }
+
+/** How long a repository that could not be downloaded waits to be tried again, in milliseconds. */
+export const retryAfter = 60000
 
 export const known = new KnownRepositories()
 
@@ -314,7 +345,7 @@ export function cachedRepository(root: string, module: GithubModule): Fetched | 
 /** The repository of a module in the cache in `cacheRoot()`, without progress; see `fetchRepository` and `known`. */
 export function fetchModule(module: GithubModule): Fetched | Error {
     if (known.enabled) {
-        const found = known.found.get(repositoryKey(module))
+        const found = known.lookup(repositoryKey(module), Date.now())
         if (found !== null) return found
         known.want(module)
         const cached = cachedRepository(cacheRoot(), module)

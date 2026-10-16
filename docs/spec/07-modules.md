@@ -54,8 +54,10 @@ import { x } from "https://github.com/owner/repo/tree/v1.2.0/src/point" // at a 
   it, in the background, one repository at a time and once per session,
   reporting the download as work-done progress (`$/progress`) in the
   editor's status bar. Meanwhile the analysis uses the commit the cache
-  has, if any. The hover of the import's URL tells the state of the
-  download: its phase, the commit cached, or the error.
+  has, if any. A download that failed is tried again a minute later, when
+  an analysis looks the repository up, or at once when a document that
+  imports it is saved. The hover of the import's URL tells the state of
+  the download: its phase, the commit cached, or the error.
 
 ## Files as text
 
