@@ -167,7 +167,7 @@ function numExpr(d: number): string {
         case 13:
             return `(${expr("nums", d)}.at(0) ?? ${a()})`
         case 14:
-            return `-${a()}`
+            return `-(${a()})`
         case 15:
             return `${expr("nums", d)}.reduce((s, x) => Math.max(s, x), ${a()})`
         default: {
