@@ -315,6 +315,7 @@ ore build --release      # an optimized binary named after the package
 ore check                # report errors without building
 ore test                 # run the tests in *.test.ore files
 ore fmt                  # format .ore files: 4 spaces, no semicolons
+ore doc src/lib.ore      # the API of a module from its exports and JSDoc (--md, --json)
 ```
 
 On a terminal, `ore` prints in color: error labels, the carets under an

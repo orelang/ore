@@ -12,6 +12,13 @@ before 1.0, a minor version may change the language.
   never scans arrays of numbers; it gives free pages back to the system;
   and its pace is set by `ORE_GOGC` and `ORE_MEMLIMIT`. `ORE_GCSTW=1`
   marks with the world stopped, as before.
+- `ore doc [file.ore | dirs...]` prints the API of modules: their exported
+  functions, classes with their public members, interfaces, type aliases
+  and variables, with their signatures as the hover shows them and their
+  JSDoc (`@param`, `@returns`, `@example` and other tags), after the `//`
+  comment the module starts with. On a terminal it is a colored listing;
+  `--md` makes Markdown (with `-o dir`, a file per module and an
+  `index.md`), `--json` a JSON dump for tools.
 - Diagnostics point at the places related to them: the first declaration of
   a name declared twice, the declaration of a variable read before it is
   assigned, the parameter, variable or field a value does not convert to,

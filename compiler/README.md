@@ -22,6 +22,7 @@ tool, 2 for a wrong command line):
 | `ore check [file.ore \| paths...]` | the diagnostics of a program; given directories, of each `.ore` file in them as an entry, skipping files a program checked before has loaded, each diagnostic once |
 | `ore test [--watch] [paths...]` | builds and runs every `*.test.ore` file below the paths (default `.`, without `node_modules` and hidden directories), in parallel, one task per CPU, each build in a child process of the same `ore`; prints each file's output in order, then `All N test file(s) passed.` or `F of N test file(s) failed.` (status 1) |
 | `ore fmt [--check] [--stdout] [paths...]` | formats `.ore` files in place; `--check` lists the unformatted ones (status 1), `--stdout` prints them formatted |
+| `ore doc [paths...] [--md \| --json] [-o out]` | the API of modules: their exports (functions, classes with their public members, interfaces, type aliases, variables) with the signatures the hover shows and their JSDoc (description, `@param`, `@returns`, `@example`, other tags), and the `//` comment each module starts with; a colored listing, Markdown (`-o dir`: a file per module and `index.md`) or JSON |
 | `ore init [dir]` | `package.json` (name from the directory) and `src/main.ore` |
 | `ore cache [clean]` | where the build cache is, its object files and their size; `clean` removes them |
 | `ore lsp`, `ore version`, `ore help` | |
@@ -109,6 +110,7 @@ object files come from the build cache when it has them (see below).
 | `cli/commands.ore` | `ore build`, `run`, `check`, `init`: the entry of a program (a file or package.json's `main`), errors and statuses |
 | `cli/test.ore`, `cli/fmt.ore`, `cli/files.ore` | `ore test`, `ore fmt`, and the `.ore` files below the paths they are given |
 | `cli/watch.ore`, `cli/background.ore` | `--watch`: the files of a program, polled for changes; the program run in the background and stopped |
+| `cli/doc.ore` | `ore doc`: the exports of a module and their JSDoc, as a listing, Markdown or JSON |
 | `cli/cache.ore` | `ore cache [clean]` |
 | `cli/self.ore` | The path of the running executable (`/proc/self/exe`, `_NSGetExecutablePath`) |
 | `main.ore` | `process.exit(main(process.args))` |
