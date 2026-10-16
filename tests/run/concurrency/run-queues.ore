@@ -1,0 +1,102 @@
+// threads: 8
+
+// The workers' own run queues under load: tasks that wake each other over
+// channels (each wakeup goes to the waker's worker first), tasks spawned
+// from tasks (queued on the spawning worker, stolen by the others), a token
+// passed around a ring of tasks, and timers that must fire while every
+// worker is busy.
+
+import { WaitGroup } from "ore:sync"
+
+// Pairs that ping-pong over unbuffered channels.
+const pairs = 200
+const rounds = 300
+const totals: int[] = []
+for (let p = 0; p < pairs; p++) totals.push(0)
+const played = new WaitGroup()
+for (let p = 0; p < pairs; p++) {
+    played.add(2)
+    const ping = new Chan<int>()
+    const pong = new Chan<int>()
+    task.spawn(() => {
+        let total = 0
+        for (let r = 0; r < rounds; r++) {
+            ping.send(r)
+            total += pong.receive() ?? 0
+        }
+        totals[p] = total
+        played.done()
+    })
+    task.spawn(() => {
+        for (let r = 0; r < rounds; r++) pong.send((ping.receive() ?? 0) * 2 + p)
+        played.done()
+    })
+}
+played.wait()
+let pingSum = 0
+for (const t of totals) pingSum += t
+console.log("ping-pong", pingSum)
+
+// A tree of tasks: each spawns its children from its own task and waits for them.
+function grow(depth: int, done: Chan<int>): void {
+    if (depth === 0) {
+        done.send(1)
+        return
+    }
+    const below = new Chan<int>(4)
+    for (let i = 0; i < 4; i++) task.spawn(() => grow(depth - 1, below))
+    let leaves = 0
+    for (let i = 0; i < 4; i++) leaves += below.receive() ?? 0
+    done.send(leaves)
+}
+const root = new Chan<int>(1)
+task.spawn(() => grow(6, root))
+console.log("leaves", root.receive() ?? 0)
+
+// A token passed around a ring of tasks, lap after lap.
+const ringSize = 500
+const laps = 20
+const links: Chan<int>[] = []
+for (let i = 0; i <= ringSize; i++) links.push(new Chan<int>())
+for (let i = 0; i < ringSize; i++) {
+    task.spawn(() => {
+        for (let lap = 0; lap < laps; lap++) links[i + 1].send((links[i].receive() ?? 0) + 1)
+    })
+}
+let token = 0
+for (let lap = 0; lap < laps; lap++) {
+    links[0].send(token)
+    token = links[ringSize].receive() ?? 0
+}
+console.log("token", token)
+
+// Sleepers among busy tasks that spawn and yield: their timers fire anyway.
+const busy = new WaitGroup()
+let stop = false
+for (let i = 0; i < 16; i++) {
+    busy.add(1)
+    task.spawn(() => {
+        let spawned = 0
+        while (!stop) {
+            const child = new WaitGroup()
+            child.add(1)
+            task.spawn(() => child.done())
+            child.wait()
+            spawned++
+            task.yield()
+        }
+        busy.done()
+    })
+}
+const slept = new Chan<int>(10)
+for (let i = 0; i < 10; i++) {
+    task.spawn(() => {
+        task.sleep(5 + i)
+        slept.send(i)
+    })
+}
+let sleptSum = 0
+for (let i = 0; i < 10; i++) sleptSum += slept.receive() ?? 0
+stop = true
+busy.wait()
+console.log("slept", sleptSum)
