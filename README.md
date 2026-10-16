@@ -396,26 +396,29 @@ Another binary can be set with the `ore.path` setting.
 TypeScript (run by Bun and Node), from compute kernels to everyday programs
 with maps, strings, JSON, regular expressions, files, tasks and channels.
 Results per machine are in [`bench/results/`](bench/results/); the latest:
-[Xeon E5-2699 v4, 16 threads, Linux](bench/results/2026-10-16-xeon-e5-2699v4.md)
-(2026-10-16).
+[Xeon E5-2699 v4, 16 threads, Linux](bench/results/2026-10-16-1200-xeon-e5-2699v4.md)
+(2026-10-16, Ore 0.4.0 and later).
 
 In short, against the fastest of the five in each benchmark:
 
+- **Fastest of the five** in `map`, `tasks` and (with C) `fib`; within 1.1x
+  of the fastest in `dispatch`, `json`, `mandelbrot`, `matmul` and
+  `spectral-norm`.
 - **Compute** (fib, mandelbrot, matmul, spectral-norm, nqueens, fannkuch,
   sha256, nbody): within 1.0–1.5x of C, level with Go or ahead, and ahead
   of Bun and Node on all but fannkuch.
-- **Tasks and channels**: 100000 tasks in 72 ms (Go 63 ms, Bun 136 ms,
-  Node 268 ms); channels 1.65x of Go, 4x ahead of Bun and Node.
-- **Allocation-heavy** (binary-trees, json, strings, closures, map): 1.2–1.5x
-  of the fastest (Bun or C).
-- **Behind**: `structs` (25x of C: immutable small structs are not kept off
-  the heap yet), `wordcount` and `knucleotide` (3–5x: string-keyed maps),
-  `sort` (2.2x of Go), `bigint` (2.8x of Go), `fileio` (2x of C).
+- **Tasks and channels**: 100000 tasks in 59 ms (Go 67 ms, Bun 138 ms,
+  Node 251 ms); channels 1.5x of Go, 4.7x ahead of Bun and Node.
+- **Objects**: `structs` 1.26x of C and ahead of Go (small immutable
+  classes are values); `binary-trees`, `closures` and `strings` 1.2–1.6x of
+  the fastest.
+- **Behind**: `wordcount` (4.1x of C), `sort` (2.2x), `bigint` (2.4x of Go),
+  `fileio` (2.4x of C), `knucleotide` (1.75x of C).
 - **Memory**: 1.3–2.5x of C and Go on most benchmarks, 10–50x less than Bun
   and Node.
-- **GC pauses**: about 0.3 ms to mark and 0.8 ms to finish, against Go's
-  0.14 + 0.05 ms; bringing them to Go's level is on the
-  [roadmap](docs/roadmap.md).
+- **GC pauses**: on a 16-thread machine, 0.065 ms and 0.01 ms (median) per
+  collection, at worst 0.2 ms in all, against Go's 0.14 + 0.05 ms and 0.43
+  ms.
 
 ## Status
 
