@@ -54,6 +54,7 @@ declare function ore_globals_count(): i64
 declare function dprintf(fd: i32, format: string, ...args: i64[]): i32
 declare function dladdr(address: ptr, info: ptr): i32
 declare function strlen(s: ptr): u64
+declare function madvise(address: ptr, size: u64, advice: i32): i32
 
 const pageShift = 13
 const pageSize = 8192
@@ -93,7 +94,9 @@ const spanGrowBits = 88
  * `gcdata` (see `allocTyped`), or nil to scan it word by word.
  */
 const spanTypes = 96
-const spanRecordSize = 104
+/** For a free run: 1 once its pages were given back to the system (see `scavenge`). */
+const spanReleased = 104
+const spanRecordSize = 112
 /** The most objects a span holds; a span of more would have room for more, unused. */
 const maxElems = 512
 
@@ -440,6 +443,12 @@ function newSpan(pages: int): ptr {
         const have = field(run, spanPages)
         if (have >= pages) {
             const next = pointerAt(run, spanNext)
+            if (field(run, spanReleased) !== 0) {
+                // Its pages come back into use: those taken now, or all of them for the rest, counted once.
+                releasedBytes -= have * pageSize
+                if (releasedBytes < 0) releasedBytes = 0
+                setField(run, spanReleased, 0)
+            }
             if (have === pages) {
                 if (isNil(prev)) freeRuns = next
                 else setPointer(prev, spanNext, next)
@@ -449,6 +458,7 @@ function newSpan(pages: int): ptr {
             const span = newRecord()
             setPointer(span, spanStart, pointerAt(run, spanStart))
             setField(span, spanPages, pages)
+            setField(span, spanReleased, 0)
             setPointer(run, spanStart, unsafe.add(pointerAt(run, spanStart), pages * pageSize))
             setField(run, spanPages, have - pages)
             return span
@@ -498,6 +508,7 @@ function useSpan(span: ptr, size: int, elems: int, noscan: bool, cls: int): void
 function releaseSpan(span: ptr): void {
     const first = unsafe.diff(pointerAt(span, spanStart), heapBase) >> pageShift
     for (let i = 0; i < field(span, spanPages); i++) setPointer(pageTable, (first + i) * 8, nil())
+    setField(span, spanReleased, 0)
     setPointer(span, spanNext, freeRuns)
     freeRuns = span
 }
@@ -1335,10 +1346,11 @@ export function collect(): void {
     if (trace !== 0) {
         dprintf(
             2,
-            "gc %ld: %ld KB live, %ld KB heap, %ld threads, %ld markers, pauses %ld + %ld us (roots %ld; finish %ld, sweep %ld), marking %ld us\n",
+            "gc %ld: %ld KB live, %ld KB heap (%ld KB released), %ld threads, %ld markers, pauses %ld + %ld us (roots %ld; finish %ld, sweep %ld), marking %ld us\n",
             number,
             liveBytes >> 10,
             heapSize() >> 10,
+            releasedBytes >> 10,
             others + 1,
             markerCount,
             (resumed - start) / 1000,
@@ -1405,6 +1417,29 @@ function sweep(): void {
     spanCount = kept
     unsafe.atomicStore<i64>(allocatedCell, 0)
     nextCollection = budget(liveBytes)
+    scavenge()
+}
+
+/** Bytes of the heap's pages given back to the system and not used since. */
+let releasedBytes: int
+
+/**
+ * Gives the pages of free runs back to the system once more than half of the
+ * heap's pages are free: they stay reserved, and come back (zeroed) when a
+ * span uses them again.
+ */
+function scavenge(): void {
+    let free = 0
+    for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) free += field(run, spanPages)
+    if (free * 2 < nextPage) return
+    // MADV_FREE_REUSABLE on macOS, which the kernel counts out of the footprint at once; MADV_DONTNEED on Linux.
+    const advice: i32 = target.os === "darwin" ? 7 : 4
+    for (let run = freeRuns; !isNil(run); run = pointerAt(run, spanNext)) {
+        if (field(run, spanReleased) !== 0) continue
+        const bytes = field(run, spanPages) * pageSize
+        if (madvise(pointerAt(run, spanStart), u64(bytes), advice) === 0) releasedBytes += bytes
+        setField(run, spanReleased, 1)
+    }
 }
 
 /**
@@ -1460,6 +1495,11 @@ export function live(): int {
 /** Bytes of address space the heap has used. */
 export function heapSize(): int {
     return nextPage * pageSize
+}
+
+/** Bytes of the heap given back to the system and not used since. */
+export function releasedSize(): int {
+    return releasedBytes
 }
 
 export function collectionCount(): int {
