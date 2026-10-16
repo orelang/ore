@@ -69,9 +69,63 @@ type Received = {
 
 type Published = { params: { uri: string; diagnostics: Diagnostic[] } }
 
-/** A message with the jsonrpc field, given the rest of its fields as JSON text. */
+/** A message with the jsonrpc field, given the rest of its fields as JSON text; its keys sorted (see `sorted`). */
 function message(fields: string): string {
-    return `{"jsonrpc":"2.0",${fields}}`
+    return sorted(`{"jsonrpc":"2.0",${fields}}`)
+}
+
+/**
+ * JSON text with the keys of every object in alphabetical order, so that
+ * messages compare whatever order the server writes their fields in.
+ */
+function sorted(text: string): string {
+    const at: int[] = [0]
+    return sortedValue(text, at)
+}
+
+/** The value at `at[0]`, canonical, moving `at[0]` past it. */
+function sortedValue(text: string, at: int[]): string {
+    const c = text[at[0]]
+    if (c === 0x7b) {
+        // {
+        at[0]++
+        const entries: string[][] = []
+        while (text[at[0]] !== 0x7d) {
+            if (text[at[0]] === 0x2c) at[0]++
+            const key = sortedValue(text, at)
+            at[0]++
+            entries.push([key, sortedValue(text, at)])
+        }
+        at[0]++
+        entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+        return `{${entries.map((e) => `${e[0]}:${e[1]}`).join(",")}}`
+    }
+    if (c === 0x5b) {
+        // [
+        at[0]++
+        const items: string[] = []
+        while (text[at[0]] !== 0x5d) {
+            if (text[at[0]] === 0x2c) at[0]++
+            items.push(sortedValue(text, at))
+        }
+        at[0]++
+        return `[${items.join(",")}]`
+    }
+    const start = at[0]
+    if (c === 0x22) {
+        // A string, with its escapes.
+        at[0]++
+        while (text[at[0]] !== 0x22) at[0] += text[at[0]] === 0x5c ? 2 : 1
+        at[0]++
+        return text.slice(start, at[0])
+    }
+    while (at[0] < text.length && text[at[0]] !== 0x2c && text[at[0]] !== 0x7d && text[at[0]] !== 0x5d) at[0]++
+    return text.slice(start, at[0])
+}
+
+/** A value as JSON text with sorted keys. */
+function json<T>(value: T): string {
+    return sorted(JSON.stringify(value))
 }
 
 /** The JSON text of a position and of a range, as the server writes them (fields in alphabetical order). */
@@ -135,7 +189,7 @@ class Client {
             const body = this.received[i]
             if (matches(decode(body))) {
                 this.received = this.received.filter((_, j) => j !== i)
-                return body
+                return sorted(body)
             }
         }
         const deadline = Date.now() + timeout
@@ -146,7 +200,7 @@ class Client {
                 task.after(Math.max(0, deadline - Date.now()), () => {}),
             ])
             if (body === null) fail(`no message from the server: ${what}`)
-            if (matches(decode(body))) return body
+            if (matches(decode(body))) return sorted(body)
             this.received.push(body)
         }
     }
@@ -287,7 +341,7 @@ test("syntax diagnostics with UTF-16 ranges, through full and incremental change
     client.send(didOpen(broken))
     const opened = client.diagnostics(uri)
     expect(opened.length > 0).toBe(true)
-    expect(JSON.stringify(opened[0])).toBe(
+    expect(json(opened[0])).toBe(
         `{"code":"ORE1001","codeDescription":{"href":"${docs("ORE1001")}"},"message":"Identifier expected.","range":${range(1, 17, 1, 18)},"relatedInformation":[],"severity":1,"source":"ore"}`,
     )
 
@@ -302,13 +356,13 @@ test("syntax diagnostics with UTF-16 ranges, through full and incremental change
     change(3, `[{"range":${range(0, 13, 0, 13)},"text":"ü"},{"range":${range(1, 18, 1, 18)},"text":" *"}]`)
     const star = client.diagnostics(uri)
     expect(star.length > 0).toBe(true)
-    expect(JSON.stringify(star[0].range.start)).toBe(position(2, 0))
+    expect(json(star[0].range.start)).toBe(position(2, 0))
 
     // A full change, with CRLF line ends.
     change(4, `[{"text":${JSON.stringify('const x = "ü"\r\nconst c = ]\r\n')}}]`)
     const full = client.diagnostics(uri)
     expect(full.length > 0).toBe(true)
-    expect(JSON.stringify(full[0].range)).toBe(range(1, 10, 1, 11))
+    expect(json(full[0].range)).toBe(range(1, 10, 1, 11))
 
     // A document that does not parse has no types: nothing to tell.
     const at = `"textDocument":{"uri":${JSON.stringify(uri)}},"position":{"line":0,"character":6}`
@@ -343,7 +397,7 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
     client.send(didOpen(text))
     const errors = client.diagnostics(uri)
     expect(errors.length).toBe(1)
-    expect(JSON.stringify(errors[0])).toBe(
+    expect(json(errors[0])).toBe(
         `{"code":"ORE2033","codeDescription":{"href":"${docs("ORE2033")}"},"message":"Type 'string' is not assignable to type 'i64'.","range":${range(8, 17, 8, 20)},"relatedInformation":[],"severity":1,"source":"ore"}`,
     )
     const at = (line: int, character: int) =>
@@ -396,7 +450,7 @@ test("the checker's diagnostics, hover with JSDoc, definition, completion, refer
         "textDocument/semanticTokens/full",
         `{"textDocument":{"uri":${JSON.stringify(uri)}}}`,
     )
-    expect(tokens.startsWith(`{"jsonrpc":"2.0","id":12,"result":{"data":[4,9,3,8,1,`)).toBe(true)
+    expect(tokens.startsWith(`{"id":12,"jsonrpc":"2.0","result":{"data":[4,9,3,8,1,`)).toBe(true)
 
     // A quick fix: the explicit conversion that the error asks for.
     const wrong = `{"range":${range(8, 17, 8, 20)},"message":"Type 'string' is not assignable to type 'i64'. Use an explicit conversion: 'i64(...)'.","code":"ORE2033"}`
@@ -463,10 +517,10 @@ test("the places related to a diagnostic: the declaration of a name declared twi
     const errors = client.diagnostics(uri)
     expect(errors.length).toBe(2)
     expect(errors[0].message).toBe("Cannot redeclare 'count' in the same scope.")
-    expect(JSON.stringify(errors[0].relatedInformation)).toBe(
+    expect(json(errors[0].relatedInformation)).toBe(
         `[{"location":{"range":${range(0, 4, 0, 9)},"uri":${JSON.stringify(uri)}},"message":"'count' is declared here."}]`,
     )
-    expect(JSON.stringify(errors[1].relatedInformation)).toBe(
+    expect(json(errors[1].relatedInformation)).toBe(
         `[{"location":{"range":${range(2, 15, 2, 16)},"uri":${JSON.stringify(uri)}},"message":"'n' is declared here."}]`,
     )
     expect(client.close()).toBe(1)
@@ -484,7 +538,7 @@ test("messages split across reads, and several in one read", () => {
         at = cut
         task.sleep(30)
     }
-    expect(JSON.stringify(client.diagnostics(uri)[0].range.start)).toBe(position(1, 17))
+    expect(json(client.diagnostics(uri)[0].range.start)).toBe(position(1, 17))
 
     client.write(
         frame(message(`"id":10,"method":"shutdown","params":null`)) +
@@ -552,7 +606,7 @@ test("modules from GitHub: work-done progress of the download, and its state in 
     // The download, which finds the commit in the cache, is reported as work-done progress.
     const create = decode(client.wait("the progress token", (m) => m.method === "window/workDoneProgress/create"))
     const token = "ore/github/0"
-    expect(JSON.stringify(create.id)).toBe(JSON.stringify(token))
+    expect(json(create.id)).toBe(JSON.stringify(token))
     client.send(message(`"id":${JSON.stringify(create.id)},"result":null`))
     const progress = (kind: string): Progress => {
         const body = client.wait(`$/progress ${kind}`, (m) => m.method === "$/progress")
@@ -583,7 +637,7 @@ test("modules from GitHub: work-done progress of the download, and its state in 
     }
     const cached = hover("1", 0, 30)
     expect(cached.contents.value).toBe("GitHub: **acme/geo**: cached at commit `89abcdef0123`")
-    expect(JSON.stringify(cached.range)).toBe(range(0, 23, 0, 23 + url.length + 2))
+    expect(json(cached.range)).toBe(range(0, 23, 0, 23 + url.length + 2))
     expect(hover("2", 1, 25).contents.value.startsWith("Invalid GitHub module URL")).toBe(true)
     // Not on a specifier: the checker's hover.
     expect(hover("3", 2, 6).contents.value.includes("int")).toBe(true)
