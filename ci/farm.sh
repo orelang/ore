@@ -46,7 +46,8 @@ by_load() {
     done | sort -n -k1,1 | cut -d' ' -f2-
 }
 
-# Takes a free slot, waiting for one: prints `host slots slot`. A light job
+# Takes a free slot, waiting for one: prints `host count slot`, where count is
+# the number of slots of its kind, among which the cores are divided. A light job
 # (a probe, a filtered test) takes one of the light slots, named l1, l2...
 acquire() {
     while true; do
@@ -64,7 +65,7 @@ acquire() {
                 if mkdir "$lock" 2>/dev/null; then
                     echo $$ >"$lock/pid"
                     echo "$1" >"$lock/job"
-                    echo "$host $slots $i"
+                    echo "$host $count $i"
                     return
                 fi
             done
