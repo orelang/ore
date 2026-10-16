@@ -1609,6 +1609,12 @@ export function satisfiesConstraint(c: Checker, arg: Type, bound: Type): bool {
     if (sameType(arg, bound) || arg.kind === "never") return true
     const source = structOrInterface(arg)
     if (bound.kind === "interface" && source !== null) return conformance(c, source, bound).reason === null
+    // A tuple is an array of its elements: `[int, string]` satisfies `unknown[]`.
+    if (arg.kind === "struct" && arg.tuple && bound.kind === "array") {
+        const elem = bound.elem
+        for (const f of arg.fields) if (elem.kind !== "unknown" && !satisfiesConstraint(c, f.type, elem)) return false
+        return true
+    }
     return membersOf(arg).every((a) => membersOf(bound).some((b) => memberOf(a, b)))
 }
 
@@ -1626,10 +1632,13 @@ export function inferTypeArgs(
 ): Type[] | null {
     const names = generic.params.map((p) => nameNode(p).text)
     const bindings = new Map<string, Type>()
+    const restName = restTypeParameter(params, names)
     for (let i = 0; i < params.length; i++) {
         const annotation = typeNode(params[i])
         const argType = i < argTypes.length ? argTypes[i] : null
-        if (annotation !== null && argType !== null) inferFrom(c, annotation, argType, names, bindings, generic.scope)
+        if (restName !== null && i === params.length - 1) bindRest(c, restName, argTypes, i, bindings)
+        else if (annotation !== null && argType !== null)
+            inferFrom(c, annotation, argType, names, bindings, generic.scope)
     }
     // Parameters the arguments do not bind take the expected type of the result: `const xs: string[] = empty()`.
     const result = typeNode(generic.decl)
@@ -1727,9 +1736,20 @@ export function inferFrom(
     if (n.kind === "FunctionType") {
         if (type.kind !== "func") return
         const params = parameters(n)
+        const restName = restTypeParameter(params, names)
         for (let i = 0; i < params.length; i++) {
             const annotation = typeNode(params[i])
-            if (annotation !== null && i < type.params.length)
+            // `(...args: A) => void` binds `A` to the tuple of the parameters left.
+            if (restName !== null && i === params.length - 1) {
+                if (bindings.has(restName) || type.rest) continue
+                const elems: Type[] = []
+                const optional: bool[] = []
+                for (let k = i; k < type.params.length; k++) {
+                    elems.push(type.params[k])
+                    optional.push(type.required >= 0 && k >= type.required)
+                }
+                bindings.set(restName, c.tupleOf(elems, optional))
+            } else if (annotation !== null && i < type.params.length)
                 inferFrom(c, annotation, type.params[i], names, bindings, scope)
         }
         const result = typeNode(n)!
@@ -1994,6 +2014,12 @@ export function genericCall(
     }
     const bindings = new Map<string, Type>()
     for (let i = 0; i < args.length; i++) bindArg(c, generic, params, found, i, names, bindings)
+    // A rest parameter `...args: A` binds `A` to the tuple of the arguments it takes, after the
+    // callbacks whose parameters all have types: `setTimeout((ms: number) => ..., 10, 5)`.
+    const restName = restTypeParameter(params, names)
+    let typedCallback = false
+    for (let i = 0; i < args.length; i++) if (found[i] === null && typedParameters(args[i])) typedCallback = true
+    if (restName !== null && !typedCallback) bindRest(c, restName, foundTypes(c, found), params.length - 1, bindings)
     for (let i = 0; i < args.length; i++) {
         const arg = args[i]
         const p = i < params.length ? typeNode(params[i]) : null
@@ -2005,7 +2031,11 @@ export function genericCall(
         const paramTypes: (Type | null)[] = []
         for (const q of parameters(fn)) {
             const qt = typeNode(q)
-            paramTypes.push(qt !== null && !mentions(qt, unbound) ? c.resolveType(qt, known) : null)
+            const t = qt !== null && !mentions(qt, unbound) ? c.resolveType(qt, known) : null
+            // A rest parameter of a tuple type is its elements.
+            if (t !== null && dotDotDotToken(q) !== null && t.kind === "struct" && t.tuple)
+                for (const f of t.fields) paramTypes.push(f.type)
+            else paramTypes.push(t)
         }
         if (paramTypes.some((t) => t === null)) {
             found[i] = checkExpr(c, arg, scope)
@@ -2037,6 +2067,7 @@ export function genericCall(
         }
         bindArg(c, generic, params, found, i, names, bindings)
     }
+    if (restName !== null) bindRest(c, restName, foundTypes(c, found), params.length - 1, bindings)
     const operands: Operand[] = []
     for (const o of found) operands.push(o!)
     if (operands.some((o) => o.k === "error")) return null
@@ -2095,8 +2126,56 @@ function bindArg(
 ) {
     const o = found[i]
     const p = i < params.length ? typeNode(params[i]) : null
+    // The type parameter of a rest parameter is bound by all the arguments it takes (see `bindRest`).
+    if (i === params.length - 1 && restTypeParameter(params, names) !== null) return
     if (o !== null && o.k !== "error" && p !== null)
         inferFrom(c, p, o.k === "typed" ? o.expr.type : c.defaultType(o), names, bindings, generic.scope)
+}
+
+/** The type parameter of `names` that types a last rest parameter, as `A` in `...args: A`, or null. */
+function restTypeParameter(params: Node[], names: string[]): string | null {
+    if (params.length === 0) return null
+    const last = params[params.length - 1]
+    const annotation = typeNode(last)
+    if (dotDotDotToken(last) === null || annotation === null || annotation.kind !== "TypeReference") return null
+    if (typeArguments(annotation).length > 0 || !isIdentifier(typeName(annotation))) return null
+    const name = typeName(annotation).text
+    return names.includes(name) ? name : null
+}
+
+/**
+ * Binds `name`, the type parameter of a rest parameter `...args: A`, to the
+ * tuple of the types of the arguments from `from` on, unless it is bound or
+ * an argument's type is not known yet.
+ */
+function bindRest(c: Checker, name: string, argTypes: (Type | null)[], from: int, bindings: Map<string, Type>) {
+    if (bindings.has(name)) return
+    const elems: Type[] = []
+    for (let i = from; i < argTypes.length; i++) {
+        const t = argTypes[i]
+        if (t === null) return
+        elems.push(t)
+    }
+    bindings.set(name, c.tupleOf(elems))
+}
+
+/** The types of the arguments checked, null for those not checked yet. */
+function foundTypes(c: Checker, found: (Operand | null)[]): (Type | null)[] {
+    const result: (Type | null)[] = []
+    for (const o of found) {
+        if (o === null || o.k === "error") result.push(null)
+        else result.push(o.k === "typed" ? o.expr.type : c.defaultType(o))
+    }
+    return result
+}
+
+/** Whether a function literal has parameters, each with a type and none a rest parameter. */
+function typedParameters(arg: Node): bool {
+    if (arg.kind !== "ArrowFunction" && arg.kind !== "FunctionExpression") return false
+    const params = parameters(arg)
+    if (params.length === 0) return false
+    for (const q of params) if (typeNode(q) === null || dotDotDotToken(q) !== null) return false
+    return true
 }
 
 /**
@@ -2156,8 +2235,10 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope, propert
         const question = questionToken(p)
         if (type !== null && question !== null) type = c.unionOf([type, types.null])
         if (dotDotDotToken(p) !== null) {
+            // Of an array type, or of a tuple type (`...args: A` given one): it takes an argument per element.
+            const tuple = type !== null && type.kind === "struct" && type.tuple
             if (i !== params_.length - 1) c.error(p, "A rest parameter must be the last parameter.")
-            else if (type !== null && (type.kind !== "array" || type.template))
+            else if (type !== null && (type.kind !== "array" || type.template) && !tuple)
                 c.error(annotation ?? p, "A rest parameter must have an array type.")
             else rest = true
         }

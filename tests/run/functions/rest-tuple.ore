@@ -1,0 +1,39 @@
+// A rest parameter of a tuple type takes as many arguments as the tuple has
+// elements; typed by a type parameter, `...args: A`, it binds `A` to the
+// tuple of the arguments, as the callbacks of setTimeout.
+
+function call<A extends unknown[]>(f: (...args: A) => void, ...args: A): void {
+    f(...args)
+}
+call((a: string, b: int) => console.log(a, b), "x", 1)
+call((n) => console.log(n * 2), 21)
+call((s: string, n: f64) => console.log(s, n), "f64", 2)
+call(() => console.log("none"))
+
+function twice(n: int): void {
+    console.log("twice", n * 2)
+}
+call(twice, 4)
+
+function later<A extends unknown[]>(f: (...args: A) => string, delay: int = 0, ...args: A): string {
+    return `${delay}: ${f(...args)}`
+}
+console.log(later(() => "no delay"))
+console.log(later((a: int, b: int) => `${a + b}`, 5, 1, 2))
+
+function pair(...p: [string, int]): string {
+    return `${p[0]}=${p[1]}`
+}
+console.log(pair("a", 1))
+const t: [string, int] = ["b", 2]
+console.log(pair(...t))
+
+function optional(...p: [int, string?]): void {
+    console.log(p[0], p[1])
+}
+optional(1)
+optional(2, "two")
+
+type F = (...args: [int, string]) => string
+const g: F = (n, s) => `${s}${n}`
+console.log(g(1, "c"))

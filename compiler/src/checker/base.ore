@@ -543,7 +543,17 @@ export class Checker {
                 }
                 const t = this.resolveValueType(annotation, scope)
                 if (t === null) return null
-                if (dotDotDotToken(p) !== null) {
+                if (dotDotDotToken(p) !== null && i === list.length - 1 && t.kind === "struct" && t.tuple) {
+                    // A rest parameter of a tuple type is its elements: `(...args: [int, string?])` is `(a: int, b?: string)`.
+                    for (const f of t.fields) {
+                        if (f.optional && required === -1) required = params.length
+                        if (!f.optional && required !== -1) {
+                            this.error(p, "A required parameter cannot follow an optional parameter.")
+                            return null
+                        }
+                        params.push(f.type)
+                    }
+                } else if (dotDotDotToken(p) !== null) {
                     if (i !== list.length - 1 || t.kind !== "array" || t.template) {
                         this.error(p, "A rest parameter must be the last parameter, of an array type.")
                         return null

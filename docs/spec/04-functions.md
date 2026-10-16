@@ -46,6 +46,14 @@
   receives the extra arguments as an array, where `...array` spreads in an
   array's elements (`f(1, ...xs, 2)`; `f(...xs)` alone passes `xs` itself).
   A [tuple](02-types.md#tuples) spreads into any parameters: `f(...t)`.
+  A rest parameter of a tuple type, `...p: [string, int?]`, takes as many
+  arguments as the tuple has elements (those of optional elements may be
+  left out), and in a function type it is its elements: `(...args: [int,
+  string]) => void` is `(a: int, b: string) => void`. Typed by a type
+  parameter, `...args: A` with `A extends unknown[]`, it binds `A` to the
+  tuple of its arguments' types, or of the parameters of a callback
+  `f: (...args: A) => void` passed with it, as `setTimeout(f, ms, ...args)`
+  does: `call((s: string, n: int) => ..., "x", 1)`.
   An array spreads only into a rest parameter, `push`, `console` and
   `Math.min`/`Math.max`: its length is not known.
 - A top-level function may have overload signatures, declarations without a

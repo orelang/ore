@@ -41,6 +41,8 @@ import {
     SetOp,
     MethodCall,
     NullLit,
+    ObjectLit,
+    FieldInit,
     Pop,
     Push,
     Recast,
@@ -1915,7 +1917,15 @@ export function callFunc(
     const required = signature !== null ? signature.required : params.length
     if (args.some((arg) => arg.kind === "SpreadElement")) return spreadCall(c, func, args, node, scope, what, receiver)
     const given = args.slice(0, fixed)
-    if (args.length < required || (!rest && args.length > fixed)) {
+    const tuple = rest ? restTuple(params[fixed]) : null
+    if (tuple !== null) {
+        const least = restLeast(tuple, fixed, required)
+        const most = fixed + tuple.fields.length
+        if (args.length < least || args.length > most) {
+            const count = least === most ? `${most}` : `${least} to ${most}`
+            return c.fail(node, `${what} expects ${count} argument(s), got ${args.length}.`)
+        }
+    } else if (args.length < required || (!rest && args.length > fixed)) {
         const count = rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
         return c.fail(node, `${what} expects ${count} argument(s), got ${args.length}.`)
     }
@@ -1930,8 +1940,23 @@ export function callFunc(
         values.push(c.coerceTo(operand_, params[i], given[i], parameter))
     }
 
-    // Extra arguments form the rest array.
-    if (rest) {
+    // Extra arguments form the rest tuple, of a rest parameter `...args: A` given a tuple.
+    if (tuple !== null) {
+        const fields: FieldInit[] = []
+        for (let k = 0; k < tuple.fields.length; k++) {
+            const f = tuple.fields[k]
+            const i = fixed + k
+            if (i >= args.length) {
+                fields.push(new FieldInit(f.name, nullOf(f.type)))
+                continue
+            }
+            const operand_ =
+                operands !== null && i < operands.length ? operands[i] : checkExpr(c, args[i], scope, f.type)
+            fields.push(new FieldInit(f.name, c.coerce(operand_, f.type, args[i])))
+        }
+        if (values.length === fixed) values.push(new ObjectLit(tuple, fields))
+    } else if (rest) {
+        // Extra arguments form the rest array.
         const array = params[fixed]
         if (array.kind !== "array") process.panic("callFunc: rest parameter is not an array")
         const elems: Expr[] = []
@@ -1945,6 +1970,28 @@ export function callFunc(
         if (values.length === fixed) values.push(new ArrayLit(array, elems))
     }
     return finishCall(c, func, values, receiver)
+}
+
+/** The tuple type of a rest parameter `...args: A` given a tuple, or null for a rest array. */
+function restTuple(type: Type): StructType | null {
+    if (type.kind === "struct" && type.tuple) return type
+    return null
+}
+
+/** The null of an optional element left out, of type `T | null`. */
+function nullOf(type: Type): Expr {
+    if (type.kind === "union") return new NullLit(type)
+    return new NullLit(types.null)
+}
+
+/**
+ * The fewest arguments of a call whose rest parameter is of tuple type: the
+ * parameters before it too, when the tuple has required elements.
+ */
+function restLeast(tuple: StructType, fixed: int, required: int): int {
+    let least = 0
+    for (const f of tuple.fields) if (!f.optional) least++
+    return least > 0 ? fixed + least : required
 }
 
 /**
@@ -1969,6 +2016,7 @@ function spreadCall(
     // The rest array's type; a flag rather than null, as stage 0 of the bootstrap narrows differently.
     const restType = rest ? params[fixed] : types.void
     const array = restType.kind === "array" ? restType : arrayOf(types.i64)
+    const tuple = rest ? restTuple(restType) : null
     const locals: BindLocal[] = []
     const hold = (value: Expr): Expr => {
         const local = c.newLocal("arg", value.type, false)
@@ -1984,6 +2032,7 @@ function spreadCall(
     // The type of the argument at the next position, or null past the parameters.
     const next = (): Type | null => {
         if (count < fixed) return params[count]
+        if (tuple !== null) return count - fixed < tuple.fields.length ? tuple.fields[count - fixed].type : null
         return rest ? array.elem : null
     }
     const put = (value: Expr) => {
@@ -2007,7 +2056,7 @@ function spreadCall(
             continue
         }
         const inner = expression(arg)
-        const operand_ = checkExpr(c, inner, scope, count >= fixed && rest ? array : null)
+        const operand_ = checkExpr(c, inner, scope, count >= fixed && rest && tuple === null ? array : null)
         if (operand_.k === "error") return errorOperand
         const value = c.toDefault(operand_, inner)
         const vt = value.type
@@ -2024,7 +2073,7 @@ function spreadCall(
             continue
         }
         if (vt.kind !== "array") return c.fail(inner, "Only an array or a tuple can be spread into arguments.")
-        if (count < fixed || !rest)
+        if (count < fixed || !rest || tuple !== null)
             return c.fail(arg, "A spread argument must be a tuple, or be passed to a rest parameter.")
         if (!sameType(vt.elem, array.elem))
             return c.fail(
@@ -2035,11 +2084,26 @@ function spreadCall(
         spread.push(true)
         spreads = true
     }
-    if (count < required || (!rest && count > fixed)) {
+    if (tuple !== null) {
+        const least = restLeast(tuple, fixed, required)
+        const most = fixed + tuple.fields.length
+        if (count < least || count > most) {
+            const expects = least === most ? `${most}` : `${least} to ${most}`
+            return c.fail(node, `${what} expects ${expects} argument(s), got ${count}.`)
+        }
+        if (values.length === fixed) {
+            const fields: FieldInit[] = []
+            for (let k = 0; k < tuple.fields.length; k++) {
+                const f = tuple.fields[k]
+                fields.push(new FieldInit(f.name, k < elems.length ? elems[k] : nullOf(f.type)))
+            }
+            values.push(new ObjectLit(tuple, fields))
+        }
+    } else if (count < required || (!rest && count > fixed)) {
         const expects = rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
         return c.fail(node, `${what} expects ${expects} argument(s), got ${count}.`)
     }
-    if (rest && values.length === fixed) {
+    if (rest && tuple === null && values.length === fixed) {
         // A single spread array is passed on; otherwise the rest array is built.
         if (elems.length === 1 && spreads) values.push(elems[0])
         else values.push(new ArrayLit(array, elems, spreads ? spread : null))
@@ -2092,6 +2156,13 @@ function finishCall(c: Checker, func: Func, values: Expr[], receiver: Expr | nul
     if (rest) {
         const array = params[fixed]
         if (array.kind === "array") held.push(new ArrayLit(array, []))
+        // A rest tuple of optional elements only, all left out.
+        const tuple = restTuple(array)
+        if (tuple !== null) {
+            const fields: FieldInit[] = []
+            for (const f of tuple.fields) fields.push(new FieldInit(f.name, nullOf(f.type)))
+            held.push(new ObjectLit(tuple, fields))
+        }
     }
     const call: Expr =
         self !== null ? new MethodCall(func.type.result, func, self, held) : new Call(func.type.result, func, held)

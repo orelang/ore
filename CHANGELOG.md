@@ -5,6 +5,11 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- A rest parameter can have a tuple type, `...p: [string, int?]`: it takes
+  as many arguments as the tuple has elements, and in a function type it is
+  its elements. Typed by a type parameter, `...args: A` with `A extends
+  unknown[]`, it binds `A` to the tuple of the arguments, or of the
+  parameters of a callback `f: (...args: A) => void`, as TypeScript does.
 - Each object shows its properties in the order it was made in, as in
   JavaScript: printing, `JSON.stringify`, `Object.keys`, `values`,
   `entries` and `console.table` follow the literal that made it, the object
