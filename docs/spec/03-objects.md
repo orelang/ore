@@ -226,6 +226,14 @@ on that slot reads the class table.
   (`stmt.line`); its type is the union of the members' field types. It can
   be assigned (`stmt.line = 3`, `stmt.count++`) when it is writable and has
   the same type in every member.
+- A method that every member of a union of classes (without `null`) has,
+  public and with the same parameter and result types, can be called
+  without narrowing (`(a: Cat | Dog) => a.speak()`): the receiver and the
+  arguments are evaluated once, then the method of the class the value
+  holds runs (an override in a subclass too), with that class's default
+  values. Methods of different types are an error
+  ([ORE4085](../errors/ORE4085.md)), and spread arguments are not
+  supported there ([ORE4086](../errors/ORE4086.md)).
 - Representation: a reference type with `null` is a nullable reference; a
   union of string literals is a string, and one of numeric literals an
   `f64` (see [numeric literal types](02-types.md#numeric-literal-types));

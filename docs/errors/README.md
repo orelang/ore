@@ -309,6 +309,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE4082](ORE4082.md) | 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '…'. |
 | [ORE4083](ORE4083.md) | 'Array.from' takes an object only as '{ length: n }'. |
 | [ORE4084](ORE4084.md) | 'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'. |
+| [ORE4085](ORE4085.md) | Method '…' has different types in the members of '…': '…' and '…'. |
+| [ORE4086](ORE4086.md) | Spread arguments are not supported in a call of '…' on a union. |
 
 ## ORE5xxx: Classes and interfaces
 

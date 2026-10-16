@@ -53,6 +53,7 @@ import {
     type FuncType,
     type StructType,
     type Type,
+    type UnionType,
     ChanType,
     Field,
     FuncType as FuncTypeClass,
@@ -122,7 +123,7 @@ import {
     zeroValue,
 } from "./helpers"
 import { type Operand, errorOperand, UntypedInt } from "./operand"
-import { capture, checkClosure, disposeCall } from "./statements"
+import { capture, checkClosure, disposeCall, narrowConvert } from "./statements"
 import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
 import { plainArray } from "./templates"
 
@@ -2219,6 +2220,83 @@ function numberMethod(c: Checker, value: Expr, type: Type, name: string, node: N
     return typed(new BuiltinCall(types.string, "Number.toExponential", [float, arg, digitsGiven]))
 }
 
+/**
+ * A method that every class of a union has, with the same type, called on
+ * the class the value holds: `(a: Cat | Dog) => a.speak()`. The receiver and
+ * the arguments are evaluated once, before the class is tested. Null when
+ * a member of the union is not a class with the method.
+ */
+function unionMethodCall(
+    c: Checker,
+    value: Expr,
+    union: UnionType,
+    node: Node,
+    callee: Node,
+    scope: Scope,
+): Operand | null {
+    const nameId = nameNode(callee)
+    const name = nameId.text
+    const classes: StructType[] = []
+    const funcs: Func[] = []
+    for (const m of union.members) {
+        if (m.kind !== "struct" || !m.nominal || genericMethod(c, m, name) !== null) return null
+        const found = findMethod(m, name)
+        if (found === null) return null
+        if (!checkAccess(c, m, found.private, name, nameId)) return errorOperand
+        classes.push(m)
+        funcs.push(found.func)
+    }
+    const first = funcs[0]
+    for (const f of funcs)
+        if (!sameType(f.type, first.type))
+            return c.fail(
+                nameId,
+                `Method '${name}' has different types in the members of '${typeToString(union)}': '${typeToString(first.type)}' and '${typeToString(f.type)}'.`,
+            )
+    const args = argsOf(node)
+    if (args.some((arg) => arg.kind === "SpreadElement"))
+        return c.fail(node, `Spread arguments are not supported in a call of '${name}' on a union.`)
+    const params = first.type.params
+    const signature = c.signatures.get(first.params)
+    const rest = signature !== null && signature.rest
+    const fixed = rest ? params.length - 1 : params.length
+    const required = signature !== null ? signature.required : params.length
+    const what = `Method '${name}'`
+    if (args.length < required || (!rest && args.length > fixed))
+        return callFunc(c, first, args, node, scope, what, new Recast(classes[0], value))
+    // The receiver and the arguments in locals, read by each branch.
+    const locals: BindLocal[] = []
+    const self = c.newLocal("self", union, false)
+    locals.push(new BindLocal(self, value))
+    const operands: Operand[] = []
+    for (let i = 0; i < args.length; i++) {
+        let expected: Type = types.void
+        if (i < fixed) expected = params[i]
+        else {
+            const array = params[fixed]
+            if (array.kind === "array") expected = array.elem
+        }
+        const arg = c.coerce(checkExpr(c, args[i], scope, expected), expected, args[i])
+        const local = c.newLocal("arg", arg.type, false)
+        locals.push(new BindLocal(local, arg))
+        operands.push(typed(new LocalRef(arg.type, local)))
+    }
+    const result = first.type.result
+    const ref = new LocalRef(union, self)
+    const calls: Expr[] = []
+    for (let i = 0; i < classes.length; i++) {
+        defineMember(c, nameId, classes[i], name)
+        const call = callFunc(c, funcs[i], args, node, scope, what, narrowConvert(c, ref, classes[i]), operands)
+        if (call.k !== "typed") return call
+        dispatch(c, call.expr, name)
+        calls.push(call.expr)
+    }
+    let chain = calls[calls.length - 1]
+    for (let i = calls.length - 2; i >= 0; i--)
+        chain = new Conditional(result, new Is(types.bool, ref, classes[i]), calls[i], chain)
+    return typed(new Bind(result, locals, chain))
+}
+
 export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node, scope: Scope): Operand {
     const nameId = nameNode(callee)
     const name = nameId.text
@@ -2268,6 +2346,10 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         if (field !== null && membersOf(field.type).some((m) => m.kind === "func"))
             return c.fail(nameId, `'${name}' may be null: call it with '${name}?.(...)'.`)
         if (field !== null) return c.fail(nameId, `Field '${name}' is not a method.`)
+    }
+    if (type.kind === "union") {
+        const call = unionMethodCall(c, value, type, node, callee, scope)
+        if (call !== null) return call
     }
     if (type.kind === "interface") {
         for (let index = 0; index < type.members.length; index++) {
