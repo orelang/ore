@@ -283,8 +283,7 @@ export class Checker {
                 this.error(node, "'any' is not supported in Ore.")
                 return null
             case "UnknownKeyword":
-                this.error(node, "'unknown' is not supported yet.")
-                return null
+                return types.unknown
             case "UndefinedKeyword":
                 this.error(node, "'undefined' is not supported in Ore. Use 'null'.")
                 return null
@@ -634,6 +633,8 @@ export class Checker {
     /** The normalized union of types: flattened, deduplicated and in canonical order. */
     unionOf(found: Type[]): Type {
         let members_: Type[] = []
+        // `unknown` holds every value: a union with it is `unknown`.
+        for (const t of found) if (t.kind === "unknown") return t
         for (const t of found) {
             for (const m of membersOf(t)) {
                 if (m.kind === "never") continue
@@ -773,6 +774,8 @@ export class Checker {
                 const expr = value.expr
                 const from = typeOf(expr)
                 if (sameType(from, target) || from.kind === "never") return expr
+                // Any value converts to `unknown`, boxed with its type.
+                if (target.kind === "unknown" && from.kind !== "void") return new Recast(target, expr)
                 // An instance of a subclass is an instance of its base classes, as it is.
                 if (from.kind === "struct" && target.kind === "struct" && isSubclass(from, target)) return expr
                 const targetMembers = membersOf(target)
@@ -857,6 +860,7 @@ export class Checker {
                 return poison(target)
             }
             case "untyped-int": {
+                if (target.kind === "unknown") return new Recast(target, this.coerce(value, types.i64, node))
                 if (target.kind === "union") return this.coerceToUnion(value, target, node)
                 if (target.kind === "int") {
                     const range = intRange(target)
@@ -882,6 +886,7 @@ export class Checker {
                 return poison(target)
             }
             case "untyped-float": {
+                if (target.kind === "unknown") return new Recast(target, this.coerce(value, types.f64, node))
                 if (target.kind === "union") return this.coerceToUnion(value, target, node)
                 if (target.kind === "float") return floatLit(target, value.value)
                 if (target.kind === "int")

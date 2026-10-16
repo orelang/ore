@@ -351,6 +351,7 @@ export function directiveKind(name: string): string | null {
 }
 
 export function canBeNull(type: Type): bool {
+    if (type.kind === "unknown") return true
     for (const m of membersOf(type)) if (m.kind === "null") return true
     return false
 }
@@ -460,6 +461,8 @@ export function zeroValue(type: Type): Expr {
             return new SetOp("new", type, type)
         case "union":
             return new NullLit(type)
+        case "unknown":
+            return new Recast(type, new NullLit(types.null))
         case "ptr":
             // The null pointer.
             return new BuiltinCall(type, "unsafe.fromInt", [new IntLit(types.u64, 0)])

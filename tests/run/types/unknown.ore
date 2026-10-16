@@ -1,0 +1,91 @@
+// `unknown` holds any value, boxed with its type; narrowing unboxes it.
+
+class Point {
+    constructor(
+        readonly x: f64,
+        readonly y: f64,
+    ) {}
+}
+
+class Animal {
+    constructor(readonly name: string) {}
+}
+
+class Dog extends Animal {
+    bark(): string {
+        return `${this.name}: woof`
+    }
+}
+
+interface Named {
+    readonly name: string
+}
+
+function describe(value: unknown): string {
+    if (value === null) return "null"
+    if (typeof value === "string") return `string of length ${value.length}`
+    if (typeof value === "number") return `number ${value + 1}`
+    if (typeof value === "boolean") return value ? "yes" : "no"
+    if (typeof value === "bigint") return `bigint ${value * 2n}`
+    if (value instanceof Dog) return value.bark()
+    if (value instanceof Animal) return `animal ${value.name}`
+    if (value instanceof Point) return `point ${value.x + value.y}`
+    return `a value of type ${typeof value}`
+}
+
+const named: Named = new Dog("rex")
+const missing: string | null = null
+const either: string | f64 = 2.5
+const values: unknown[] = [
+    "hi",
+    1.5,
+    7,
+    i32(3),
+    true,
+    10n,
+    null,
+    new Point(1, 2),
+    new Dog("fido"),
+    new Animal("cat"),
+    named,
+    missing,
+    either,
+    [1, 2],
+    (a: i64) => a,
+]
+for (const v of values) console.log(describe(v))
+console.log(values)
+for (const v of values) console.log(v)
+
+// `===` compares the types and the values; numbers compare as numbers.
+const five: unknown = 5
+const alsoFive: unknown = 5.0
+console.log(five === alsoFive, five === 5, five !== "5", five === null)
+const text: unknown = "abc"
+console.log(text === "abc", "abc" === text, text === five)
+
+// A variable of type `unknown` starts as null.
+let later: unknown
+console.log(later, typeof later)
+later = new Dog("max")
+console.log(typeof later, later instanceof Animal, later instanceof Dog, later instanceof Point)
+const fn: unknown = (x: i64) => x
+console.log(typeof fn)
+console.log(later ?? "fallback")
+
+// A union with `unknown` is `unknown`.
+const wide: unknown | string = "wide"
+console.log(wide)
+
+// `switch (typeof x)` narrows each case.
+function kind(value: unknown): string {
+    switch (typeof value) {
+        case "string":
+            return value.toUpperCase()
+        case "number":
+            return `${value * 10}`
+        default:
+            return "other"
+    }
+}
+console.log(kind("a"), kind(4), kind(false))

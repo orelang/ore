@@ -412,6 +412,7 @@ function isEquatable(type: Type): bool {
         k === "bool" ||
         k === "string" ||
         k === "bigint" ||
+        k === "unknown" ||
         k === "array" ||
         k === "struct" ||
         k === "interface" ||
@@ -468,8 +469,11 @@ export function compare(
     if ((op === "===" || op === "!==") && le.k === "string" && re.k === "string") {
         return typed(new BoolLit(types.bool, (le.value === re.value) === (op === "===")))
     }
+    // Any value compares with an `unknown`, boxed: equal when it has the same type and value.
+    if (!sameType(le.type, re.type) && re.type.kind === "unknown") le = c.coerce(typed(le), re.type, leftNode)
+    else if (!sameType(le.type, re.type) && le.type.kind === "unknown") re = c.coerce(typed(re), le.type, rightNode)
     // A member compares with a union containing it.
-    if (!sameType(le.type, re.type) && re.type.kind === "union") le = c.coerce(typed(le), re.type, leftNode)
+    else if (!sameType(le.type, re.type) && re.type.kind === "union") le = c.coerce(typed(le), re.type, leftNode)
     else if (!sameType(le.type, re.type) && le.type.kind === "union") re = c.coerce(typed(re), le.type, rightNode)
     const type = typeOf(le)
     // Instances of a class and of a subclass compare by identity.
@@ -743,6 +747,10 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
             c.error(node, "Strings are immutable.")
             return null
         }
+        if (at.kind === "unknown") {
+            c.error(expression(node), unknownObject)
+            return null
+        }
         if (at.kind === "struct" && at.tuple) {
             const field = tupleField(c, at, argumentExpression(node), scope)
             if (field === null) return null
@@ -781,6 +789,10 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         const nameId = nameNode(node)
         const name = nameId.text
         const ot = object.type
+        if (ot.kind === "unknown") {
+            c.error(nameId, unknownObject)
+            return null
+        }
         if (ot.kind === "interface") {
             let index = -1
             for (let i = 0; i < ot.members.length; i++) if (index === -1 && ot.members[i].name === name) index = i
@@ -1772,6 +1784,7 @@ export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
 /** Reads the field or length named by a property access from a value. */
 export function member(c: Checker, value: Expr, nameNode_: Node, name: string): Operand {
     const type = value.type
+    if (type.kind === "unknown") return c.fail(nameNode_, unknownObject)
     if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
     if (name === "length" && type.kind === "struct" && type.tuple) return new UntypedInt(bigOf(type.fields.length))
     if (name === "length" && membersOf(type).every(isStringLike))
@@ -1825,6 +1838,9 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     return c.fail(nameNode_, noProperty(type, name))
 }
 
+/** The error for using a value of type `unknown` as an object before narrowing it, as TypeScript reports it. */
+export const unknownObject = "Object is of type 'unknown'."
+
 export function noProperty(type: Type, name: string): string {
     const message = `Property '${name}' does not exist on type '${typeToString(type)}'.`
     if (type.kind === "union" && type.members.some((m) => m.kind === "null")) {
@@ -1866,6 +1882,7 @@ export function checkInstanceOf(c: Checker, node: Node, scope: Scope): Operand {
 /** The `is` test of `value instanceof target`, or null if it can never be true. */
 export function instanceTest(c: Checker, value: Expr, target: StructType | InterfaceType): Expr | null {
     const type = value.type
+    if (type.kind === "unknown") return target.kind === "struct" ? new Is(types.bool, value, target) : null
     if (sameType(type, target)) return new BoolLit(types.bool, true)
     // An instance of a class is an instance of its base classes; one of a base class may be of a subclass.
     const related = (m: Type): bool =>
@@ -1935,6 +1952,7 @@ export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
         if (index === null) return errorOperand
         if (vt.kind === "string") return typed(new Index(types.u8, v, index))
         if (vt.kind === "array") return typed(new Index(vt.elem, v, index))
+        if (vt.kind === "unknown") return c.fail(expression(node), unknownObject)
         return c.fail(expression(node), `Type '${typeToString(vt)}' cannot be indexed.`)
     }
     return questionDotToken(node) !== null ? optional(c, value, node, element) : element(value)

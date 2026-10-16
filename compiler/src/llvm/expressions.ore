@@ -53,6 +53,7 @@ import { memberIndex } from "./helpers"
 import { floatConstant, globalName, sizeOf, voidValue, type V } from "./ll"
 import { fnvHex } from "./names"
 import { slot } from "./functions"
+import { box, holds, unbox, unknownEquals, unknownIsNull, unknownTypeof } from "./unknown"
 
 /** A place other than a local: `Exclude<ir.LValue, { k: "local" }>` in TypeScript. */
 export type Place = ElementLValue | FieldLValue | IfaceFieldLValue | UnionFieldLValue
@@ -280,11 +281,23 @@ export function expr(g: Emitter, e: Expr): V {
             return recast(g, expr(g, e.value), e.value.type, e.type)
         case "is-null": {
             const v = expr(g, e.value)
+            if (e.value.type.kind === "unknown") return unknownIsNull(g, v)
             return isNullValue(g, unionOf(e.value.type), v)
         }
         case "optional":
             return optional(g, e)
         case "coalesce": {
+            if (e.value.type.kind === "unknown") {
+                const held = expr(g, e.value)
+                const otherwise = e.fallback
+                return choose(
+                    g,
+                    unknownIsNull(g, held),
+                    () => expr(g, otherwise),
+                    () => held,
+                    g.lt(e.type),
+                )
+            }
             const from = unionOf(e.value.type)
             const v = expr(g, e.value)
             const fallback = e.fallback
@@ -302,12 +315,14 @@ export function expr(g: Emitter, e: Expr): V {
         case "typeof": {
             const from = e.value.type
             const v = expr(g, e.value)
+            if (from.kind === "unknown") return unknownTypeof(g, v)
             if (from.kind !== "union") return g.str(typeofName(from))
             return g.b.value(STR, `call ${STR} ${typeofer(g, from)}(${v.ty} ${v.v})`)
         }
         case "is": {
             const v = expr(g, e.value)
             const member = e.member
+            if (e.value.type.kind === "unknown") return holds(g, v, member)
             if (e.value.type.kind === "struct") return g.classIs(v, structOf(member))
             if (e.value.type.kind === "interface") return ifaceIs(g, v, structOf(member))
             const u = unionOf(e.value.type)
@@ -770,6 +785,7 @@ export function compare(g: Emitter, op: CompareOp, l: V, r: V, type: Type): V {
 
 /** `===` of two values of a type. */
 export function equals(g: Emitter, a: V, b: V, type: Type): V {
+    if (type.kind === "unknown") return unknownEquals(g, a, b)
     if (type.kind === "union") {
         const repr = unionRepr(type)
         if (repr.k === "tagged")
@@ -983,6 +999,8 @@ export function recastToBase(g: Emitter, v: V, from: UnionType, to: StructType):
 
 /** Converts between a union and its members; narrowing panics on a member the target lacks. */
 export function recast(g: Emitter, v: V, from: Type, to: Type): V {
+    if (to.kind === "unknown") return box(g, v, from)
+    if (from.kind === "unknown") return unbox(g, v, to)
     // Unions of string literals widen to `string` without a change.
     if (from.kind === "union" && unionRepr(from).k === "strings" && to.kind === "string") return v
     if (from.kind !== "union") {

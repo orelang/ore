@@ -18,10 +18,12 @@ import { Emitter } from "./base"
 import { fieldPtr, payload, slotTest } from "./expressions"
 import { globalName, type V } from "./ll"
 import { concat, helper } from "./calls"
+import { heldString, holdsString, inspectHeld, unknownIsNull } from "./unknown"
 
 /** The value as console.log prints it: strings as they are, other values as they are inside an array. */
 export function inspectTop(g: Emitter, v: V, t: Type): V {
     if (t.kind === "string" || t.kind === "literal") return v
+    if (t.kind === "unknown") return g.b.value(STR, `call ${STR} ${unknownTop(g)}(${v.ty} ${v.v})`)
     if (t.kind === "union") {
         if (unionRepr(t).k === "strings") return v
         return g.b.value(STR, `call ${STR} ${topInspector(g, t)}(${v.ty} ${v.v})`)
@@ -51,6 +53,25 @@ function topInspector(g: Emitter, t: UnionType): string {
             e.b.start(next)
         }
         e.b.terminate(`ret ${STR} ${e.str("").v}`)
+    })
+    return name
+}
+
+/** The function formatting an `unknown` at the top: a string as it is, other values by their inspectors. */
+function unknownTop(g: Emitter): string {
+    const name = "@inspect.top.unknown"
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const ty = g.lt(types.unknown)
+    helper(g, name, `define internal ${STR} ${name}(${ty} %v)`, (e) => {
+        const v: V = { ty, v: "%v" }
+        const text = e.b.label("text")
+        const other = e.b.label("other")
+        e.b.condBr(holdsString(e, v), text, other)
+        e.b.start(text)
+        e.b.terminate(`ret ${STR} ${heldString(e, v).v}`)
+        e.b.start(other)
+        e.b.terminate(`ret ${STR} ${inspectAt(e, v, types.unknown, e.rt("ore_rt_inspect_new", []), e.i64(0)).v}`)
     })
     return name
 }
@@ -86,7 +107,7 @@ export function printYellow(g: Emitter, printIt: () => void) {
 }
 
 /** Calls the inspector of type `t` on `v`, `depth` levels deep, with the state `s`. */
-function inspectAt(g: Emitter, v: V, t: Type, s: V, depth: V): V {
+export function inspectAt(g: Emitter, v: V, t: Type, s: V, depth: V): V {
     return g.b.value(STR, `call ${STR} ${inspector(g, t)}(${v.ty} ${v.v}, ptr ${s.v}, i64 ${depth.v})`)
 }
 
@@ -198,6 +219,15 @@ function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
             return inspectUnion(g, t, v, s, depth)
         case "interface":
             return inspectInterface(g, t, v, s, depth)
+        case "unknown": {
+            const isNull = g.b.label("unull")
+            const present = g.b.label("upresent")
+            g.b.condBr(unknownIsNull(g, v), isNull, present)
+            g.b.start(isNull)
+            g.b.terminate(`ret ${STR} ${inspectNull(g, s).v}`)
+            g.b.start(present)
+            return inspectHeld(g, v, s, depth)
+        }
         case "array": {
             const n = g.b.value("i64", `load i64, ptr ${g.field(v.v, ARRAY, 1)}`)
             returnUnlessEmpty(

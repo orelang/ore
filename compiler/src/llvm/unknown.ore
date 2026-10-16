@@ -1,0 +1,329 @@
+// Values of type `unknown`: a pointer to the descriptor of the type the value
+// has, null for `null`, and two words that hold the value as a variable of
+// that type would. A descriptor (`%ore.type`) is a constant per type, made
+// when a value of the type is first boxed:
+//
+//     { typeof name, flags, inspect function, equality function, f64 function }
+//
+// The functions take pointers to the words. The f64 function is null but for
+// numbers, which it converts to `f64`, the type `typeof x === "number"`
+// narrows to. A value is boxed with the type it has at run time: a string
+// literal as a string, a union as its member, an interface as its class, an
+// instance of a class with subclasses as its own class.
+
+import { type StructType, type Type, type UnionType, isNumeric, typeofName, typeToString, types } from "../ir/types"
+import { Emitter } from "./base"
+import { STR, TYPE, UNKNOWN } from "./context"
+import { check, choose, convert, equals, inject, payload, slotTest } from "./expressions"
+import { helper } from "./calls"
+import { inspectAt } from "./inspect"
+import { globalName, type V } from "./ll"
+
+// The fields of a descriptor.
+const NAME = 0
+const FLAGS = 1
+const INSPECT = 2
+const EQUALS = 3
+const TO_F64 = 4
+
+/** A descriptor flag: the value is a string, which console.log prints as it is. */
+export const STRING_FLAG = 1
+
+/** The type a value of a type is boxed as. */
+function boxedAs(t: Type): Type {
+    return t.kind === "literal" ? types.string : t
+}
+
+/** The descriptor of a type: `@ore.type.<type>`. */
+export function descriptor(g: Emitter, type: Type): string {
+    const t = boxedAs(type)
+    const key = g.names.key(t)
+    const name = globalName(`ore.type.${key}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const inspect = globalName(`ore.unknown.inspect.${key}`)
+    helper(g, inspect, `define internal ${STR} ${inspect}(ptr %p, ptr %s, i64 %depth)`, (e) => {
+        const r = inspectAt(e, e.load("%p", t), t, { ty: "ptr", v: "%s" }, { ty: "i64", v: "%depth" })
+        e.b.terminate(`ret ${STR} ${r.v}`)
+    })
+    const eq = globalName(`ore.unknown.eq.${key}`)
+    helper(g, eq, `define internal i1 ${eq}(ptr %a, ptr %b)`, (e) => {
+        e.b.terminate(`ret i1 ${equals(e, e.load("%a", t), e.load("%b", t), t).v}`)
+    })
+    let toF64 = "null"
+    if (isNumeric(t)) {
+        toF64 = globalName(`ore.unknown.f64.${key}`)
+        helper(g, toF64, `define internal double ${toF64}(ptr %p)`, (e) => {
+            e.b.terminate(`ret double ${convert(e, e.load("%p", t), t, types.f64).v}`)
+        })
+    }
+    const flags = t.kind === "string" ? STRING_FLAG : 0
+    g.helpers.set(
+        name,
+        `${name} = internal constant ${TYPE} { ${STR} ${g.str(typeofName(t)).v}, i64 ${flags}, ptr ${inspect}, ptr ${eq}, ptr ${toF64} }`,
+    )
+    return name
+}
+
+/** The descriptor of an `unknown` value. */
+export function descriptorOf(g: Emitter, v: V): V {
+    return g.extract(v, 0, "ptr")
+}
+
+/** A field of a descriptor that is not null. */
+function descriptorField(g: Emitter, desc: V, index: int, ty: string): V {
+    const place = g.b.value("ptr", `getelementptr ${TYPE}, ptr ${desc.v}, i32 0, i32 ${index}`)
+    return g.b.value(ty, `load ${ty}, ptr ${place.v}`)
+}
+
+/** The words of an `unknown` value, in a new stack slot. */
+function words(g: Emitter, v: V): string {
+    return g.field(g.spill(v), UNKNOWN, 1)
+}
+
+/** An `unknown` holding a value with a descriptor. */
+function pack(g: Emitter, desc: string, v: V | null, t: Type): V {
+    const s = g.b.alloca(UNKNOWN)
+    g.b.emit(`store ${UNKNOWN} zeroinitializer, ptr ${s}`)
+    g.b.emit(`store ptr ${desc}, ptr ${g.field(s, UNKNOWN, 0)}`)
+    if (v !== null) g.store(v, g.field(s, UNKNOWN, 1), t)
+    return g.b.value(UNKNOWN, `load ${UNKNOWN}, ptr ${s}`)
+}
+
+/** A value boxed as an `unknown`. */
+export function box(g: Emitter, v: V, from: Type): V {
+    switch (from.kind) {
+        case "unknown":
+            return v
+        case "null":
+            return { ty: UNKNOWN, v: "zeroinitializer" }
+        case "union":
+            return g.b.value(UNKNOWN, `call ${UNKNOWN} ${unionBoxer(g, from)}(${v.ty} ${v.v})`)
+        case "interface":
+            return boxInterface(g, v, from.id)
+        case "struct":
+            if (g.tables.has(from.id)) return boxInstance(g, v, from)
+            return pack(g, descriptor(g, from), v, from)
+        default:
+            return pack(g, descriptor(g, from), v, boxedAs(from))
+    }
+}
+
+/** The function boxing a union value as its member: `@ore.box.<union>`. */
+function unionBoxer(g: Emitter, u: UnionType): string {
+    const name = globalName(`ore.box.${g.names.key(u)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const uty = g.lt(u)
+    helper(g, name, `define internal ${UNKNOWN} ${name}(${uty} %v)`, (e) => {
+        const v: V = { ty: uty, v: "%v" }
+        for (let i = 0; i < u.members.length; i++) {
+            const m = u.members[i]
+            const here = e.b.label("bmember")
+            const next = e.b.label("bnext")
+            e.b.condBr(slotTest(e, u, v, i), here, next)
+            e.b.start(here)
+            const boxed = m.kind === "null" ? box(e, v, m) : box(e, payload(e, u, v, i), m)
+            e.b.terminate(`ret ${UNKNOWN} ${boxed.v}`)
+            e.b.start(next)
+        }
+        e.b.terminate(`ret ${UNKNOWN} zeroinitializer`)
+    })
+    return name
+}
+
+/** An interface value boxed as the instance it refers to, told by the type id in its table; null stays null. */
+function boxInterface(g: Emitter, v: V, iface: int): V {
+    const table = g.extract(v, 1, "ptr")
+    const object = g.extract(v, 0, "ptr")
+    const present = g.b.value("i1", `icmp ne ptr ${table.v}, null`)
+    return choose(
+        g,
+        present,
+        () => {
+            const id = g.b.value("i64", `load i64, ptr ${table.v}`)
+            const result = g.b.alloca(UNKNOWN)
+            g.b.emit(`store ${UNKNOWN} zeroinitializer, ptr ${result}`)
+            const end = g.b.label("boxed")
+            const done = new Set<int>()
+            for (const itab of g.module.itabs) {
+                const struct = itab.struct
+                if (itab.iface.id !== iface || done.has(struct.id)) continue
+                done.add(struct.id)
+                const here = g.b.label("bclass")
+                const next = g.b.label("bnext")
+                g.b.condBr(g.b.value("i1", `icmp eq i64 ${id.v}, ${g.names.typeId(struct)}`), here, next)
+                g.b.start(here)
+                g.b.emit(`store ${UNKNOWN} ${box(g, object, struct).v}, ptr ${result}`)
+                g.b.br(end)
+                g.b.start(next)
+            }
+            g.b.br(end)
+            g.b.start(end)
+            return g.b.value(UNKNOWN, `load ${UNKNOWN}, ptr ${result}`)
+        },
+        () => ({ ty: UNKNOWN, v: "zeroinitializer" }),
+        UNKNOWN,
+    )
+}
+
+/** An instance of a class with a class table, boxed as an instance of the class it was made by. */
+function boxInstance(g: Emitter, v: V, s: StructType): V {
+    const table = g.b.value("ptr", `load ptr, ptr ${v.v}`)
+    let desc = descriptor(g, s)
+    for (const sub of g.subclasses(s)) {
+        if (sub === s) continue
+        const test = g.b.value("i1", `icmp eq ptr ${table.v}, ${g.classTable(sub)}`)
+        desc = g.b.value("ptr", `select i1 ${test.v}, ptr ${descriptor(g, sub)}, ptr ${desc}`).v
+    }
+    return pack(g, desc, v, s)
+}
+
+/** Whether an `unknown` holds a value of a type: a number for `f64`, an instance of the class or a subclass for a class. */
+export function holds(g: Emitter, v: V, to: Type): V {
+    const desc = descriptorOf(g, v)
+    if (to.kind === "null") return g.b.value("i1", `icmp eq ptr ${desc.v}, null`)
+    if (to.kind === "float" && to.bits === 64) {
+        return choose(
+            g,
+            g.b.value("i1", `icmp ne ptr ${desc.v}, null`),
+            () => {
+                const f = descriptorField(g, desc, TO_F64, "ptr")
+                return g.b.value("i1", `icmp ne ptr ${f.v}, null`)
+            },
+            () => ({ ty: "i1", v: "false" }),
+            "i1",
+        )
+    }
+    const classes: Type[] = []
+    if (to.kind === "struct" && g.tables.has(to.id)) for (const sub of g.subclasses(to)) classes.push(sub)
+    else classes.push(boxedAs(to))
+    let result: V = { ty: "i1", v: "false" }
+    for (let i = 0; i < classes.length; i++) {
+        const test = g.b.value("i1", `icmp eq ptr ${desc.v}, ${descriptor(g, classes[i])}`)
+        result = i === 0 ? test : g.b.value("i1", `or i1 ${result.v}, ${test.v}`)
+    }
+    return result
+}
+
+/** The value an `unknown` holds, as a type it was checked to have; panics if it has another. */
+export function unbox(g: Emitter, v: V, to: Type): V {
+    if (to.kind === "unknown") return v
+    if (to.kind === "union") return g.b.value(g.lt(to), `call ${g.lt(to)} ${unionUnboxer(g, to)}(${v.ty} ${v.v})`)
+    check(g, holds(g, v, to), `value is not of type ${typeToString(to)}`)
+    if (to.kind === "null") return g.zero(to)
+    if (to.kind === "float" && to.bits === 64) {
+        const f = descriptorField(g, descriptorOf(g, v), TO_F64, "ptr")
+        return g.b.value("double", `call double ${f.v}(ptr ${words(g, v)})`)
+    }
+    return g.load(words(g, v), to)
+}
+
+/** The function unboxing an `unknown` as a union, as the first member it holds: `@ore.unbox.<union>`. */
+function unionUnboxer(g: Emitter, u: UnionType): string {
+    const name = globalName(`ore.unbox.${g.names.key(u)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const uty = g.lt(u)
+    helper(g, name, `define internal ${uty} ${name}(${UNKNOWN} %v)`, (e) => {
+        const v: V = { ty: UNKNOWN, v: "%v" }
+        for (let i = 0; i < u.members.length; i++) {
+            const m = u.members[i]
+            const here = e.b.label("umember")
+            const next = e.b.label("unext")
+            e.b.condBr(holds(e, v, m), here, next)
+            e.b.start(here)
+            const value = inject(e, u, i, m.kind === "null" ? null : unbox(e, v, m))
+            e.b.terminate(`ret ${uty} ${value.v}`)
+            e.b.start(next)
+        }
+        e.panic(`value is not of type ${typeToString(u)}`)
+        e.b.terminate("unreachable")
+    })
+    return name
+}
+
+/** Whether an `unknown` is null. */
+export function unknownIsNull(g: Emitter, v: V): V {
+    return g.b.value("i1", `icmp eq ptr ${descriptorOf(g, v).v}, null`)
+}
+
+/** What `typeof` says of an `unknown`: its descriptor's name, "object" for null. */
+export function unknownTypeof(g: Emitter, v: V): V {
+    const desc = descriptorOf(g, v)
+    return choose(
+        g,
+        g.b.value("i1", `icmp eq ptr ${desc.v}, null`),
+        () => g.str("object"),
+        () => descriptorField(g, desc, NAME, STR),
+        STR,
+    )
+}
+
+/** Whether a descriptor is that of a string. */
+export function holdsString(g: Emitter, v: V): V {
+    const desc = descriptorOf(g, v)
+    return choose(
+        g,
+        g.b.value("i1", `icmp eq ptr ${desc.v}, null`),
+        () => ({ ty: "i1", v: "false" }),
+        () => {
+            const flags = descriptorField(g, desc, FLAGS, "i64")
+            return g.b.value("i1", `icmp ne i64 ${flags.v}, 0`)
+        },
+        "i1",
+    )
+}
+
+/** The string an `unknown` holds, after `holdsString`. */
+export function heldString(g: Emitter, v: V): V {
+    return g.load(words(g, v), types.string)
+}
+
+/** Formats an `unknown` that is not null by its descriptor's inspect function. */
+export function inspectHeld(g: Emitter, v: V, s: V, depth: V): V {
+    const f = descriptorField(g, descriptorOf(g, v), INSPECT, "ptr")
+    return g.b.value(STR, `call ${STR} ${f.v}(ptr ${words(g, v)}, ptr ${s.v}, i64 ${depth.v})`)
+}
+
+/**
+ * `===` of two `unknown` values: the same type and equal values, or two
+ * numbers equal as `f64`, as JavaScript has one type of numbers.
+ */
+export function unknownEquals(g: Emitter, a: V, b: V): V {
+    const name = "@ore.unknown.eq"
+    if (!g.helpers.has(name)) {
+        g.helpers.set(name, "")
+        helper(g, name, `define internal i1 ${name}(${UNKNOWN} %a, ${UNKNOWN} %b)`, (e) => {
+            const x: V = { ty: UNKNOWN, v: "%a" }
+            const y: V = { ty: UNKNOWN, v: "%b" }
+            const dx = descriptorOf(e, x)
+            const dy = descriptorOf(e, y)
+            const same = e.b.label("same")
+            const differ = e.b.label("differ")
+            e.b.condBr(e.b.value("i1", `icmp eq ptr ${dx.v}, ${dy.v}`), same, differ)
+            e.b.start(same)
+            const isNull = e.b.label("null")
+            const present = e.b.label("present")
+            e.b.condBr(e.b.value("i1", `icmp eq ptr ${dx.v}, null`), isNull, present)
+            e.b.start(isNull)
+            e.b.terminate("ret i1 true")
+            e.b.start(present)
+            const eq = descriptorField(e, dx, EQUALS, "ptr")
+            const r = e.b.value("i1", `call i1 ${eq.v}(ptr ${words(e, x)}, ptr ${words(e, y)})`)
+            e.b.terminate(`ret i1 ${r.v}`)
+            e.b.start(differ)
+            const numbers = e.b.label("numbers")
+            const no = e.b.label("no")
+            const both = e.b.value("i1", `and i1 ${holds(e, x, types.f64).v}, ${holds(e, y, types.f64).v}`)
+            e.b.condBr(both, numbers, no)
+            e.b.start(no)
+            e.b.terminate("ret i1 false")
+            e.b.start(numbers)
+            const fx = unbox(e, x, types.f64)
+            const fy = unbox(e, y, types.f64)
+            e.b.terminate(`ret i1 ${e.b.value("i1", `fcmp oeq double ${fx.v}, ${fy.v}`).v}`)
+        })
+    }
+    return g.b.value("i1", `call i1 ${name}(${UNKNOWN} ${a.v}, ${UNKNOWN} ${b.v})`)
+}

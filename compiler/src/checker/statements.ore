@@ -1617,6 +1617,8 @@ function narrowFacts(c: Checker, target: Node, scope: Scope, matches: (member: T
  */
 export function literalFacts(c: Checker, subject: Node, values: Set<string>, scope: Scope): FactPair {
     if (subject.kind === "ParenthesizedExpression") return literalFacts(c, expression(subject), values, scope)
+    if (subject.kind === "TypeOfExpression" && c.info.types.get(expression(subject)) === types.unknown)
+        return unknownFacts(c, expression(subject), values, scope)
     if (subject.kind === "TypeOfExpression")
         return narrowFacts(c, expression(subject), scope, (m) => (values.has(typeofName(m)) ? "yes" : "no"))
     if (subject.kind === "PropertyAccessExpression" && questionDotToken(subject) === null) {
@@ -1630,6 +1632,26 @@ export function literalFacts(c: Checker, subject: Node, values: Set<string>, sco
         }
     }
     return narrowFacts(c, subject, scope, (m) => covers(m, values))
+}
+
+/**
+ * Facts when `typeof value` of an `unknown` is one of `values`: the value is
+ * of the type that `typeof` names, unboxed when read. Other names, such as
+ * "object", tell no type that Ore has, and nothing is known when it is not.
+ */
+function unknownFacts(c: Checker, value: Node, values: Set<string>, scope: Scope): FactPair {
+    const key = refKey(c, value, scope)
+    const found: Type[] = []
+    let all = true
+    for (const name of values) {
+        if (name === "string") found.push(types.string)
+        else if (name === "number") found.push(types.f64)
+        else if (name === "boolean") found.push(types.bool)
+        else if (name === "bigint") found.push(types.bigint)
+        else all = false
+    }
+    if (key === null || !all || found.length === 0) return new FactPair([], [])
+    return new FactPair([new Fact(key, c.unionOf(found))], [])
 }
 
 /**

@@ -101,6 +101,7 @@ import {
     noProperty,
     optional,
     inspectable,
+    unknownObject,
 } from "./expressions"
 import {
     arrayMethods,
@@ -1068,6 +1069,7 @@ export function callValue(c: Checker, callee: Operand, node: Node, scope: Scope)
     if (callee.k !== "typed")
         return callee.k === "error" ? callee : c.fail(expression(node), "A constant is not a function.")
     const type = callee.expr.type
+    if (type.kind === "unknown") return c.fail(expression(node), unknownObject)
     if (type.kind !== "func")
         return c.fail(expression(node), `A value of type '${typeToString(type)}' is not a function.`)
     let args = argsOf(node)
@@ -1867,6 +1869,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
     const args = argsOf(node)
     const typeArgs = typeArguments(node)
     const type = value.type
+    if (type.kind === "unknown") return c.fail(nameId, unknownObject)
 
     const generic = type.kind === "struct" ? genericMethod(c, type, name) : null
     if (typeArgs.length > 0 && generic === null)

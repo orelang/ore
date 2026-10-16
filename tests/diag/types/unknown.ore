@@ -1,0 +1,36 @@
+class Point {
+    constructor(public x: f64) {}
+}
+
+interface Shape {
+    area(): f64
+}
+
+function use(value: unknown, other: unknown) {
+    const s: string = value // error: Type 'unknown' is not assignable to type 'string'.
+    console.log(value.length) // error: Object is of type 'unknown'.
+    value.toString() // error: Object is of type 'unknown'.
+    value() // error: Object is of type 'unknown'.
+    console.log(value[0]) // error: Object is of type 'unknown'.
+    value.x = 1 // error: Object is of type 'unknown'.
+    console.log(value + 1) // error: Operator '+' cannot be applied
+    console.log(value < other) // error: Operator '<' cannot be applied to type 'unknown'.
+    if (value instanceof Shape) {
+        // error: A value of type 'unknown' is never an instance of 'Shape'.
+    }
+    if (typeof value === "object") {
+        console.log(value.x) // error: Object is of type 'unknown'.
+    }
+    if (value instanceof Point) console.log(value.x)
+    if (typeof value === "string") console.log(value.length)
+    if (typeof value !== "number") return
+    // Here it is a number.
+    console.log(value.x) // error: Property 'x' does not exist on type 'f64'.
+}
+
+function nothing() {}
+const v: unknown = nothing() // error: Type 'void' is not assignable to type 'unknown'.
+const n: unknown = 1
+console.log(`${n}`) // error: Cannot format a value of type 'unknown'.
+console.log(JSON.stringify(n)) // error: Type 'unknown' cannot be converted to or from JSON.
+const keys = new Map<unknown, int>() // error: Type 'unknown' cannot be a Map key.
