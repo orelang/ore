@@ -58,8 +58,8 @@ function layoutOf(g: Emitter, ty: string, seen: Set<string>): Layout {
         const body = def.slice(def.indexOf("= type ") + "= type ".length)
         const layout = layoutOf(g, body, seen)
         seen.delete(t)
-        // The payload of a tagged union holds whichever member it has: any word of it may be a pointer.
-        if (t.startsWith("%U.")) {
+        // The payload of a tagged union, or of an `unknown` value, holds whichever type it has: any word of it may be a pointer.
+        if (t.startsWith("%U.") || t === "%ore.unknown") {
             const pointers: int[] = []
             for (let o = 8; o + 8 <= layout.size; o += 8) pointers.push(o)
             return new Layout(layout.size, layout.align, pointers)
