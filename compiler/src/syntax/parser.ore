@@ -1504,9 +1504,13 @@ export class Parser {
                     member.add(this.block(), "body")
                     node.add(this.finish(member, memberStart), "properties")
                 } else {
+                    // `*name() { ... }`: a generator method.
+                    const asterisk = this.at("AsteriskToken") ? this.tokenNode() : null
                     const name = this.propertyName()
-                    if (this.at("OpenParenToken") || this.at("LessThanToken")) {
-                        const member = new Node("MethodDeclaration", memberStart, memberStart).add(name, "name")
+                    if (asterisk !== null || this.at("OpenParenToken") || this.at("LessThanToken")) {
+                        const member = new Node("MethodDeclaration", memberStart, memberStart)
+                            .add(asterisk, "asteriskToken")
+                            .add(name, "name")
                         this.signature(member)
                         member.add(this.block(), "body")
                         node.add(this.finish(member, memberStart), "properties")

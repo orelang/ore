@@ -22,12 +22,12 @@ import { type StructType, type Type, FuncType, findMethod, sameType, types, type
 import { type Node } from "../syntax/ast"
 import { asteriskToken, body, expression } from "../syntax/nodes"
 import { type Checker } from "./base"
-import { FuncContext } from "./context"
+import { FuncContext, InferredYields } from "./context"
 import { checkReturns, instantiate } from "./declarations"
 import { checkExpr } from "./expressions"
 import { canBeNull, typed } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
-import { iteratorOf } from "./iteration"
+import { iteratorOf, iteratorValue } from "./iteration"
 import { checkBlock } from "./statements"
 import { GenericFuncSymbol, Scope } from "./symbols"
 
@@ -66,8 +66,6 @@ export function generatorTypes(c: Checker, result: Type, node: Node): GeneratorT
     if (args === null) args = iteratorInstance(c, result, "Iterator")
     if (args === null) args = iteratorInstance(c, result, "IterableIterator")
     if (args === null || args.length < 1) {
-        // Without an annotation, the error is reported already.
-        if (result.kind === "void") return null
         c.error(
             node,
             `The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '${typeToString(result)}'.`,
@@ -101,23 +99,47 @@ export function iteratorFunc(c: Checker, name: string, typeArgs: Type[], node: N
     return null
 }
 
+/** The statements of a generator function's body, and its result type. */
+export class GeneratorBody {
+    constructor(
+        readonly stmts: Stmt[],
+        readonly type: Type,
+    ) {}
+}
+
 /**
  * The body of a generator function `decl` whose declared result type is
  * `declared`: a closure of the body, given the generator, passed to the
- * runtime's `generator`. Returns the statements of the function's body.
+ * runtime's `generator`. Without a declared result type (`declared` null),
+ * the body gives it, as in TypeScript: `Generator<T, TReturn, null>`, where T
+ * is the union of the types of the values yielded (`null` without any) and
+ * TReturn the type of the first `return`, `void` without a value.
  */
-export function checkGeneratorBody(c: Checker, decl: Node, scope: Scope, declared: Type, name: string): Stmt[] {
+export function generatorBody(
+    c: Checker,
+    decl: Node,
+    scope: Scope,
+    declared: Type | null,
+    name: string,
+): GeneratorBody | null {
     const outer = c.fn!
-    const t = generatorTypes(c, declared, decl)
-    if (t === null) return []
-    const genType = generatorClass(c, t, decl)
-    if (genType === null) return []
-    const self = c.newLocal("generator", genType, false)
+    let t: GeneratorTypes | null = null
+    let genType: StructType | null = null
+    if (declared !== null) {
+        t = generatorTypes(c, declared, decl)
+        if (t === null) return null
+        genType = generatorClass(c, t, decl)
+        if (genType === null) return null
+    }
+    // Without a declared type, the generator's type is known after the body: `yield`s complete then.
+    let selfType: Type = types.void
+    if (genType !== null) selfType = genType
+    const self = c.newLocal("generator", selfType, false)
     const func = new Func(
         `ore_lambda_${c.nextLambda++}`,
         `${name}.<generator>`,
         c.line(decl),
-        new FuncType([genType], t.result),
+        new FuncType([self.type], t !== null ? t.result : types.void),
         [self],
         new Block([]),
         false,
@@ -134,19 +156,98 @@ export function checkGeneratorBody(c: Checker, decl: Node, scope: Scope, declare
     if (outer.thisCaptures !== null) for (const f of outer.thisCaptures) captures.push(f)
     const savedFacts = c.facts
     c.facts = [new Map<string, Type>()]
-    c.fn = new FuncContext(t.result, [], 0, func, captures, outer.thisLocal, outer.cls)
-    c.fn.generator = self
-    c.fn.yieldType = t.value
-    c.fn.nextType = t.next
+    const fn = new FuncContext(t !== null ? t.result : null, [], 0, func, captures, outer.thisLocal, outer.cls)
+    c.fn = fn
+    fn.generator = self
+    fn.yieldType = t !== null ? t.value : null
+    fn.nextType = t !== null ? t.next : types.null
+    const yields = t === null ? new InferredYields() : null
+    fn.yields = yields
     func.body = checkBlock(c, body(decl)!, inner)
     c.fn = outer
     c.facts = savedFacts
+    if (yields !== null) {
+        // Untyped constants take their default type, as the elements of an array literal do.
+        const found = yields.types.slice()
+        if (yields.floats) found.push(types.f64)
+        else if (yields.ints) found.push(types.i64)
+        // Without a value, as TypeScript's `never`, which no value has: null.
+        if (found.length === 0) found.push(types.null)
+        t = new GeneratorTypes(c.unionOf(found), fn.result ?? types.void, types.null)
+        genType = generatorClass(c, t, decl)
+        if (genType === null) return null
+        self.type = genType
+        func.type = new FuncType([genType], t.result)
+        fn.yieldType = t.value
+        fn.result = t.result
+        for (const fix of yields.fixups) fix()
+    }
     checkReturns(c, func, decl)
-    const make = iteratorFunc(c, "generator", [t.value, t.result, t.next], decl)
-    if (make === null) return []
+    const types_ = t!
+    const make = iteratorFunc(c, "generator", [types_.value, types_.result, types_.next], decl)
+    if (make === null) return null
     const closure: Expr = new Closure(func.type, func)
-    const made: Expr = new Call(genType, make, [closure])
-    return [new ReturnStmt(c.coerce(typed(made), declared, decl))]
+    const made: Expr = new Call(genType!, make, [closure])
+    const result = declared ?? genType!
+    return new GeneratorBody([new ReturnStmt(c.coerce(typed(made), result, decl))], result)
+}
+
+/**
+ * Makes sure that the type of `func` is known, before it is used at `node`:
+ * a generator without a return type annotation has its body checked first.
+ * Reports one used in its own body, whose type is not known yet.
+ */
+export function inferGenerator(c: Checker, func: Func, node: Node): bool {
+    const inferred = c.inferredGenerators.get(func)
+    if (inferred === null || inferred.state === "done") return true
+    if (inferred.state === "checking") {
+        c.error(
+            node,
+            `A generator function needs a return type annotation, such as 'Generator<T>': '${func.sourceName}' is used in its own body.`,
+        )
+        return false
+    }
+    const savedFn = c.fn
+    const savedFacts = c.facts
+    const savedContext = c.context
+    const savedStatic = c.staticClass
+    c.context = null
+    inferred.check()
+    c.fn = savedFn
+    c.facts = savedFacts
+    c.context = savedContext
+    c.staticClass = savedStatic
+    return true
+}
+
+/**
+ * Whether the body of a function or method is to be checked now: false for a
+ * generator without a return type annotation whose body is checked already.
+ */
+export function startBody(c: Checker, func: Func): bool {
+    const inferred = c.inferredGenerators.get(func)
+    if (inferred === null) return true
+    if (inferred.state !== "waiting") return false
+    inferred.state = "checking"
+    return true
+}
+
+/**
+ * The statements of the body of a generator function or method `func`: of
+ * one without a return type annotation, the body gives its result type.
+ */
+export function generatorStmts(c: Checker, decl: Node, func: Func, scope: Scope): Stmt[] {
+    const inferred = c.inferredGenerators.get(func)
+    const checked = generatorBody(c, decl, scope, inferred === null ? func.type.result : null, func.sourceName)
+    if (inferred !== null) inferred.state = "done"
+    if (checked === null) return []
+    if (inferred !== null) {
+        const type = new FuncType(func.type.params, checked.type)
+        type.required = func.type.required
+        type.rest = func.type.rest
+        func.type = type
+    }
+    return checked.stmts
 }
 
 /** `yield value`, `yield` and `yield* iterable` in the body of a generator. */
@@ -154,6 +255,7 @@ export function checkYield(c: Checker, node: Node, scope: Scope): Operand {
     const fn = c.fn
     const self = fn !== null ? fn.generator : null
     if (fn === null || self === null) return c.fail(node, "'yield' is only allowed in generator functions.")
+    if (fn.yields !== null) return inferredYield(c, node, scope, fn, fn.yields)
     const valueType = fn.yieldType!
     const nextType = fn.nextType!
     const genType = self.type
@@ -178,6 +280,78 @@ export function checkYield(c: Checker, node: Node, scope: Scope): Operand {
     // The value of `next(value)`, null when `next()` passed none: asserted for a type without null.
     if (canBeNull(nextType)) return typed(c.coerce(typed(sent), nextType, node))
     return typed(new Recast(nextType, sent))
+}
+
+/**
+ * A `yield` in a generator whose types its body gives: the value's type is
+ * recorded, and the call completed once the types are known. Its value, what
+ * `next` sends, is null: TNext is `null`.
+ */
+function inferredYield(c: Checker, node: Node, scope: Scope, fn: FuncContext, yields: InferredYields): Operand {
+    const self = fn.generator!
+    const operandNode = node.child("expression")
+    if (asteriskToken(node) !== null) return inferredDelegate(c, node, expression(node), scope, fn, yields)
+    let value: Operand = typed(new NullLit(types.null))
+    if (operandNode !== null) {
+        value = checkExpr(c, operandNode, scope)
+        if (value.k === "error") return errorOperand
+    }
+    if (value.k === "typed") yields.types.push(value.expr.type)
+    else if (value.k === "untyped-float") yields.floats = true
+    else yields.ints = true
+    const sent = new MethodCall(types.null, fn.closure!, new LocalRef(self.type, self), [])
+    yields.fixups.push(() => {
+        const genType = self.type
+        if (genType.kind !== "struct") return
+        const method = findMethod(genType, "yieldValue")!
+        sent.type = method.func.type.result
+        sent.func = method.func
+        sent.receiver = new LocalRef(self.type, self)
+        sent.args = [c.coerce(value, fn.yieldType!, operandNode ?? node)]
+    })
+    return typed(sent)
+}
+
+/** `yield* iterable` in a generator whose types its body gives, as `inferredYield`. */
+function inferredDelegate(
+    c: Checker,
+    node: Node,
+    operandNode: Node,
+    scope: Scope,
+    fn: FuncContext,
+    yields: InferredYields,
+): Operand {
+    const self = fn.generator!
+    const v = checkExpr(c, operandNode, scope)
+    if (v.k === "error") return errorOperand
+    const inner = c.toDefault(v, operandNode)
+    const innerArgs = iteratorInstance(c, inner.type, "Generator")
+    if (innerArgs !== null) {
+        // Another generator: values sent to this one go to it, and its return value is the result.
+        yields.types.push(innerArgs[0])
+        const call = new Call(innerArgs[1], fn.closure!, [])
+        yields.fixups.push(() => {
+            if (!sameElements(c, innerArgs, fn, operandNode)) return
+            const f = iteratorFunc(c, "delegate", [fn.yieldType!, innerArgs[1], fn.result!, fn.nextType!], node)
+            if (f === null) return
+            call.func = f
+            call.args = [new LocalRef(self.type, self), inner]
+        })
+        return typed(call)
+    }
+    const iterator = iteratorOf(c, inner, operandNode)
+    if (iterator === null) return errorOperand
+    const elem = iteratorValue(c, iterator.type)
+    if (elem === null) return errorOperand
+    yields.types.push(elem)
+    const call = new Call(types.void, fn.closure!, [])
+    yields.fixups.push(() => {
+        const f = iteratorFunc(c, "delegateIterator", [fn.yieldType!, fn.result!, fn.nextType!], node)
+        if (f === null) return
+        call.func = f
+        call.args = [new LocalRef(self.type, self), c.coerce(typed(iterator), f.type.params[1], operandNode)]
+    })
+    return typed(call)
 }
 
 /** `yield* iterable`: yields each value of the iterable; the value of the expression is a generator's return value. */

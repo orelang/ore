@@ -71,7 +71,7 @@ import {
     types as typeNodes,
 } from "../syntax/nodes"
 import { checkAsyncBody, isAsync, promiseValue } from "./async"
-import { checkGeneratorBody, isGenerator } from "./generators"
+import { generatorStmts, inferGenerator, isGenerator, startBody } from "./generators"
 import { type Checker } from "./base"
 import {
     type InterfaceInfo,
@@ -90,6 +90,7 @@ import {
     applyFuncDirectives,
     checkFunctionBody,
     declareGeneric,
+    inferredGenerator,
     instantiate,
     makeFunc,
     resultType,
@@ -341,6 +342,8 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                 `${className}.${name}`,
                 `ore_m_${info.cname}_${cIdent(name)}`,
             )
+            if (!flags.isAbstract)
+                inferredGenerator(c, member, func, () => checkMethodBody(c, member, func, type, instanceScope))
             if (flags.isAbstract) {
                 // Never called: the classes that can be instantiated override it.
                 const message: Expr = new StringLit(types.string, `abstract method ${className}.${name} called`)
@@ -682,6 +685,11 @@ function declareStatic(c: Checker, info: ClassInfo, member: Node, flags: MemberF
     }
     const func = makeFunc(c, member, scope, `${className}.${name}`, `${info.cname}_s_${cIdent(name)}`, false)
     applyFuncDirectives(c, member, func)
+    inferredGenerator(c, member, func, () => {
+        c.staticClass = info.type.name
+        checkFunctionBody(c, member, func, scope)
+        c.staticClass = null
+    })
     info.statics.set(name, new StaticMember(name, member, info, null, func, hidden))
 }
 
@@ -1197,6 +1205,7 @@ export function makeMethod(
 }
 
 export function checkMethodBody(c: Checker, decl: Node, func: Func, type: StructType, outer: Scope) {
+    if (!startBody(c, func)) return
     const prologue: Stmt[] = []
     const scope = paramScope(c, parameters(decl), func.params, outer, prologue)
     c.facts = [new Map<string, Type>()]
@@ -1204,8 +1213,7 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     enterPredicate(c, func, scope)
     const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
-    else if (isGenerator(decl))
-        func.body = new Block(checkGeneratorBody(c, decl, scope, func.type.result, func.sourceName))
+    else if (isGenerator(decl)) func.body = new Block(generatorStmts(c, decl, func, scope))
     else func.body = checkBlock(c, body(decl)!, scope)
     if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
     func.body.body = prepend(prologue, func.body.body)
@@ -1702,6 +1710,8 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
             const field = method === null ? findField(from, member.name) : null
             if (field !== null && !field.private && sameType(field.type, member.type)) continue
             if (method === null || method.private) return new Conformance(`${what} is missing`, null, member.name)
+            const decl = c.funcDecls.get(method.func)
+            if (decl !== null) inferGenerator(c, method.func, decl)
             if (!sameType(method.func.type, member.type))
                 return new Conformance(
                     `${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'`,

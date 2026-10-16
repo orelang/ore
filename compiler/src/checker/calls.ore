@@ -2,7 +2,7 @@
 // `unsafe` and `JSON`), array and string methods.
 
 import { isProtocolIterable, toArray } from "./iteration"
-import { iteratorFunc, iteratorInstance } from "./generators"
+import { inferGenerator, iteratorFunc, iteratorInstance } from "./generators"
 import { compileRegExp } from "../../../runtime/core/regexp-syntax"
 import {
     type Expr,
@@ -1786,6 +1786,7 @@ export function callFunc(
     receiver: Expr | null = null,
     operands: Operand[] | null = null,
 ): Operand {
+    if (!inferGenerator(c, func, node)) return errorOperand
     const params = func.type.params
     const variadic = func.variadic
     if (variadic !== null) {

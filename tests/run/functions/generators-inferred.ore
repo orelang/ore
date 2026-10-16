@@ -1,0 +1,105 @@
+// Generators without a return type annotation: the body gives the type.
+
+// Used before its declaration, and from a function whose body is checked first.
+for (const x of count(3)) console.log("count", x)
+console.log("total", total())
+
+function total(): int {
+    let sum = 0
+    for (const x of count(4)) sum += x
+    return sum
+}
+
+function* count(n: int) {
+    for (let i = 0; i < n; i++) yield i
+}
+
+// A union of the values' types, and the first return's type.
+function* mixed() {
+    yield 1
+    yield "two"
+    yield true
+    return "done"
+}
+const m = mixed()
+let step = m.next()
+while (!step.done) {
+    console.log("mixed", step.value)
+    step = m.next()
+}
+console.log("returned", step.value)
+
+// Untyped constants take their default type: with a float, f64.
+function* halves() {
+    yield 1
+    yield 1.5
+}
+for (const x of halves()) console.log("half", x * 2)
+
+// yield* of an array and of another generator whose type is inferred.
+function* tens() {
+    yield* [10, 20]
+}
+for (const x of tens()) console.log("ten", x)
+function* both() {
+    yield "first"
+    const r = yield* mixed()
+    console.log("inner returned", r)
+}
+for (const x of both()) console.log("both", x)
+
+// Without any yield: of null values.
+function* none() {}
+let n = 0
+for (const _ of none()) n++
+console.log("none", n)
+
+// Generic.
+function* repeat<T>(value: T, times: int) {
+    for (let i = 0; i < times; i++) yield value
+}
+for (const s of repeat("ab", 2)) console.log("repeat", s.length)
+
+// Methods: `*[Symbol.iterator]()`, an instance method using `this`, a static one.
+class Range {
+    constructor(
+        readonly from: int,
+        readonly to: int,
+    ) {}
+
+    *[Symbol.iterator]() {
+        for (let i = this.from; i < this.to; i++) yield i
+    }
+
+    *labels() {
+        for (const i of this) yield `#${i}`
+    }
+
+    static *pair(a: string, b: string) {
+        yield a
+        yield b
+    }
+}
+for (const i of new Range(1, 4)) console.log("range", i)
+for (const l of new Range(5, 7).labels()) console.log("label", l)
+for (const p of Range.pair("x", "y")) console.log("pair", p)
+
+// A function expression, a value passed on, and a method of an object literal.
+const letters = function* () {
+    yield "a"
+    yield "b"
+}
+const take = (g: Generator<string>): string[] => {
+    const out: string[] = []
+    for (const s of g) out.push(s)
+    return out
+}
+console.log(take(letters()).join(","))
+const bag = {
+    size: 2,
+    *items() {
+        yield 7
+        yield 8
+    },
+}
+for (const x of bag.items()) console.log("bag", x, bag.size)

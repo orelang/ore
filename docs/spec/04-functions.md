@@ -181,8 +181,18 @@ as a computed method name of classes and interfaces, and in
   generator method `*m()` (also `*[Symbol.iterator]()`) or a generator
   function expression returns a `Generator<T, TReturn = void, TNext = null>`
   without running its body; the declared result type may also be
-  `Iterator<T, TReturn>` or `IterableIterator<T, TReturn>`, and is
-  required (it is not inferred from the `yield`s). `next()` runs the body
+  `Iterator<T, TReturn>` or `IterableIterator<T, TReturn>`. Without one
+  (or a context that gives one, for a function expression), the body gives
+  it, as in TypeScript: `Generator<T, TReturn, null>`, where T is the union
+  of the types of the values yielded (untyped constants taking their default
+  type, `null` without any) and TReturn the type of the first `return`
+  (`void` without a value). The body of such a function or method is
+  checked at its first use, so that its type is known there. A generator
+  used in its own body, a nested generator function declaration (hoisted,
+  it can be called before the variables its body uses are declared) and a
+  generator method of an object literal that uses `this` need an
+  annotation ([ORE6079](../errors/ORE6079.md)).
+  `next()` runs the body
   until its next `yield value` (`{ value, done: false }`) or its end
   (`{ value: returned, done: true }`); `next(value)` makes `value` the result
   of the `yield` the body waits at (the value of the first `next` is

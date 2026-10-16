@@ -95,6 +95,30 @@ export class Signature {
     ) {}
 }
 
+/**
+ * The `yield`s of a generator without a return type annotation, checked
+ * before its types are known: they give T, and are completed once it is.
+ */
+export class InferredYields {
+    /** The types of the values yielded. */
+    readonly types: Type[] = []
+    /** Untyped constants are yielded too: integers, and floats (which make them `f64`). */
+    ints = false
+    floats = false
+    /** Complete each `yield` once the types of the generator are known. */
+    readonly fixups: (() => void)[] = []
+}
+
+/**
+ * A generator function or method without a return type annotation, whose
+ * body gives its type: checked at its first use, or with the other bodies.
+ */
+export class InferredGenerator {
+    /** "waiting", "checking" (its body is being checked) or "done". */
+    state = "waiting"
+    constructor(readonly check: () => void) {}
+}
+
 export class FuncContext {
     constructor(
         /** The return type; null while it is inferred from return statements of a closure. */
@@ -133,6 +157,8 @@ export class FuncContext {
     yieldType: Type | null = null
     /** In the body of a generator: the type of the values `next` gives `yield`, TNext. */
     nextType: Type | null = null
+    /** In the body of a generator without a return type annotation: its `yield`s, which give its types. */
+    yields: InferredYields | null = null
     /**
      * In the top-level code of a module or an arrow function in it, where
      * `this` is null: JavaScript's `undefined` there.

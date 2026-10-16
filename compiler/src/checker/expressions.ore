@@ -12,6 +12,7 @@ import {
     BigIntLit,
     Arith,
     Bind,
+    type Closure,
     Downcast,
     IfaceCall,
     MethodCall,
@@ -115,7 +116,7 @@ import {
 } from "../syntax/nodes"
 import { bigIsNeg, bigLt, bigOf, bigText, bigToI64 } from "./bigint"
 import { checkAwait } from "./async"
-import { checkYield } from "./generators"
+import { checkYield, inferGenerator, isGenerator } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import { checkCall, checkNew, checkRegExpLiteral } from "./calls"
 import {
@@ -355,6 +356,7 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
                     node,
                     `Function '${symbol.func.sourceName}' has overload signatures and cannot be used as a value.`,
                 )
+            if (!inferGenerator(c, symbol.func, node)) return errorOperand
             return typed(new FuncRef(symbol.func.type, symbol.func))
         default:
             return c.fail(node, `'${node.text}' is a function and cannot be used as a value yet.`)
@@ -1771,7 +1773,13 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
             continue
         }
         if (k === "MethodDeclaration") {
-            const type = methodType(c, prop, scope, hints !== null ? memberHint(hints, name) : null)
+            const hint = hints !== null ? memberHint(hints, name) : null
+            if (typeNode(prop) === null && isGenerator(prop) && (hint === null || hint.kind !== "func")) {
+                const closure = generatorMethod(c, prop, scope)
+                if (closure === null || !put(name, name, prop, closure, closure.type, false)) return errorOperand
+                continue
+            }
+            const type = methodType(c, prop, scope, hint)
             if (type === null || !put(name, name, prop, null, type, false)) return errorOperand
             continue
         }
@@ -1891,6 +1899,35 @@ function methodType(c: Checker, method: Node, scope: Scope, hint: Type | null): 
         result = types.void
     }
     return new FuncType(params, result)
+}
+
+/**
+ * A generator method of an object literal without a return type annotation
+ * or a type to fit: its body gives its type, before the object's type, its
+ * `this`, is known, so it cannot use `this`.
+ */
+function generatorMethod(c: Checker, method: Node, scope: Scope): Closure | null {
+    if (usesThis(body(method))) {
+        c.error(
+            method.child("name")!,
+            "A generator function needs a return type annotation, such as 'Generator<T>': a method of an object literal that uses 'this'.",
+        )
+        return null
+    }
+    const closure = checkClosure(c, method, scope)
+    return closure.k === "typed" && closure.expr.k === "closure" ? closure.expr : null
+}
+
+/** Whether a function body uses `this` or `super` (not counting nested functions other than arrow functions). */
+function usesThis(node: Node | null): bool {
+    if (node === null) return false
+    const k = node.kind
+    if (k === "ThisKeyword" || k === "SuperKeyword") return true
+    // Functions other than arrow functions, and classes, have a `this` of their own.
+    if (k === "FunctionDeclaration" || k === "FunctionExpression" || k === "MethodDeclaration") return false
+    if (k === "ClassDeclaration") return false
+    for (const child of node.children) if (usesThis(child)) return true
+    return false
 }
 
 /** Whether a function body returns a value somewhere (not counting nested functions). */
@@ -2301,6 +2338,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
         const method = findMethod(type, name)
         if (method !== null) {
             if (!checkAccess(c, type, method.private, name, nameNode_)) return errorOperand
+            if (!inferGenerator(c, method.func, nameNode_)) return errorOperand
             const bound: Expr = new BoundMethod(method.func.type, value, method.func)
             dispatch(c, bound, name)
             return typed(bound)

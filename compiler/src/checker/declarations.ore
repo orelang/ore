@@ -82,7 +82,7 @@ import { type Source } from "../syntax/source"
 import { leadingCommentRanges } from "../syntax/nodes"
 import { checkAssigned } from "./assigned"
 import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseValue } from "./async"
-import { checkGeneratorBody, isGenerator } from "./generators"
+import { generatorStmts, isGenerator, startBody } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import {
     conformance,
@@ -100,6 +100,7 @@ import {
     type ClassInfo as ClassInfoType,
     type ModuleInfo,
     Directive,
+    InferredGenerator,
     InterfaceInfo,
     JsonImport,
     Signature,
@@ -1173,7 +1174,11 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
 }
 
 /** A function with the signature of a declaration, resolved in `scope`; the body is checked later. */
-/** The declared result type of a function or method; `void`, or `Promise<void>` for an async one, without an annotation. */
+/**
+ * The declared result type of a function or method; `void`, or `Promise<void>`
+ * for an async one, without an annotation. A generator's comes from its body
+ * then (see `inferredGenerator`).
+ */
 export function resultType(c: Checker, decl: Node, scope: Scope): Type {
     const annotation = typeNode(decl)
     if (annotation !== null) {
@@ -1182,9 +1187,17 @@ export function resultType(c: Checker, decl: Node, scope: Scope): Type {
         return t
     }
     if (isAsync(decl)) return promiseOf(c, types.void, decl) ?? types.void
-    if (isGenerator(decl))
-        c.error(nameNode(decl), "A generator function needs a return type annotation, such as 'Generator<T>'.")
     return types.void
+}
+
+/**
+ * Whether a function or method is a generator without a return type
+ * annotation, whose type comes from its body: `check` checks it, at the
+ * first use of the function or with the other bodies.
+ */
+export function inferredGenerator(c: Checker, decl: Node, func: Func, check: () => void) {
+    if (!isGenerator(decl) || isAsync(decl) || typeNode(decl) !== null || body(decl) === null) return
+    c.inferredGenerators.set(func, new InferredGenerator(check))
 }
 
 export function makeFunc(
@@ -1213,6 +1226,7 @@ export function makeFunc(
     c.module.functions.push(func)
     c.funcDecls.set(func, decl)
     declarePredicate(c, decl, func, scope, false)
+    inferredGenerator(c, decl, func, () => checkFunctionBody(c, decl, func, scope))
     return func
 }
 
@@ -1389,6 +1403,7 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
         const owner = genericMethodOwner(c, generic)!
         const func = makeMethod(c, decl, owner, scope, `${owner.type.name}.${label}`, `ore_m_${owner.cname}_${cname}`)
         generic.instances.set(key, func)
+        inferredGenerator(c, decl, func, () => checkMethodBody(c, decl, func, owner.type, scope))
         c.pending.push(inContext(c, label, () => checkMethodBody(c, decl, func, owner.type, scope)))
         return func
     }
@@ -2181,6 +2196,7 @@ function constantBranches(st: Stmt): bool {
 }
 
 export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Scope) {
+    if (!startBody(c, func)) return
     const prologue: Stmt[] = []
     const scope = paramScope(c, parameters(decl), func.params, outer, prologue)
     c.facts = [new Map<string, Type>()]
@@ -2188,8 +2204,7 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     enterPredicate(c, func, scope)
     const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
-    else if (isGenerator(decl))
-        func.body = new Block(checkGeneratorBody(c, decl, scope, func.type.result, func.sourceName))
+    else if (isGenerator(decl)) func.body = new Block(generatorStmts(c, decl, func, scope))
     else func.body = checkBlock(c, body(decl)!, scope)
     if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
     func.body.body = prepend(prologue, func.body.body)

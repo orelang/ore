@@ -487,7 +487,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6076](ORE6076.md) | A type predicate's type must be assignable to its parameter's type: '…' is not assignable to '…'. |
 | [ORE6077](ORE6077.md) | This result does not show that '…' is '…': return a check of '…' that narrows it, such as 'typeof x === "string"' or 'x instanceof C', or false. |
 | [ORE6078](ORE6078.md) | The function can return here without showing that '…' is '…': it must panic or exit where the assertion does not hold. |
-| [ORE6079](ORE6079.md) | A generator function needs a return type annotation, such as 'Generator<T>'. |
+| [ORE6079](ORE6079.md) | A generator function needs a return type annotation, such as 'Generator<T>': …. |
 | [ORE6080](ORE6080.md) | The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '…'. |
 | [ORE6081](ORE6081.md) | 'yield' is only allowed in generator functions. |
 | [ORE6082](ORE6082.md) | 'yield' without a value yields null, which type '…' does not include. |

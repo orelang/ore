@@ -1,7 +1,31 @@
-function* untyped() {
-    // error: A generator function needs a return type annotation, such as 'Generator<T>'.
+type Tree = { value: int; children: Tree[] }
+
+function* walk(tree: Tree) {
+    yield tree.value
+    for (const child of tree.children) yield* walk(child)
+    // error: A generator function needs a return type annotation, such as 'Generator<T>': 'walk' is used in its own body.
+}
+
+function outer() {
+    function* inner() {
+        // error: A generator function needs a return type annotation, such as 'Generator<T>': a nested generator function declaration is hoisted.
+        yield 1
+    }
+}
+
+const counter = {
+    n: 3,
+    *values() {
+        // error: A generator function needs a return type annotation, such as 'Generator<T>': a method of an object literal that uses 'this'.
+        yield this.n
+    },
+}
+
+function* inferred() {
     yield 1
 }
+
+const wrongType: Generator<string> = inferred() // error: Type 'Generator<i64, null, null>' is not assignable to type 'Generator<string, null, null>'.
 
 function* wrong(): int[] {
     // error: The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not 'i64[]'.

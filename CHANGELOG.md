@@ -26,6 +26,10 @@ before 1.0, a minor version may change the language.
   in PATH. New options: `--version`, `--home`, `--yes`, `--no-modify-path`,
   `--verbose`, `--help` (and `ORE_YES`, `ORE_NO_MODIFY_PATH`, `ORE_VERBOSE`);
   without a terminal it does what it did.
+- A generator function, method or function expression without a return
+  type annotation takes its type from its body, as in TypeScript:
+  `function* g() { yield 1; yield "a" }` returns a
+  `Generator<i64 | string, void, null>`.
 
 ## 0.5.0
 

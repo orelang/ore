@@ -101,7 +101,7 @@ import {
     asteriskToken,
 } from "../syntax/nodes"
 import { asyncValue, checkAsyncBody, isAsync, promiseOf } from "./async"
-import { checkGeneratorBody, isGenerator, iteratorModule } from "./generators"
+import { generatorBody, inferGenerator, isGenerator, iteratorModule } from "./generators"
 import { isProtocolIterable, iteratorOf, iteratorValue, protocolLoop } from "./iteration"
 import { type Checker } from "./base"
 import { dispatch, initStatics } from "./classes"
@@ -319,6 +319,7 @@ export function symbolMethodCall(c: Checker, value: Expr, name: string): Expr | 
     if (type.kind === "struct") {
         const method = findMethod(type, name)
         if (method !== null && method.func.params.length === 0) {
+            if (!inferGenerator(c, method.func, c.funcDecls.get(method.func)!)) return null
             const call: Expr = new MethodCall(method.func.type.result, method.func, value, [])
             dispatch(c, call, name)
             return call
@@ -359,6 +360,14 @@ export function declareNestedFunction(c: Checker, decl: Node, scope: Scope): Loc
         params.push(t)
     }
     const annotation = typeNode(decl)
+    if (annotation === null && isGenerator(decl)) {
+        // Hoisted, it is used before its body, which can use what the block declares after it, is checked.
+        c.error(
+            name,
+            "A generator function needs a return type annotation, such as 'Generator<T>': a nested generator function declaration is hoisted.",
+        )
+        return null
+    }
     const result = annotation !== null ? c.resolveType(annotation, scope) : types.void
     if (result === null) return null
     const local = c.newLocal(name.text, new FuncTypeClass(params, result), false)
@@ -1727,15 +1736,17 @@ function asyncClosureBody(
     return true
 }
 
-/** The body of a generator function expression: its result type comes from an annotation or the context. */
+/**
+ * The body of a generator function expression: its result type comes from an
+ * annotation or the context, or else from the body.
+ */
 function generatorClosureBody(c: Checker, node: Node, func: Func, scope: Scope, prologue: Stmt[], name: string): bool {
+    // A context of a void result, such as a callback's, does not type the generator.
     const result = c.fn!.result
-    if (result === null) {
-        c.error(node, "A generator function needs a return type annotation, such as 'Generator<T>'.")
-        return false
-    }
-    func.body = new Block(prepend(prologue, checkGeneratorBody(c, node, scope, result, name)))
-    const done = new FuncTypeClass(func.type.params, result)
+    const checked = generatorBody(c, node, scope, result !== null && result.kind !== "void" ? result : null, name)
+    if (checked === null) return false
+    func.body = new Block(prepend(prologue, checked.stmts))
+    const done = new FuncTypeClass(func.type.params, checked.type)
     done.required = func.type.required
     done.rest = func.type.rest
     func.type = done
