@@ -439,7 +439,7 @@ functions.
 - A `string` is an immutable sequence of UTF-8 bytes.
 - `a + b` and `+=` concatenate two strings. A string and a non-string cannot
   be added: use a template literal, `` `${a}${b}` ``, which formats numbers
-  and `bool` like `print`.
+  and `bool` as `console.log` prints them.
 - `s.length` is the length in bytes. `s[i]` is the byte at `i` as `u8`;
   an index out of range panics.
 - `s.slice(start, end?)` takes byte offsets with JavaScript rules: negative
@@ -611,8 +611,8 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
 - `a[i]` reads and writes elements; an index of any integer type is allowed
   and an index out of range panics. Compound assignments (`a[i] += 1`,
   `a[i]++`) evaluate `a` and `i` once.
-- `a.push(...values)` appends and returns the new length; arrays spread in
-  (`a.push(...b)`) append all their elements. `a.pop()` removes
+- `a.push(...values)` appends and returns the new length; arrays and tuples
+  spread in (`a.push(...b)`) append all their elements. `a.pop()` removes
   and returns the last element and panics on an empty array; `a.shift()`
   does the same with the first element. `a.unshift(...values)` inserts at
   the start and returns the new length. `a.splice(start, count?,
@@ -622,10 +622,7 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   both are clamped to the array, as in JavaScript. Arrays spread in add all
   their elements, as with `push`; every reference to the array sees the
   change.
-- `a.push(...values)` appends and returns the new length; arrays and tuples
-  spread in (`a.push(...b)`) append all their elements. `a.pop()` removes
-  and returns the last element and panics on an empty array.
-  `a.slice(start?, end?)` returns a copy with JavaScript offsets.
+- `a.slice(start?, end?)` returns a copy with JavaScript offsets.
 - `let a: T[]` without an initializer is a new empty array.
 - `new Array<T>(n)` (or `new Array(n)` with an array type as the context)
   is an array of `n` zero values of `T`, each its own: 0, `false`, `""`, a
