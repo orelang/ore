@@ -261,3 +261,62 @@ function arrayAt(a: ptr, i: int, size: int): ptr {
     if (u64(i) >= u64(len)) indexOutOfRange(i, len)
     return unsafe.add(data(a), i * size)
 }
+
+/** A new array of `len` zeroed elements, as `new Array<T>(len)` makes it; a negative length panics as in JavaScript. */
+//ore:runtime ore_rt_array_make
+function arrayMake(size: int, len: int, gcdata: ptr): ptr {
+    if (len < 0) process.panic("Invalid array length")
+    return arrayNew(size, len, gcdata)
+}
+
+/** A JavaScript `slice` offset, for the methods that take a range: `fill`, `includes` and `indexOf`. */
+//ore:runtime ore_rt_slice_offset
+function rangeOffset(offset: int, length: int): int {
+    return sliceOffset(offset, length)
+}
+
+/**
+ * Where `lastIndexOf` starts: a negative offset counts from the end, and one
+ * past the end is the last element; -1 when there is nothing to search.
+ */
+//ore:runtime ore_rt_last_offset
+function lastOffset(offset: int, length: int): int {
+    if (offset < 0) return offset + length
+    return offset < length - 1 ? offset : length - 1
+}
+
+/** The index of `at(i)`: a negative index counts from the end; -1 when it is out of range. */
+//ore:runtime ore_rt_array_relative
+function arrayRelative(a: ptr, i: int): int {
+    const len = length(a)
+    const at = i < 0 ? i + len : i
+    return at < 0 || at >= len ? -1 : at
+}
+
+/** The index of `with(i, value)`, counted as `at` does; out of range panics, as JavaScript throws a RangeError. */
+//ore:runtime ore_rt_array_with_index
+function arrayWithIndex(a: ptr, i: int): int {
+    const at = arrayRelative(a, i)
+    if (at === -1) process.panic(`Invalid index : ${i}`)
+    return at
+}
+
+/** Panics for `reduce` and `reduceRight` without an initial value on an empty array, as JavaScript throws a TypeError. */
+//ore:runtime ore_rt_array_reduce_empty
+function arrayReduceEmpty(): void {
+    process.panic("Reduce of empty array with no initial value")
+}
+
+/** `copyWithin(target, start, end)`: copies the elements in [start, end) to `target`, with JavaScript offsets. */
+//ore:runtime ore_rt_array_copy_within
+function arrayCopyWithin(a: ptr, size: int, target: int, start: int, end: int): void {
+    const len = length(a)
+    const to = sliceOffset(target, len)
+    const from = sliceOffset(start, len)
+    const final = sliceOffset(end, len)
+    let count = final - from
+    if (count > len - to) count = len - to
+    if (count <= 0) return
+    const d = data(a)
+    unsafe.copy(unsafe.add(d, to * size), unsafe.add(d, from * size), count * size)
+}

@@ -1,0 +1,213 @@
+// The Array methods of JavaScript, with their edge cases; the expected
+// output is node's for the same program.
+
+const show = (label: string, value: string) => console.log(label, value)
+const j = (xs: int[]) => JSON.stringify(xs)
+
+// at: negative indices count from the end; out of range is null.
+const xs = [10, 20, 30, 40, 50]
+const none: int[] = []
+console.log("at", xs.at(0), xs.at(-1), xs.at(-5), xs.at(5) ?? -1, xs.at(-6) ?? -1)
+
+// concat: arrays add their elements, values themselves; the receiver is unchanged.
+show("concat", j(xs.concat([1, 2], 3, [], [4])))
+show("concat-none", j(xs.concat()))
+show("concat-same", JSON.stringify(xs.concat() === xs))
+
+// copyWithin: target, start and end with slice offsets.
+show("copyWithin", j([1, 2, 3, 4, 5].copyWithin(0, 3)))
+show("copyWithin2", j([1, 2, 3, 4, 5].copyWithin(0, 3, 4)))
+show("copyWithin3", j([1, 2, 3, 4, 5].copyWithin(-2, -3, -1)))
+show("copyWithin4", j([1, 2, 3, 4, 5].copyWithin(1)))
+show("copyWithin5", j([1, 2, 3, 4, 5].copyWithin(2, 0)))
+show("copyWithin6", j([1, 2, 3, 4, 5].copyWithin(10, 0)))
+
+// entries, keys and values: arrays for now.
+show("entries", JSON.stringify([...["a", "b"].entries()]))
+show("keys", j([...["a", "b", "c"].keys()]))
+show("values", JSON.stringify([...["a", "b"].values()]))
+
+// every and some, with the index and the array.
+console.log(
+    "every",
+    xs.every((x) => x > 5),
+    xs.every((x, i) => x > i * 15),
+    none.every((x) => false),
+    xs.every((x, i, a) => a.length === 5),
+)
+console.log(
+    "some",
+    xs.some((x) => x > 45),
+    xs.some((x) => x > 50),
+    none.some((x) => true),
+)
+
+// fill: value, start, end.
+show("fill", j([1, 2, 3, 4].fill(0)))
+show("fill2", j([1, 2, 3, 4].fill(7, 1)))
+show("fill3", j([1, 2, 3, 4].fill(7, 1, 3)))
+show("fill4", j([1, 2, 3, 4].fill(7, -3, -1)))
+show("fill5", j([1, 2, 3, 4].fill(7, 3, 1)))
+show("fill6", j([1, 2, 3, 4].fill(7, -10, 10)))
+
+// filter, find, findIndex, findLast, findLastIndex.
+show("filter", j(xs.filter((x, i, a) => x > 15 && i < a.length - 1)))
+console.log(
+    "find",
+    xs.find((x) => x > 25),
+    xs.find((x) => x > 100) ?? -1,
+    xs.findIndex((x) => x > 25),
+    xs.findIndex((x) => x > 100),
+)
+console.log(
+    "findLast",
+    xs.findLast((x) => x < 35),
+    xs.findLast((x) => x > 100) ?? -1,
+    xs.findLastIndex((x) => x < 35),
+    xs.findLastIndex((x) => x > 100),
+    xs.findLastIndex((x, i, a) => a[i] === x),
+)
+
+// flat and flatMap.
+const nested: int[][] = [[1, 2], [3], [], [4, 5]]
+show("flat", j(nested.flat()))
+const deep = [[[1], [2, 3]], [[4]]]
+show("flat1", JSON.stringify(deep.flat()))
+show("flat2", j(deep.flat(2)))
+show("flatInf", j(deep.flat(Infinity)))
+show("flat0", JSON.stringify(deep.flat(0)))
+show("flatFlat", j([1, 2].flat()))
+show("flatMap", j(xs.flatMap((x, i) => [x, i])))
+show("flatMap1", j(xs.flatMap((x) => x + 1)))
+show("flatMapEmpty", j(xs.flatMap((x) => (x > 20 ? [x] : []))))
+show("flatMapNested", JSON.stringify([1, 2].flatMap((x) => [[x]])))
+
+// forEach with the array.
+let sum = 0
+xs.forEach((x, i, a) => {
+    sum += x * i + a.length
+})
+console.log("forEach", sum)
+
+// includes, indexOf and lastIndexOf with fromIndex.
+const ys = [1, 2, 3, 1, 2, 3]
+console.log(
+    "includes",
+    ys.includes(3),
+    ys.includes(4),
+    ys.includes(1, 1),
+    ys.includes(1, 4),
+    ys.includes(3, -1),
+    ys.includes(1, -100),
+    ys.includes(1, 100),
+)
+console.log(
+    "indexOf",
+    ys.indexOf(2),
+    ys.indexOf(2, 2),
+    ys.indexOf(2, -2),
+    ys.indexOf(2, -100),
+    ys.indexOf(2, 6),
+    ys.indexOf(9),
+)
+console.log(
+    "lastIndexOf",
+    ys.lastIndexOf(2),
+    ys.lastIndexOf(2, 3),
+    ys.lastIndexOf(2, -3),
+    ys.lastIndexOf(2, -100),
+    ys.lastIndexOf(2, 100),
+    ys.lastIndexOf(1, 0),
+    ys.lastIndexOf(9),
+)
+const fs = [0.5, Number.NaN, 1]
+console.log("NaN", fs.includes(Number.NaN), fs.indexOf(Number.NaN), fs.lastIndexOf(Number.NaN))
+
+// join.
+console.log("join", xs.join(), xs.join(" - "), none.join(), [1].join("x"))
+
+// map with the array.
+show("map", j(xs.map((x, i, a) => x + i + a.length)))
+
+// reduce and reduceRight, with and without an initial value.
+console.log(
+    "reduce",
+    xs.reduce((a, b) => a + b),
+    xs.reduce((a, b) => a + b, 1000),
+    xs.reduce((acc, x, i) => `${acc}${x}@${i};`, ">"),
+    [7].reduce((a, b) => a * b),
+)
+console.log(
+    "reduceRight",
+    xs.reduceRight((a, b) => a - b),
+    xs.reduceRight((acc, x, i) => `${acc}${x}@${i};`, "<"),
+    [7].reduceRight((a, b) => a * b),
+    xs.reduceRight((acc, x, i, a) => acc + a.length, 0),
+)
+
+// reverse and toReversed.
+const zs = [1, 2, 3]
+const reversed = zs.toReversed()
+console.log("toReversed", j(reversed), j(zs), reversed === zs, zs.reverse() === zs, j(zs))
+
+// slice.
+show("slice", j(xs.slice(1, -1)))
+
+// sort and toSorted.
+const unsorted = [3, 1, 2]
+const sorted = unsorted.toSorted()
+console.log("toSorted", j(sorted), j(unsorted), j(unsorted.toSorted((a, b) => b - a)), j(unsorted))
+console.log("sort", j(unsorted.sort((a, b) => a - b)), j(unsorted))
+
+// splice and toSpliced.
+const sp = [1, 2, 3, 4, 5]
+console.log(
+    "toSpliced",
+    j(sp.toSpliced(1, 2)),
+    j(sp.toSpliced(1, 0, 9, 8)),
+    j(sp.toSpliced(-2)),
+    j(sp.toSpliced()),
+    j(sp),
+)
+console.log("splice", j(sp.splice()), j(sp), j(sp.splice(-2)), j(sp), j(sp.splice(1, 1, 7, 7)), j(sp))
+
+// with.
+const w = [1, 2, 3]
+console.log("with", j(w.with(0, 9)), j(w.with(-1, 9)), j(w))
+
+// push, pop, shift and unshift.
+const q = [2]
+console.log("push", q.push(3, 4), q.unshift(0, 1), q.shift(), q.pop(), j(q))
+
+// Array.from, Array.of and Array.isArray.
+show("from", j(Array.from(xs)))
+console.log("fromCopy", Array.from(xs) === xs)
+show("fromMap", j(Array.from(xs, (x, i) => x * i)))
+show("fromString", JSON.stringify(Array.from("héllo")))
+show("fromSet", j(Array.from(new Set([3, 1, 3, 2]))))
+show(
+    "fromMapEntries",
+    JSON.stringify(
+        Array.from(
+            new Map([
+                ["a", 1],
+                ["b", 2],
+            ]),
+        ),
+    ),
+)
+show("fromSetMapped", JSON.stringify(Array.from(new Set(["a", "b"]), (s, i) => `${s}${i}`)))
+show("fromLength", j(Array.from({ length: 4 }, (_, i) => i * i)))
+show("of", j(Array.of(7, 8, 9)))
+show("ofOne", j(Array.of(3)))
+show("ofEmpty", j(Array.of<int>()))
+const maybe: int[] | string = "x"
+const list: int[] | string = [1]
+console.log(
+    "isArray",
+    Array.isArray(xs),
+    Array.isArray("x"),
+    Array.isArray(maybe),
+    Array.isArray(list),
+    Array.isArray(1),
+)

@@ -4,15 +4,34 @@ const xs = [1, 2]
 xs.map((x) => {}) // error: The callback of 'map' must return a value.
 xs.filter((x) => x) // error: Type 'i64' is not assignable to type 'bool'.
 xs.map((s: string) => 1) // error: Parameter type 'string' does not match the expected 'i64'.
-xs.reduce((a, b) => a + b) // error: 'reduce' expects 2 argument(s), got 1.
+xs.reduce((a, b, c) => a, 0, 1) // error: 'reduce' expects 1 to 2 argument(s), got 3.
 xs.sort((a, b) => "x") // error: The comparator of 'sort' must return a number.
 const boxes = [new Box()]
 boxes.sort() // error: Sorting 'Box' needs a comparator
 boxes.join() // error: Cannot join elements of type 'Box'.
-xs.forEach(5) // error: Expected a function of type '(i64, i64) => void', got 'i64'.
+xs.forEach(5) // error: Expected a function of type '(i64, i64, i64[]) => void', got 'i64'.
 xs.shift(1) // error: 'shift' expects 0 argument(s), got 1.
-xs.splice() // error: 'splice' expects at least 1 argument(s), got 0.
 xs.splice(0, 1, "a") // error: Type 'string' is not assignable to type 'i64'.
 const names = ["a"]
 xs.unshift(...names) // error: An array of 'string' cannot be spread into an array of 'i64'.
 xs.splice("a") // error: An index must be an integer, got 'string'.
+let depth = 2
+const u: unknown = 1
+xs.flat(depth) // error: The depth of 'flat' must be an integer constant or 'Infinity'.
+new Array(3) // error: Cannot infer the type of the array. Write 'new Array<T>(length)' or annotate the variable.
+new Array<Box>(2) // error: 'new Array(length)' needs elements with a zero value, and 'Box' has none.
+Array.isArray(u) // error: 'Array.isArray' cannot test an 'unknown' yet.
+Array.from(5) // error: 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got 'i64'.
+Array.from({ size: 2 }, (_, i) => i) // error: 'Array.from' takes an object only as '{ length: n }'.
+Array.from({ length: 2 }) // error: 'Array.from({ length })' needs a function to make the elements
+Array.from([1], (x) => {}) // error: The callback of 'Array.from' must return a value.
+xs.flatMap((x) => {}) // error: The callback of 'flatMap' must return a value.
+xs.toSorted((a, b) => "x") // error: The comparator of 'toSorted' must return a number.
+xs.with("a", 1) // error: An index must be an integer, got 'string'.
+xs.with(0) // error: 'with' expects 2 argument(s), got 1.
+xs.at() // error: 'at' expects 1 argument(s), got 0.
+xs.lastIndexOf(1, "a") // error: An index must be an integer, got 'string'.
+xs.fill("a") // error: Type 'string' is not assignable to type 'i64'.
+xs.concat("a") // error: Type 'string' is not assignable to type 'i64'.
+xs.findLast((x) => x) // error: Type 'i64' is not assignable to type 'bool'.
+xs.reduceRight((a: string, b) => a) // error: Parameter type 'string' does not match the expected 'i64'.
