@@ -1,0 +1,37 @@
+// URLSearchParams is iterable: for...of, spread, Array.from and new Map take
+// its [name, value] pairs, and keys(), values() and entries() are lazy
+// iterators that see the changes made while they run.
+const p = new URLSearchParams("a=1&b=x+y&a=%C3%A9")
+for (const [k, v] of p) console.log(k, v)
+console.log([...p])
+console.log([...p.keys()], [...p.values()])
+console.log(Array.from(p.entries()), Array.from(p))
+const m = new Map(p)
+console.log(m.size, m.get("a"), m.get("b"))
+console.log(new Set(p.keys()).size, p.size)
+
+// The iterator protocol by hand; a done iterator stays done.
+const it = p.keys()
+console.log(it.next(), it.next(), it.next(), it.next(), it.next())
+console.log(it.toString(), it[Symbol.iterator]().next())
+const own = p[Symbol.iterator]()
+console.log(own.next().value)
+
+// Live: pairs appended while iterating are visited, removed ones are not.
+const live = new URLSearchParams("x=1&y=2")
+const seen: string[] = []
+for (const [k, v] of live) {
+    seen.push(`${k}=${v}`)
+    if (k === "x") live.append("z", "3")
+}
+console.log(seen.join("&"))
+const values = live.values()
+console.log(values.next().value)
+live.delete("y")
+console.log(values.next().value, values.next().done)
+
+// forEach gives the params as its third argument, and a URL's searchParams iterates too.
+live.forEach((value, key, params) => console.log(key, value, params === live))
+const u = new URL("https://example.com/?q=ore&lang=en")
+for (const [k, v] of u.searchParams) console.log(k, v)
+for (const k of new URLSearchParams().keys()) console.log("never", k)

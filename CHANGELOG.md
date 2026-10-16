@@ -8,6 +8,9 @@ before 1.0, a minor version may change the language.
 - `reduce` and `reduceRight` with a number as the initial value give the
   accumulator the element's type when the number fits it, as TypeScript
   does: `xs.reduce((a, b) => a + b, 0)` of a `number[]` is a `number`.
+- `URLSearchParams` is iterable: `for (const [k, v] of params)`, spread,
+  `Array.from` and `new Map(params)` take its pairs, and `keys()`,
+  `values()` and `entries()` return lazy iterators, as in JavaScript.
 
 ## 0.5.0
 

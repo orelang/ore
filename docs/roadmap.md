@@ -100,8 +100,7 @@ exports, type assertions (Ore converts: `i32(x)`).
   `toLocale*String` know only `en-US`, and time zone names in `toString`
   only the common abbreviations).
 - `URL` and `URLSearchParams` from MDN, with the WHATWG URL Standard's
-  parser (done; no IDNA or Punycode for domains outside ASCII, and
-  `URLSearchParams` is not iterable until Ore has iterators).
+  parser (done; no IDNA or Punycode for domains outside ASCII).
 - `globalThis`, as in JavaScript: the global names (`globalThis.console`,
   `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
   members of one value, with the type `typeof globalThis`; a module's own

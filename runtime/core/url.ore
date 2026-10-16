@@ -1074,24 +1074,73 @@ export class URLSearchParams {
         for (let i = 0; i < this.list.length; i++) callback(this.list[i][1], this.list[i][0], this)
     }
 
-    /** The names, in order (JavaScript returns an iterator). */
-    keys(): string[] {
-        return this.list.map((pair) => pair[0])
+    /** An iterator of the names, in order. */
+    keys(): URLSearchParamsIterator<string> {
+        return new URLSearchParamsIterator<string>(
+            () => this.list,
+            (pair) => pair[0],
+        )
     }
 
-    /** The values, in order (JavaScript returns an iterator). */
-    values(): string[] {
-        return this.list.map((pair) => pair[1])
+    /** An iterator of the values, in order. */
+    values(): URLSearchParamsIterator<string> {
+        return new URLSearchParamsIterator<string>(
+            () => this.list,
+            (pair) => pair[1],
+        )
     }
 
-    /** The `[name, value]` pairs, in order (JavaScript returns an iterator). */
-    entries(): [string, string][] {
-        return this.list.map((pair): [string, string] => [pair[0], pair[1]])
+    /** An iterator of the `[name, value]` pairs, in order. */
+    entries(): URLSearchParamsIterator<[string, string]> {
+        return new URLSearchParamsIterator<[string, string]>(
+            () => this.list,
+            (pair): [string, string] => [pair[0], pair[1]],
+        )
+    }
+
+    /** The `[name, value]` pairs, as `entries()`: what `for...of` and spread take. */
+    [Symbol.iterator](): URLSearchParamsIterator<[string, string]> {
+        return this.entries()
     }
 
     /** The query string, as `application/x-www-form-urlencoded`: `a=1&b=x+y`. */
     toString(): string {
         return serializeForm(this.list)
+    }
+}
+
+/**
+ * The iterator of `keys()`, `values()` and `entries()`: what `read` makes of
+ * each pair. It is live, as JavaScript's: it reads the pairs again at every
+ * step, so it sees the changes made meanwhile; once done, it stays done.
+ */
+export class URLSearchParamsIterator<T> {
+    private index = 0
+    private done = false
+
+    constructor(
+        private readonly pairs: () => [string, string][],
+        private readonly read: (pair: [string, string]) => T,
+    ) {}
+
+    next(): IteratorResult<T, void> {
+        const list = this.pairs()
+        if (this.done || this.index >= list.length) {
+            this.done = true
+            return { value: null, done: true }
+        }
+        const value = this.read(list[this.index])
+        this.index++
+        return { value, done: false }
+    }
+
+    [Symbol.iterator](): IterableIterator<T> {
+        return this
+    }
+
+    /** `[object URLSearchParams Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object URLSearchParams Iterator]"
     }
 }
 

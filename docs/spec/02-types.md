@@ -864,23 +864,26 @@ Standard, whose parser they follow over the UTF-8 bytes of the input:
   copy. `append(name, value)`, `delete(name, value?)`, `get(name)` (`null`
   when missing, as in JavaScript), `getAll(name)`, `has(name, value?)`,
   `set(name, value)`, `sort()` (stable, by UTF-16 code units as JavaScript
-  compares strings), `size`, `forEach((value, name, params) => ...)`, and
-  `toString()`, which writes `application/x-www-form-urlencoded`: a space
-  is `+`, and every byte but ASCII letters, digits and `*-._` is
-  percent-encoded. Reading a query, `+` is a space and invalid UTF-8 after
-  decoding becomes U+FFFD.
+  compares strings), `size`, `forEach((value, name, params) => ...)`,
+  `keys()`, `values()` and `entries()`, and `toString()`, which writes
+  `application/x-www-form-urlencoded`: a space is `+`, and every byte but
+  ASCII letters, digits and `*-._` is percent-encoded. Reading a query,
+  `+` is a space and invalid UTF-8 after decoding becomes U+FFFD.
+- A `URLSearchParams` is iterable, of its `[name, value]` tuples: `for
+  (const [name, value] of params)`, spread, `Array.from` and `new
+  Map(params)` take it. `keys()`, `values()` and `entries()` return lazy
+  iterators, as JavaScript's: each step reads the pairs as they are then,
+  so pairs appended meanwhile are visited and removed ones are not.
 - `console.log` prints a URL as Node does, `URL { href: '...', origin:
   '...', ... }`, and a `URLSearchParams` as `URLSearchParams { 'a' => '1'
   }`; `JSON.stringify` writes a URL as its `href`.
 - Differences from JavaScript: domains outside ASCII are lowercased in
   ASCII only and kept as they are, without Unicode's IDNA mapping and
   Punycode (`http://é.com/` stays so, where JavaScript has
-  `http://xn--9ca.com/`); `keys()`, `values()` and `entries()` return
-  arrays (of `[name, value]` tuples for `entries`) until Ore has
-  iterators, and `for...of` does not iterate a `URLSearchParams`; the
-  constructor of `URLSearchParams` does not take a `Map` or a record; a URL
-  is not formatted by a template literal (`` `${u}` ``: use `u.href`);
-  `URL.createObjectURL` and `URL.revokeObjectURL` are missing.
+  `http://xn--9ca.com/`); the constructor of `URLSearchParams` does not
+  take a `Map` or a record; a URL is not formatted by a template literal
+  (`` `${u}` ``: use `u.href`); `URL.createObjectURL` and
+  `URL.revokeObjectURL` are missing.
 - `URL` and `URLSearchParams` are classes of the runtime written in Ore
   (`runtime/core/url.ore`), global names as in JavaScript.
 
