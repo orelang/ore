@@ -31,6 +31,7 @@ Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
 | `typeof x === "number"` on an `unknown` | narrows to `number` | narrows to `f64`; an integer converts |
 | `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it |
 | `map.get(missing)` | `undefined` | `null` |
+| `a.length = n` | truncates, or grows with holes | truncates; a larger `n` panics (no holes) |
 | `map.keys()` | iterator | array |
 | `[10, 9, 1].sort()` | `[1, 10, 9]` (as strings) | `[1, 9, 10]` |
 | `[10n, 9n, 1n].sort()` | `[1n, 10n, 9n]` (as strings) | `[1n, 9n, 10n]` |

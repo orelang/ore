@@ -3,6 +3,7 @@
 
 import {
     Alloc,
+    ArrayMethod,
     type Expr,
     type LValue,
     ArrayLit,
@@ -591,6 +592,31 @@ function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): O
     return typed(locals.length > 0 ? new Bind(result.type, locals, result) : result)
 }
 
+/** Whether an expression is a name or a chain of property names, which can be checked twice without effects. */
+function isNamePath(node: Node): bool {
+    if (isIdentifier(node) || node.kind === "ThisKeyword") return true
+    return node.kind === "PropertyAccessExpression" && questionDotToken(node) === null && isNamePath(expression(node))
+}
+
+/**
+ * `array.length = n`, as JavaScript truncates an array to `n` elements; the
+ * value is `n`. A negative length panics as JavaScript throws, and so does
+ * a longer one: an Ore array has no holes to grow by. Null when the target
+ * is not an array, which the assignment then reports.
+ */
+function assignLength(c: Checker, node: Node, target: Node, scope: Scope): Operand | null {
+    const object = expression(target)
+    if (!isNamePath(object)) return null
+    const checked = checkExpr(c, object, scope)
+    if (checked.k !== "typed" || checked.expr.type.kind !== "array") return null
+    const array = checked.expr
+    const n = c.coerce(checkExpr(c, right(node), scope, types.i64), types.i64, right(node))
+    const local = c.newLocal("length", types.i64, false)
+    const ref: Expr = new LocalRef(types.i64, local)
+    const truncate: Expr = new ArrayMethod("length=", types.void, array, [ref])
+    return typed(new Bind(types.i64, [new BindLocal(local, n)], new Seq(types.i64, [truncate, ref])))
+}
+
 /** The locals of a `Bind` built while writing an accessor. */
 class Holder {
     readonly locals: BindLocal[] = []
@@ -665,6 +691,10 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     const target_ = left(node)
     if (op === null && (target_.kind === "ArrayLiteralExpression" || target_.kind === "ObjectLiteralExpression"))
         return checkDestructuringAssign(c, node, scope)
+    if (op === null && target_.kind === "PropertyAccessExpression" && nameNode(target_).text === "length") {
+        const truncated = assignLength(c, node, target_, scope)
+        if (truncated !== null) return truncated
+    }
     const target = assignTarget(c, target_, scope)
     // The first assignment of a variable declared without a type gives its type.
     const place = target !== null ? target.lvalue : null

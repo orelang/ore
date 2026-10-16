@@ -16,6 +16,8 @@ before 1.0, a minor version may change the language.
 - `console.log` prints an object literal's accessors as Node does
   (`b: [Getter]`, `c: [Getter/Setter]`), and a `RegExpMatch` as Node prints
   a match array (`[ '12', index: 3, input: 'a 12', groups: undefined ]`).
+- `array.length = n` truncates an array, as in JavaScript; a negative or
+  larger length panics, since an array has no holes.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with

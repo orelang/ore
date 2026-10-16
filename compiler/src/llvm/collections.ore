@@ -93,7 +93,15 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
     const ft = funcTypeOf(callback !== null ? callback.type : null)
     let f: V | null = null
     const m = e.method
-    if (callback !== null && m !== "includes" && m !== "indexOf" && m !== "join" && m !== "unshift" && m !== "splice")
+    if (
+        callback !== null &&
+        m !== "includes" &&
+        m !== "indexOf" &&
+        m !== "join" &&
+        m !== "unshift" &&
+        m !== "splice" &&
+        m !== "length="
+    )
         f = expr(g, callback)
     const fn = f
     const call = (args: V[]): V => callClosure(g, fn ?? voidValue, ft, args)
@@ -214,6 +222,10 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
             return array
         case "shift":
             return g.load(g.rt("ore_rt_array_shift", [array, { ty: "i64", v: sizeOf(elem) }]).v, T)
+        case "length=":
+            // `array.length = n`.
+            g.rt("ore_rt_array_set_length", [array, { ty: "i64", v: sizeOf(elem) }, expr(g, e.args[0])])
+            return voidValue
         case "unshift":
             return g.rt("ore_rt_array_unshift", [array, { ty: "i64", v: sizeOf(elem) }, expr(g, e.args[0])])
         case "splice": {
