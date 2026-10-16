@@ -48,8 +48,70 @@ console.log(results.receive())
 - A file operation blocks only its OS thread: the scheduler starts another
   thread for the other tasks meanwhile. A task waiting for a program it ran
   (`process.output`, `process.run`) parks on the poller, like one waiting
-  for a socket, and is no deadlock. `async`, `await` and `Promise` are
-  rejected.
+  for a socket, and is no deadlock.
+
+## Async functions and promises
+
+Beside tasks, Ore has JavaScript's single-threaded event loop: promises,
+`async` functions and `await`, with microtasks and timers in JavaScript's
+order. A promise never rejects: a failure is a value, as everywhere in Ore
+(`Promise<int | ParseError>`), and a panic in an async function ends the
+program as anywhere else.
+
+```ts
+async function fetchCount(name: string): Promise<int> {
+    await time.delay(10 * time.millisecond)
+    return name.length
+}
+
+const counts = await Promise.all([fetchCount("a"), fetchCount("bcd")])
+console.log(counts) // [ 1, 3 ]
+```
+
+- `Promise<T>` is a global class. `new Promise<T>((resolve) => ...)` runs
+  its executor at once; `resolve(value)` fulfills it once (later calls do
+  nothing), and `resolve(promise)` makes it follow that promise.
+  `then(f)` returns a promise of what `f` returns (of its value, when `f`
+  returns a promise), `finally(f)` one of the same value after `f` ran.
+  The statics are `Promise.resolve(value?)`, `all`, `race` and `any` (the
+  same as `race`, since nothing rejects). There is no `reject` and no
+  `catch`.
+- An `async` function, method or arrow function returns `Promise<T>`, which
+  its return type must be (`Promise<void>` without an annotation); its
+  `return` statements give a `T` or a promise of one. It runs at once until
+  its first `await`, then the caller continues.
+- `await p` suspends an async function until `p` is fulfilled and gives its
+  value; `await value` of anything else takes one tick, as for a fulfilled
+  promise. The top-level code of a module may `await` too: it runs the
+  event loop until the promise is fulfilled. A top-level `await` that
+  nothing can settle any more (no timer, no task left that could) ends the
+  program with "Warning: unsettled top-level await" and status 13, as in
+  Node.
+- `task.microtask(f)` queues a microtask (`queueMicrotask`). `time.timeout(f,
+  ns)`, `time.interval(f, ns)` and `time.immediate(f)` return a timer with
+  `cancel()` (`setTimeout`, `setInterval`, `setImmediate`); `time.delay(ns)`
+  is a promise fulfilled after `ns` nanoseconds. Durations are nanoseconds,
+  as everywhere in `time`: `time.timeout(f, 50 * time.millisecond)`.
+- Order: the code that runs now, then all microtasks (including those they
+  queue), then the immediates queued before this turn, then the timers that
+  are due, by deadline and then creation, with the microtasks after each
+  callback.
+- The program ends when its top-level code has ended and the event loop has
+  nothing left that can run: timers keep it running, a promise that nobody
+  settles does not, and tasks still running are stopped then.
+- Async code is single-threaded: only the top-level code and async functions
+  hold the event loop, one at a time, so between two `await`s nothing else
+  of them runs, however many threads there are. Tasks still run in
+  parallel. A task can settle a promise, call an async function or queue a
+  microtask or a timer: that is handed to the event loop, which wakes up for
+  it. Blocking calls in async code (a channel receive, `time.sleep`, file
+  I/O) block the event loop, as synchronous I/O does in Node; timers due
+  meanwhile run after it. When the top-level code awaits a promise that only
+  a task could settle and every task waits forever, the program panics with
+  a deadlock.
+- Each call of an async function runs as a fiber: a task with its own stack
+  that only the event loop resumes, so suspending it costs a switch of
+  stacks, and a call that awaits forever keeps its stack.
 
 The standard module `ore:sync` provides `Mutex` (`lock`, `unlock`, and
 `acquire()` for `using guard = mutex.acquire()`) and `WaitGroup` (`add`,

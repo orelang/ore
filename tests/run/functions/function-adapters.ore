@@ -1,0 +1,32 @@
+// A function converts to a function type whose parameters convert to its own.
+
+function show(value: int | string): void {
+    console.log("show", value)
+}
+const ints: (n: int) => void = show
+ints(1)
+const strings: ((s: string) => void)[] = [show]
+strings[0]("two")
+
+// Its result is dropped for a void function type.
+function twice(n: int | null): int {
+    return (n ?? 0) * 2
+}
+const each: (n: int) => void = twice
+each(3)
+
+// Type arguments are inferred through unions: a generic member matches its instances.
+class Box<T> {
+    constructor(readonly value: T) {}
+}
+function unbox<U>(v: U | Box<U>): U {
+    if (v instanceof Box) return v.value
+    return v
+}
+console.log(unbox(5), unbox(new Box("boxed")))
+
+// A type argument void is null; trailing parameters of its type may be left out.
+function optional<T = void>(value: T | null): string {
+    return value === null ? "nothing" : "something"
+}
+console.log(optional(), optional<int>(1))

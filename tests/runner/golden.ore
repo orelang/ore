@@ -14,9 +14,6 @@ import { loadProgram } from "../../compiler/src/project/load"
 import { formatDiagnostic } from "../../compiler/src/syntax/diagnostic"
 import { Case, difference, entries, expectRun, filesBelow, header, headers, quote, read, runProgram } from "./cases"
 
-/** Whether Ore implements async yet; until then the async programs are skipped. */
-const asyncImplemented = false
-
 /** Where the cases write executables and other files. */
 export class Settings {
     /** The build cache of the builds of the cases, rather than the user's. */
@@ -87,15 +84,13 @@ export function runCases(settings: Settings): Case[] {
 
 /**
  * tests/async: programs whose expected output was recorded from Bun: the
- * order of microtasks and timers must be JavaScript's. Skipped until Ore has
- * async.
+ * order of microtasks and timers must be JavaScript's.
  */
 export function asyncCases(settings: Settings): Case[] {
     const cases: Case[] = []
     for (const name of filesBelow("tests/async", ".ore")) {
         const file = name.slice("tests/async/".length)
-        const skip = asyncImplemented ? "" : "Ore has no async yet"
-        cases.push(new Case(`async/${file}`, () => runCase(settings, "async", "tests/async", file), skip))
+        cases.push(new Case(`async/${file}`, () => runCase(settings, "async", "tests/async", file)))
     }
     return cases
 }

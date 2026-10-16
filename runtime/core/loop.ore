@@ -1,0 +1,355 @@
+//ore:internal
+// The event loop: microtasks, immediates and timers, run by the task that
+// holds the loop, as JavaScript's single thread runs them.
+//
+// The program's top-level code holds the loop, and so do the fibers that run
+// async functions (see "Fibers" in task.ore): only one of them runs at a
+// time. Each turn runs the microtasks, then the immediates queued before the
+// turn, then the timers that are due, with the microtasks after each
+// callback. Other tasks never touch the queues: what they do to the loop,
+// such as settling a promise, is posted to its inbox, which wakes it.
+//
+// The loop runs when the top-level code awaits, until what it awaits is
+// settled, and when the top-level code ends, until nothing is left that can
+// run: no microtask, immediate or timer. A promise that nobody settles does
+// not keep the program running, and tasks still running are stopped then,
+// as when main returns in Go.
+
+import { exitProgram, flushOutput, writeString } from "ore:runtime/io"
+import { clock_gettime, lock, permanentMutex, unlock } from "ore:runtime/os"
+import {
+    addTimerLocked,
+    blocked,
+    enqueue,
+    liveTasks,
+    mainTask,
+    nowMilliseconds,
+    onLoop,
+    park,
+    removeTimerLocked,
+    loopLock,
+    scheduler,
+    SelectState,
+    selectWaiting,
+    setTaskEnded,
+} from "ore:runtime/task"
+
+/** A callback of `time.timeout`, `time.interval` or `time.immediate`; `cancel` stops it. */
+export class Timer {
+    /** When it is due, in nanoseconds of the monotonic clock. */
+    deadline = 0
+    /** The order of creation, for timers due at the same time. */
+    seq = 0
+    /** For an interval, its period in nanoseconds; 0 for a timer that runs once. */
+    period = 0
+    cancelled = false
+
+    constructor(readonly callback: () => void) {}
+
+    /** Stops the timer: it does not run again, or at all. Harmless after it ran, and twice. */
+    cancel(): void {
+        if (onLoop()) {
+            this.cancelled = true
+            return
+        }
+        post(() => {
+            this.cancelled = true
+        })
+    }
+}
+
+class Loop {
+    /** The microtasks, run in order from `head`. */
+    microtasks: (() => void)[] = []
+    head = 0
+    /** The immediates of the next turn. */
+    immediates: Timer[] = []
+    /** The timers, as a binary heap by deadline, then creation. */
+    timers: Timer[] = []
+    seq = 0
+    /** What other tasks posted, under `inboxLock`. */
+    inbox: (() => void)[] = []
+    inboxLock = permanentMutex()
+    /** Whether the loop sleeps waiting for its inbox or its first timer, under `inboxLock`. */
+    sleeping = false
+    /** How the loop wakes: claimed by the first of a post and its timer. */
+    wake: SelectState | null = null
+}
+
+let theLoop: Loop | null = null
+
+/** The loop, made on first use, by the task holding it or by one posting to it. */
+function loop(): Loop {
+    const l = theLoop
+    if (l !== null) return l
+    lock(loopLock())
+    let made = theLoop
+    if (made === null) {
+        made = new Loop()
+        theLoop = made
+        // A task that ends may leave a top-level await with nothing to wait for.
+        setTaskEnded(nudge)
+    }
+    unlock(loopLock())
+    return made
+}
+
+function monotonic(): int {
+    const spec = unsafe.allocBytes(16)
+    clock_gettime(target.os === "darwin" ? 6 : 1, spec)
+    return unsafe.load<i64>(spec) * 1_000_000_000 + unsafe.load<i64>(unsafe.add(spec, 8))
+}
+
+// ---------------------------------------------------------------------------
+// Queues
+
+/** Queues `job` to run after the current one, before any immediate or timer. */
+export function microtask(job: () => void): void {
+    if (!onLoop()) {
+        post(() => microtask(job))
+        return
+    }
+    loop().microtasks.push(job)
+}
+
+/** Runs `callback` on the next turn of the loop, before the timers. */
+export function immediate(callback: () => void): Timer {
+    const t = new Timer(callback)
+    if (onLoop()) loop().immediates.push(t)
+    else post(() => loop().immediates.push(t))
+    return t
+}
+
+/** Runs `callback` once, `ns` nanoseconds from now or later. */
+export function timeout(callback: () => void, ns: int): Timer {
+    return addTimer(new Timer(callback), ns, 0)
+}
+
+/** Runs `callback` every `ns` nanoseconds until cancelled. */
+export function interval(callback: () => void, ns: int): Timer {
+    return addTimer(new Timer(callback), ns, ns > 0 ? ns : 1)
+}
+
+function addTimer(t: Timer, ns: int, period: int): Timer {
+    t.deadline = monotonic() + (ns > 0 ? ns : 0)
+    t.period = period
+    if (onLoop()) pushTimer(t)
+    else post(() => pushTimer(t))
+    return t
+}
+
+/** Whether timer `a` runs before timer `b`. */
+function before(a: Timer, b: Timer): bool {
+    return a.deadline < b.deadline || (a.deadline === b.deadline && a.seq < b.seq)
+}
+
+function pushTimer(t: Timer): void {
+    const l = loop()
+    t.seq = l.seq++
+    const heap = l.timers
+    heap.push(t)
+    let i = heap.length - 1
+    while (i > 0) {
+        const parent = (i - 1) >> 1
+        if (!before(heap[i], heap[parent])) break
+        const swap = heap[i]
+        heap[i] = heap[parent]
+        heap[parent] = swap
+        i = parent
+    }
+}
+
+function popTimer(): Timer {
+    const heap = loop().timers
+    const first = heap[0]
+    const last = heap.pop()
+    if (heap.length > 0) {
+        heap[0] = last
+        let i = 0
+        while (true) {
+            const l = 2 * i + 1
+            const r = l + 1
+            let least = i
+            if (l < heap.length && before(heap[l], heap[least])) least = l
+            if (r < heap.length && before(heap[r], heap[least])) least = r
+            if (least === i) break
+            const swap = heap[i]
+            heap[i] = heap[least]
+            heap[least] = swap
+            i = least
+        }
+    }
+    return first
+}
+
+/** Drops cancelled timers from the top of the heap. */
+function firstTimer(): Timer | null {
+    const heap = loop().timers
+    while (heap.length > 0 && heap[0].cancelled) popTimer()
+    return heap.length > 0 ? heap[0] : null
+}
+
+/** Runs the queued microtasks, and those they queue, in order. */
+function runMicrotasks(): void {
+    const l = loop()
+    while (l.head < l.microtasks.length) {
+        const job = l.microtasks[l.head]
+        l.head++
+        job()
+    }
+    l.microtasks = []
+    l.head = 0
+}
+
+// ---------------------------------------------------------------------------
+// The inbox
+
+/** Has the loop run `job`, from a task that does not hold it; wakes the loop if it sleeps. */
+export function post(job: () => void): void {
+    const l = loop()
+    lock(l.inboxLock)
+    l.inbox.push(job)
+    let wake = false
+    const state = l.wake
+    if (l.sleeping && state !== null) {
+        l.sleeping = false
+        wake = unsafe.atomicCompareExchange<i64>(state.fired, selectWaiting, 0)
+    }
+    unlock(l.inboxLock)
+    if (wake) enqueue(mainTask())
+}
+
+/** Wakes the loop if it sleeps, with nothing to run: to look again at what can still wake it. */
+function nudge(): void {
+    const l = loop()
+    lock(l.inboxLock)
+    let wake = false
+    const state = l.wake
+    if (l.sleeping && state !== null) {
+        l.sleeping = false
+        wake = unsafe.atomicCompareExchange<i64>(state.fired, selectWaiting, 0)
+    }
+    unlock(l.inboxLock)
+    if (wake) enqueue(mainTask())
+}
+
+/** Runs what other tasks posted; whether there was anything. */
+function runInbox(): bool {
+    const l = loop()
+    lock(l.inboxLock)
+    const jobs = l.inbox
+    if (jobs.length > 0) l.inbox = []
+    unlock(l.inboxLock)
+    for (const job of jobs) job()
+    return jobs.length > 0
+}
+
+/**
+ * Parks the loop until a task posts to it, or until `deadline` (nanoseconds
+ * of the monotonic clock; -1 for none). The scheduler's timers count in
+ * milliseconds, so the loop may wake up to a millisecond late, never early:
+ * a timer is run by its deadline in nanoseconds. With `needsTask`, returns
+ * false instead when no task is left that could post.
+ */
+function sleep(deadline: int, needsTask: bool): bool {
+    const l = loop()
+    const s = scheduler()
+    const t = mainTask()
+    lock(l.inboxLock)
+    if (l.inbox.length > 0) {
+        unlock(l.inboxLock)
+        return true
+    }
+    // Under the lock, so that a task ending now either is not counted or wakes the loop.
+    if (needsTask && liveTasks() === 0) {
+        unlock(l.inboxLock)
+        return false
+    }
+    const state = new SelectState()
+    l.wake = state
+    l.sleeping = true
+    t.select = state
+    const timed = deadline >= 0
+    if (timed) {
+        const left = deadline - monotonic()
+        t.wakeAt = nowMilliseconds() + (left > 0 ? (left + 999_999) / 1_000_000 : 0)
+    }
+    t.state = blocked
+    // The inbox is locked until the task has left its stack and its timer is
+    // set, so that no post can wake it before.
+    const inbox = l.inboxLock
+    park(() => {
+        if (timed) {
+            lock(s.lock)
+            addTimerLocked(t)
+            unlock(s.lock)
+        }
+        unlock(inbox)
+    })
+    t.select = null
+    if (timed) {
+        lock(s.lock)
+        removeTimerLocked(t)
+        unlock(s.lock)
+    }
+    lock(l.inboxLock)
+    l.sleeping = false
+    l.wake = null
+    unlock(l.inboxLock)
+    return true
+}
+
+// ---------------------------------------------------------------------------
+// Turns
+
+/**
+ * Runs the loop until `done` returns true (for a top-level await), or, when
+ * it is null, until nothing is left that can run (at the program's end).
+ */
+export function drive(done: (() => bool) | null): void {
+    const l = loop()
+    while (true) {
+        runMicrotasks()
+        if (done !== null && done()) return
+        if (runInbox()) continue
+        // The immediates queued before this turn; those they queue wait for the next one.
+        if (l.immediates.length > 0) {
+            const batch = l.immediates
+            l.immediates = []
+            for (const t of batch) {
+                if (t.cancelled) continue
+                t.cancelled = true
+                t.callback()
+                runMicrotasks()
+            }
+            continue
+        }
+        // The timers due by now, by deadline, then creation.
+        const now = monotonic()
+        let ran = false
+        while (true) {
+            const t = firstTimer()
+            if (t === null || t.deadline > now) break
+            popTimer()
+            if (t.period > 0) {
+                // The next run is a period after this one was due, so that runs do not drift.
+                t.deadline = t.deadline + t.period > now ? t.deadline + t.period : now
+                pushTimer(t)
+            } else {
+                t.cancelled = true
+            }
+            t.callback()
+            runMicrotasks()
+            ran = true
+        }
+        if (ran) continue
+        const next = firstTimer()
+        // Without timers, only a task could still post to the loop.
+        if (next === null && done === null) return
+        if (!sleep(next !== null ? next.deadline : -1, next === null)) {
+            flushOutput()
+            writeString(2, "Warning: unsettled top-level await\n")
+            exitProgram(13)
+        }
+    }
+}

@@ -5,8 +5,15 @@
 
 import {
     type Expr,
-    type Closure,
-    type LocalRef,
+    type Stmt,
+    Bind,
+    BindLocal,
+    Block,
+    CallValue,
+    Closure,
+    ExprStmt,
+    LocalRef,
+    ReturnStmt,
     Func,
     Itab,
     IntLit,
@@ -800,6 +807,23 @@ export class Checker {
                 const expr = value.expr
                 const from = typeOf(expr)
                 if (sameType(from, target) || from.kind === "never") return expr
+                // A function converts to a function type whose parameters convert to its own,
+                // as `(v: T | Promise<T>) => void` to `(v: T) => void`: through an adapter.
+                if (from.kind === "func" && target.kind === "func") {
+                    const adapted = this.adaptFunction(expr, from, target, node)
+                    if (adapted !== null) return adapted
+                }
+                // A function literal takes the optional parameters of its target: its own are as many, and nullable.
+                if (expr.k === "closure" && from.kind === "func" && target.kind === "func" && target.required >= 0) {
+                    const wanted = target
+                    if (
+                        from.rest === wanted.rest &&
+                        from.params.length === wanted.params.length &&
+                        from.params.every((p, i) => sameType(p, wanted.params[i])) &&
+                        sameType(from.result, wanted.result)
+                    )
+                        return new Closure(wanted, expr.func)
+                }
                 // Any value converts to `unknown`, boxed with its type.
                 if (target.kind === "unknown" && from.kind !== "void") return new Recast(target, expr)
                 // An instance of a subclass is an instance of its base classes, as it is.
@@ -1017,6 +1041,51 @@ export class Checker {
     line(node: Node): int {
         const source = this.sourceOf(node)
         return source.position(node.start).line + 1
+    }
+
+    /**
+     * A closure of type `to` that calls the function `value` of type `from`,
+     * converting its arguments; null unless each parameter of `to` converts
+     * to the one of `from` and the results are the same (or `to`'s is void).
+     */
+    adaptFunction(value: Expr, from: FuncType, to: FuncType, node: Node): Expr | null {
+        if (from.rest || to.rest || from.params.length !== to.params.length) return null
+        if (!sameType(from.result, to.result) && to.result.kind !== "void") return null
+        for (let i = 0; i < to.params.length; i++) {
+            const p = from.params[i]
+            const q = to.params[i]
+            if (sameType(p, q)) continue
+            if (p.kind !== "union" || !membersOf(q).every((m) => membersOf(p).some((x) => sameType(x, m)))) return null
+        }
+        const held = this.newLocal("adapted", from, false)
+        held.captured = true
+        const params: Local[] = []
+        const args: Expr[] = []
+        for (let i = 0; i < to.params.length; i++) {
+            const local = this.newLocal(`a${i}`, to.params[i], false)
+            params.push(local)
+            const ref: Expr = new LocalRef(local.type, local)
+            args.push(sameType(from.params[i], to.params[i]) ? ref : new Recast(from.params[i], ref))
+        }
+        const call: Expr = new CallValue(from.result, new LocalRef(from, held), args)
+        const stmt: Stmt = to.result.kind === "void" ? new ExprStmt(call) : new ReturnStmt(call)
+        const captures: Local[] = [held]
+        const func = new Func(
+            `ore_lambda_${this.nextLambda++}`,
+            "<adapter>",
+            this.line(node),
+            to,
+            params,
+            new Block([stmt]),
+            false,
+            this.sourceOf(node).path,
+            false,
+            null,
+            null,
+            captures,
+        )
+        this.module.functions.push(func)
+        return new Bind(to, [new BindLocal(held, value)], new Closure(to, func))
     }
 
     newLocal(name: string, type: Type, mutable: bool): Local {

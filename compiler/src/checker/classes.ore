@@ -68,6 +68,7 @@ import {
     typeParameters,
     types as typeNodes,
 } from "../syntax/nodes"
+import { checkAsyncBody, isAsync, promiseValue } from "./async"
 import { type Checker } from "./base"
 import {
     type InterfaceInfo,
@@ -88,6 +89,7 @@ import {
     declareGeneric,
     instantiate,
     makeFunc,
+    resultType,
     paramScope,
     prepend,
     resolveParams,
@@ -716,6 +718,8 @@ export function memberModifiers(c: Checker, node: Node): MemberFlags {
             case "StaticKeyword":
                 flags.isStatic = true
                 break
+            case "AsyncKeyword":
+                break
             default:
                 c.error(mod, `Modifier '${c.text(mod)}' is not allowed here.`)
         }
@@ -1013,8 +1017,7 @@ export function makeMethod(
     cname: string,
 ): Func {
     const params = resolveParams(c, parameters(decl), scope)
-    const annotation = typeNode(decl)
-    const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
+    const result = resultType(c, decl, scope)
     const func = new Func(
         cname,
         sourceName,
@@ -1041,7 +1044,9 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     const scope = paramScope(c, parameters(decl), func.params, outer, prologue)
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(func.type.result, [], 0, null, null, func.receiver, type)
-    func.body = checkBlock(c, body(decl)!, scope)
+    const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
+    if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    else func.body = checkBlock(c, body(decl)!, scope)
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
     checkReturns(c, func, typeNode(decl) ?? nameNode(decl))

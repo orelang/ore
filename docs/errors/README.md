@@ -141,7 +141,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3003](ORE3003.md) | 'this' can only be used inside a class. |
 | [ORE3004](ORE3004.md) | 'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'. |
 | [ORE3005](ORE3005.md) | Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'. |
-| [ORE3006](ORE3006.md) | 'await' is not supported in Ore. |
+| [ORE3006](ORE3006.md) | 'await' is only allowed in async functions and in the top-level code of a module. |
 | [ORE3007](ORE3007.md) | 'delete' is not supported in Ore. |
 | [ORE3008](ORE3008.md) | This expression is not supported yet. |
 | [ORE3009](ORE3009.md) | '…' is a class. Create an instance with 'new …(...)'. |
@@ -215,6 +215,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE3077](ORE3077.md) | A method of an object literal needs a return type annotation, or a type to fit. |
 | [ORE3078](ORE3078.md) | Object is of type 'unknown'. |
 | [ORE3079](ORE3079.md) | Static fields of generic classes are not supported yet. |
+| [ORE3080](ORE3080.md) | An expression of type 'void' cannot be awaited. |
+| [ORE3081](ORE3081.md) | A union of promises and other values cannot be awaited yet. |
 
 ## ORE4xxx: Calls and built-in functions
 
@@ -393,7 +395,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6019](ORE6019.md) | Cannot export '…': it is not declared in this module. |
 | [ORE6020](ORE6020.md) | A function declaration must have a name. |
 | [ORE6021](ORE6021.md) | Generic overload signatures are not supported yet. |
-| [ORE6022](ORE6022.md) | 'async' is not supported in Ore. Use spawn() and channels. |
+| [ORE6022](ORE6022.md) | The return type of an async function must be 'Promise<T>'. |
 | [ORE6023](ORE6023.md) | Default exports are not supported in Ore. |
 | [ORE6024](ORE6024.md) | A generic function cannot have overload signatures yet. |
 | [ORE6025](ORE6025.md) | Overload signatures must all be exported or not, as the implementation. |

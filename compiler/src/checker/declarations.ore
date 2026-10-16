@@ -78,6 +78,7 @@ import {
 import { type Source } from "../syntax/source"
 import { leadingCommentRanges } from "../syntax/nodes"
 import { checkAssigned } from "./assigned"
+import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseValue } from "./async"
 import { type Checker, structOrInterface } from "./base"
 import {
     conformance,
@@ -1013,7 +1014,7 @@ export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | nu
     const asterisk = asteriskToken(decl)
     if (asterisk !== null) c.error(asterisk, "Generators are not supported in Ore.")
     for (const mod of modifiers(decl)) {
-        if (mod.kind === "AsyncKeyword") c.error(mod, "'async' is not supported in Ore. Use spawn() and channels.")
+        if (mod.kind === "AsyncKeyword") continue
         else if (mod.kind === "DefaultKeyword") c.error(mod, "Default exports are not supported in Ore.")
         else if (mod.kind !== "ExportKeyword") c.error(mod, `Modifier '${c.text(mod)}' is not allowed here.`)
     }
@@ -1165,6 +1166,18 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
 }
 
 /** A function with the signature of a declaration, resolved in `scope`; the body is checked later. */
+/** The declared result type of a function or method; `void`, or `Promise<void>` for an async one, without an annotation. */
+export function resultType(c: Checker, decl: Node, scope: Scope): Type {
+    const annotation = typeNode(decl)
+    if (annotation !== null) {
+        const t = c.resolveType(annotation, scope) ?? types.void
+        if (isAsync(decl) && t.kind !== "void") asyncValue(c, t, annotation)
+        return t
+    }
+    if (isAsync(decl)) return promiseOf(c, types.void, decl) ?? types.void
+    return types.void
+}
+
 export function makeFunc(
     c: Checker,
     decl: Node,
@@ -1174,8 +1187,7 @@ export function makeFunc(
     exported: bool,
 ): Func {
     const params = resolveParams(c, parameters(decl), scope)
-    const annotation = typeNode(decl)
-    const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
+    const result = resultType(c, decl, scope)
     const func = new Func(
         `ore_fn_${cname}`,
         sourceName,
@@ -1273,7 +1285,9 @@ export function inContext(c: Checker, label: string, check: () => void): () => v
  * (whose body is checked later), a class, an interface or a type.
  */
 export function instantiate(c: Checker, generic: Generic, given: Type[], node: Node): Instance | null {
-    const args = withDefaults(c, generic, given)
+    // A type argument `void` is `null`, as `undefined` is in TypeScript: `Promise<void>` is `Promise<null>`.
+    const args: Type[] = []
+    for (const t of withDefaults(c, generic, given)) args.push(t.kind === "void" ? types.null : t)
     if (args.length !== generic.params.length) {
         c.error(node, `'${generic.name}' expects ${generic.params.length} type argument(s), got ${args.length}.`)
         return null
@@ -1288,9 +1302,9 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
 
     const scope = new Scope(generic.scope)
     for (let i = 0; i < generic.params.length; i++) {
-        // A type parameter given `void` is `null` in the instance, as `undefined` is in TypeScript.
-        const symbol = new TypeSymbol(args[i].kind === "void" ? types.null : args[i], generic.params[i])
-        if (args[i].kind === "void") c.voidParameters.add(symbol)
+        // Trailing parameters typed by a type parameter given `void` or `null` may be left out.
+        const symbol = new TypeSymbol(args[i], generic.params[i])
+        if (args[i].kind === "null") c.voidParameters.add(symbol)
         scope.declareType(nameNode(generic.params[i]).text, symbol)
     }
     for (let i = 0; i < generic.params.length; i++) {
@@ -1584,6 +1598,53 @@ export function inferTypeArgs(
     return names.map((n) => bindings.get(n)!)
 }
 
+/**
+ * Binds type parameters from a union annotation, as `U | Promise<U>`:
+ * members without type parameters match exactly, a member naming a generic
+ * matches its instances (a `Promise<int>` binds U to int), and a bare type
+ * parameter takes the rest.
+ */
+function inferFromUnion(c: Checker, n: Node, type: Type, names: string[], bindings: Map<string, Type>, scope: Scope) {
+    const alts = typeNodes(n)
+    // Members without type parameters are matched exactly.
+    const closed: Type[] = []
+    for (const alt of alts) {
+        if (mentions(alt, names)) continue
+        const t = c.resolveType(alt, scope)
+        if (t !== null) closed.push(t)
+    }
+    const rest: Type[] = []
+    for (const t of membersOf(type)) {
+        let matched = closed.some((x) => sameType(x, t))
+        for (const alt of alts) {
+            if (matched || !mentions(alt, names)) continue
+            if (alt.kind !== "TypeReference" || typeArguments(alt).length === 0) continue
+            const name = typeName(alt)
+            const symbol = isIdentifier(name) ? scope.lookupType(name.text) : null
+            const generic = symbol === null ? null : symbol.generic
+            const instance = c.instanceOf.get(t)
+            if (generic !== null && instance !== null && instance.generic === generic) {
+                inferFrom(c, alt, t, names, bindings, scope)
+                matched = true
+            }
+        }
+        if (!matched) rest.push(t)
+    }
+    if (rest.length === 0) return
+    const restType = rest.length === 1 ? rest[0] : c.unionOf(rest)
+    // The rest goes to the bare type parameter, or else to the one other generic member.
+    for (const alt of alts) {
+        if (alt.kind !== "TypeReference" || typeArguments(alt).length > 0) continue
+        const name = typeName(alt)
+        if (isIdentifier(name) && names.includes(name.text)) {
+            inferFrom(c, alt, restType, names, bindings, scope)
+            return
+        }
+    }
+    const open = alts.filter((t) => mentions(t, names))
+    if (open.length === 1) inferFrom(c, open[0], restType, names, bindings, scope)
+}
+
 /** Binds type parameters `names` in annotation `n` by matching it against `type`. */
 export function inferFrom(
     c: Checker,
@@ -1627,6 +1688,10 @@ export function inferFrom(
         const elems = n.list("elements")
         if (type.kind === "struct" && type.tuple && type.fields.length === elems.length)
             for (let i = 0; i < elems.length; i++) inferFrom(c, elems[i], type.fields[i].type, names, bindings, scope)
+        return
+    }
+    if (n.kind === "UnionType") {
+        inferFromUnion(c, n, type, names, bindings, scope)
         return
     }
     if (n.kind === "TypeReference" && isIdentifier(n.child("typeName")!)) {
@@ -1698,17 +1763,6 @@ export function inferFrom(
                 if (t !== null) inferFrom(c, typeArgs[i], t, names, bindings, scope)
             }
         }
-        return
-    }
-    if (n.kind === "UnionType") {
-        // Members without type parameters are matched exactly; the rest of the type goes to the one generic member.
-        const all = typeNodes(n)
-        const open = all.filter((t) => mentions(t, names))
-        if (open.length !== 1) return
-        const closed: (Type | null)[] = []
-        for (const t of all) if (!mentions(t, names)) closed.push(c.resolveType(t, scope))
-        const rest = membersOf(type).filter((m) => !closed.some((x) => x !== null && sameType(x, m)))
-        if (rest.length > 0) inferFrom(c, open[0], c.unionOf(rest), names, bindings, scope)
         return
     }
     if (n.kind === "TypeLiteral") {
@@ -1961,6 +2015,14 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope, propert
     let defaults = new Scope(scope)
     let required = -1
     let rest = false
+    // Trailing parameters typed by a type parameter given `void` may be left out, as in `resolve()`.
+    let voidFrom = params_.length
+    while (voidFrom > 0) {
+        const p = params_[voidFrom - 1]
+        const annotation = typeNode(p)
+        if (annotation === null || dotDotDotToken(p) !== null || !c.namesVoidParameter(annotation, scope)) break
+        voidFrom--
+    }
     for (let i = 0; i < params_.length; i++) {
         const p = params_[i]
         let type: Type | null = null
@@ -1999,7 +2061,11 @@ export function resolveParams(c: Checker, params_: Node[], scope: Scope, propert
         }
         if (init !== null && question !== null)
             c.error(question, "A parameter with a default value is already optional.")
-        const optional = init !== null || question !== null || (dotDotDotToken(p) !== null && i === params_.length - 1)
+        const optional =
+            init !== null ||
+            question !== null ||
+            i >= voidFrom ||
+            (dotDotDotToken(p) !== null && i === params_.length - 1)
         if (optional && required === -1) required = i
         if (!optional && required !== -1)
             c.error(p, "A required parameter cannot follow an optional or rest parameter.")
@@ -2075,7 +2141,9 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     const scope = paramScope(c, parameters(decl), func.params, outer, prologue)
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(func.type.result, [], 0)
-    func.body = checkBlock(c, body(decl)!, scope)
+    const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
+    if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    else func.body = checkBlock(c, body(decl)!, scope)
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
     checkReturns(c, func, typeNode(decl) ?? nameNode(decl))

@@ -7,7 +7,7 @@
 // A promise resolved by a task wakes the event loop.
 const fromTask = new Promise<int>((resolve) => {
     task.spawn(() => {
-        time.sleep(10)
+        time.sleep(10 * time.millisecond)
         resolve(42)
     })
 })
@@ -33,7 +33,7 @@ const raced = new Promise<int>((resolve) => {
 })
 raced.then(() => reactions++)
 const winner = await raced
-await time.delay(20)
+await time.delay(20 * time.millisecond)
 console.log("raced", winner >= 0 && winner < 16, reactions)
 
 // Async code is single-threaded: between awaits nothing else runs, so these
@@ -57,7 +57,7 @@ let overlapped = false
 async function exclusive(): Promise<int> {
     inLoop++
     if (inLoop > 1) overlapped = true
-    time.sleep(1)
+    time.sleep(1 * time.millisecond)
     inLoop--
     await null
     return 1
@@ -71,16 +71,16 @@ console.log("called from tasks", ran.length, "overlapped", overlapped)
 
 // A timer and a task: the loop sleeps until whichever comes first.
 const order: string[] = []
-time.timeout(() => order.push("timer"), 50)
+time.timeout(() => order.push("timer"), 50 * time.millisecond)
 await new Promise<void>((resolve) =>
     task.spawn(() => {
-        time.sleep(5)
+        time.sleep(5 * time.millisecond)
         order.push("task")
         resolve()
     }),
 )
 order.push("resolved")
-await time.delay(60)
+await time.delay(60 * time.millisecond)
 console.log(order.join(" "))
 
 // Pending promises kept alive only by tasks survive garbage collection.
@@ -91,7 +91,7 @@ for (let i = 0; i < 200; i++) {
             task.spawn(() => {
                 let junk = 0
                 for (let k = 0; k < 200; k++) junk += [k, k].length
-                time.sleep(1)
+                time.sleep(1 * time.millisecond)
                 resolve(junk)
             }),
         ),

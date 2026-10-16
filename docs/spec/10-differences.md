@@ -7,8 +7,9 @@
 `enum` and `const enum` (use unions of literals), index signatures (use
 `Map`), `namespace` (use modules), `throw` / `try`.
 
-Not supported yet, and planned (see the [roadmap](../roadmap.md)): `async` /
-`await` and `Promise`.
+Promises never reject: there is no `reject`, `catch` or `Promise.allSettled`;
+a failure is a value (`Promise<T | Error>`), and a panic in an async function
+ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promises)).
 
 ## Changed semantics
 

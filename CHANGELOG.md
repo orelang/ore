@@ -5,6 +5,25 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Promises and async functions, in JavaScript's order of microtasks and
+  timers, without rejections: `Promise<T>` (`then`, `finally`,
+  `Promise.resolve`, `all`, `race`, `any`), `async` functions, methods and
+  arrow functions, `await` in them and in the top-level code,
+  `task.microtask`, and `time.timeout`, `interval`, `immediate` (with
+  `cancel()`), `delay` and `sleep`, in nanoseconds. The event loop runs in
+  the top-level code; each async call is a fiber it switches to, so async
+  code is single-threaded while tasks stay parallel, and a task can settle
+  promises and call async functions, which wakes the loop. The program ends
+  when the loop has nothing left; an unsettled top-level await exits with
+  status 13. Every test of `tests/async` passes.
+- The language grew what the promises needed: a function value converts to
+  a function type whose parameters convert to its own (`(v: T | Promise<T>)
+  => void` to `(v: T) => void`); type arguments are inferred through unions
+  such as `U | Promise<U>`; `Promise<void>` is `Promise<null>`, and
+  trailing parameters typed by such a type parameter may be left out
+  (`Promise.resolve()`); a `const` or `let` whose value has functions that
+  use it, as `const step = () => task.microtask(step)`, is declared before
+  its value is checked.
 - Generic classes can have static methods, generic ones too (`Box.of<U>(v)`),
   which do not see the class's type parameters, as in TypeScript; a generic
   class name works with `instanceof` and narrows a union to its instance

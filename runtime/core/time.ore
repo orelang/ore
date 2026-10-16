@@ -13,7 +13,14 @@
 // so a number without a unit is still milliseconds: `time.parse("100")` is
 // 100 ms.
 
+import {
+    immediate as loopImmediate,
+    interval as loopInterval,
+    timeout as loopTimeout,
+    Timer as LoopTimer,
+} from "ore:runtime/loop"
 import { clock_gettime } from "ore:runtime/os"
+import { sleepMs as taskSleep } from "ore:runtime/task"
 
 // ---------------------------------------------------------------------------
 // Clocks and durations
@@ -215,4 +222,40 @@ function rounded(ns: int, abs: f64, unit: int, name: string, long: bool): string
     const n = Math.round(f64(ns) / f64(unit))
     if (!long) return `${n}${name}`
     return `${n} ${name}${abs >= f64(unit) * 1.5 ? "s" : ""}`
+}
+
+// ---------------------------------------------------------------------------
+// Timers, run by the event loop (see runtime/core/loop.ore)
+
+/** A callback of `timeout`, `interval` or `immediate`; `cancel()` stops it. */
+export type Timer = LoopTimer
+
+/** Runs `callback` once, `ns` nanoseconds from now or later: `time.timeout(f, 50 * time.millisecond)`. */
+export function timeout(callback: () => void, ns: int): Timer {
+    return loopTimeout(callback, ns)
+}
+
+/** Runs `callback` every `ns` nanoseconds, until cancelled. */
+export function interval(callback: () => void, ns: int): Timer {
+    return loopInterval(callback, ns)
+}
+
+/** Runs `callback` on the next turn of the event loop, before the timers. */
+export function immediate(callback: () => void): Timer {
+    return loopImmediate(callback)
+}
+
+/** A promise fulfilled `ns` nanoseconds from now or later. */
+export function delay(ns: int): Promise<void> {
+    return new Promise<void>((resolve) => {
+        loopTimeout(() => resolve(), ns)
+    })
+}
+
+/**
+ * Blocks the current task for `ns` nanoseconds, letting other tasks run; in
+ * the event loop, as synchronous code in JavaScript, it blocks the loop.
+ */
+export function sleep(ns: int): void {
+    taskSleep(ns > 0 ? (ns + millisecond - 1) / millisecond : 0)
 }

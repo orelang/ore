@@ -31,7 +31,7 @@ for a release build of the runner.
 |---|---|---|
 | `run/<topic>/` | Programs built and run; stdout must equal the `.out` file | `run/...` |
 | `diag/<topic>/` | Programs that must fail to check, with `// error: <message>` on the lines of the errors | `diag/...` |
-| `async/` | Async programs with their expected outputs (recorded from Bun), skipped until Ore has async | `async/...` |
+| `async/` | Async programs with their expected outputs (recorded from Bun; timers in nanoseconds) | `async/...` |
 | `runner/` | The runner: `main.ore`, `golden.ore` (programs), `fmt.ore` (formatting), `cases.ore` | |
 | `bench/` | Benchmarks: `bench/run.sh`, `bench/async/run.sh` | |
 

@@ -1,0 +1,141 @@
+// Async functions and `await`, compiled to calls of the runtime's
+// "ore:runtime/promise": the body of an async function is a closure that
+// `asyncCall` runs as a fiber of the event loop, resolving the promise the
+// function returns with what the body returns; `await` is `awaitPromise`
+// for a promise and `awaitValue` for any other value.
+
+import { type Expr, type Stmt, Block, Call, Closure, ExprStmt, Func, ReturnStmt } from "../ir/nodes"
+import { type Type, FuncType, types } from "../ir/types"
+import { type Node } from "../syntax/ast"
+import { body, expression, hasModifier } from "../syntax/nodes"
+import { type Checker } from "./base"
+import { FuncContext } from "./context"
+import { checkReturns, instantiate } from "./declarations"
+import { checkExpr } from "./expressions"
+import { typed } from "./helpers"
+import { type Operand, errorOperand } from "./operand"
+import { checkBlock } from "./statements"
+import { GenericFuncSymbol, Scope } from "./symbols"
+
+const promiseModule = "ore:runtime/promise"
+
+/** Whether a function, method or arrow function is `async`. */
+export function isAsync(node: Node): bool {
+    return hasModifier(node, "AsyncKeyword")
+}
+
+/** The type `Promise<T>`. */
+export function promiseOf(c: Checker, value: Type, node: Node): Type | null {
+    const symbol = c.builtins!.lookupType("Promise")
+    const generic = symbol !== null ? symbol.generic : null
+    if (generic === null) return null
+    const instance = instantiate(c, generic, [value], node)
+    return instance !== null && !(instance instanceof Func) ? instance : null
+}
+
+/** For an instance of `Promise<T>`: T; null for any other type. */
+export function promiseValue(c: Checker, type: Type): Type | null {
+    const info = type.kind === "struct" ? c.instanceOf.get(type) : null
+    if (info === null || info.generic.name !== "Promise" || info.args.length !== 1) return null
+    // Only the runtime's class, not one of the program named the same.
+    if (!c.sourceOf(info.generic.decl).path.startsWith(promiseModule)) return null
+    // `Promise<void>` holds null, the value of a void type argument.
+    return info.args[0].kind === "void" ? types.null : info.args[0]
+}
+
+/**
+ * The value type T of an async function's result type, which must be
+ * `Promise<T>`, as in TypeScript; reports any other.
+ */
+export function asyncValue(c: Checker, result: Type, node: Node): Type | null {
+    const value = promiseValue(c, result)
+    if (value === null) c.error(node, "The return type of an async function must be 'Promise<T>'.")
+    return value
+}
+
+/** A function of the runtime's promise module, instantiated for `typeArgs`. */
+function runtimeFunc(c: Checker, name: string, typeArgs: Type[], node: Node): Func | null {
+    for (const [source, info] of c.modules) {
+        if (source.path !== promiseModule) continue
+        const symbol = info.scope.ownValue(name)
+        if (!(symbol instanceof GenericFuncSymbol)) process.panic(`async: no function ${name}`)
+        const found = instantiate(c, symbol.generic, typeArgs, node)
+        if (found instanceof Func) return found
+    }
+    return null
+}
+
+/**
+ * The body of an async function `decl`, whose promise has the value type
+ * `value`: a closure of the body, which returns a value or a promise of it,
+ * called by `asyncCall`. Returns the statements of the function's body.
+ */
+export function checkAsyncBody(c: Checker, decl: Node, scope: Scope, value: Type, name: string): Stmt[] {
+    const outer = c.fn!
+    const promise = promiseOf(c, value, decl)
+    if (promise === null) return []
+    const result = value.kind === "null" ? types.null : c.unionOf([value, promise])
+    const func = new Func(
+        `ore_lambda_${c.nextLambda++}`,
+        `${name}.<async>`,
+        c.line(decl),
+        new FuncType([], result),
+        [],
+        new Block([]),
+        false,
+        c.sourceOf(decl).path,
+        false,
+        null,
+        null,
+        [],
+    )
+    c.module.functions.push(func)
+    const inner = new Scope(scope, func)
+    // The body sees `this` of the enclosing method, as an arrow function does.
+    const captures: Func[] = [func]
+    if (outer.thisCaptures !== null) for (const f of outer.thisCaptures) captures.push(f)
+    const savedFacts = c.facts
+    c.facts = [new Map<string, Type>()]
+    c.fn = new FuncContext(result, [], 0, func, captures, outer.thisLocal, outer.cls)
+    c.fn.inAsync = true
+    const fnBody = body(decl)!
+    if (fnBody.kind === "Block") {
+        func.body = checkBlock(c, fnBody, inner)
+    } else {
+        const v = checkExpr(c, fnBody, inner, result)
+        if (v.k !== "error") {
+            if (result.kind === "null" && v.k === "typed" && v.expr.type.kind === "void")
+                func.body = new Block([new ExprStmt(v.expr)])
+            else func.body = new Block([new ReturnStmt(c.coerce(v, result, fnBody))])
+        }
+    }
+    c.fn = outer
+    c.facts = savedFacts
+    checkReturns(c, func, decl)
+    const call = runtimeFunc(c, "asyncCall", [value], decl)
+    if (call === null) return []
+    const closure: Expr = new Closure(func.type, func)
+    return [new ReturnStmt(new Call(promise, call, [closure]))]
+}
+
+/** `await value`: the value of a promise, or the value itself after a tick. */
+export function checkAwait(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const fn = c.fn
+    if (fn === null || !(fn.topLevel || fn.inAsync)) {
+        return c.fail(node, "'await' is only allowed in async functions and in the top-level code of a module.")
+    }
+    const operandNode = expression(node)
+    const v = checkExpr(c, operandNode, scope, null)
+    if (v.k === "error") return errorOperand
+    const expr = v.k === "typed" ? v.expr : c.coerce(v, expected ?? c.defaultType(v), operandNode)
+    const value = promiseValue(c, expr.type)
+    if (value !== null) {
+        const f = runtimeFunc(c, "awaitPromise", [value], node)
+        return f !== null ? typed(new Call(value, f, [expr])) : errorOperand
+    }
+    if (expr.type.kind === "void") return c.fail(operandNode, "An expression of type 'void' cannot be awaited.")
+    if (expr.type.kind === "union" && expr.type.members.some((m) => promiseValue(c, m) !== null))
+        return c.fail(operandNode, "A union of promises and other values cannot be awaited yet.")
+    const f = runtimeFunc(c, "awaitValue", [expr.type], node)
+    return f !== null ? typed(new Call(expr.type, f, [expr])) : errorOperand
+}

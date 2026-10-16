@@ -114,6 +114,12 @@ export class Task {
     waiter: ptr = nil()
     /** For a task running a test of `ore test`: its record (an address in program.ore), or null. */
     test: ptr = nil()
+    /** Whether the task was spawned by the program: counted in `live` until it ends. */
+    spawned = false
+    /** For a fiber of the event loop (see "Fibers"): the task that ran it last and waits for it. */
+    resumer: Task | null = null
+    /** Whether the task is a fiber of the event loop. */
+    fiber = false
 
     constructor(readonly body: () => void) {}
 
@@ -160,6 +166,9 @@ class Scheduler {
     pollState = permanent(8)
     /** How many times a worker has started or resumed a task: the watchdog's sign of progress. */
     switches = permanent(8)
+    /** How many tasks the program spawned that have not ended: changed atomically. */
+    live = permanent(8)
+    loopLock = permanentMutex()
 }
 
 /** The scheduler, set by ore_rt_run_main. */
@@ -1003,6 +1012,11 @@ function taskMain(self: ptr): void {
     exitSwitch()
     const t = unsafe.fromAddress<Task>(self)
     t.body()
+    if (t.spawned) {
+        unsafe.atomicAdd<i64>(s.live, -1)
+        const ended = taskEnded
+        if (ended !== null) ended()
+    }
     // The program ends with its top-level code, after what "ore:test" runs then.
     if (t === s.mainTask) {
         const end = mainEnd
@@ -1021,7 +1035,92 @@ export function endTask(): void {
 
 //ore:runtime ore_rt_spawn
 function spawn(body: () => void): void {
-    enqueueNext(newTask(body, taskStackSize))
+    const t = newTask(body, taskStackSize)
+    t.spawned = true
+    unsafe.atomicAdd<i64>(scheduler().live, 1)
+    enqueueNext(t)
+}
+
+/** What runs when a task the program spawned ends: set by the event loop, which may wait for one. */
+let taskEnded: (() => void) | null = null
+
+export function setTaskEnded(body: () => void): void {
+    taskEnded = body
+}
+
+/** The lock that guards making the event loop (loop.ore), which may happen on any task. */
+export function loopLock(): ptr {
+    return scheduler().loopLock
+}
+
+/** How many tasks the program spawned are still running or waiting. */
+export function liveTasks(): int {
+    return unsafe.atomicLoad<i64>(scheduler().live)
+}
+
+// ---------------------------------------------------------------------------
+// Fibers
+//
+// The event loop (loop.ore) runs each call of an async function as a fiber:
+// a task that is never queued on its own, but runs only when the task holding
+// the loop hands the loop to it, and hands it back when it awaits or ends.
+// Only one of them runs at a time, so async code is single-threaded, though
+// the fibers may run on any worker.
+
+/** A fiber that runs `body`; it must end with `endFiber`. */
+export function newFiber(body: () => void): Task {
+    const t = newTask(body, taskStackSize)
+    t.fiber = true
+    return t
+}
+
+/** Runs the fiber `t` until it hands back: the current task waits meanwhile. */
+//ore:noinline
+export function handTo(t: Task): void {
+    const self = current()
+    t.resumer = self
+    self.state = blocked
+    park(() => enqueueNext(t))
+}
+
+/** Hands the loop back to the task that ran this fiber, until it is run again. */
+//ore:noinline
+export function handBack(): void {
+    const self = current()
+    const resumer = self.resumer!
+    self.resumer = null
+    self.state = blocked
+    park(() => enqueueNext(resumer))
+}
+
+/** Ends the current fiber, handing the loop back. */
+//ore:noinline
+export function endFiber(): void {
+    const self = current()
+    const resumer = self.resumer!
+    self.resumer = null
+    self.state = done
+    park(() => enqueueNext(resumer))
+}
+
+/** Whether the current task holds the event loop: the program's top-level code or a fiber. */
+export function onLoop(): bool {
+    const w = workerBlock()
+    if (isNil(w)) return false
+    const t = unsafe.load<ptr>(unsafe.add(w, 32))
+    if (isNil(t)) return false
+    const task = unsafe.fromAddress<Task>(t)
+    return task.fiber || task === scheduler().mainTask
+}
+
+/** The task that runs the program's top-level code. */
+export function mainTask(): Task {
+    return scheduler().mainTask!
+}
+
+/** The scheduler's clock, in milliseconds: what `wakeAt` counts in. */
+export function nowMilliseconds(): int {
+    return now()
 }
 
 /** What runs when the program's top-level code ends: the tests that "ore:test" collected. */
@@ -1103,7 +1202,7 @@ export function wakeIn(t: Task, ms: int): void {
 }
 
 //ore:runtime ore_rt_sleep
-function sleep(ms: int): void {
+export function sleepMs(ms: int): void {
     const s = scheduler()
     const t = current()
     wakeIn(t, ms)

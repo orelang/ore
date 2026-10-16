@@ -281,6 +281,19 @@ declare namespace time {
         /** Whole words, as "2 minutes", instead of "2m". */
         long?: bool
     }
+
+    /** Runs `callback` once on the event loop, `ns` nanoseconds from now or later: `setTimeout`. */
+    function timeout(callback: () => void, ns: int): Timer
+    /** Runs `callback` on the event loop every `ns` nanoseconds, until cancelled: `setInterval`. */
+    function interval(callback: () => void, ns: int): Timer
+    /** Runs `callback` on the next turn of the event loop, before its timers: `setImmediate`. */
+    function immediate(callback: () => void): Timer
+    /** A promise fulfilled `ns` nanoseconds from now or later. */
+    function delay(ns: int): Promise<void>
+    /** Blocks the current task, or the event loop, for `ns` nanoseconds. */
+    function sleep(ns: int): void
+    /** A callback of `timeout`, `interval` or `immediate`; `cancel()` stops it, harmlessly after it ran. */
+    type Timer = { cancel(): void }
 }
 
 /**
@@ -302,6 +315,11 @@ declare namespace task {
     function select(cases: SelectCase[], otherwise?: () => void): void
     /** A select case that proceeds after `ms` milliseconds. */
     function after(ms: int, handler: () => void): SelectCase
+    /**
+     * Queues `job` on the event loop after the current code and the microtasks
+     * before it, ahead of any timer: `queueMicrotask`.
+     */
+    function microtask(job: () => void): void
 }
 
 /**

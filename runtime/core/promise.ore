@@ -1,0 +1,184 @@
+//ore:internal
+// Promises, and what async functions and `await` compile to.
+//
+// A promise is pending until it is resolved with a value; it never rejects:
+// a failure is a value, such as `Promise<int | Error>`. Its reactions run as
+// microtasks of the event loop (loop.ore), in the order of the ECMAScript
+// specification, so that the ticks between them are those of JavaScript.
+// Resolving a promise with another promise adopts it, two ticks later.
+//
+// Every method can be called from any task: one that does not hold the loop
+// posts its work to the loop, so that promises are only touched by the task
+// that holds it.
+
+import { drive, microtask, post } from "ore:runtime/loop"
+import { current, endFiber, handBack, handTo, newFiber, onLoop } from "ore:runtime/task"
+
+export class Promise<T> {
+    /** The value once fulfilled: one element. */
+    values: T[] = []
+    /** Whether it was resolved: with a value, or with a promise it adopts. */
+    private resolved = false
+    /** What runs once it is fulfilled, while pending. */
+    private reactions: (() => void)[] = []
+
+    /** Runs `executor` at once, with the function that resolves the promise. */
+    constructor(executor: (resolve: (value: T | Promise<T>) => void) => void) {
+        executor((value) => this.resolveWith(value))
+    }
+
+    /** Whether the promise is fulfilled. */
+    private get settled(): bool {
+        return this.values.length > 0
+    }
+
+    /** Resolves the promise, once: with a value, or with a promise it then follows. */
+    resolveWith(value: T | Promise<T>): void {
+        if (!onLoop()) {
+            post(() => this.resolveWith(value))
+            return
+        }
+        if (this.resolved) return
+        this.resolved = true
+        if (value instanceof Promise) {
+            // A job that calls `then` on it, as NewPromiseResolveThenableJob does.
+            const adopted = value
+            microtask(() => adopted.react(() => this.fulfill(adopted.values[0])))
+            return
+        }
+        this.fulfill(value)
+    }
+
+    fulfill(value: T): void {
+        this.values.push(value)
+        for (const r of this.reactions) microtask(r)
+        this.reactions = []
+    }
+
+    /** Runs `reaction` as a microtask once the promise is fulfilled. */
+    react(reaction: () => void): void {
+        if (!onLoop()) {
+            post(() => this.react(reaction))
+            return
+        }
+        if (this.settled) microtask(reaction)
+        else this.reactions.push(reaction)
+    }
+
+    /**
+     * A promise of what `onFulfilled` returns for this promise's value; when
+     * it returns a promise, the promise follows it.
+     */
+    then<R>(onFulfilled: (value: T) => R): Promise<Awaited<R>> {
+        const out = pending<Awaited<R>>()
+        this.react(() => out.resolveWith(onFulfilled(this.values[0])))
+        return out
+    }
+
+    /** A promise of the same value, that runs `onFinally` first. */
+    finally(onFinally: () => void): Promise<T> {
+        const out = pending<T>()
+        this.react(() => {
+            onFinally()
+            out.resolveWith(this.values[0])
+        })
+        return out
+    }
+
+    /** A promise fulfilled with `value`, or `value` itself when it is a promise. */
+    static resolve<U = void>(value: U | Promise<U>): Promise<U> {
+        if (value instanceof Promise) return value
+        const out = pending<U>()
+        out.resolveWith(value)
+        return out
+    }
+
+    /** A promise of the values of all `promises`, in their order, once each is fulfilled. */
+    static all<U>(promises: Promise<U>[]): Promise<U[]> {
+        const out = pending<U[]>()
+        const values: U[] = []
+        let left = promises.length
+        if (left === 0) {
+            out.resolveWith(values)
+            return out
+        }
+        for (let i = 0; i < promises.length; i++) {
+            const p = promises[i]
+            const at = i
+            p.react(() => {
+                while (values.length <= at) values.push(p.values[0])
+                values[at] = p.values[0]
+                left--
+                if (left === 0) out.resolveWith(values)
+            })
+        }
+        return out
+    }
+
+    /** A promise of the value of the first of `promises` to be fulfilled. */
+    static race<U>(promises: Promise<U>[]): Promise<U> {
+        const out = pending<U>()
+        for (const p of promises) p.react(() => out.resolveWith(p.values[0]))
+        return out
+    }
+
+    /** As `race`: promises do not reject, so the first fulfilled one is the first to settle. */
+    static any<U>(promises: Promise<U>[]): Promise<U> {
+        return Promise.race(promises)
+    }
+
+    /** The value of a fulfilled promise, for `await`. */
+    valueOf(): T {
+        return this.values[0]
+    }
+}
+
+/** A pending promise, resolved by its owner. */
+function pending<T>(): Promise<T> {
+    return new Promise<T>((resolve) => {})
+}
+
+// ---------------------------------------------------------------------------
+// Async functions
+
+/**
+ * Calls the body of an async function: as a fiber that runs at once, until
+ * its first await, and resolves the promise it returns with what it returns.
+ * From a task that does not hold the loop, the call is posted to the loop.
+ */
+export function asyncCall<T>(body: () => T | Promise<T>): Promise<T> {
+    const out = pending<T>()
+    const fiber = newFiber(() => {
+        out.resolveWith(body())
+        endFiber()
+    })
+    if (onLoop()) handTo(fiber)
+    else post(() => handTo(fiber))
+    return out
+}
+
+/**
+ * `await promise`: in an async function, hands the loop back until the
+ * promise is fulfilled; in the top-level code, runs the loop until then.
+ */
+export function awaitPromise<T>(promise: Promise<T>): T {
+    let ready = false
+    const self = current()
+    if (self.fiber) {
+        promise.react(() => handTo(self))
+        handBack()
+    } else {
+        promise.react(() => {
+            ready = true
+        })
+        drive(() => ready)
+    }
+    return promise.valueOf()
+}
+
+/** `await value` of a value that is no promise: one tick, as for a fulfilled promise. */
+export function awaitValue<T>(value: T): T {
+    const p = pending<T>()
+    p.resolveWith(value)
+    return awaitPromise(p)
+}

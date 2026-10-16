@@ -269,6 +269,8 @@ export function expr(g: Emitter, e: Expr): V {
         case "is-null": {
             const v = expr(g, e.value)
             if (e.value.type.kind === "unknown") return unknownIsNull(g, v)
+            // A value of the type `null` itself, as a type parameter given `void`, is always null.
+            if (e.value.type.kind === "null") return { ty: "i1", v: "true" }
             return isNullValue(g, unionOf(e.value.type), v)
         }
         case "optional":

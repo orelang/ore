@@ -11,7 +11,7 @@ const flood = () => {
 }
 time.timeout(() => console.log("timeout after flood"), 0)
 task.microtask(flood)
-await time.delay(20)
+await time.delay(20 * time.millisecond)
 
 // Immediates: a microtask from an immediate runs before the next immediate;
 // an immediate queued by an immediate waits for the next turn.
@@ -22,12 +22,12 @@ time.immediate(() => {
 })
 time.immediate(() => console.log("immediate 2"))
 task.microtask(() => time.immediate(() => console.log("immediate from microtask")))
-await time.delay(20)
+await time.delay(20 * time.millisecond)
 
 // Delays in sequence.
 await time.delay(0)
 console.log("delay 0")
-await time.delay(1)
+await time.delay(1 * time.millisecond)
 console.log("delay 1")
 
 // Blocking the loop: timers due meanwhile run after it, microtasks first, then
@@ -35,8 +35,8 @@ console.log("delay 1")
 time.timeout(() => {
     console.log("timeout 10")
     time.timeout(() => console.log("timeout 15, queued before sleep"), 5)
-    time.sleep(30)
+    time.sleep(30 * time.millisecond)
     task.microtask(() => console.log("microtask after sleep"))
     console.log("slept")
-}, 10)
-time.timeout(() => console.log("timeout 25, due during sleep"), 25)
+}, 10 * time.millisecond)
+time.timeout(() => console.log("timeout 25, due during sleep"), 25 * time.millisecond)

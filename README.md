@@ -435,7 +435,7 @@ In short, against the fastest of the five in each benchmark:
 | 10. Compiler in Ore: the whole toolchain (`ore` command, LLVM through its C API, tests), bootstrapped; no TypeScript left | done |
 | 11. Own garbage collector: mark-sweep with parallel marking (done); precise heap, concurrent marking | in progress |
 | 11.5. TypeScript gaps: tuples, spreads, `static`, overloads, optional properties, regular expressions, … ([roadmap](docs/roadmap.md)) | in progress |
-| 12. Promises and `async`/`await` | planned |
+| 12. Promises and `async`/`await`: the JavaScript event loop on fibers, timers, `task.microtask` | done |
 
 ### Known limitations
 
@@ -471,7 +471,7 @@ Every directory below has a README with the details.
 | `runtime/std` | Built-in declarations (`builtin.d.ore`) and standard modules (`ore:test`, `ore:sync`, `ore:net`, `ore:crypto`, `ore:path`) |
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |
-| `tests/async` | Async tests with their expected output, waiting for async |
+| `tests/async` | Async programs, with expected output recorded from Bun |
 | `bench` | Benchmarks against C, Go, Bun and Node, and their results |
 | `tests/bench` | Micro-benchmarks of the runtime |
 | `tests/runner` | The test runner (`ci/test.sh`), written in Ore |

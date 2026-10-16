@@ -11,7 +11,7 @@ import { Checker } from "./base"
 import {
     builtinScope,
     globalClasses,
-    globalClassModule,
+    globalClassModules,
     globalTypeModule,
     namespaceAtPath,
     namespaceModule,
@@ -136,8 +136,9 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
                 builtins.scope.declareType(generic.name, new TypeSymbol(types.never, stmt, generic))
             }
         }
-        if (m.source.path !== globalClassModule) continue
-        for (const name of globalClasses) {
+        for (let i = 0; i < globalClasses.length; i++) {
+            if (m.source.path !== globalClassModules[i]) continue
+            const name = globalClasses[i]
             const type = m.scope.ownType(name)
             const value = m.scope.ownValue(name)
             if (type !== null) builtins.scope.declareType(name, type)
