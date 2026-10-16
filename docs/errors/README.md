@@ -450,11 +450,11 @@ The codes are grouped by the part of the language they concern:
 | [ORE6071](ORE6071.md) | A generic function value must be instantiated: give its type arguments or call it. |
 | [ORE6072](ORE6072.md) | '…' calls itself, so it needs a return type annotation. |
 | [ORE6073](ORE6073.md) | Module '…' has already exported a member named '…'. Consider explicitly re-exporting to resolve the ambiguity. |
-| [ORE6074](ORE6074.md) | A generator function needs a return type annotation, such as 'Generator<T>'. |
-| [ORE6075](ORE6075.md) | The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '…'. |
-| [ORE6076](ORE6076.md) | 'yield' is only allowed in generator functions. |
-| [ORE6077](ORE6077.md) | 'yield' without a value yields null, which type '…' does not include. |
-| [ORE6078](ORE6078.md) | 'yield*' takes a generator of the same value and next types: '…' and '…'. |
+| [ORE6079](ORE6079.md) | A generator function needs a return type annotation, such as 'Generator<T>'. |
+| [ORE6080](ORE6080.md) | The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '…'. |
+| [ORE6081](ORE6081.md) | 'yield' is only allowed in generator functions. |
+| [ORE6082](ORE6082.md) | 'yield' without a value yields null, which type '…' does not include. |
+| [ORE6083](ORE6083.md) | 'yield*' takes a generator of the same value and next types: '…' and '…'. |
 
 ## ORE7xxx: Statements
 
@@ -504,4 +504,4 @@ The codes are grouped by the part of the language they concern:
 | [ORE7042](ORE7042.md) | A rest element must be last in a destructuring pattern. |
 | [ORE7043](ORE7043.md) | A rest element cannot have a default value. |
 | [ORE7044](ORE7044.md) | The rest of an object pattern must be a name, not a pattern. |
-| [ORE7045](ORE7045.md) | Type '…' is not iterable: it needs a '[Symbol.iterator]()' method. |
+| [ORE7046](ORE7046.md) | Type '…' is not iterable: it needs a '[Symbol.iterator]()' method. |
