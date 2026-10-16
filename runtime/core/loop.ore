@@ -303,16 +303,23 @@ function kept(): bool {
     return false
 }
 
-/** Runs the queued microtasks, and those they queue, in order. */
-function runMicrotasks(): void {
+/**
+ * Runs the queued microtasks, and those they queue, in order; true when it
+ * stops early because `done` (of a top-level await) became true: the
+ * microtask that resumes the top-level code is one of them, as in
+ * JavaScript, and those after it wait until it awaits again or ends.
+ */
+function runMicrotasks(done: (() => bool) | null): bool {
     const l = loop()
     while (l.head < l.microtasks.length) {
         const job = l.microtasks[l.head]
         l.head++
         job()
+        if (done !== null && done()) return true
     }
     l.microtasks = []
     l.head = 0
+    return false
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +430,7 @@ function sleep(deadline: int, needsTask: bool): bool {
 export function drive(done: (() => bool) | null): void {
     const l = loop()
     while (true) {
-        runMicrotasks()
+        if (runMicrotasks(done)) return
         if (done !== null && done()) return
         if (runInbox()) continue
         // Timers and immediates unref'd run only while something else keeps
@@ -438,11 +445,18 @@ export function drive(done: (() => bool) | null): void {
         if (l.immediates.length > 0) {
             const batch = l.immediates
             l.immediates = []
-            for (const t of batch) {
+            for (let i = 0; i < batch.length; i++) {
+                const t = batch[i]
                 if (t.cancelled) continue
                 t.cancelled = true
                 t.callback()
-                runMicrotasks()
+                if (runMicrotasks(done)) {
+                    // The rest of the batch runs before the immediates queued since.
+                    const rest = batch.slice(i + 1)
+                    for (const later of l.immediates) rest.push(later)
+                    l.immediates = rest
+                    return
+                }
             }
             continue
         }
@@ -461,7 +475,7 @@ export function drive(done: (() => bool) | null): void {
                 t.cancelled = true
             }
             t.callback()
-            runMicrotasks()
+            if (runMicrotasks(done)) return
             ran = true
         }
         if (ran) continue
