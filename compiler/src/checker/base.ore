@@ -9,6 +9,7 @@ import {
     Bind,
     BindLocal,
     Block,
+    BoolLit,
     CallValue,
     Closure,
     ExprStmt,
@@ -42,6 +43,7 @@ import {
     intRange,
     isNumberLiterals,
     isNumeric,
+    isBoolLiteral,
     isStringLike,
     isSubclass,
     membersOf,
@@ -325,9 +327,11 @@ export class Checker {
             if (lit.kind === "NullKeyword") return types.null
             if (lit.kind === "StringLiteral") return this.literal(stringText(lit))
             if (lit.kind === "NumericLiteral") return this.numberLiteral(lit.text)
+            if (lit.kind === "TrueKeyword") return types.boolTrue
+            if (lit.kind === "FalseKeyword") return types.boolFalse
             const operand = lit.kind === "PrefixUnaryExpression" ? lit.child("operand") : null
             if (operand !== null && operand.kind === "NumericLiteral") return this.numberLiteral(`-${operand.text}`)
-            this.error(node, "Only string and number literal types are supported yet.")
+            this.error(node, "Only string, number and boolean literal types are supported yet.")
             return null
         }
         if (node.kind === "UnionType") {
@@ -707,6 +711,12 @@ export class Checker {
         // `number` includes every numeric literal type.
         if (members_.some((m) => m.kind === "float" && m.bits === 64))
             members_ = members_.filter((m) => m.kind !== "number-literal")
+        // `boolean` is `true | false`, and includes each of them.
+        const bools = members_.filter((m) => m.kind === "bool")
+        if (bools.length > 1) {
+            members_ = members_.filter((m) => m.kind !== "bool")
+            members_.push(types.bool)
+        }
         // A class includes its subclasses: `A | B` is `A` when `B extends A`.
         if (members_.filter((m) => m.kind === "struct").length > 1) {
             for (const m of members_) {
@@ -871,6 +881,19 @@ export class Checker {
                         }
                     }
                 }
+                // A boolean literal expression has the literal type its context asks for.
+                if (expr.k === "bool") {
+                    const wanted = expr.value ? "true" : "false"
+                    for (const m of targetMembers) {
+                        if (m.kind === "bool" && m.literal === wanted) {
+                            const retyped: Expr = new BoolLit(m, expr.value)
+                            return target.kind === "union" ? new Recast(target, retyped) : retyped
+                        }
+                    }
+                }
+                // Boolean literal types widen to `boolean`.
+                if (target.kind === "bool" && target.literal === "" && from.kind === "bool")
+                    return new Recast(target, expr)
                 // String literal types widen to `string`, and numeric literal types to `number`.
                 if (target.kind === "string" && membersOf(from).every(isStringLike)) return new Recast(target, expr)
                 if (target.kind === "float" && target.bits === 64 && isNumberLiterals(from))
@@ -938,7 +961,14 @@ export class Checker {
                         return poison(target)
                     }
                 }
-                let message = `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}'.`
+                // A boolean literal given for a boolean literal type is named as its literal type, as TypeScript does.
+                const fromText =
+                    expr.k === "bool" && targetMembers.some(isBoolLiteral)
+                        ? expr.value
+                            ? "true"
+                            : "false"
+                        : typeToString(from)
+                let message = `Type '${fromText}' is not assignable to type '${typeToString(target)}'.`
                 if (isNumeric(from) && isNumeric(target))
                     message += ` Use an explicit conversion: '${typeToString(target)}(...)'.`
                 else if ((isNumeric(from) || from.kind === "bigint") && (isNumeric(target) || target.kind === "bigint"))

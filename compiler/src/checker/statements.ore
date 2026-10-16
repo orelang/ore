@@ -1281,8 +1281,11 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
             narrowable = leaves
         }
     }
-    // A switch over a union of literals that has a case for each is exhaustive.
+    // A switch over a union of literals that has a case for each is exhaustive;
+    // `boolean` is `true | false`.
     const exhaustive = membersOf(type).every((m) => {
+        if (m.kind === "bool" && m.literal === "")
+            return allCases.has(literalKey(types.boolTrue)!) && allCases.has(literalKey(types.boolFalse)!)
         const key = literalKey(m)
         return key !== null && allCases.has(key)
     })
@@ -1715,6 +1718,16 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             )
         }
     }
+    // A reference of a boolean type, such as `r.ok`, is a test that it is `true`.
+    if (isIdentifier(node) || node.kind === "PropertyAccessExpression") {
+        const expr = checkCondition(c, node, scope)
+        const type = c.info.types.get(node)
+        if (type === null || type.kind !== "bool") return new Condition(expr, [], [])
+        const values = new Set<string>()
+        values.add(literalKey(types.boolTrue)!)
+        const pair = literalFacts(c, node, values, scope)
+        return new Condition(expr, pair.yes, pair.no)
+    }
     return new Condition(checkCondition(c, node, scope), [], [])
 }
 
@@ -1753,8 +1766,14 @@ function covers(type: Type, values: Set<string>): string {
     const keys: string[] = []
     for (const m of members_) {
         const key = literalKey(m)
+        if (key === null && m.kind === "bool" && members_.length === 1) continue
         if (key === null) return "both"
         keys.push(key)
+    }
+    // `boolean` is `true | false`.
+    if (keys.length === 0 && members_.every((m) => m.kind === "bool")) {
+        keys.push(literalKey(types.boolTrue)!)
+        keys.push(literalKey(types.boolFalse)!)
     }
     if (keys.every((k) => values.has(k))) return "yes"
     if (keys.every((k) => !values.has(k))) return "no"
@@ -1768,6 +1787,7 @@ function covers(type: Type, values: Set<string>): string {
 function literalKey(type: Type): string | null {
     if (type.kind === "literal") return type.value
     if (type.kind === "number-literal") return `\n#${type.value}`
+    if (type.kind === "bool" && type.literal !== "") return `\n!${type.literal}`
     return null
 }
 
@@ -1776,6 +1796,8 @@ function literalNodeKey(c: Checker, node: Node): string | null {
     if (node.kind === "ParenthesizedExpression") return literalNodeKey(c, expression(node))
     if (isStringLiteralNode(node)) return stringText(node)
     if (node.kind === "NumericLiteral") return literalKey(c.numberLiteral(node.text))
+    if (node.kind === "TrueKeyword") return literalKey(types.boolTrue)
+    if (node.kind === "FalseKeyword") return literalKey(types.boolFalse)
     if (node.kind === "PrefixUnaryExpression" && prefixOperator(node, c.sourceOf(node).text) === "-") {
         const inner = operand(node)
         if (inner.kind === "NumericLiteral") return literalKey(c.numberLiteral(`-${inner.text}`))

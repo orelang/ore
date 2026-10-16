@@ -53,6 +53,33 @@ those numbers. They are subtypes of `number`:
   unions of string literals, and a `switch` with a case for each number is
   exhaustive.
 
+## Boolean literal types
+
+`true` and `false` are types too, each with one value; `boolean` is
+`true | false`, so a union of both, or of either with `boolean`, is
+`boolean`:
+
+- Representation: a `bool`, as `boolean` is.
+- A boolean literal expression fits the literal type of its value:
+  `const t: true = true`; `const f: true = false` and assigning a `boolean`
+  to `true` are errors. A value of a boolean literal type widens to
+  `boolean`.
+- A field of a boolean literal type discriminates a union of objects, as
+  in the Result pattern:
+
+  ```ts
+  type Result = { ok: true; value: int } | { ok: false; error: string }
+
+  function show(r: Result): string {
+      if (r.ok) return `value ${r.value}`
+      return `error ${r.error}`
+  }
+  ```
+
+  `if (r.ok)`, `if (!r.ok)`, `r.ok === false` and `switch (r.ok)` with
+  `case true` and `case false` narrow `r`, and a `switch` on a `boolean`
+  with both cases is exhaustive.
+
 ## Conversions
 
 There are no implicit conversions between distinct numeric types. Conversions

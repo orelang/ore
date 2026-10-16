@@ -5,6 +5,11 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Boolean literal types: `true` and `false` are types, and `boolean` is
+  their union. A field of such a type discriminates a union of objects, as
+  in the Result pattern `{ ok: true; value: T } | { ok: false; error: E }`:
+  `if (r.ok)`, `if (!r.ok)`, `r.ok === false` and `switch (r.ok)` narrow
+  `r`.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

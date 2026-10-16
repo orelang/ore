@@ -226,7 +226,9 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
 - `x !== null` and `x === null`;
 - `x === "lit"` and `x === 1` for a union of literal types, and
   `x.kind === "lit"` for a union of objects whose `kind` fields have
-  literal types (discriminated unions);
+  literal types (discriminated unions), with `x.ok === true`, or the
+  test `if (x.ok)` itself, when the field has a boolean literal type
+  (see [boolean literal types](02-types.md#boolean-literal-types));
 - `typeof x === "string" | "number" | "boolean" | "object"`;
 - `x instanceof C` for a class `C` (also on interface values, which then
   narrow to the class, and on instances of a base class of `C`) and
