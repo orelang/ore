@@ -263,6 +263,43 @@ export function fromCodePoint(...points: int[]): string {
     return fromUnits(units)
 }
 
+/**
+ * `String.raw(template, ...substitutions)`: the raw strings of a template
+ * with the substitutions between them, as in JavaScript; substitutions past
+ * the last gap are left out. A `TemplateStringsArray` passes its `raw`.
+ * `` String.raw`...` `` the checker writes as a template of the raw strings.
+ */
+export function raw(template: { readonly raw: string[] }, ...substitutions: string[]): string {
+    const strings = template.raw
+    const parts: string[] = []
+    for (let i = 0; i < strings.length; i++) {
+        parts.push(strings[i])
+        if (i + 1 < strings.length && i < substitutions.length) parts.push(substitutions[i])
+    }
+    return joinWith(parts, "")
+}
+
+// Tagged templates. A `TemplateStringsArray` is the array of the cooked
+// strings with a header one word longer than an array's (see array.ore):
+// the array of the raw strings. Array operations see a plain array.
+
+/** The bytes of an array header. */
+const arrayHeader = 32
+
+/** The strings object of a tagged template site, created once (see checker/templates.ore). */
+//ore:noinline
+function templateObject(cooked: (string | null)[], raw: string[]): TemplateStringsArray {
+    const header = unsafe.alloc(arrayHeader + 8)
+    unsafe.copy(header, unsafe.addressOf(cooked), arrayHeader)
+    unsafe.store<ptr>(unsafe.add(header, arrayHeader), unsafe.addressOf(raw))
+    return unsafe.fromAddress<TemplateStringsArray>(header)
+}
+
+/** `strings.raw`: the array after the header. */
+function templateRaw(strings: TemplateStringsArray): string[] {
+    return unsafe.fromAddress<string[]>(unsafe.load<ptr>(unsafe.add(unsafe.addressOf(strings), arrayHeader)))
+}
+
 /** An offset clamped to the string, as JavaScript clamps positions. */
 function clamp(at: int, length: int): int {
     return at < 0 ? 0 : at > length ? length : at

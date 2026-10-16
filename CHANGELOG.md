@@ -5,6 +5,12 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Tagged templates: `` tag`a${x}b` `` calls the tag with a
+  `TemplateStringsArray` (the cooked strings, `null` for an invalid escape,
+  and their `raw` text) and the substitutions, checked as a call against
+  the tag's parameters. Each site passes the same strings object every
+  time. `String.raw` works as a tag and as a function of `{ raw }` and
+  strings.
 - `Date` is a global class, JavaScript's, written in Ore
   (runtime/core/date.ore): the constructors (`new Date()`, `new Date(ms)`,
   `new Date("2024-10-15T12:00Z")`, `new Date(2024, 9, 15, 12)`), the

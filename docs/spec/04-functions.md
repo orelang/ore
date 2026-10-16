@@ -65,6 +65,38 @@
   is null. As values, top-level functions and methods take all their
   parameters.
 
+## Tagged templates
+
+- `` tag`a${x}b${y}c` `` calls `tag(strings, x, y)`, as in JavaScript: the
+  tag is any function value, function, method or closure, and the call is
+  checked like any other, so the tag's parameters type the substitutions
+  (`function tag(s: TemplateStringsArray, ...values: int[])`, or fixed
+  parameters such as `(s: TemplateStringsArray, name: string, n: f64)`).
+  The tag is evaluated first, then the substitutions in order.
+- `strings` is a `TemplateStringsArray`: an array of the cooked strings
+  (`["a", "b", "c"]`, escapes resolved), with `strings.raw`, a `string[]`
+  of the text as written (`\n` stays two characters; line breaks are `\n`).
+  Its elements are `string | null`: a tagged template may have an escape
+  that is not valid, such as `\unicode` or `\xZ`, whose cooked string is
+  `null` where JavaScript has `undefined`; its raw text keeps it. Untagged
+  templates do not check their escapes yet.
+- Each site has one strings object, created when the program starts, before
+  the top-level code of its modules: every evaluation of the site passes the
+  same object, so `===` tells sites apart. A generic function has one per
+  instance.
+- A `TemplateStringsArray` converts to `(string | null)[]` as it is, and has
+  the array's methods, whose results are plain arrays. It converts to an
+  object type with only `raw: string[]`, as `String.raw` takes. Only a
+  tagged template makes one: an array literal is not one (ORE2033), and it
+  has no zero value, cannot be a rest parameter's type (ORE6039) and is not
+  read from JSON (ORE2049).
+- `` String.raw`...` `` is the raw strings with the substitutions between
+  them, which it formats as a template does (`` String.raw`\d+${n}` `` is
+  `"\\d+"` and the digits of `n`). Called as a function,
+  `String.raw(template, ...substitutions)` takes `{ raw: string[] }` or a
+  `TemplateStringsArray` and strings: Ore does not convert other values to
+  strings. Type arguments on a tag (`` tag<T>`...` ``) are not supported.
+
 ## Array methods
 
 Arrays have the methods of JavaScript's `Array.prototype`, with its

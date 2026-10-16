@@ -124,6 +124,7 @@ import {
 import { type Operand, errorOperand, UntypedInt } from "./operand"
 import { capture, checkClosure, disposeCall } from "./statements"
 import { type ValueSymbol, GenericFuncSymbol, LocalSymbol, Scope } from "./symbols"
+import { plainArray } from "./templates"
 
 export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type | null = null): Operand {
     const callee = expression(node)
@@ -2216,11 +2217,13 @@ function numberMethod(c: Checker, value: Expr, type: Type, name: string, node: N
     return typed(new BuiltinCall(types.string, "Number.toExponential", [float, arg, digitsGiven]))
 }
 
-export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, scope: Scope): Operand {
+export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node, scope: Scope): Operand {
     const nameId = nameNode(callee)
     const name = nameId.text
     const args = argsOf(node)
     const typeArgs = typeArguments(node)
+    // The methods of a `TemplateStringsArray` are those of its array, whose copies are plain arrays.
+    const value = plainArray(receiver)
     const type = value.type
     if (type.kind === "unknown") return c.fail(nameId, unknownObject)
 

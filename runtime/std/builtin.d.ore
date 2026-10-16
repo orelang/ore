@@ -235,7 +235,7 @@ declare namespace BigInt {
 }
 
 /**
- * Strings from character codes, as in JavaScript. Written in Ore, in
+ * Strings from character codes and raw templates, as in JavaScript. Written in Ore, in
  * runtime/core/string.ore, whose exports are members of the namespace.
  */
 declare namespace String {
@@ -250,7 +250,18 @@ declare namespace String {
      * Surrogates combine as in `fromCharCode`.
      */
     function fromCodePoint(...points: int[]): string
+    /**
+     * The raw strings of a template with the substitutions between them:
+     * `` String.raw`\d+\.${ext}` `` keeps each backslash, and formats
+     * the substitutions as a template does. Called as a function, it takes
+     * an object with the raw strings, or a `TemplateStringsArray`.
+     */
+    function raw(template: { readonly raw: string[] }, ...substitutions: string[]): string
 }
+
+// `TemplateStringsArray`, the type of the strings a tagged template passes
+// to its tag, is built into the checker: an array of `string | null` (null
+// for a string with an invalid escape) with a field `raw: string[]`.
 
 /**
  * The static methods of `Map`. Written in Ore, in runtime/core/collections.ore,

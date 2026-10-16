@@ -166,6 +166,7 @@ import {
     LocalSymbol,
     Scope,
 } from "./symbols"
+import { checkTaggedTemplate, templateRawOf } from "./templates"
 
 /**
  * Checks an expression. `expected` is the type required by the context; it
@@ -239,6 +240,7 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
     if (k === "AsExpression")
         return c.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
     if (k === "TemplateExpression") return checkTemplate(c, node, scope)
+    if (k === "TaggedTemplateExpression") return checkTaggedTemplate(c, node, scope, expected)
     if (k === "PropertyAccessExpression") return checkProperty(c, node, scope)
     if (k === "ElementAccessExpression") return checkElement(c, node, scope)
     if (k === "NullKeyword") return typed(nullOperand)
@@ -1240,7 +1242,8 @@ export function checkArrayElements(
     const arrays: ArrayType[] = []
     if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "array") arrays.push(m)
     if (arrays.length === 1) {
-        const type = arrays[0]
+        // Only a tagged template makes a `TemplateStringsArray`: a literal is an array of its elements.
+        const type = arrays[0].template ? arrayOf(arrays[0].elem) : arrays[0]
         const values: Expr[] = []
         for (const e of elems) values.push(c.coerce(checkExpr(c, e, scope, type.elem), type.elem, e))
         return typed(new ArrayLit(type, values))
@@ -1891,6 +1894,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     const type = value.type
     if (type.kind === "unknown") return c.fail(nameNode_, unknownObject)
     if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
+    if (name === "raw" && type.kind === "array" && type.template) return typed(templateRawOf(c, value))
     if (name === "length" && type.kind === "struct" && type.tuple) return new UntypedInt(bigOf(type.fields.length))
     if (name === "length" && membersOf(type).every(isStringLike))
         return typed(new Len(types.i64, new Recast(types.string, value)))

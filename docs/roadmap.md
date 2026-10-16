@@ -63,6 +63,8 @@ exports, type assertions (Ore converts: `i32(x)`).
     operators, conversions and the namespace `BigInt` (done);
   - overloads (several signatures of one function; done for top-level
     functions);
+  - tagged templates with `TemplateStringsArray` and `String.raw` (done;
+    no type arguments on a tag);
   - generic closures, nested generic functions (done: nested declarations
     and function literals of a `const`, called only; generic function
     types as values are not supported); default type arguments
@@ -88,8 +90,7 @@ exports, type assertions (Ore converts: `i32(x)`).
   `\p{...}` knows only the letter and number categories and four scripts).
 - The methods of `String.prototype` from MDN, on byte offsets, with
   Unicode's full case mappings and the four normalization forms (done;
-  `localeCompare` compares by code point, `String.raw` needs tagged
-  templates).
+  `localeCompare` compares by code point).
 - `Date` from MDN, with the local time zone from TZif files (done;
   `toLocale*String` know only `en-US`, and time zone names in `toString`
   only the common abbreviations).

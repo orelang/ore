@@ -537,7 +537,8 @@ functions.
   `toWellFormed()` replaces each byte that is not part of a valid character
   by U+FFFD; the other methods keep such bytes as they are. `repeat` with a
   negative count panics (JavaScript's `RangeError`).
-- `String.raw` is not supported: Ore has no tagged templates.
+- `String.raw` is the raw text of a template; see
+  [Tagged templates](04-functions.md#tagged-templates).
 - `String.fromCharCode(...codes)` makes a string of UTF-16 code units, each
   taken modulo 2^16, and `String.fromCodePoint(...points)` of code points, as
   in JavaScript: a high surrogate followed by a low surrogate is one

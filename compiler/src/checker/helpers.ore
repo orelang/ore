@@ -463,6 +463,8 @@ export function hasZeroValue(type: Type): bool {
         for (const m of type.members) if (m.kind === "null") return true
         return false
     }
+    // Only a tagged template makes a `TemplateStringsArray`.
+    if (type.kind === "array" && type.template) return false
     return (
         type.kind !== "struct" &&
         type.kind !== "interface" &&
@@ -484,7 +486,12 @@ export function hashable(type: Type): bool {
  */
 export function zeroNeedsInit(type: Type): bool {
     if (type.kind === "union") return hasZeroValue(type) && unionRepr(type).k === "tagged"
-    return type.kind === "string" || type.kind === "array" || type.kind === "map" || type.kind === "set"
+    return (
+        type.kind === "string" ||
+        (type.kind === "array" && !type.template) ||
+        type.kind === "map" ||
+        type.kind === "set"
+    )
 }
 
 export function zeroValue(type: Type): Expr {
@@ -866,6 +873,8 @@ export function jsonProblem(type: Type, seen: Set<StructType> | null = null): st
         case "null":
             return null
         case "array":
+            // Only a tagged template makes the strings with their raw strings: JSON has an array of them.
+            if (type.template) return `Type '${typeToString(type)}' cannot be converted to or from JSON.`
             return jsonProblem(type.elem, visited)
         case "map":
             if (!isStringLike(type.key))

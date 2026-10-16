@@ -87,6 +87,14 @@ export function paramsToString(t: FuncType): string {
 export class ArrayType {
     readonly kind: "array" = "array"
     constructor(readonly elem: Type) {}
+
+    /**
+     * `TemplateStringsArray`, of elements `string | null`: the strings a
+     * tagged template passes to its tag. Its header has the array of raw
+     * strings after it (`templateObject` in runtime/core/string.ore), so it
+     * is a type of its own, which converts to the array of its elements.
+     */
+    public template = false
 }
 
 export class Field {
@@ -446,7 +454,7 @@ function sameIn(a: Type, b: Type, assumed: Assumed | null): bool {
     if (a === b) return true
     if (a.kind === "literal" && b.kind === "literal") return a.value === b.value
     if (a.kind === "number-literal" && b.kind === "number-literal") return a.value === b.value
-    if (a.kind === "array" && b.kind === "array") return sameIn(a.elem, b.elem, assumed)
+    if (a.kind === "array" && b.kind === "array") return a.template === b.template && sameIn(a.elem, b.elem, assumed)
     if (a.kind === "map" && b.kind === "map") return sameIn(a.key, b.key, assumed) && sameIn(a.value, b.value, assumed)
     if (a.kind === "set" && b.kind === "set") return sameIn(a.elem, b.elem, assumed)
     if (a.kind === "chan" && b.kind === "chan") return sameIn(a.elem, b.elem, assumed)
@@ -474,6 +482,7 @@ export function typeToString(t: Type): string {
         case "func":
             return `(${paramsToString(t)}) => ${typeToString(t.result)}`
         case "array":
+            if (t.template) return "TemplateStringsArray"
             return t.elem.kind === "func" ? `(${typeToString(t.elem)})[]` : `${typeToString(t.elem)}[]`
         case "struct": {
             if (t.name !== null) return t.name
@@ -545,7 +554,7 @@ export function intRange(t: IntType): IntRange {
 export function typeKey(type: Type): string {
     switch (type.kind) {
         case "array":
-            return `${typeKey(type.elem)}[]`
+            return type.template ? "TemplateStringsArray" : `${typeKey(type.elem)}[]`
         case "struct":
             return `#${type.id}`
         case "interface":

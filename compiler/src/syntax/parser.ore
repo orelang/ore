@@ -1271,6 +1271,12 @@ export class Parser {
             } else if (this.at("OpenParenToken")) {
                 const args = this.arguments()
                 expression = this.make("CallExpression", start).add(expression, "expression").addAll(args, "arguments")
+            } else if (this.at("NoSubstitutionTemplateLiteral") || this.at("TemplateHead")) {
+                // A tagged template: the tag is called with the strings and the substitutions.
+                const template = this.at("TemplateHead") ? this.template() : this.tokenNode()
+                expression = this.make("TaggedTemplateExpression", start)
+                    .add(expression, "tag")
+                    .add(template, "template")
             } else if (this.at("LessThanToken")) {
                 const typeArguments = this.typeArgumentsInExpression()
                 if (typeArguments === null) break

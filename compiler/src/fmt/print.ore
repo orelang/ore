@@ -296,9 +296,10 @@ function isObjectProperty(n: ENode | null): bool {
 }
 
 function isTemplateOnItsOwnLine(n: ENode): bool {
-    if (n.type !== "TemplateLiteral") return false
+    const template = n.type === "TaggedTemplateExpression" ? n.at("quasi") : n
+    if (template.type !== "TemplateLiteral") return false
     let multiline = false
-    for (const q of n.all("quasis")) if (q.raw.includes("\n")) multiline = true
+    for (const q of template.all("quasis")) if (q.raw.includes("\n")) multiline = true
     return multiline && !hasNewline(ctx().text, locStart(n), true)
 }
 
@@ -961,6 +962,8 @@ function printNode(n: ENode, args: Args): Doc {
             return literalText(n.raw)
         case "TemplateLiteral":
             return printTemplateLiteral(n)
+        case "TaggedTemplateExpression":
+            return c([pk(n, "tag"), lineSuffixBoundary, pk(n, "quasi")])
         case "PrivateIdentifier":
             return t("#" + n.name)
         case "Literal":
