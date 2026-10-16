@@ -1,0 +1,31 @@
+// File I/O: writes n lines of comma-separated numbers to a file in a new
+// temporary directory, reads the file back, parses the second number of each
+// line and sums them, then removes the directory. The file is written and
+// read whole: Ore has no file handles for writing or reading a file a piece
+// at a time yet.
+
+const n = process.args.length > 0 ? (Number.parseInt(process.args[0]) ?? 3000000) : 3000000
+
+function check(e: Error | null): void {
+    if (e !== null) process.panic(e.message)
+}
+
+const dir = fs.mkdtemp("ore-bench-fileio-")
+if (dir instanceof Error) process.panic(dir.message)
+const path = `${dir}/numbers.csv`
+
+let out = ""
+for (let i = 0; i < n; i++) out += `${i},${(i * 7919) % 1000003}\n`
+check(fs.writeFile(path, out))
+
+const text = fs.readFile(path)
+if (text instanceof Error) process.panic(text.message)
+let lines = 0
+let sum = 0
+for (const line of text.split("\n")) {
+    if (line.length === 0) continue
+    lines++
+    sum += Number.parseInt(line.slice(line.indexOf(",") + 1)) ?? 0
+}
+check(fs.remove(dir, true))
+console.log(lines, text.length, sum)
