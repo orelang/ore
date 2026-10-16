@@ -3,7 +3,7 @@
 import { dirname, join, resolve } from "ore:path"
 import { Diagnostic } from "../syntax/diagnostic"
 import { importsText, moduleSpecifier, stringValue } from "../syntax/imports"
-import { parse } from "../syntax/parse"
+import { parse, type ParseResult } from "../syntax/parse"
 import { type Source } from "../syntax/source"
 import { findPackageRoot, isFile, resolveImport, runtimeModules, stdModules } from "./resolve"
 
@@ -55,6 +55,12 @@ export class LoadOptions {
     overrides = new Map<string, string>()
     /** Name modules by absolute paths instead of paths relative to the working directory. */
     absolutePaths = false
+    /**
+     * Parses of the embedded "ore:" modules, kept across loads: a module
+     * found here is not parsed again, and one parsed is added. The language
+     * server keeps one for its session; an overridden module is parsed anew.
+     */
+    parsed = new Map<string, ParseResult>()
 }
 
 /**
@@ -104,13 +110,26 @@ class Loader {
         return fs.readFile(path)
     }
 
+    /** Parses the file at a path, or reuses its parse when it is an "ore:" module parsed before. */
+    private parse(path: string, display: string): ParseResult | Error {
+        const reusable = stdModules.has(path) && !this.options.overrides.has(path)
+        if (reusable) {
+            const known = this.options.parsed.get(path)
+            if (known !== null) return known
+        }
+        const text = this.read(path)
+        if (text instanceof Error) return text
+        const parsed = parse(display, text)
+        if (reusable) this.options.parsed.set(path, parsed)
+        return parsed
+    }
+
     /** Parses the module at a path (or an "ore:" name) once, then the modules it imports. */
     visit(path: string, display: string): Source | Error {
         const existing = this.byPath.get(path)
         if (existing !== null) return existing
-        const text = this.read(path)
-        if (text instanceof Error) return text
-        const parsed = parse(display, text)
+        const parsed = this.parse(path, display)
+        if (parsed instanceof Error) return parsed
         const source = parsed.source
         this.byPath.set(path, source)
         for (const d of parsed.diagnostics) this.diagnostics.push(d)

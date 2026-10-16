@@ -14,7 +14,7 @@ import { typeToString, type Type } from "../ir/types"
 import { LoadOptions, loadProgram } from "../project/load"
 import { stdModules } from "../project/resolve"
 import { type Node } from "../syntax/ast"
-import { parse as parseFile } from "../syntax/parse"
+import { parse as parseFile, type ParseResult } from "../syntax/parse"
 import { parse } from "../syntax/parser"
 import { type Source } from "../syntax/source"
 import { offsetAt, positionAt, rangeOf, type Position, type Range } from "./text"
@@ -165,6 +165,9 @@ const headed = [
     "Constructor",
 ]
 
+/** The runtime and the standard library, parsed once per session and reused by every analysis. */
+const parsedModules = new Map<string, ParseResult>()
+
 /** The parent of each node of a tree. */
 class Parents {
     readonly of = new Map<Node, Node>()
@@ -210,6 +213,7 @@ class CheckedAnalysis {
         }
         const options = new LoadOptions()
         options.absolutePaths = true
+        options.parsed = parsedModules
         // A module of the runtime or the standard library is checked as the
         // module it is, `ore:...`, which every program loads or may import.
         const module = moduleName(absolute)
