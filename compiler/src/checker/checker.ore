@@ -5,6 +5,7 @@ import { Block, Func } from "../ir/nodes"
 import { type Type, FuncType, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { hasModifier, members, nameNode, typeParameters } from "../syntax/nodes"
+import { type Source } from "../syntax/source"
 import { type Program } from "../project/load"
 import { Checker } from "./base"
 import {
@@ -58,9 +59,16 @@ class Body {
     ) {}
 }
 
-/** Checks a program of modules into one IR module. */
-export function check(program: Program): CheckResult {
+/**
+ * Checks a program of modules into one IR module. The bodies of the
+ * functions and classes of the modules in `signaturesOnly` are not checked:
+ * the language server leaves out those of the runtime and the standard
+ * library, which the user's modules use only through their declarations.
+ * The IR module is then incomplete.
+ */
+export function check(program: Program, signaturesOnly?: Set<Source>): CheckResult {
     const c = new Checker(program)
+    const skipped = signaturesOnly ?? new Set<Source>()
     const builtins = builtinScope()
     c.builtins = builtins.scope
     c.addSource(builtins.source)
@@ -186,8 +194,8 @@ export function check(program: Program): CheckResult {
         )
     }
     checkExportsDeclared(c, modules)
-    for (const b of bodies) checkFunctionBody(c, b.decl, b.func, b.scope)
-    for (const info of c.classes) checkClassBodies(c, info, info.scope)
+    for (const b of bodies) if (!skipped.has(c.sourceOf(b.decl))) checkFunctionBody(c, b.decl, b.func, b.scope)
+    for (const info of c.classes) if (!skipped.has(c.sourceOf(info.decl))) checkClassBodies(c, info, info.scope)
     // In order, including the checks that these add.
     for (let i = 0; i < c.pending.length; i++) c.pending[i]()
     finishClasses(c)

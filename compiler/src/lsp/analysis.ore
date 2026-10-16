@@ -248,7 +248,11 @@ class CheckedAnalysis {
                     code: d.code,
                 })
         if (loaded.syntaxErrors) return
-        const result = check(loaded)
+        // The runtime and the standard library are checked by their tests:
+        // only their declarations matter here, unless one is the document.
+        const signaturesOnly = new Set<Source>()
+        for (const m of loaded.modules) if (m !== entry && m.path.startsWith("ore:")) signaturesOnly.add(m)
+        const result = check(loaded, signaturesOnly)
         this.info = result.info
         for (const d of result.diagnostics)
             if (d.source === entry)
