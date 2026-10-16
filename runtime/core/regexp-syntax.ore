@@ -924,16 +924,28 @@ class Parser {
         if (c === 42 || c === 43 || c === 63) return this.fail("Nothing to repeat")
         if (c === 123 && this.quantifierAhead()) return this.fail("Nothing to repeat")
         if (this.unicode && (c === 123 || c === 125 || c === 93)) return this.fail("Lone quantifier brackets")
+        // A lookaround written as this atom, not one inside a group that is: `(?:(?<=a))*` repeats a group.
+        const lookaround = this.lookaroundAhead()
         this.look = false
         const atom = this.atom()
         if (this.error !== "") return atom
-        if (this.look && (this.unicode || atom.kind === K_LOOKBEHIND)) {
+        if (lookaround !== 0 && (this.unicode || lookaround === 2)) {
             const q = this.peek()
             if (q === 42 || q === 43 || q === 63 || (q === 123 && this.quantifierAhead()))
                 return this.fail("Invalid quantifier")
             return atom
         }
         return this.quantified(atom)
+    }
+
+    /** Whether the atom at the position is a lookaround: 0 for none, 1 for `(?=` or `(?!`, 2 for `(?<=` or `(?<!`. */
+    lookaroundAhead(): int {
+        const t = this.text
+        const i = this.pos
+        if (i + 2 >= t.length || t[i] !== 40 || t[i + 1] !== 63) return 0
+        const c = t[i + 2]
+        if (c === 61 || c === 33) return 1
+        return c === 60 && i + 3 < t.length && (t[i + 3] === 61 || t[i + 3] === 33) ? 2 : 0
     }
 
     /** An assertion, which no quantifier may follow. */
