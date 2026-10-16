@@ -829,8 +829,16 @@ function membersOfType(type: Type, out: Completion[]) {
         case "string":
         case "literal":
             out.push({ label: "length", kind: "field", detail: "int", documentation: "" })
-            for (const [name, sig] of stringMethods)
-                out.push({ label: name, kind: "method", detail: typeToString(sig.result), documentation: "" })
+            for (const [name, sig] of stringMethods) {
+                const result = typeToString(sig.result)
+                out.push({
+                    label: name,
+                    kind: "method",
+                    detail: sig.nullable ? `${result} | null` : result,
+                    documentation: "",
+                })
+            }
+            out.push({ label: "concat", kind: "method", detail: "string", documentation: "" })
             return
         case "map":
             out.push({ label: "size", kind: "field", detail: "int", documentation: "" })

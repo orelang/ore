@@ -2086,6 +2086,27 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             return regExpMethod(c, str, re.expr, reType, name, node, scope)
         }
     }
+    if (stringLike && name === "concat") {
+        const parts: Expr[] = [sameType(type, types.string) ? value : new Recast(types.string, value)]
+        for (const a of args) parts.push(c.coerce(checkExpr(c, a, scope, types.string), types.string, a))
+        return typed(new Concat(types.string, parts))
+    }
+    if (stringLike && (name === "replace" || name === "replaceAll") && args.length === 2) {
+        // A string pattern, replaced by a string or by what a function returns.
+        const pattern = c.coerce(
+            firstChecked ? first : checkExpr(c, args[0], scope, types.string),
+            types.string,
+            args[0],
+        )
+        const literal = args[1].kind === "ArrowFunction" || args[1].kind === "FunctionExpression"
+        const replacer = new FuncTypeClass([types.string, types.i64, types.string], types.string)
+        const replacement = checkExpr(c, args[1], scope, literal ? replacer : types.string)
+        if (replacement.k === "error") return replacement
+        const callback = replacement.k === "typed" && replacement.expr.type.kind === "func"
+        const str: Expr = sameType(type, types.string) ? value : new Recast(types.string, value)
+        const values: Expr[] = [pattern, c.coerce(replacement, callback ? replacer : types.string, args[1])]
+        return typed(new StringMethod(callback ? `${name}With` : name, types.string, str, values))
+    }
     const stringMethod = stringLike ? stringMethods.get(name) : null
     if (stringMethod !== null) {
         const params = stringMethod.params
@@ -2102,7 +2123,7 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
             values.push(c.coerce(arg, params[i], args[i]))
         }
         const str: Expr = sameType(type, types.string) ? value : new Recast(types.string, value)
-        const result = name === "codePointAt" ? c.unionOf([types.i64, types.null]) : stringMethod.result
+        const result = stringMethod.nullable ? c.unionOf([stringMethod.result, types.null]) : stringMethod.result
         return typed(new StringMethod(name, result, str, values))
     }
     if (type.kind === "array" && name === "push") {

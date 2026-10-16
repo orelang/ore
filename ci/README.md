@@ -15,6 +15,10 @@
   copy of the working tree on a Linux machine.
 - `test-linux.sh` and `Dockerfile`: the bootstrap and the tests in Linux
   containers, arm64 and amd64.
+- `unicode-tables.js`: generates `runtime/core/unicode-tables.ore`, the
+  Unicode data of the string methods, from node's (and python's
+  `unicodedata` for the combining classes):
+  `node ci/unicode-tables.js > runtime/core/unicode-tables.ore`.
 
 The GitLab pipeline is [`.gitlab-ci.yml`](../.gitlab-ci.yml): the bootstrap,
 all tests, then `stress.sh`, on x86-64 Linux.

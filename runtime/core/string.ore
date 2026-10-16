@@ -9,6 +9,7 @@
 
 import { sliceOffset } from "ore:runtime/array"
 import { allocGrowable, growable, objectSize } from "ore:runtime/gc"
+import { decode, decodedValid, encode } from "ore:runtime/unicode"
 
 function isNull(p: ptr): bool {
     return unsafe.toInt(p) === 0
@@ -132,39 +133,6 @@ function strSubstring(s: string, start: int, end: int): string {
     return a <= b ? view(unsafe.stringData(s), a, b - a) : view(unsafe.stringData(s), b, a - b)
 }
 
-/**
- * The UTF-8 character of the `left` bytes at `p`, as `rune * 8 + size`.
- * An invalid byte decodes to U+FFFD of size 1.
- */
-function decode(p: ptr, left: int): int {
-    const b = unsafe.load<u8>(p)
-    if (b < 0x80) return i64(b) * 8 + 1
-    let rune = 0
-    let size = 0
-    if ((b & 0xe0) === 0xc0) {
-        rune = i64(b & 0x1f)
-        size = 2
-    } else if ((b & 0xf0) === 0xe0) {
-        rune = i64(b & 0x0f)
-        size = 3
-    } else if ((b & 0xf8) === 0xf0) {
-        rune = i64(b & 0x07)
-        size = 4
-    } else {
-        return 0xfffd * 8 + 1
-    }
-    if (left < size) return 0xfffd * 8 + 1
-    for (let i = 1; i < size; i++) {
-        const c = unsafe.load<u8>(unsafe.add(p, i))
-        if ((c & 0xc0) !== 0x80) return 0xfffd * 8 + 1
-        rune = (rune << 6) | i64(c & 0x3f)
-    }
-    // Overlong forms, surrogates and values past U+10FFFF are invalid.
-    const min = size === 2 ? 0x80 : size === 3 ? 0x800 : 0x10000
-    if (rune < min || rune > 0x10ffff || (rune >= 0xd800 && rune <= 0xdfff)) return 0xfffd * 8 + 1
-    return rune * 8 + size
-}
-
 //ore:runtime ore_rt_str_decode
 function strDecode(s: string, pos: ptr): i32 {
     const at = unsafe.load<int>(pos)
@@ -180,28 +148,63 @@ function strCodePointAt(s: string, at: int): int | null {
     return decode(unsafe.add(unsafe.stringData(s), at), s.length - at) >> 3
 }
 
-/** Writes the UTF-8 bytes of a code point at `p`; returns how many. */
-function encode(p: ptr, point: int): int {
-    if (point < 0x80) {
-        unsafe.store<u8>(p, u8(point))
-        return 1
+/** The character that starts at byte `at`, or the byte there if no valid character starts there. */
+function charView(s: string, at: int): string {
+    const p = unsafe.stringData(s)
+    return view(p, at, decode(unsafe.add(p, at), s.length - at) & 7)
+}
+
+/** `s.at(index)`: `charAt` with a negative index counting from the end; null out of range. */
+//ore:runtime ore_rt_str_char_at_relative
+function strAtRelative(s: string, index: int): string | null {
+    const at = index < 0 ? s.length + index : index
+    if (at < 0 || at >= s.length) return null
+    return charView(s, at)
+}
+
+/** `s.charAt(at)`: the character that starts at byte `at`, or "" out of range. */
+//ore:runtime ore_rt_str_char_at
+function strCharAt(s: string, at: int): string {
+    if (at < 0 || at >= s.length) return ""
+    return charView(s, at)
+}
+
+/** `s.charCodeAt(at)`: the byte (UTF-8 code unit) at `at`, or null out of range (JavaScript's NaN). */
+//ore:runtime ore_rt_str_char_code_at
+function strCharCodeAt(s: string, at: int): int | null {
+    if (at < 0 || at >= s.length) return null
+    return i64(unsafe.load<u8>(unsafe.add(unsafe.stringData(s), at)))
+}
+
+/** `s.isWellFormed()`: whether the bytes are valid UTF-8. */
+//ore:runtime ore_rt_str_is_well_formed
+function strIsWellFormed(s: string): bool {
+    const p = unsafe.stringData(s)
+    let at = 0
+    while (at < s.length) {
+        const q = unsafe.add(p, at)
+        const r = decode(q, s.length - at)
+        if (!decodedValid(q, r)) return false
+        at += r & 7
     }
-    if (point < 0x800) {
-        unsafe.store<u8>(p, u8(0xc0 | (point >> 6)))
-        unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | (point & 0x3f)))
-        return 2
+    return true
+}
+
+/** `s.toWellFormed()`: each byte that is not part of a valid UTF-8 character replaced by U+FFFD. */
+//ore:runtime ore_rt_str_to_well_formed
+function strToWellFormed(s: string): string {
+    if (strIsWellFormed(s)) return s
+    const p = unsafe.stringData(s)
+    const out = unsafe.allocBytes(s.length * 3)
+    let n = 0
+    let at = 0
+    while (at < s.length) {
+        const q = unsafe.add(p, at)
+        const r = decode(q, s.length - at)
+        n += encode(unsafe.add(out, n), r >> 3)
+        at += r & 7
     }
-    if (point < 0x10000) {
-        unsafe.store<u8>(p, u8(0xe0 | (point >> 12)))
-        unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | ((point >> 6) & 0x3f)))
-        unsafe.store<u8>(unsafe.add(p, 2), u8(0x80 | (point & 0x3f)))
-        return 3
-    }
-    unsafe.store<u8>(p, u8(0xf0 | (point >> 18)))
-    unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | ((point >> 12) & 0x3f)))
-    unsafe.store<u8>(unsafe.add(p, 2), u8(0x80 | ((point >> 6) & 0x3f)))
-    unsafe.store<u8>(unsafe.add(p, 3), u8(0x80 | (point & 0x3f)))
-    return 4
+    return unsafe.makeString(out, n)
 }
 
 /**
@@ -260,50 +263,69 @@ export function fromCodePoint(...points: int[]): string {
     return fromUnits(units)
 }
 
+/** An offset clamped to the string, as JavaScript clamps positions. */
+function clamp(at: int, length: int): int {
+    return at < 0 ? 0 : at > length ? length : at
+}
+
+/** `s.indexOf(sub, from)`: the first occurrence at or after `from` (clamped), or -1. */
 //ore:runtime ore_rt_str_index_of
 function strIndexOf(s: string, sub: string, from: int): int {
     const p = unsafe.stringData(s)
     const q = unsafe.stringData(sub)
-    if (sub.length === 0) return from < 0 ? 0 : from <= s.length ? from : -1
+    const start = clamp(from, s.length)
+    if (sub.length === 0) return start
     // Comparing the rest only where the first byte is there.
     const first = unsafe.load<u8>(q)
-    for (let i = from < 0 ? 0 : from; i + sub.length <= s.length; i++) {
+    for (let i = start; i + sub.length <= s.length; i++) {
         if (unsafe.load<u8>(unsafe.add(p, i)) === first && bytesAt(p, i, q, sub.length)) return i
     }
     return -1
 }
 
+/** `s.lastIndexOf(sub, from)`: the last occurrence at or before `from` (clamped), or -1. */
 //ore:runtime ore_rt_str_last_index_of
-function strLastIndexOf(s: string, sub: string): int {
+function strLastIndexOf(s: string, sub: string, from: int): int {
     const p = unsafe.stringData(s)
     const q = unsafe.stringData(sub)
-    for (let i = s.length - sub.length; i >= 0; i--) {
+    const start = clamp(from, s.length)
+    for (let i = start < s.length - sub.length ? start : s.length - sub.length; i >= 0; i--) {
         if (bytesAt(p, i, q, sub.length)) return i
     }
     return -1
 }
 
+/** `s.startsWith(prefix, at)`: whether `prefix` is at `at` (clamped). */
 //ore:runtime ore_rt_str_starts_with
-function strStartsWith(s: string, prefix: string): bool {
-    return prefix.length <= s.length && bytesAt(unsafe.stringData(s), 0, unsafe.stringData(prefix), prefix.length)
-}
-
-//ore:runtime ore_rt_str_ends_with
-function strEndsWith(s: string, suffix: string): bool {
+function strStartsWith(s: string, prefix: string, at: int): bool {
+    const start = clamp(at, s.length)
     return (
-        suffix.length <= s.length &&
-        bytesAt(unsafe.stringData(s), s.length - suffix.length, unsafe.stringData(suffix), suffix.length)
+        prefix.length <= s.length - start &&
+        bytesAt(unsafe.stringData(s), start, unsafe.stringData(prefix), prefix.length)
     )
 }
 
+/** `s.endsWith(suffix, end)`: whether `suffix` ends at `end` (clamped). */
+//ore:runtime ore_rt_str_ends_with
+function strEndsWith(s: string, suffix: string, end: int): bool {
+    const start = clamp(end, s.length) - suffix.length
+    return start >= 0 && bytesAt(unsafe.stringData(s), start, unsafe.stringData(suffix), suffix.length)
+}
+
+/**
+ * `s.split(sep, limit)`: at most `limit` parts, which JavaScript takes
+ * modulo 2^32 (so -1 is no limit). An empty separator splits into UTF-8
+ * characters.
+ */
 //ore:runtime ore_rt_str_split
-function strSplit(s: string, sep: string): string[] {
+function strSplit(s: string, sep: string, limit: int): string[] {
     const parts: string[] = []
+    const most = limit & 0xffffffff
+    if (most === 0) return parts
     const p = unsafe.stringData(s)
     if (sep.length === 0) {
-        // Into UTF-8 characters.
         let at = 0
-        while (at < s.length) {
+        while (at < s.length && parts.length < most) {
             const size = decode(unsafe.add(p, at), s.length - at) & 7
             parts.push(view(p, at, size))
             at += size
@@ -315,6 +337,7 @@ function strSplit(s: string, sep: string): string[] {
         const at = strIndexOf(s, sep, start)
         if (at === -1) break
         parts.push(view(p, start, at - start))
+        if (parts.length === most) return parts
         start = at + sep.length
     }
     parts.push(view(p, start, s.length - start))
@@ -326,53 +349,149 @@ function strJoin(strings: string[], sep: string): string {
     return joinWith(strings, sep)
 }
 
-function isSpace(c: u8): bool {
-    return c === 0x20 || (c >= 0x09 && c <= 0x0d)
+/** Whether a character is white space or a line terminator to JavaScript's `trim`. */
+function isWhiteSpace(c: int): bool {
+    if (c < 0x80) return c === 0x20 || (c >= 0x09 && c <= 0x0d)
+    return (
+        c === 0xa0 ||
+        c === 0x1680 ||
+        (c >= 0x2000 && c <= 0x200a) ||
+        c === 0x2028 ||
+        c === 0x2029 ||
+        c === 0x202f ||
+        c === 0x205f ||
+        c === 0x3000 ||
+        c === 0xfeff
+    )
 }
 
-/** Trims ASCII whitespace from the start (sides 1), the end (2) or both (3). */
+/** The size of the white space character that ends at `end`, after `limit`, or 0 if none does. */
+function spaceBefore(p: ptr, end: int, limit: int): int {
+    let start = end - 1
+    while (start > limit && end - start < 4 && (unsafe.load<u8>(unsafe.add(p, start)) & 0xc0) === 0x80) start--
+    const r = decode(unsafe.add(p, start), end - start)
+    return (r & 7) === end - start && isWhiteSpace(r >> 3) ? end - start : 0
+}
+
+/** Trims JavaScript's white space and line terminators from the start (sides 1), the end (2) or both (3). */
 //ore:runtime ore_rt_str_trim
 function strTrim(s: string, sides: int): string {
     const p = unsafe.stringData(s)
     let start = 0
     let end = s.length
-    if ((sides & 1) !== 0) while (start < end && isSpace(unsafe.load<u8>(unsafe.add(p, start)))) start++
-    if ((sides & 2) !== 0) while (end > start && isSpace(unsafe.load<u8>(unsafe.add(p, end - 1)))) end--
+    if ((sides & 1) !== 0) {
+        while (start < end) {
+            const r = decode(unsafe.add(p, start), end - start)
+            if (!isWhiteSpace(r >> 3)) break
+            start += r & 7
+        }
+    }
+    if ((sides & 2) !== 0) {
+        while (end > start) {
+            const size = spaceBefore(p, end, start)
+            if (size === 0) break
+            end -= size
+        }
+    }
     return view(p, start, end - start)
 }
 
-/** ASCII letters to upper or lower case. */
-//ore:runtime ore_rt_str_case
-function strCase(s: string, upper: bool): string {
-    const p = unsafe.stringData(s)
-    const out = unsafe.allocBytes(s.length)
-    for (let i = 0; i < s.length; i++) {
-        const c = unsafe.load<u8>(unsafe.add(p, i))
-        const changed = upper ? (c >= 0x61 && c <= 0x7a ? c - 32 : c) : c >= 0x41 && c <= 0x5a ? c + 32 : c
-        unsafe.store<u8>(unsafe.add(out, i), changed)
+/**
+ * Where `replace` (the first) or `replaceAll` (all) replaces `pattern`:
+ * occurrences that do not overlap; an empty pattern is at the start and,
+ * for all, after each character.
+ */
+function occurrences(s: string, pattern: string, all: bool): int[] {
+    const out: int[] = []
+    if (pattern.length === 0) {
+        out.push(0)
+        if (!all) return out
+        const p = unsafe.stringData(s)
+        let at = 0
+        while (at < s.length) {
+            at += decode(unsafe.add(p, at), s.length - at) & 7
+            out.push(at)
+        }
+        return out
     }
-    return unsafe.makeString(out, s.length)
+    let from = 0
+    while (true) {
+        const at = strIndexOf(s, pattern, from)
+        if (at === -1) break
+        out.push(at)
+        if (!all) break
+        from = at + pattern.length
+    }
+    return out
 }
 
-/** Replaces the first occurrence of `from`, or all of them. */
+/**
+ * The replacement of the occurrence at `at` with `$` patterns, as
+ * JavaScript's GetSubstitution reads them without groups: `$$` is `$`, `$&`
+ * the matched text, `` $` `` the text before it and `$'` the text after it;
+ * any other `$` stays.
+ */
+function substitute(s: string, at: int, matched: int, template: string, parts: string[]) {
+    const p = unsafe.stringData(s)
+    const t = unsafe.stringData(template)
+    let from = 0
+    let i = 0
+    while (i + 1 < template.length) {
+        if (unsafe.load<u8>(unsafe.add(t, i)) !== 0x24) {
+            i++
+            continue
+        }
+        const c = unsafe.load<u8>(unsafe.add(t, i + 1))
+        if (c !== 0x24 && c !== 0x26 && c !== 0x60 && c !== 0x27) {
+            i++
+            continue
+        }
+        parts.push(view(t, from, c === 0x24 ? i + 1 - from : i - from))
+        if (c === 0x26) parts.push(view(p, at, matched))
+        else if (c === 0x60) parts.push(view(p, 0, at))
+        else if (c === 0x27) parts.push(view(p, at + matched, s.length - at - matched))
+        i += 2
+        from = i
+    }
+    parts.push(view(t, from, template.length - from))
+}
+
+/** `s.replace(pattern, replacement)` and `replaceAll`, with the `$` patterns of `substitute`. */
 //ore:runtime ore_rt_str_replace
-function strReplace(s: string, from: string, to: string, all: bool): string {
+function strReplace(s: string, pattern: string, replacement: string, all: bool): string {
+    const found = occurrences(s, pattern, all)
+    if (found.length === 0) return s
+    const p = unsafe.stringData(s)
+    const parts: string[] = []
+    const dollar = strIndexOf(replacement, "$", 0) >= 0
+    let start = 0
+    for (const at of found) {
+        parts.push(view(p, start, at - start))
+        if (dollar) substitute(s, at, pattern.length, replacement, parts)
+        else parts.push(replacement)
+        start = at + pattern.length
+    }
+    parts.push(view(p, start, s.length - start))
+    return joinWith(parts, "")
+}
+
+/** `s.replace(pattern, fn)` and `replaceAll`: each occurrence replaced by `fn(matched, offset, s)`. */
+//ore:runtime ore_rt_str_replace_with
+function strReplaceWith(
+    s: string,
+    pattern: string,
+    replacer: (matched: string, offset: int, input: string) => string,
+    all: bool,
+): string {
+    const found = occurrences(s, pattern, all)
+    if (found.length === 0) return s
     const p = unsafe.stringData(s)
     const parts: string[] = []
     let start = 0
-    while (true) {
-        const at = strIndexOf(s, from, start)
-        if (at === -1) break
+    for (const at of found) {
         parts.push(view(p, start, at - start))
-        parts.push(to)
-        start = at + from.length
-        // An empty pattern matches between characters; step over one byte to progress.
-        if (from.length === 0) {
-            if (at >= s.length || !all) break
-            parts.push(view(p, at, 1))
-            start = at + 1
-        }
-        if (!all) break
+        parts.push(replacer(view(p, at, pattern.length), at, s))
+        start = at + pattern.length
     }
     parts.push(view(p, start, s.length - start))
     return joinWith(parts, "")
@@ -380,24 +499,38 @@ function strReplace(s: string, from: string, to: string, all: bool): string {
 
 //ore:runtime ore_rt_str_repeat
 function strRepeat(s: string, count: int): string {
-    if (count < 0) process.panic("invalid repeat count")
+    if (count < 0) process.panic(`RangeError: Invalid count value: ${count}`)
     const out = unsafe.allocBytes(s.length * count)
     for (let i = 0; i < count; i++) unsafe.copy(unsafe.add(out, i * s.length), unsafe.stringData(s), s.length)
     return unsafe.makeString(out, s.length * count)
 }
 
-/** Pads to `length` bytes with repetitions of `pad`, at the start or the end. */
+/**
+ * Pads to `length` bytes with repetitions of `pad`, at the start or the
+ * end. The last repetition is cut where a character starts, so the result
+ * may be up to 3 bytes shorter than `length` rather than invalid UTF-8.
+ */
 //ore:runtime ore_rt_str_pad
 function strPad(s: string, length: int, pad: string, start: bool): string {
     if (length <= s.length || pad.length === 0) return s
-    const fill = length - s.length
-    const out = unsafe.allocBytes(length)
-    const filled = start ? out : unsafe.add(out, s.length)
     const q = unsafe.stringData(pad)
+    let fill = length - s.length
+    let cut = fill % pad.length
+    while (cut > 0 && (unsafe.load<u8>(unsafe.add(q, cut)) & 0xc0) === 0x80) cut--
+    fill = fill - (fill % pad.length) + cut
+    const out = unsafe.allocBytes(s.length + fill)
+    const filled = start ? out : unsafe.add(out, s.length)
     for (let i = 0; i < fill; i++)
         unsafe.store<u8>(unsafe.add(filled, i), unsafe.load<u8>(unsafe.add(q, i % pad.length)))
     if (s.length > 0) unsafe.copy(start ? unsafe.add(out, fill) : out, unsafe.stringData(s), s.length)
-    return unsafe.makeString(out, length)
+    return unsafe.makeString(out, s.length + fill)
+}
+
+/** `s.substr(start, length)`: `length` bytes from `start`, which counts from the end when negative. */
+//ore:runtime ore_rt_str_substr
+function strSubstr(s: string, start: int, length: int): string {
+    const from = start < 0 ? clamp(s.length + start, s.length) : clamp(start, s.length)
+    return view(unsafe.stringData(s), from, clamp(length, s.length - from))
 }
 
 /** The byte at `i`, bounds-checked. */

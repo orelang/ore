@@ -1,0 +1,523 @@
+//ore:internal
+// Unicode for the string methods: UTF-8 decoding and encoding, full case
+// mapping (toUpperCase, toLowerCase) and normalization (normalize), as
+// JavaScript does them, from the tables of unicode-tables.ore. The tables are
+// read on first use; tasks that read one at the same time build equal copies.
+
+import {
+    canonicalDecompositions,
+    caseIgnorableRanges,
+    casedRanges,
+    combiningClasses,
+    compatibilityDecompositions,
+    lowerRuns,
+    lowerSpecial,
+    noComposition,
+    upperRuns,
+    upperSpecial,
+} from "ore:runtime/unicode-tables"
+
+/**
+ * The UTF-8 character of the `left` bytes at `p`, as `rune * 8 + size`.
+ * An invalid byte decodes to U+FFFD of size 1.
+ */
+export function decode(p: ptr, left: int): int {
+    const b = unsafe.load<u8>(p)
+    if (b < 0x80) return i64(b) * 8 + 1
+    let rune = 0
+    let size = 0
+    if ((b & 0xe0) === 0xc0) {
+        rune = i64(b & 0x1f)
+        size = 2
+    } else if ((b & 0xf0) === 0xe0) {
+        rune = i64(b & 0x0f)
+        size = 3
+    } else if ((b & 0xf8) === 0xf0) {
+        rune = i64(b & 0x07)
+        size = 4
+    } else {
+        return 0xfffd * 8 + 1
+    }
+    if (left < size) return 0xfffd * 8 + 1
+    for (let i = 1; i < size; i++) {
+        const c = unsafe.load<u8>(unsafe.add(p, i))
+        if ((c & 0xc0) !== 0x80) return 0xfffd * 8 + 1
+        rune = (rune << 6) | i64(c & 0x3f)
+    }
+    // Overlong forms, surrogates and values past U+10FFFF are invalid.
+    const min = size === 2 ? 0x80 : size === 3 ? 0x800 : 0x10000
+    if (rune < min || rune > 0x10ffff || (rune >= 0xd800 && rune <= 0xdfff)) return 0xfffd * 8 + 1
+    return rune * 8 + size
+}
+
+/** Whether `decode` read a valid character rather than an invalid byte. */
+export function decodedValid(p: ptr, r: int): bool {
+    return r >> 3 !== 0xfffd || (r & 7) === 3 || unsafe.load<u8>(p) < 0x80
+}
+
+/** Writes the UTF-8 bytes of a code point at `p`; returns how many. */
+export function encode(p: ptr, point: int): int {
+    if (point < 0x80) {
+        unsafe.store<u8>(p, u8(point))
+        return 1
+    }
+    if (point < 0x800) {
+        unsafe.store<u8>(p, u8(0xc0 | (point >> 6)))
+        unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | (point & 0x3f)))
+        return 2
+    }
+    if (point < 0x10000) {
+        unsafe.store<u8>(p, u8(0xe0 | (point >> 12)))
+        unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | ((point >> 6) & 0x3f)))
+        unsafe.store<u8>(unsafe.add(p, 2), u8(0x80 | (point & 0x3f)))
+        return 3
+    }
+    unsafe.store<u8>(p, u8(0xf0 | (point >> 18)))
+    unsafe.store<u8>(unsafe.add(p, 1), u8(0x80 | ((point >> 12) & 0x3f)))
+    unsafe.store<u8>(unsafe.add(p, 2), u8(0x80 | ((point >> 6) & 0x3f)))
+    unsafe.store<u8>(unsafe.add(p, 3), u8(0x80 | (point & 0x3f)))
+    return 4
+}
+
+/** How many bytes `encode` writes for a code point. */
+function encodedSize(point: int): int {
+    return point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4
+}
+
+/**
+ * The characters of a string, with each byte that is not part of a valid
+ * character as `-1 - byte`, so that it comes back unchanged.
+ */
+function points(s: string): int[] {
+    const out: int[] = []
+    const p = unsafe.stringData(s)
+    let at = 0
+    while (at < s.length) {
+        const q = unsafe.add(p, at)
+        const r = decode(q, s.length - at)
+        out.push(decodedValid(q, r) ? r >> 3 : -1 - i64(unsafe.load<u8>(q)))
+        at += r & 7
+    }
+    return out
+}
+
+/** The string of what `points` gives. */
+function fromPoints(points: int[]): string {
+    let length = 0
+    for (const point of points) length += point < 0 ? 1 : encodedSize(point)
+    const out = unsafe.allocBytes(length)
+    let n = 0
+    for (const point of points) {
+        if (point < 0) {
+            unsafe.store<u8>(unsafe.add(out, n), u8(-1 - point))
+            n++
+        } else {
+            n += encode(unsafe.add(out, n), point)
+        }
+    }
+    return unsafe.makeString(out, length)
+}
+
+/** Whether every byte is ASCII. */
+function ascii(s: string): bool {
+    const p = unsafe.stringData(s)
+    for (let i = 0; i < s.length; i++) if (unsafe.load<u8>(unsafe.add(p, i)) >= 0x80) return false
+    return true
+}
+
+// -----------------------------------------------------------------------------
+// The tables
+
+/** The value of a digit of a table: 0-31 ends a number, 32-63 continues it. */
+function tableDigit(b: int): int {
+    if (b >= 48 && b <= 57) return b - 48
+    if (b >= 65 && b <= 90) return b - 55
+    if (b >= 97 && b <= 122) return b - 61
+    return b === 43 ? 62 : 63
+}
+
+/** The numbers of a table. */
+function numbers(text: string): int[] {
+    const out: int[] = []
+    let n = 0
+    for (let i = 0; i < text.length; i++) {
+        const d = tableDigit(int(text[i]))
+        n = n * 32 + (d & 31)
+        if (d < 32) {
+            out.push(n)
+            n = 0
+        }
+    }
+    return out
+}
+
+/** A signed number of a table. */
+function signed(n: int): int {
+    return (n & 1) === 0 ? n >> 1 : -(n >> 1) - 1
+}
+
+/** The ranges of a table of gaps and lengths, as first and last character of each. */
+function ranges(text: string): int[] {
+    const n = numbers(text)
+    const out: int[] = []
+    let previous = -1
+    for (let i = 0; i < n.length; i += 2) {
+        const start = previous + 1 + n[i]
+        previous = start + n[i + 1]
+        out.push(start)
+        out.push(previous)
+    }
+    return out
+}
+
+/** Whether a character is in sorted ranges. */
+function inRanges(table: int[], c: int): bool {
+    let lo = 0
+    let hi = table.length / 2
+    while (lo < hi) {
+        const mid = (lo + hi) / 2
+        if (table[2 * mid + 1] < c) lo = mid + 1
+        else hi = mid
+    }
+    return lo < table.length / 2 && table[2 * lo] <= c
+}
+
+/** The index of the last entry of `stride` numbers whose first is at most `c`, or -1. */
+function lastAtMost(table: int[], stride: int, c: int): int {
+    let lo = 0
+    let hi = table.length / stride
+    while (lo < hi) {
+        const mid = (lo + hi) / 2
+        if (table[stride * mid] <= c) lo = mid + 1
+        else hi = mid
+    }
+    return lo - 1
+}
+
+/**
+ * The simple case mappings, four numbers a run: its first character, its
+ * last, the stride and the distance to the mapping.
+ */
+function caseRuns(text: string): int[] {
+    const n = numbers(text)
+    const out: int[] = []
+    let previous = -1
+    for (let i = 0; i < n.length; i += 4) {
+        const start = previous + 1 + n[i]
+        const stride = n[i + 2] + 1
+        previous = start + n[i + 1] * stride
+        out.push(start)
+        out.push(previous)
+        out.push(stride)
+        out.push(signed(n[i + 3]))
+    }
+    return out
+}
+
+/**
+ * Mappings to several characters: three numbers each in `keys` (the
+ * character, how many, their offset in `points`).
+ */
+class SpecialCases {
+    keys: int[] = []
+    points: int[] = []
+
+    constructor(text: string) {
+        const n = numbers(text)
+        let previous = -1
+        let i = 0
+        while (i < n.length) {
+            const c = previous + 1 + n[i]
+            const count = n[i + 1]
+            this.keys.push(c)
+            this.keys.push(count)
+            this.keys.push(this.points.length)
+            let point = c
+            for (let k = 0; k < count; k++) {
+                point += signed(n[i + 2 + k])
+                this.points.push(point)
+            }
+            previous = c
+            i += 2 + count
+        }
+    }
+
+    /** Adds the mapping of `c` to `out`; false if it has none. */
+    add(c: int, out: int[]): bool {
+        const i = lastAtMost(this.keys, 3, c)
+        if (i < 0 || this.keys[3 * i] !== c) return false
+        const at = this.keys[3 * i + 2]
+        for (let k = 0; k < this.keys[3 * i + 1]; k++) out.push(this.points[at + k])
+        return true
+    }
+}
+
+/** The tables of the case mappings. */
+class CaseTables {
+    upper = caseRuns(upperRuns)
+    lower = caseRuns(lowerRuns)
+    upperSpecial = new SpecialCases(upperSpecial)
+    lowerSpecial = new SpecialCases(lowerSpecial)
+    cased = ranges(casedRanges)
+    ignorable = ranges(caseIgnorableRanges)
+
+    /** Adds the full case mapping of a character to `out`. */
+    add(c: int, upper: bool, out: int[]) {
+        if (!(upper ? this.upperSpecial : this.lowerSpecial).add(c, out))
+            out.push(simpleCase(upper ? this.upper : this.lower, c))
+    }
+
+    /**
+     * Whether the capital sigma at `i` ends a word, so that it lowers to `ς`:
+     * a cased letter comes before it and none after, past case-ignorable
+     * characters (Unicode's Final_Sigma condition, as ICU checks it).
+     */
+    finalSigma(cs: int[], i: int): bool {
+        let j = i - 1
+        while (j >= 0 && cs[j] >= 0 && inRanges(this.ignorable, cs[j])) j--
+        if (j < 0 || cs[j] < 0 || !inRanges(this.cased, cs[j])) return false
+        let k = i + 1
+        while (k < cs.length && cs[k] >= 0 && inRanges(this.ignorable, cs[k])) k++
+        return k >= cs.length || cs[k] < 0 || !inRanges(this.cased, cs[k])
+    }
+}
+
+let caseTables: CaseTables | null = null
+
+function loadCaseTables(): CaseTables {
+    const found = caseTables
+    if (found !== null) return found
+    const tables = new CaseTables()
+    caseTables = tables
+    return tables
+}
+
+/** The simple mapping of a character by a table of `caseRuns`. */
+function simpleCase(table: int[], c: int): int {
+    const i = lastAtMost(table, 4, c)
+    if (i < 0 || c > table[4 * i + 1] || (c - table[4 * i]) % table[4 * i + 2] !== 0) return c
+    return c + table[4 * i + 3]
+}
+
+/**
+ * `toUpperCase` and `toLowerCase`: the full case mappings of Unicode without
+ * a locale, as JavaScript has them: `ß` uppercases to `SS`, `İ` lowercases to
+ * `i̇`, and a capital sigma at the end of a word to `ς`.
+ */
+//ore:runtime ore_rt_str_case
+function strCase(s: string, upper: bool): string {
+    if (ascii(s)) {
+        const p = unsafe.stringData(s)
+        const out = unsafe.allocBytes(s.length)
+        for (let i = 0; i < s.length; i++) {
+            const c = unsafe.load<u8>(unsafe.add(p, i))
+            const changed = upper ? (c >= 0x61 && c <= 0x7a ? c - 32 : c) : c >= 0x41 && c <= 0x5a ? c + 32 : c
+            unsafe.store<u8>(unsafe.add(out, i), changed)
+        }
+        return unsafe.makeString(out, s.length)
+    }
+    const tables = loadCaseTables()
+    const from = points(s)
+    const to: int[] = []
+    for (let i = 0; i < from.length; i++) {
+        const c = from[i]
+        if (c < 0) to.push(c)
+        else if (!upper && c === 0x3a3) to.push(tables.finalSigma(from, i) ? 0x3c2 : 0x3c3)
+        else tables.add(c, upper, to)
+    }
+    return fromPoints(to)
+}
+
+// -----------------------------------------------------------------------------
+// Normalization
+
+/**
+ * Decompositions, from a table of `canonicalDecompositions`: runs of four
+ * numbers (first character, count, how many characters each, their offset
+ * in `points` for the first) and the characters of the first of each run.
+ */
+class Decompositions {
+    runs: int[] = []
+    points: int[] = []
+
+    constructor(text: string) {
+        const n = numbers(text)
+        let previous = -1
+        let last: int[] = []
+        let i = 0
+        while (i < n.length) {
+            const start = previous + 1 + n[i]
+            const length = n[i + 1] + 1
+            const count = n[i + 2] + 1
+            this.runs.push(start)
+            this.runs.push(count)
+            this.runs.push(length)
+            this.runs.push(this.points.length)
+            const d: int[] = []
+            for (let k = 0; k < length; k++) {
+                const base = k < last.length ? last[k] : k > 0 ? d[k - 1] : 0
+                d.push(base + signed(n[i + 3 + k]))
+            }
+            for (const x of d) this.points.push(x)
+            last = d
+            previous = start + count - 1
+            i += 3 + length
+        }
+    }
+
+    /** Adds the decomposition of `c` to `out`; false if it has none. */
+    add(c: int, out: int[]): bool {
+        const i = lastAtMost(this.runs, 4, c)
+        if (i < 0) return false
+        const start = this.runs[4 * i]
+        if (c >= start + this.runs[4 * i + 1]) return false
+        const length = this.runs[4 * i + 2]
+        const at = this.runs[4 * i + 3]
+        for (let k = 0; k < length - 1; k++) out.push(this.points[at + k])
+        out.push(this.points[at + length - 1] + c - start)
+        return true
+    }
+}
+
+let canonical: Decompositions | null = null
+let compatibility: Decompositions | null = null
+let classTable: int[] = []
+/** Primary composites, by `first * 0x110000 + second`. */
+let compositions: Map<int, int> | null = null
+
+const hangulS = 0xac00
+const hangulL = 0x1100
+const hangulV = 0x1161
+const hangulT = 0x11a7
+const hangulTCount = 28
+const hangulNCount = 21 * 28
+const hangulSCount = 19 * 21 * 28
+
+/** The canonical combining class of a character; 0 for a byte of invalid UTF-8. */
+function combiningClass(c: int): int {
+    if (c < 0x300) return 0
+    const i = lastAtMost(classTable, 3, c)
+    return i >= 0 && c <= classTable[3 * i + 1] ? classTable[3 * i + 2] : 0
+}
+
+function loadNormalization(): Decompositions {
+    const found = canonical
+    if (found !== null) return found
+    const table = new Decompositions(canonicalDecompositions)
+    compatibility = new Decompositions(compatibilityDecompositions)
+    const classes = numbers(combiningClasses)
+    const runs: int[] = []
+    let previous = -1
+    for (let i = 0; i < classes.length; i += 3) {
+        const start = previous + 1 + classes[i]
+        previous = start + classes[i + 1]
+        runs.push(start)
+        runs.push(previous)
+        runs.push(classes[i + 2])
+    }
+    classTable = runs
+    // A primary composite is the composition of its decomposition without
+    // the last character, and that character.
+    const excluded = ranges(noComposition)
+    const byDecomposition = new Map<string, int>()
+    const pairs: int[] = []
+    for (let r = 0; r < table.runs.length; r += 4) {
+        for (let c = table.runs[r]; c < table.runs[r] + table.runs[r + 1]; c++) {
+            if (inRanges(excluded, c)) continue
+            const d: int[] = []
+            table.add(c, d)
+            byDecomposition.set(d.join(","), c)
+            pairs.push(c)
+        }
+    }
+    const map = new Map<int, int>()
+    for (const c of pairs) {
+        const d: int[] = []
+        table.add(c, d)
+        const second = d.pop()
+        const first = d.length === 1 ? d[0] : byDecomposition.get(d.join(","))
+        if (first !== null) map.set(first * 0x110000 + second, c)
+    }
+    compositions = map
+    canonical = table
+    return table
+}
+
+/** Adds the full decomposition of a character to `out`. */
+function decompose(c: int, compat: bool, table: Decompositions, out: int[]) {
+    if (c >= hangulS && c < hangulS + hangulSCount) {
+        const index = c - hangulS
+        out.push(hangulL + index / hangulNCount)
+        out.push(hangulV + (index % hangulNCount) / hangulTCount)
+        if (index % hangulTCount !== 0) out.push(hangulT + (index % hangulTCount))
+        return
+    }
+    const other = compatibility
+    if (c >= 0xa0 && compat && other !== null && other.add(c, out)) return
+    if (c < 0xc0 || !table.add(c, out)) out.push(c)
+}
+
+/** The primary composite of two characters, or -1. */
+function compose(a: int, b: int): int {
+    if (a >= hangulL && a < hangulL + 19 && b >= hangulV && b < hangulV + 21)
+        return hangulS + ((a - hangulL) * 21 + b - hangulV) * hangulTCount
+    if (
+        a >= hangulS &&
+        a < hangulS + hangulSCount &&
+        (a - hangulS) % hangulTCount === 0 &&
+        b > hangulT &&
+        b < hangulT + hangulTCount
+    )
+        return a + b - hangulT
+    const map = compositions
+    if (a < 0 || b < 0 || map === null) return -1
+    return map.get(a * 0x110000 + b) ?? -1
+}
+
+/**
+ * `s.normalize(form)`: the Unicode normalization form NFC, NFD, NFKC or
+ * NFKD, as JavaScript computes it. Bytes of invalid UTF-8 stay as they are.
+ */
+//ore:runtime ore_rt_str_normalize
+function strNormalize(s: string, form: string): string {
+    const compat = form === "NFKC" || form === "NFKD"
+    const composed = form === "NFC" || form === "NFKC"
+    if (!compat && !composed && form !== "NFD")
+        process.panic("RangeError: The normalization form should be one of NFC, NFD, NFKC, NFKD.")
+    if (ascii(s)) return s
+    const table = loadNormalization()
+    const out: int[] = []
+    for (const c of points(s)) decompose(c, compat, table, out)
+    // The canonical order: each run of non-starters sorted by class, stably.
+    for (let i = 1; i < out.length; i++) {
+        const c = out[i]
+        const cc = combiningClass(c)
+        if (cc === 0) continue
+        let j = i
+        while (j > 0 && combiningClass(out[j - 1]) > cc) {
+            out[j] = out[j - 1]
+            j--
+        }
+        out[j] = c
+    }
+    if (composed && out.length > 0) {
+        let starter = 0
+        let last = combiningClass(out[0]) === 0 ? 0 : 256
+        let n = 1
+        for (let i = 1; i < out.length; i++) {
+            const c = out[i]
+            const cc = combiningClass(c)
+            const composite = compose(out[starter], c)
+            if (composite >= 0 && (last < cc || last === 0)) {
+                out[starter] = composite
+            } else {
+                if (cc === 0) starter = n
+                last = cc
+                out[n] = c
+                n++
+            }
+        }
+        while (out.length > n) out.pop()
+    }
+    return fromPoints(out)
+}

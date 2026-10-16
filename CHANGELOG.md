@@ -5,6 +5,22 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Strings have every method of JavaScript's `String.prototype`: `at`,
+  `charAt`, `charCodeAt`, `concat`, `isWellFormed`, `toWellFormed`,
+  `localeCompare`, `normalize`, `substr`, `trimLeft`, `trimRight`,
+  `toLocaleUpperCase`, `toLocaleLowerCase`, `toString` and `valueOf`
+  are new; `lastIndexOf`, `includes`, `startsWith` and `endsWith` take a
+  position, `split` a limit, and positions clamp as in JavaScript
+  (`"abc".indexOf("", 9)` is 3, not -1). `replace` and `replaceAll` with
+  a string pattern read `$&`, `$$`, `` $` `` and `$'`
+  (`"aXbX".replace("X", "$&$&")` is `"aXXbX"`) and take a function
+  `(matched, offset, input) => string`. `toUpperCase` and `toLowerCase`
+  map all of Unicode, not only ASCII, with the full mappings (`"é ß"` to
+  `"É SS"`, a final sigma to `ς`), and `trim` removes all of JavaScript's
+  white space; `replaceAll` with an empty pattern and `padStart`/`padEnd`
+  no longer split a character. The Unicode 17.0 data is generated from
+  node by `ci/unicode-tables.js` into `runtime/core/unicode-tables.ore`
+  (33 KB).
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with
