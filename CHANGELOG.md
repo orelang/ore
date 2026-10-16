@@ -94,6 +94,10 @@ before 1.0, a minor version may change the language.
   with the flags `g`, `i`, `m`, `s` and `y`, and `match`, `matchAll`,
   `replace`, `replaceAll` (with `$1`, `$<name>` and functions), `split` and
   `search` on strings; a backtracking engine written in Ore in the runtime.
+- Building a string by appending (`s += piece` in a loop) takes linear time
+  instead of quadratic: a concatenation's buffer has room after its text, and
+  the next append to the string that ends it writes in place, growing the
+  buffer twice as large when it is full, like Go's `append`.
 
 ## 0.1.1
 

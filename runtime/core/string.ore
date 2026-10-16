@@ -8,6 +8,7 @@
 // strEq would call strEq. See README.md for how the runtime is put together.
 
 import { sliceOffset } from "ore:runtime/array"
+import { allocGrowable, growable, objectSize } from "ore:runtime/gc"
 
 function isNull(p: ptr): bool {
     return unsafe.toInt(p) === 0
@@ -61,19 +62,60 @@ function strCmp(a: string, b: string): i32 {
     return a.length < b.length ? -1 : a.length > b.length ? 1 : 0
 }
 
+/**
+ * The bytes before the text in the buffer of a concatenation: how many of the
+ * buffer's bytes are taken, by the strings that end furthest in it.
+ */
+const header = 8
+
+/**
+ * The parts joined. A concatenation's buffer is growable, with room for more
+ * text after it, so a string built by appending, `s += piece` in a loop, takes
+ * linear time like Go's `append`: when the first part ends where the taken
+ * bytes of its buffer end and the rest fits, the rest is written in place and
+ * the taken length moves past it. Another string ending at the same place
+ * finds it taken and copies, so strings sharing a buffer never see each
+ * other's text. A first part that was the end of a full buffer gets a new
+ * buffer twice the size it needs.
+ */
 //ore:runtime ore_rt_str_concat
 function strConcat(count: int, parts: ptr): string {
     const size = unsafe.sizeOf<string>()
     let length = 0
     for (let i = 0; i < count; i++) length += unsafe.load<string>(unsafe.add(parts, i * size)).length
-    const out = unsafe.allocBytes(length)
+    const first = unsafe.load<string>(parts)
+    const data = unsafe.stringData(first)
+    let grow = false
+    if (first.length > 0) {
+        const start = growable(data)
+        if (!isNull(start)) {
+            const end = unsafe.diff(unsafe.add(data, first.length), start) - header
+            const room = objectSize(start) - header
+            if (
+                end + length - first.length <= room &&
+                unsafe.atomicCompareExchange<i64>(start, end, end + length - first.length)
+            ) {
+                copyParts(unsafe.add(data, first.length), count, parts, 1)
+                return unsafe.makeString(data, length)
+            }
+            grow = unsafe.atomicLoad<i64>(start) === end
+        }
+    }
+    const out = allocGrowable(header + (grow ? length * 2 : length))
+    unsafe.store<i64>(out, length)
+    copyParts(unsafe.add(out, header), count, parts, 0)
+    return unsafe.makeString(unsafe.add(out, header), length)
+}
+
+/** Copies the parts from the one at `from` on to `to`, one after another. */
+function copyParts(to: ptr, count: int, parts: ptr, from: int): void {
+    const size = unsafe.sizeOf<string>()
     let at = 0
-    for (let i = 0; i < count; i++) {
+    for (let i = from; i < count; i++) {
         const part = unsafe.load<string>(unsafe.add(parts, i * size))
-        if (part.length > 0) unsafe.copy(unsafe.add(out, at), unsafe.stringData(part), part.length)
+        if (part.length > 0) unsafe.copy(unsafe.add(to, at), unsafe.stringData(part), part.length)
         at += part.length
     }
-    return unsafe.makeString(out, length)
 }
 
 //ore:runtime ore_rt_str_slice

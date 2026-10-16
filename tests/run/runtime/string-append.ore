@@ -1,0 +1,50 @@
+// Appending to a string in place: linear time, and strings sharing a buffer
+// never see each other's text.
+
+// A million appends: quadratic copying would take hours.
+let s = ""
+for (let i = 0; i < 1000000; i++) s += `${i % 10}`
+console.log(s.length, s.slice(0, 12), s.slice(-3))
+
+// Two strings appended to the same prefix: the second copies.
+let base = "ab"
+base += "c"
+const left = base + "LEFT"
+const right = base + "RIGHT"
+console.log(base, left, right, left + "!", base + "?")
+
+// Appending again to a string that is no longer the end of its buffer.
+let a = "x"
+a += "y"
+const b = a
+a += "1"
+const c = b + "2"
+console.log(a, b, c)
+
+// A slice that ends at the end of the taken bytes, and one that ends before.
+let t = "hello"
+t += " world"
+const head = t.slice(0, 5)
+const whole = t.slice(0)
+console.log(head + "!", whole + "?", t + ".", head, whole, t)
+
+// Many strings grown from one in a loop each keep their own text.
+const root = "r" + "-"
+const grown: string[] = []
+for (let i = 0; i < 5; i++) {
+    let g = root
+    for (let j = 0; j <= i; j++) g += `${i}`
+    grown.push(g)
+}
+console.log(grown.join(" "), root)
+
+// Collections while appending keep the buffer alive and its text intact.
+let long = ""
+const keep: string[] = []
+for (let i = 0; i < 200000; i++) {
+    long += "ab"
+    if (i % 50000 === 0) keep.push(long)
+    const garbage = [i, i + 1, i + 2]
+    if (garbage.length !== 3) console.log("bad")
+}
+console.log(long.length, keep.map((k) => k.length).join(","), keep[3].slice(-4))
