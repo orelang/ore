@@ -1,0 +1,104 @@
+// The examples of docs/errors: every page's Example must report the page's
+// code, and every program under How to fix must check without errors, as
+// docs/errors/README.md promises. A block after `<!-- no-check -->` is not
+// checked; a line `// file: name.ore` starts another file of the same block.
+
+import { join } from "ore:path"
+import { fail } from "ore:test"
+import { check } from "../../compiler/src/checker/checker"
+import { loadProgram } from "../../compiler/src/project/load"
+import { formatDiagnostic } from "../../compiler/src/syntax/diagnostic"
+import { Case, read } from "./cases"
+import { type Settings } from "./golden"
+
+/** A code block of a page: its section and its text. */
+class Block {
+    constructor(
+        readonly section: string,
+        readonly text: string,
+    ) {}
+}
+
+/** The checked ```ts blocks of a page, with the `##` section each is in. */
+function blocks(page: string): Block[] {
+    const found: Block[] = []
+    const lines = page.split("\n")
+    let section = ""
+    let skipNext = false
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        if (line.startsWith("## ")) section = line.slice(3).trim()
+        if (line.trim() === "<!-- no-check -->") skipNext = true
+        if (line.trim() !== "```ts") continue
+        const body: string[] = []
+        i++
+        while (i < lines.length && lines[i].trim() !== "```") {
+            body.push(lines[i])
+            i++
+        }
+        if (skipNext) skipNext = false
+        else found.push(new Block(section, `${body.join("\n")}\n`))
+    }
+    return found
+}
+
+/** Writes a block's files into `dir` (the first is main.ore) and checks the program; the diagnostics, or a failure. */
+function checkBlock(dir: string, text: string): string[] {
+    const made = fs.mkdir(dir, true)
+    if (made !== null) fail(made.message)
+    let name = "main.ore"
+    let lines: string[] = []
+    const files = new Map<string, string>()
+    for (const line of text.split("\n")) {
+        if (line.startsWith("// file: ")) {
+            files.set(name, lines.join("\n"))
+            name = line.slice("// file: ".length).trim()
+            lines = []
+            continue
+        }
+        lines.push(line)
+    }
+    files.set(name, lines.join("\n"))
+    for (const [file, source] of files) {
+        const written = fs.writeFile(join(dir, file), source)
+        if (written !== null) fail(written.message)
+    }
+    const program = loadProgram(join(dir, "main.ore"))
+    if (program instanceof Error) return [`error: ${program.message}`]
+    const shown: string[] = []
+    const all = program.diagnostics.slice()
+    if (!program.syntaxErrors) for (const d of check(program).diagnostics) all.push(d)
+    for (const d of all) if (d.severity === "error") shown.push(`${d.code}|${formatDiagnostic(d)}`)
+    return shown
+}
+
+/** docs/errors/OREnnnn.md: one case per page. */
+export function docsCases(settings: Settings): Case[] {
+    const cases: Case[] = []
+    const entries = fs.readDir("docs/errors")
+    if (entries instanceof Error) return cases
+    entries.sort()
+    for (const entry of entries) {
+        if (!entry.startsWith("ORE") || !entry.endsWith(".md")) continue
+        const code = entry.slice(0, entry.length - 3)
+        cases.push(
+            new Case(`docs/errors/${entry}`, () => {
+                const page = read(join("docs/errors", entry))
+                let n = 0
+                for (const block of blocks(page)) {
+                    n++
+                    const errors = checkBlock(join(settings.work, `docs-${code}-${n}`), block.text)
+                    if (block.section === "Example") {
+                        if (!errors.some((e) => e.startsWith(`${code}|`)))
+                            fail(
+                                `the example does not report ${code}:\n${block.text}\nit reports:\n${errors.join("\n")}`,
+                            )
+                    } else if (block.section === "How to fix" && errors.length > 0) {
+                        fail(`a fix does not check:\n${block.text}\nit reports:\n${errors.join("\n")}`)
+                    }
+                }
+            }),
+        )
+    }
+    return cases
+}

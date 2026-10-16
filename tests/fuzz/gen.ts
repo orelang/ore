@@ -178,7 +178,11 @@ function numExpr(d: number): string {
     }
 }
 
-/** Integers: lengths and positions, which are int in Ore; never divided, which is integer division in Ore. */
+/**
+ * Integers: lengths and positions, which are int in Ore; never divided (integer
+ * division in Ore), and never a negative remainder or a product with 0, which
+ * JavaScript's floats make -0 where an int has no negative zero.
+ */
 function intExpr(d: number): string {
     const i = () => expr("int", d)
     switch (below(10)) {
@@ -187,7 +191,7 @@ function intExpr(d: number): string {
         case 1:
             return `(${i()} - ${i()})`
         case 2:
-            return `(${i()} * ${below(5)})`
+            return `(${i()} * ${1 + below(4)})`
         case 3:
             return `${expr("str", d)}.length`
         case 4:
@@ -199,7 +203,7 @@ function intExpr(d: number): string {
         case 7:
             return `Math.${pick(["min", "max"])}(${i()}, ${i()})`
         case 8:
-            return `(${i()} % ${1 + below(7)})`
+            return `(Math.abs(${i()}) % ${1 + below(7)})`
         default:
             return `(${expr("bool", d)} ? ${i()} : ${i()})`
     }
