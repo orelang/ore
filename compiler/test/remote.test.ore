@@ -1,0 +1,67 @@
+// Modules imported from GitHub by URL (project/remote.ore): the URLs, the
+// paths in the cache, and a commit found in the cache without the network.
+
+import { test, expect, fail } from "ore:test"
+import { join } from "ore:path"
+import { commitDir, fetchRepository, githubDir, parseGithubUrl, refFile, repositoryDir } from "../src/project/remote"
+
+/** A parsed URL as text: owner, repo, ref and path, or the error. */
+function parsed(url: string): string {
+    const module = parseGithubUrl(url)
+    if (module instanceof Error) return "invalid"
+    return `${module.owner} ${module.repo} ref=${module.ref} path=${module.path}`
+}
+
+test("parses GitHub URLs", () => {
+    expect(parsed("https://github.com/acme/geo")).toBe("acme geo ref= path=")
+    expect(parsed("https://github.com/acme/geo/")).toBe("acme geo ref= path=")
+    expect(parsed("https://github.com/acme/geo.git")).toBe("acme geo ref= path=")
+    expect(parsed("https://github.com/acme/geo/src/point")).toBe("acme geo ref= path=src/point")
+    expect(parsed("https://github.com/acme/geo/tree/v1.2.0")).toBe("acme geo ref=v1.2.0 path=")
+    expect(parsed("https://github.com/acme/geo/tree/main/src/point.ore")).toBe("acme geo ref=main path=src/point.ore")
+    expect(parsed("https://github.com/acme/geo/blob/dev/x.ore")).toBe("acme geo ref=dev path=x.ore")
+    expect(parsed("https://github.com/acme")).toBe("invalid")
+    expect(parsed("https://github.com/acme/geo/../../etc")).toBe("invalid")
+    expect(parsed("https://github.com/acme/geo/tree/../x")).toBe("invalid")
+    expect(parsed("https://github.com/ac me/geo")).toBe("invalid")
+    expect(parsed("https://github.com/acme/geo?x=1")).toBe("invalid")
+    expect(parsed("https://gitlab.com/acme/geo")).toBe("invalid")
+    const module = parseGithubUrl("https://github.com/acme/geo/tree/main")
+    if (module instanceof Error) fail(module.message)
+    expect(module.url).toBe("https://github.com/acme/geo")
+})
+
+test("keeps repositories in the cache by commit", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567"
+    expect(githubDir("/c")).toBe("/c/modules/github")
+    expect(repositoryDir("/c", "acme", "geo")).toBe("/c/modules/github/acme/geo")
+    expect(commitDir("/c", "acme", "geo", sha)).toBe(`/c/modules/github/acme/geo/${sha}`)
+    expect(refFile("/c", "acme", "geo", "")).toBe("/c/modules/github/acme/geo/refs/HEAD")
+    expect(refFile("/c", "acme", "geo", "v1")).toBe("/c/modules/github/acme/geo/refs/v1")
+})
+
+test("uses a cached commit without the network", () => {
+    const root = fs.mkdtemp("ore-remote-")
+    if (root instanceof Error) fail(root.message)
+    const sha = "89abcdef0123456789abcdef0123456789abcdef"
+    const dir = commitDir(root, "acme", "geo", sha)
+    const made = fs.mkdir(dir, true)
+    if (made !== null) fail(made.message)
+    const module = parseGithubUrl(`https://github.com/acme/geo/tree/${sha}/point`)
+    if (module instanceof Error) fail(module.message)
+    const phases: string[] = []
+    const result = fetchRepository(root, module, (phase: string, percent: int) => phases.push(phase))
+    if (result instanceof Error) fail(result.message)
+    expect(result.dir).toBe(dir)
+    expect(result.commit).toBe(sha)
+    expect(result.warning === null).toBe(true)
+    expect(phases.join(",")).toBe("done")
+    fs.remove(root, true)
+})
+
+test("needs the cache", () => {
+    const module = parseGithubUrl("https://github.com/acme/geo")
+    if (module instanceof Error) fail(module.message)
+    const result = fetchRepository("", module, (phase: string, percent: int) => {})
+    expect(result instanceof Error).toBe(true)
+})

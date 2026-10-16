@@ -407,6 +407,10 @@ The codes are grouped by the part of the language they concern:
 | [ORE6060](ORE6060.md) | A '//ore:naked' function can branch only on conditions known at compile time, such as 'target.arch'. |
 | [ORE6061](ORE6061.md) | A parameter property is only allowed in a constructor. |
 | [ORE6062](ORE6062.md) | A recursive type alias needs an object type in its cycle: '{ next: T \| null }'. |
+| [ORE6063](ORE6063.md) | Invalid GitHub module URL '…': expected https://github.com/<owner>/<repo>[/tree/<ref>][/<path>]. |
+| [ORE6064](ORE6064.md) | Cannot download …: … |
+| [ORE6065](ORE6065.md) | Cannot import …: it has no branch or tag '…'. |
+| [ORE6066](ORE6066.md) | Cannot import …: modules from GitHub are kept in the cache, which is off. |
 
 ## ORE7xxx: Statements
 

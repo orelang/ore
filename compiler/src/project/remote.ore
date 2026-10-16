@@ -1,0 +1,274 @@
+// Modules imported from GitHub by URL: `https://github.com/<owner>/<repo>`,
+// optionally followed by a path in the repository, or by `/tree/<ref>/<path>`
+// (`/blob/<ref>/<path>` too) for a branch, a tag or a commit. A repository is
+// downloaded with git into the cache, one directory per commit:
+//
+//   <cache>/modules/github/<owner>/<repo>/<commit>/   the files of the commit
+//   <cache>/modules/github/<owner>/<repo>/refs/<ref>  the commit a ref resolved to
+//
+// Each process asks GitHub once (`git ls-remote`) which commit a ref, or the
+// default branch, is at, and downloads that commit when the cache does not
+// have it: into a temporary directory next to it, renamed into place, so
+// that builds running at the same time never see half a download. A commit
+// given by its hash is never asked about. Offline, the commit the ref
+// resolved to last is used, with a warning.
+
+import { join } from "ore:path"
+import { cacheRoot } from "../driver/cache"
+
+/** A module of a GitHub repository, as its import URL names it. */
+export class GithubModule {
+    constructor(
+        readonly owner: string,
+        readonly repo: string,
+        /** A branch, a tag or a commit hash; "" for the default branch. */
+        readonly ref: string,
+        /** The path of the module in the repository; "" for the repository's entry module. */
+        readonly path: string,
+    ) {}
+
+    /** The repository's URL, for git. */
+    get url(): string {
+        return `https://github.com/${this.owner}/${this.repo}`
+    }
+}
+
+const prefix = "https://github.com/"
+
+/** Whether an import specifier is a URL of a GitHub repository. */
+export function isGithubUrl(specifier: string): bool {
+    return specifier.startsWith(prefix)
+}
+
+/** A character of a name or ref, which may also have `.`, `-` and `_`. */
+function nameChar(c: string): bool {
+    return (
+        (c >= "a" && c <= "z") ||
+        (c >= "A" && c <= "Z") ||
+        (c >= "0" && c <= "9") ||
+        c === "." ||
+        c === "-" ||
+        c === "_"
+    )
+}
+
+/** Whether a part of a URL is a name git and the file system take as is: not empty, not `.` or `..`. */
+function plainName(part: string): bool {
+    if (part.length === 0 || part === "." || part === "..") return false
+    for (let i = 0; i < part.length; i++) if (!nameChar(part.slice(i, i + 1))) return false
+    return true
+}
+
+/** Whether a ref is the full hash of a commit, 40 hexadecimal digits. */
+export function isCommitHash(ref: string): bool {
+    if (ref.length !== 40) return false
+    for (let i = 0; i < ref.length; i++) {
+        const c = ref.slice(i, i + 1)
+        if (!((c >= "0" && c <= "9") || (c >= "a" && c <= "f"))) return false
+    }
+    return true
+}
+
+/** The module a GitHub URL names; an Error when the URL is not of the form above. */
+export function parseGithubUrl(url: string): GithubModule | Error {
+    const invalid = new Error(
+        `Invalid GitHub module URL '${url}': expected https://github.com/<owner>/<repo>[/tree/<ref>][/<path>].`,
+    )
+    if (!url.startsWith(prefix) || url.includes("?") || url.includes("#")) return invalid
+    let rest = url.slice(prefix.length)
+    while (rest.endsWith("/")) rest = rest.slice(0, rest.length - 1)
+    const parts = rest.split("/")
+    if (parts.length < 2) return invalid
+    const owner = parts[0]
+    let repo = parts[1]
+    if (repo.endsWith(".git")) repo = repo.slice(0, repo.length - 4)
+    if (!plainName(owner) || !plainName(repo)) return invalid
+    let ref = ""
+    let start = 2
+    if (parts.length >= 4 && (parts[2] === "tree" || parts[2] === "blob")) {
+        ref = parts[3]
+        if (!plainName(ref)) return invalid
+        start = 4
+    }
+    const path = parts.slice(start)
+    for (const part of path) if (part.length === 0 || part === "." || part === "..") return invalid
+    return new GithubModule(owner, repo, ref, path.join("/"))
+}
+
+/** The directory of the modules downloaded from GitHub in a cache directory. */
+export function githubDir(root: string): string {
+    return join(root, "modules", "github")
+}
+
+/** The directory of a repository's downloaded commits. */
+export function repositoryDir(root: string, owner: string, repo: string): string {
+    return join(githubDir(root), owner, repo)
+}
+
+/** The directory of the files of a commit of a repository. */
+export function commitDir(root: string, owner: string, repo: string, commit: string): string {
+    return join(repositoryDir(root, owner, repo), commit)
+}
+
+/** The file that records the commit a ref, or the default branch (`HEAD`), resolved to. */
+export function refFile(root: string, owner: string, repo: string, ref: string): string {
+    return join(repositoryDir(root, owner, repo), "refs", ref === "" ? "HEAD" : ref)
+}
+
+/** A repository downloaded at a commit. */
+export class Fetched {
+    constructor(
+        /** The directory of the commit's files. */
+        readonly dir: string,
+        readonly commit: string,
+        /** Why a cached copy was used without checking it is current (offline), or null. */
+        readonly warning: string | null,
+    ) {}
+}
+
+/**
+ * Reports the progress of a download: the phase ("checking",
+ * "downloading", "done") and how far it is, 0 to 100.
+ */
+export type Progress = (phase: string, percent: int) => void
+
+/** The commits found this process, by repository URL and ref, so that GitHub is asked once. */
+const fetched = new Map<string, Fetched>()
+
+/** Runs git without prompts (a missing repository asks for a password otherwise). */
+function git(args: string[]): process.Output | Error {
+    const all = ["GIT_TERMINAL_PROMPT=0", "git"]
+    for (const arg of args) all.push(arg)
+    return process.output("env", all)
+}
+
+/** The first line of git's error output, for messages. */
+function gitError(output: process.Output): string {
+    const text = output.stderr.trim()
+    const end = text.indexOf("\n")
+    return end < 0 ? text : text.slice(0, end)
+}
+
+/**
+ * The commit a ref is at on the remote: the commit of an annotated tag
+ * rather than the tag. An Error when git fails (offline); null when there
+ * is no such ref.
+ */
+function remoteCommit(url: string, ref: string): string | Error | null {
+    const out = git(["ls-remote", url, ref === "" ? "HEAD" : ref])
+    if (out instanceof Error) return out
+    if (!out.ok) return new Error(gitError(out))
+    let found: string | null = null
+    for (const line of out.stdout.split("\n")) {
+        const tab = line.indexOf("\t")
+        if (tab < 0) continue
+        const hash = line.slice(0, tab)
+        const name = line.slice(tab + 1)
+        if (name.endsWith("^{}")) return hash
+        if (found === null && (name === "HEAD" || name === `refs/heads/${ref}` || name === `refs/tags/${ref}`))
+            found = hash
+    }
+    return found
+}
+
+/** Downloads a commit of a repository into its directory in the cache. */
+function download(root: string, module: GithubModule, commit: string, progress: Progress): Error | null {
+    const dir = commitDir(root, module.owner, module.repo, commit)
+    const parent = repositoryDir(root, module.owner, module.repo)
+    const madeParent = fs.isDir(parent) ? null : fs.mkdir(parent, true)
+    if (madeParent !== null) return madeParent
+    const temporary = fs.mkdtemp(".download-", parent)
+    if (temporary instanceof Error) return temporary
+    progress("downloading", 10)
+    const steps = [
+        ["-C", temporary, "init", "--quiet"],
+        ["-C", temporary, "fetch", "--quiet", "--depth", "1", module.url, commit],
+        ["-C", temporary, "-c", "advice.detachedHead=false", "checkout", "--quiet", "FETCH_HEAD"],
+    ]
+    for (let i = 0; i < steps.length; i++) {
+        const out = git(steps[i])
+        const failed = out instanceof Error ? out.message : out.ok ? "" : gitError(out)
+        if (failed !== "") {
+            fs.remove(temporary, true)
+            return new Error(`Cannot download ${module.url} at ${commit}: ${failed}`)
+        }
+        progress("downloading", 10 + (80 * (i + 1)) / steps.length)
+    }
+    fs.remove(join(temporary, ".git"), true)
+    // Another build may have downloaded the commit meanwhile: keep its copy.
+    if (fs.isDir(dir)) {
+        fs.remove(temporary, true)
+        return null
+    }
+    const renamed = fs.rename(temporary, dir)
+    if (renamed !== null && !fs.isDir(dir)) return renamed
+    if (renamed !== null) fs.remove(temporary, true)
+    return null
+}
+
+/** Records the commit a ref resolved to; a failure only loses the record. */
+function record(root: string, module: GithubModule, commit: string) {
+    const file = refFile(root, module.owner, module.repo, module.ref)
+    const slash = file.lastIndexOf("/")
+    const dir = file.slice(0, slash)
+    if (!fs.isDir(dir) && fs.mkdir(dir, true) !== null) return
+    // Written next to it, then renamed, so that a reader never sees half of it.
+    const temporary = fs.mkdtemp(".record-", dir)
+    if (temporary instanceof Error) return
+    const written = join(temporary, "commit")
+    if (fs.writeFile(written, `${commit}\n`) === null) fs.rename(written, file)
+    fs.remove(temporary, true)
+}
+
+/** The commit a ref resolved to last, if it is still in the cache. */
+function recorded(root: string, module: GithubModule): string | null {
+    const text = fs.readFile(refFile(root, module.owner, module.repo, module.ref))
+    if (text instanceof Error) return null
+    const commit = text.trim()
+    return isCommitHash(commit) && fs.isDir(commitDir(root, module.owner, module.repo, commit)) ? commit : null
+}
+
+/**
+ * The repository of a module at the commit its ref (or the default branch)
+ * is at, downloaded into the cache in `root` when the cache does not have
+ * it. Offline, the commit the ref resolved to last, with a warning. An
+ * Error when the cache is off, the ref does not exist, or the repository
+ * cannot be downloaded.
+ */
+export function fetchRepository(root: string, module: GithubModule, progress: Progress): Fetched | Error {
+    if (root === "")
+        return new Error(`Cannot import ${module.url}: modules from GitHub are kept in the cache, which is off.`)
+    const key = `${module.url}@${module.ref}`
+    const known = fetched.get(key)
+    if (known !== null) return known
+    let commit = module.ref
+    let warning: string | null = null
+    if (!isCommitHash(commit)) {
+        progress("checking", 0)
+        const remote = remoteCommit(module.url, module.ref)
+        if (remote === null) return new Error(`Cannot import ${module.url}: it has no branch or tag '${module.ref}'.`)
+        if (remote instanceof Error) {
+            const last = recorded(root, module)
+            if (last === null) return new Error(`Cannot download ${module.url}: ${remote.message}`)
+            commit = last
+            warning = `cannot check ${module.url} for a new commit (${remote.message}); using the cached ${last.slice(0, 12)}`
+        } else {
+            commit = remote
+        }
+    }
+    const dir = commitDir(root, module.owner, module.repo, commit)
+    if (!fs.isDir(dir)) {
+        const failed = download(root, module, commit, progress)
+        if (failed !== null) return failed
+    }
+    if (warning === null && !isCommitHash(module.ref)) record(root, module, commit)
+    progress("done", 100)
+    const result = new Fetched(dir, commit, warning)
+    fetched.set(key, result)
+    return result
+}
+
+/** The repository of a module in the cache in `cacheRoot()`, without progress; see `fetchRepository`. */
+export function fetchModule(module: GithubModule): Fetched | Error {
+    return fetchRepository(cacheRoot(), module, (phase: string, percent: int) => {})
+}

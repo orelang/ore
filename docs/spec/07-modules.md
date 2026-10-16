@@ -14,9 +14,42 @@
   `x/index.ore`; a package name to `node_modules/<name>` in the directory of
   the importing file or above, using its package.json `main` (or
   `index.ore`); `name/sub/path` to a file of the package. `ore:` names
-  standard modules embedded in the compiler.
+  standard modules embedded in the compiler. `https://github.com/...` names
+  a module of a GitHub repository (below).
 - A project is an npm package: package.json `main` is the entry module, and
   dependencies are installed by npm and locked in `package-lock.json`.
+
+## Modules from GitHub
+
+An import specifier that is the URL of a GitHub repository imports a module
+of the repository, without installing it in the project:
+
+```ts
+import { x } from "https://github.com/owner/repo"                       // its entry module
+import { x } from "https://github.com/owner/repo/src/point"             // a file of it
+import { x } from "https://github.com/owner/repo/tree/v1.2.0/src/point" // at a branch, tag or commit
+```
+
+- `https://github.com/<owner>/<repo>` is the repository's entry module, as
+  for a package: its package.json `main`, or `index.ore`. A trailing `.git`
+  or `/` is ignored.
+- A path after it names a module in the repository, resolved like `./path`
+  is: `path.ore`, `path` itself or `path/index.ore`.
+- `/tree/<ref>/` (or `/blob/<ref>/`, as GitHub's own links have it) before
+  the path picks a branch, a tag or a commit (its full 40-digit hash);
+  without it, the repository's default branch. A ref with `/` in its name
+  cannot be named this way; a path cannot have `.` or `..` parts.
+- The repository is downloaded with `git` into the cache (`ore cache`), by
+  commit: `<cache>/modules/github/<owner>/<repo>/<commit>/`. Once per
+  build, the compiler asks GitHub (`git ls-remote`) which commit the branch
+  or tag is at, and downloads that commit when the cache does not have it;
+  the commit it resolved to is recorded in `<repo>/refs/<ref>` (`refs/HEAD`
+  for the default branch). A commit named by its hash is never asked about.
+- Offline, the commit recorded last is used, with a warning; a repository
+  never downloaded is an error. `ore cache clean` removes the downloaded
+  modules with the rest of the cache.
+- Inside a downloaded module, relative imports resolve in the repository,
+  and further GitHub URLs the same way.
 
 ## Files as text
 
