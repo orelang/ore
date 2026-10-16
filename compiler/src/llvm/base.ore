@@ -9,7 +9,7 @@
 // parameter `g`. Now that a class can extend a class, the layers can become
 // classes again.
 
-import { gcdata } from "./gcdata"
+import { barrierWords, gcdata } from "./gcdata"
 import { type Func, type Local, type Module } from "../ir/nodes"
 import {
     isSubclass,
@@ -358,13 +358,39 @@ export class Emitter {
         return type.kind === "bool" ? this.b.value("i1", `trunc i8 ${v.v} to i1`) : v
     }
 
-    store(v: V, ptr: string, type: Type) {
+    /**
+     * Stores a value at `ptr`, after the write barrier when the value has
+     * pointers; `barrier` is false for stores into a local's stack slot or a
+     * global, which the collector scans as roots.
+     */
+    store(v: V, ptr: string, type: Type, barrier: bool = true) {
+        if (barrier && type.kind !== "bool") this.writeBarrier(ptr, this.mt(type))
         if (type.kind === "bool") {
             const byte = this.b.value("i8", `zext i1 ${v.v} to i8`)
             this.b.emit(`store i8 ${byte.v}, ptr ${ptr}`)
         } else {
             this.b.emit(`store ${this.mt(type)} ${v.v}, ptr ${ptr}`)
         }
+    }
+
+    /** Whether the function being emitted stores with the write barrier: all but those of the collector and the system layer under it. */
+    barriers(): bool {
+        const f = this.func
+        if (f === null) return true
+        const file = f.file ?? ""
+        return file !== "ore:runtime/gc" && file !== "ore:runtime/os" && file !== "ore:runtime/sys"
+    }
+
+    /** The write barrier before a store of an LLVM type at `ptr` (see `writeBarrier` in runtime/core/gc.ore). */
+    writeBarrier(ptr: string, ty: string) {
+        if (!this.barriers()) return
+        const words = barrierWords(this, ty)
+        if (words > 0) this.rt("ore_rt_write_barrier", [{ ty: "ptr", v: ptr }, this.i64(words)])
+    }
+
+    /** The write barrier before a copy or fill of `bytes` bytes at `ptr`. */
+    writeBarrierRange(ptr: V, bytes: V) {
+        if (this.barriers()) this.rt("ore_rt_write_barrier_range", [ptr, bytes])
     }
 
     field(ptr: string, structTy: string, index: int): string {
@@ -458,7 +484,7 @@ export class Emitter {
     declare(local: Local, init: V | null) {
         if (local.global && this.globals.has(local)) {
             // A global without a value is zero from the start, and may already have been set by functions.
-            if (init !== null) this.store(init, this.globalPlace(local), local.type)
+            if (init !== null) this.store(init, this.globalPlace(local), local.type, false)
             return
         }
         const mt = this.mt(local.type)
@@ -482,7 +508,7 @@ export class Emitter {
         const known = this.storage.get(local)
         const s = known ?? new Storage(false, this.b.alloca(mt))
         if (known === null) this.storage.set(local, s)
-        this.store(init ?? this.zero(local.type), s.ptr, local.type)
+        this.store(init ?? this.zero(local.type), s.ptr, local.type, false)
     }
 
     /** Saves the state of the function being emitted and starts an empty one, for a helper. */

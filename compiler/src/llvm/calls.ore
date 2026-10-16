@@ -615,10 +615,12 @@ export function unsafeCall(g: Emitter, e: BuiltinCall): V {
         case "allocBytes":
             return g.rt("ore_rt_alloc_bytes", [a[0]])
         case "copy":
+            g.writeBarrierRange(a[0], a[2])
             intrinsic("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)")
             g.b.emit(`call void @llvm.memmove.p0.p0.i64(ptr ${a[0].v}, ptr ${a[1].v}, i64 ${a[2].v}, i1 false)`)
             return voidValue
         case "fill":
+            g.writeBarrierRange(a[0], a[2])
             intrinsic("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)")
             g.b.emit(`call void @llvm.memset.p0.i64(ptr ${a[0].v}, i8 ${a[1].v}, i64 ${a[2].v}, i1 false)`)
             return voidValue
@@ -638,6 +640,7 @@ export function unsafeCall(g: Emitter, e: BuiltinCall): V {
         case "atomicLoad":
             return g.b.value(mt, `load atomic ${mt}, ptr ${a[0].v} seq_cst, align ${align}`)
         case "atomicStore":
+            g.writeBarrier(a[0].v, mt)
             g.b.emit(`store atomic ${mt} ${a[1].v}, ptr ${a[0].v} seq_cst, align ${align}`)
             return voidValue
         case "atomicAdd":
@@ -646,10 +649,12 @@ export function unsafeCall(g: Emitter, e: BuiltinCall): V {
         case "atomicOr":
         case "atomicXor":
         case "atomicExchange": {
+            if (name === "atomicExchange") g.writeBarrier(a[0].v, mt)
             const op = name === "atomicExchange" ? "xchg" : name.slice("atomic".length).toLowerCase()
             return g.b.value(mt, `atomicrmw ${op} ptr ${a[0].v}, ${mt} ${a[1].v} seq_cst, align ${align}`)
         }
         case "atomicCompareExchange": {
+            g.writeBarrier(a[0].v, mt)
             const pair = g.b.value(
                 `{ ${mt}, i1 }`,
                 `cmpxchg ptr ${a[0].v}, ${mt} ${a[1].v}, ${mt} ${a[2].v} seq_cst seq_cst, align ${align}`,

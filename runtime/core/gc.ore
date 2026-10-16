@@ -118,8 +118,12 @@ const threadStoppedFor = 64
 const threadTrace = 72
 /** Set by the thread once it has printed its stack for the watchdog. */
 const threadDumped = 80
-const threadCache = 88
+/** The objects the thread's write barrier shaded, for the markers: a buffer of `wbCap` pointers, and how many it holds. */
+const threadWbBuffer = 88
+const threadWbCount = 96
+const threadCache = 104
 const threadRecordSize = threadCache + maxClasses * 2 * 8
+const wbCap = 256
 
 let heapBase: ptr
 let pageTable: ptr
@@ -174,6 +178,8 @@ let extraRootCount: int
 let extraRootCap: int
 /** 1 when ORE_GCTRACE is set: each collection prints a line to stderr. */
 let trace: int
+/** 1 to mark alongside the program (the default), 0 with the world stopped throughout (ORE_GCSTW set). */
+let concurrentMarking: int
 let clock: ptr
 
 /**
@@ -263,6 +269,7 @@ export function init(): void {
     allocatedCell = permanent(8)
     stoppingCell = permanent(8)
     generationCell = permanent(8)
+    markingCell = permanent(8)
     pause = permanent(16)
     unsafe.store<i64>(unsafe.add(pause, 8), 20000)
     heapBase = mapMemory(heapPages * pageSize)
@@ -334,6 +341,7 @@ export function registerThread(): void {
     // The first thread reads the settings; getenv's argument is a copy, so the thread must be registered.
     if (threadCount === 1) {
         trace = isNil(getenv("ORE_GCTRACE")) ? 0 : 1
+        concurrentMarking = isNil(getenv("ORE_GCSTW")) ? 1 : 0
         startMarkers()
     }
 }
@@ -528,6 +536,7 @@ function allocLarge(size: int, noscan: bool, gcdata: ptr): ptr {
     useSpan(span, pages * pageSize, 1, noscan, -1)
     setPointer(pointerAt(span, spanTypes), 0, gcdata)
     setBit(pointerAt(span, spanAllocBits), 0)
+    if (!isNil(markingCell) && unsafe.atomicLoad<i64>(markingCell) !== 0) setBit(pointerAt(span, spanMarkBits), 0)
     unlock(heapLock)
     const p = pointerAt(span, spanStart)
     unsafe.fill(p, 0, size)
@@ -589,6 +598,9 @@ export function allocTyped(size: int, noscan: bool, gcdata: ptr): ptr {
         p = unsafe.add(pointerAt(span, spanStart), i * elemSize)
         unsafe.fill(p, 0, elemSize)
         if (!noscan) setPointer(pointerAt(span, spanTypes), i * 8, gcdata)
+        // Allocated black while marking runs: it holds nothing yet that the snapshot did not.
+        if (!isNil(markingCell) && unsafe.atomicLoad<i64>(markingCell) !== 0)
+            unsafe.atomicOr<i64>(unsafe.add(pointerAt(span, spanMarkBits), (i >> 6) * 8), 1 << (i & 63))
     }
     unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
     if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
@@ -877,6 +889,11 @@ const maxMarkers = 8
 const batch = 256
 
 /** The markers' records; the collector is marker 0. */
+/**
+ * Holds 1 while the markers run alongside the program: the write barrier shades
+ * the pointers that stores overwrite, and new objects are allocated marked.
+ */
+let markingCell: ptr
 let markers: ptr
 let markerCount: int
 let poolLock: ptr
@@ -965,22 +982,121 @@ export function allocElements(bytes: int, gcdata: ptr): ptr {
 
 /** Marks the object that `p` points into, if it is an allocated object of the heap, on marker `m`. */
 function mark(m: ptr, p: u64): void {
+    const object = greyen(p)
+    if (!isNil(object)) push(m, object)
+}
+
+/**
+ * Marks the object that `p` points into, if it is an allocated object of the
+ * heap not marked yet; returns it when it is to be scanned, nil otherwise.
+ */
+function greyen(p: u64): ptr {
     const offset = p - unsafe.toInt(heapBase)
-    if (offset >= u64(nextPage * pageSize)) return
+    if (offset >= u64(nextPage * pageSize)) return nil()
     const span = pointerAt(pageTable, i64(offset >> 13) * 8)
-    if (isNil(span)) return
+    if (isNil(span)) return nil()
     const elemSize = field(span, spanElemSize)
     const index = i64(
         (u64(unsafe.diff(unsafe.fromInt(p), pointerAt(span, spanStart))) * u64(field(span, spanDivMul))) >> 32,
     )
-    if (index >= field(span, spanElems)) return
-    if (!bit(pointerAt(span, spanAllocBits), index)) return
+    if (index >= field(span, spanElems)) return nil()
+    if (!bit(pointerAt(span, spanAllocBits), index)) return nil()
     // The bitmaps are read as bytes elsewhere: little-endian words hold the same bits.
     const word = unsafe.add(pointerAt(span, spanMarkBits), (index >> 6) * 8)
     const mask = 1 << (index & 63)
-    if ((unsafe.atomicOr<i64>(word, mask) & mask) !== 0) return
-    if (field(span, spanNoscan) !== 0) return
-    push(m, unsafe.add(pointerAt(span, spanStart), index * elemSize))
+    if ((unsafe.atomicOr<i64>(word, mask) & mask) !== 0) return nil()
+    if (field(span, spanNoscan) !== 0) return nil()
+    return unsafe.add(pointerAt(span, spanStart), index * elemSize)
+}
+
+// ---------------------------------------------------------------------------
+// The write barrier
+//
+// While the markers run alongside the program, the collector keeps what was
+// reachable when marking began (snapshot at the beginning): the stacks and
+// the globals were scanned then, with the world stopped, and a store into the
+// heap shades the pointer it overwrites, so that no object reachable at the
+// start loses its last path unseen. Objects allocated meanwhile are marked
+// already. Stores to locals and globals need no barrier: what they held at
+// the start was scanned as a root.
+
+/**
+ * Before a store over `words` words at `slot` in the heap: shades what they
+ * point to while marking runs. The compiler calls it before every store of
+ * a value with pointers into an object.
+ */
+//ore:runtime ore_rt_write_barrier
+export function writeBarrier(slot: ptr, words: int): void {
+    // Before `init`, while the runtime's modules set up their globals, nothing is marking.
+    if (isNil(markingCell) || unsafe.atomicLoad<i64>(markingCell) === 0) return
+    shadeWords(slot, words)
+}
+
+/** Before a copy or a fill over `bytes` bytes at `to`: shades what the words there point to while marking runs. */
+//ore:runtime ore_rt_write_barrier_range
+export function writeBarrierRange(to: ptr, bytes: int): void {
+    if (isNil(markingCell) || unsafe.atomicLoad<i64>(markingCell) === 0) return
+    const from = unsafe.fromInt(unsafe.toInt(to) & ~u64(7))
+    shadeWords(from, (unsafe.diff(to, from) + bytes) >> 3)
+}
+
+//ore:noinline
+function shadeWords(slot: ptr, words: int): void {
+    // A stop waits until the shaded objects are in the thread's buffer, where the collector finds them.
+    const t = threadRecord()
+    if (!isNil(t)) unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    for (let i = 0; i < words; i++) {
+        const object = greyen(unsafe.load<u64>(unsafe.add(slot, i * 8)))
+        if (!isNil(object)) shade(object)
+    }
+    if (isNil(t)) return
+    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
+    if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
+}
+
+/** Hands an object the barrier marked to the markers, through the thread's buffer. */
+function shade(object: ptr): void {
+    const t = threadRecord()
+    if (isNil(t)) {
+        lock(poolLock)
+        addToPool(object)
+        unlock(poolLock)
+        return
+    }
+    let buffer = pointerAt(t, threadWbBuffer)
+    if (isNil(buffer)) {
+        buffer = permanent(wbCap * 8)
+        setPointer(t, threadWbBuffer, buffer)
+    }
+    const n = field(t, threadWbCount)
+    setPointer(buffer, n * 8, object)
+    setField(t, threadWbCount, n + 1)
+    if (n + 1 === wbCap) flushBarrier(t)
+}
+
+/** Moves the objects a thread's barrier shaded to the pool. */
+function flushBarrier(t: ptr): void {
+    const n = field(t, threadWbCount)
+    if (n === 0) return
+    const buffer = pointerAt(t, threadWbBuffer)
+    lock(poolLock)
+    for (let i = 0; i < n; i++) addToPool(pointerAt(buffer, i * 8))
+    unlock(poolLock)
+    setField(t, threadWbCount, 0)
+}
+
+/** Adds an object to scan to the pool; the caller holds `poolLock`. */
+function addToPool(object: ptr): void {
+    if (poolCount === poolCap) {
+        const cap = poolCap < 64 ? 64 : poolCap * 2
+        const grown = mapMemory(cap * 8)
+        if (poolCount > 0) unsafe.copy(grown, pool, poolCount * 8)
+        pool = grown
+        poolCap = cap
+    }
+    setPointer(pool, poolCount * 8, object)
+    poolCount++
+    unsafe.atomicStore<i64>(poolHint, poolCount)
 }
 
 function push(m: ptr, object: ptr): void {
@@ -1113,17 +1229,8 @@ function drain(m: ptr): void {
     }
 }
 
-/** Collects garbage: stops the world, marks from the roots, sweeps. */
-//ore:noinline
-export function collect(): void {
-    lock(gcLock)
-    if (unsafe.atomicLoad<i64>(allocatedCell) < nextCollection) {
-        // Another thread collected meanwhile.
-        unlock(gcLock)
-        return
-    }
-    const self = threadRecord()
-    const start = nowNs(clock)
+/** Stops every thread but this one; the caller holds `gcLock`. Returns how many it stopped. */
+function stopWorld(self: ptr): int {
     // No worker is between two stacks while the collector holds the write side.
     unsafe.atomicOr<i64>(switchState, switchWriter)
     while ((unsafe.atomicLoad<i64>(switchState) & ~switchWriter) !== 0) nanosleep(pause, nil())
@@ -1135,11 +1242,52 @@ export function collect(): void {
         pthread_kill(pointerAt(t, threadId), stopSignal())
         others++
     }
-    // Every other thread has stopped once it acknowledged this collection.
+    // Every other thread has stopped once it acknowledged this stop.
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
         if (t === self) continue
         while (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) nanosleep(pause, nil())
     }
+    return others
+}
+
+/** Lets the threads `stopWorld` stopped run again. */
+function startWorld(): void {
+    unsafe.atomicStore<i64>(stoppingCell, 0)
+    unsafe.atomicAnd<i64>(switchState, ~switchWriter)
+}
+
+/** Marks until there is nothing left to mark, on this thread and the helpers. */
+function markAll(): void {
+    idleMarkers = 0
+    unsafe.atomicStore<i64>(idleHint, 0)
+    unsafe.atomicStore<i64>(helpersDone, 0)
+    if (markerCount > 1) {
+        lock(helperLock)
+        markRound++
+        pthread_cond_broadcast(helperCond)
+        unlock(helperLock)
+    }
+    drain(pointerAt(markers, 0))
+    while (unsafe.atomicLoad<i64>(helpersDone) < markerCount - 1) nanosleep(pause, nil())
+}
+
+/**
+ * Collects garbage, marking alongside the program: the world stops to scan
+ * the roots and turn the write barrier on, runs while the markers mark what
+ * was reachable then, and stops again to mark what the barrier shaded
+ * meanwhile, turn it off and sweep.
+ */
+//ore:noinline
+export function collect(): void {
+    lock(gcLock)
+    if (unsafe.atomicLoad<i64>(allocatedCell) < nextCollection) {
+        // Another thread collected meanwhile.
+        unlock(gcLock)
+        return
+    }
+    const self = threadRecord()
+    const start = nowNs(clock)
+    const others = stopWorld(self)
     const stopped = nowNs(clock)
     collections++
 
@@ -1158,39 +1306,40 @@ export function collect(): void {
     const globals = ore_globals_table()
     const count = ore_globals_count()
     for (let i = 0; i < count; i++) scan(pointerAt(globals, i * 16), field(globals, i * 16 + 8))
-    // The helpers join in, then the collector waits until they are all done.
-    idleMarkers = 0
-    unsafe.atomicStore<i64>(idleHint, 0)
-    unsafe.atomicStore<i64>(helpersDone, 0)
-    if (markerCount > 1) {
-        lock(helperLock)
-        markRound++
-        pthread_cond_broadcast(helperCond)
-        unlock(helperLock)
-    }
-    drain(pointerAt(markers, 0))
-    while (unsafe.atomicLoad<i64>(helpersDone) < markerCount - 1) nanosleep(pause, nil())
-    const marked = nowNs(clock)
-    sweep()
+    unsafe.atomicStore<i64>(markingCell, 1)
+    const concurrent = concurrentMarking !== 0
+    if (concurrent) startWorld()
+    const resumed = nowNs(clock)
 
-    unsafe.atomicStore<i64>(stoppingCell, 0)
-    unsafe.atomicAnd<i64>(switchState, ~switchWriter)
+    markAll()
+    const marked = nowNs(clock)
+    if (concurrent) stopWorld(self)
+    const stoppedAgain = nowNs(clock)
+    // What the barrier shaded since: in the threads' buffers and the pool.
+    for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) flushBarrier(t)
+    markAll()
+    unsafe.atomicStore<i64>(markingCell, 0)
+    const terminated = nowNs(clock)
+    sweep()
+    startWorld()
     const end = nowNs(clock)
     const number = collections
     unlock(gcLock)
     if (trace !== 0) {
         dprintf(
             2,
-            "gc %ld: %ld KB live, %ld KB heap, %ld threads, %ld markers, pause %ld us (stop %ld, mark %ld, sweep %ld)\n",
+            "gc %ld: %ld KB live, %ld KB heap, %ld threads, %ld markers, pauses %ld + %ld us (roots %ld; finish %ld, sweep %ld), marking %ld us\n",
             number,
             liveBytes >> 10,
             heapSize() >> 10,
             others + 1,
             markerCount,
-            (end - start) / 1000,
-            (stopped - start) / 1000,
-            (marked - stopped) / 1000,
-            (end - marked) / 1000,
+            (resumed - start) / 1000,
+            (end - stoppedAgain) / 1000 + (stoppedAgain - marked) / 1000,
+            (resumed - stopped) / 1000,
+            (terminated - stoppedAgain) / 1000,
+            (end - terminated) / 1000,
+            (marked - resumed) / 1000,
         )
     }
 }

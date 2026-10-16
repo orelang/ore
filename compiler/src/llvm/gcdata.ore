@@ -123,3 +123,9 @@ export function elementData(g: Emitter, ty: string): V {
     const size = layoutOf(g, ty, new Set<string>()).size
     return { ty: "ptr", v: constArray(g, "i64", [`${(size + 7) & ~7}`, "0"]) }
 }
+
+/** The number of words a store of an LLVM type over a slot overwrites, for the write barrier; 0 when none holds a pointer. */
+export function barrierWords(g: Emitter, ty: string): int {
+    const layout = layoutOf(g, ty, new Set<string>())
+    return layout.pointers.length === 0 ? 0 : (layout.size + 7) >> 3
+}
