@@ -389,6 +389,33 @@ code --install-extension ore-0.1.0.vsix
 
 Another binary can be set with the `ore.path` setting.
 
+## Performance
+
+[`bench/`](bench/README.md) holds 24 programs, each written in Ore, C, Go and
+TypeScript (run by Bun and Node), from compute kernels to everyday programs
+with maps, strings, JSON, regular expressions, files, tasks and channels.
+Results per machine are in [`bench/results/`](bench/results/); the latest:
+[Xeon E5-2699 v4, 16 threads, Linux](bench/results/2026-10-16-xeon-e5-2699v4.md)
+(2026-10-16).
+
+In short, against the fastest of the five in each benchmark:
+
+- **Compute** (fib, mandelbrot, matmul, spectral-norm, nqueens, fannkuch,
+  sha256, nbody): within 1.0–1.5x of C, level with Go or ahead, and ahead
+  of Bun and Node on all but fannkuch.
+- **Tasks and channels**: 100000 tasks in 72 ms (Go 63 ms, Bun 136 ms,
+  Node 268 ms); channels 1.65x of Go, 4x ahead of Bun and Node.
+- **Allocation-heavy** (binary-trees, json, strings, closures, map): 1.2–1.5x
+  of the fastest (Bun or C).
+- **Behind**: `structs` (25x of C: immutable small structs are not kept off
+  the heap yet), `wordcount` and `knucleotide` (3–5x: string-keyed maps),
+  `sort` (2.2x of Go), `bigint` (2.8x of Go), `fileio` (2x of C).
+- **Memory**: 1.3–2.5x of C and Go on most benchmarks, 10–50x less than Bun
+  and Node.
+- **GC pauses**: about 0.3 ms to mark and 0.8 ms to finish, against Go's
+  0.14 + 0.05 ms; bringing them to Go's level is on the
+  [roadmap](docs/roadmap.md).
+
 ## Status
 
 | Phase | |
@@ -427,7 +454,8 @@ Another binary can be set with the `ore.path` setting.
 ```sh
 ci/test.sh                       # every test, with dist/ore (see tests/README.md)
 ORE_BLESS=1 ci/test.sh run/      # regenerate expected outputs of tests/run
-tests/bench/run.sh               # time the benchmarks in tests/bench/ (release builds)
+bench/run.sh                     # Ore against C, Go, Bun and Node (see bench/README.md)
+tests/bench/run.sh               # time the micro-benchmarks in tests/bench/ (release builds)
 ci/test-linux.sh                 # the tests in Linux containers (arm64 and amd64), with Docker
 ci/stress.sh                     # run the concurrent programs many times
 ```
@@ -444,7 +472,8 @@ Every directory below has a README with the details.
 | `tests/run` | Programs with expected output, by topic; a directory with `main.ore` is one program |
 | `tests/diag` | Programs with expected diagnostics (`// error: ...`), by topic |
 | `tests/async` | Async tests with their expected output, waiting for async |
-| `tests/bench` | Benchmarks |
+| `bench` | Benchmarks against C, Go, Bun and Node, and their results |
+| `tests/bench` | Micro-benchmarks of the runtime |
 | `tests/runner` | The test runner (`ci/test.sh`), written in Ore |
 | `editors/zed` | Zed extension (GPL-3.0-or-later: it carries Zed's TypeScript queries) |
 | `editors/vscode` | VS Code extension |
