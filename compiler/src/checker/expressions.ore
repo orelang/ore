@@ -1,6 +1,7 @@
 // Expressions: names, operators, assignments, literals, members and
 // conversions between them.
 
+import { toArray } from "./iteration"
 import {
     Alloc,
     ArrayMethod,
@@ -11,6 +12,9 @@ import {
     BigIntLit,
     Arith,
     Bind,
+    Downcast,
+    IfaceCall,
+    MethodCall,
     BindLocal,
     BoolLit,
     BoundMethod,
@@ -46,6 +50,7 @@ import {
     Recast,
     Seq,
     StringLit,
+    StringMethod,
     TypeOf,
     Unary,
     UnionField,
@@ -55,6 +60,7 @@ import {
 import {
     type ArrayType,
     type InterfaceType,
+    type MapType,
     type StructType,
     type Type,
     type UnionType,
@@ -68,6 +74,7 @@ import {
     isSubclass,
     isStringLike,
     membersOf,
+    readonlyTuple,
     sameType,
     types,
     typeToString,
@@ -105,6 +112,7 @@ import {
 } from "../syntax/nodes"
 import { bigIsNeg, bigLt, bigOf, bigText, bigToI64 } from "./bigint"
 import { checkAwait } from "./async"
+import { checkYield } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import { checkCall, checkNew, checkRegExpLiteral } from "./calls"
 import {
@@ -121,6 +129,17 @@ import {
     staticMember,
 } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
+import {
+    checkDelete,
+    checkIn,
+    dictAssign,
+    dictCoalesceAssign,
+    dictGet,
+    dictKey,
+    dictLiteral,
+    dictTarget,
+    keyedMember,
+} from "./dicts"
 import { checkFunctionBody, inContext, makeFunc } from "./declarations"
 import { cIdent } from "./helpers"
 import { foldBinary, foldUnary } from "./fold"
@@ -202,13 +221,18 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         const fn = c.fn
         const self = fn !== null ? fn.thisLocal : null
         const inStatic = c.staticClass
+        // `this` directly in a field initializer; arrow functions there capture it.
+        if (fn !== null && fn.fieldInit && fn.closure === null)
+            return c.fail(node, "Field initializers cannot use 'this'.")
+        // At the top level of a module and in its arrow functions, `this` is null (`undefined` in JavaScript).
+        if (self === null && fn !== null && fn.nullThis && inStatic === null) return typed(new NullLit(types.null))
         if (self === null)
             return c.fail(
                 node,
                 fn !== null && fn.fieldInit
                     ? "Field initializers cannot use 'this'."
                     : inStatic !== null
-                      ? `A static method has no 'this'; name the class: '${inStatic}.name'.`
+                      ? `A static method or block has no 'this'; name the class: '${inStatic}.name'.`
                       : "'this' can only be used inside a class.",
             )
         capture(self, fn!.thisCaptures ?? [])
@@ -237,8 +261,17 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         if (type !== null && value.k !== "error") c.coerce(value, type, expression(node))
         return value
     }
-    if (k === "AsExpression")
+    if (k === "AsExpression") {
+        const asType = node.child("type")!
+        if (asType.kind === "TypeReference" && c.text(asType) === "const") {
+            const type = constType(c, expression(node), scope)
+            if (type === null) return errorOperand
+            const value = checkExpr(c, expression(node), scope, type)
+            if (value.k === "error") return value
+            return typed(c.coerce(value, type, expression(node)))
+        }
         return c.fail(node, "Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'.")
+    }
     if (k === "TemplateExpression") return checkTemplate(c, node, scope)
     if (k === "TaggedTemplateExpression") return checkTaggedTemplate(c, node, scope, expected)
     if (k === "PropertyAccessExpression") return checkProperty(c, node, scope)
@@ -252,7 +285,8 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         return typed(new TypeOf(types.string, c.toDefault(value, expression(node))))
     }
     if (k === "AwaitExpression") return checkAwait(c, node, scope, expected)
-    if (k === "DeleteExpression") return c.fail(node, "'delete' is not supported in Ore.")
+    if (k === "YieldExpression") return checkYield(c, node, scope)
+    if (k === "DeleteExpression") return checkDelete(c, node, scope)
     return c.fail(node, "This expression is not supported yet.")
 }
 
@@ -295,6 +329,8 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
                 )
             return c.fail(node, `'${node.text}' is a generic function and cannot be used as a value.`)
         case "namespace": {
+            if (symbol.name === "globalThis")
+                return c.fail(node, "'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'.")
             let first = ""
             for (const [name, _] of symbol.members) {
                 first = name
@@ -360,7 +396,7 @@ export function checkBinary(c: Checker, node: Node, scope: Scope): Operand {
     if (op === "CommaToken") return c.fail(opNode, "The comma operator is not supported in Ore.")
     if (op === "QuestionQuestionToken") return checkCoalesce(c, node, scope)
     if (op === "InstanceOfKeyword") return checkInstanceOf(c, node, scope)
-    if (op === "InKeyword") return c.fail(opNode, "'in' is not supported in Ore.")
+    if (op === "InKeyword") return checkIn(c, left(node), right(node), scope)
     return c.fail(opNode, `Operator '${c.text(opNode)}' is not supported.`)
 }
 
@@ -525,6 +561,11 @@ export function compare(
     // A member compares with a union containing it.
     else if (!sameType(le.type, re.type) && re.type.kind === "union") le = c.coerce(typed(le), re.type, leftNode)
     else if (!sameType(le.type, re.type) && le.type.kind === "union") re = c.coerce(typed(re), le.type, rightNode)
+    // `true` and `false` compare with any boolean, as `bool`.
+    if (le.type.kind === "bool" && re.type.kind === "bool" && le.type !== re.type) {
+        if (le.type !== types.bool) le = new Recast(types.bool, le)
+        if (re.type !== types.bool) re = new Recast(types.bool, re)
+    }
     const type = typeOf(le)
     // Instances of a class and of a subclass compare by identity.
     const lt = le.type
@@ -557,8 +598,14 @@ export function checkAssign(c: Checker, node: Node, op: ArithOp | null, scope: S
  * evaluated once, and the expression is the value `x` ends with.
  */
 function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): Operand {
-    const target = assignTarget(c, left(node), scope)
+    const target = assignTarget(c, left(node), scope, op === "??")
     if (target === null) return errorOperand
+    const entry = target.entry
+    if (entry !== null) {
+        const value = checkExpr(c, right(node), scope, target.type)
+        if (value.k === "error") return value
+        return typed(dictCoalesceAssign(c, entry, value, right(node)))
+    }
     if (target.accessor !== null)
         return c.fail(left(node), `'${op}=' cannot assign to an accessor; write 'x = x ${op} v'.`)
     const place = target.lvalue!
@@ -728,7 +775,7 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
         const truncated = assignLength(c, node, target_, scope)
         if (truncated !== null) return truncated
     }
-    const target = assignTarget(c, target_, scope)
+    const target = assignTarget(c, target_, scope, op === null)
     // The first assignment of a variable declared without a type gives its type.
     const place = target !== null ? target.lvalue : null
     const untyped = place !== null && place.k === "local" && c.untyped.has(place.local) ? place.local : null
@@ -746,6 +793,11 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     if (untyped !== null) {
         if (!settle(c, untyped, value, right(node))) return errorOperand
         target.type = untyped.type
+    }
+    const entry = target.entry
+    if (entry !== null) {
+        if (value.k === "error") return value
+        return typed(dictAssign(c, entry, c.coerce(value, target.type, right(node))))
     }
     if (target.accessor !== null) {
         if (value.k === "error") return value
@@ -815,13 +867,34 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
     return typed(new IncDec(type, place!, op, prefix))
 }
 
-export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget | null {
-    if (node.kind === "ParenthesizedExpression") return assignTarget(c, expression(node), scope)
+export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool = false): AssignTarget | null {
+    if (node.kind === "ParenthesizedExpression") return assignTarget(c, expression(node), scope, entries)
     if (node.kind === "ElementAccessExpression") {
         const target = checkExpr(c, expression(node), scope)
         if (target.k !== "typed") return null
         const array = target.expr
         const at = array.type
+        if (at.kind === "map" && at.dict) {
+            const key = dictKey(c, argumentExpression(node), scope)
+            if (key === null) return null
+            return entryTarget(c, node, array, at, key, entries)
+        }
+        // A match is read-only, though a class: its captures are what the expression matched.
+        if (matchCaptures(array) !== null) {
+            c.error(node, `Index signature in type '${typeToString(at)}' only permits reading.`)
+            return null
+        }
+        const indexNode = argumentExpression(node)
+        if ((at.kind === "struct" && !at.tuple) || at.kind === "interface" || at.kind === "union") {
+            if (indexNode.kind !== "StringLiteral" && indexNode.kind !== "NoSubstitutionTemplateLiteral") {
+                c.error(
+                    indexNode,
+                    "Only a member named by a string literal can be assigned to: 'object[\"name\"] = value'.",
+                )
+                return null
+            }
+            return memberTarget(c, node, array, indexNode, stringText(indexNode))
+        }
         if (at.kind === "string") {
             c.error(node, "Strings are immutable.")
             return null
@@ -833,11 +906,19 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         if (at.kind === "struct" && at.tuple) {
             const field = tupleField(c, at, argumentExpression(node), scope)
             if (field === null) return null
+            if (field.readonly) {
+                c.error(node, `Cannot assign to '${field.name}' because it is a read-only property.`)
+                return null
+            }
             c.info.types.set(node, field.type)
             return new AssignTargetClass(field.type, new FieldLValue(array, field.name))
         }
         if (at.kind !== "array") {
             c.error(expression(node), `Type '${typeToString(at)}' cannot be indexed.`)
+            return null
+        }
+        if (at.readOnly) {
+            c.error(node, `Index signature in type '${typeToString(at)}' only permits reading.`)
             return null
         }
         const index = checkIndex(c, argumentExpression(node), scope)
@@ -867,6 +948,62 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         const object = target.expr
         const nameId = nameNode(node)
         const name = nameId.text
+        const ot = object.type
+        if (ot.kind === "map" && ot.dict)
+            return entryTarget(c, node, object, ot, new StringLit(types.string, name), entries)
+        return memberTarget(c, node, object, nameId, name)
+    }
+    if (!isIdentifier(node)) {
+        c.error(node, "Only variables, fields and array elements can be assigned to.")
+        return null
+    }
+    const found = scope.lookupCapturing(node.text)
+    if (found === null) {
+        c.error(node, `Cannot find name '${node.text}'.`)
+        return null
+    }
+    const symbol = found.symbol
+    c.info.definitions.set(node, symbol.decl)
+    if (symbol.k === "const") {
+        // Reported already, as `globalThis.name` that is no global.
+        if (symbol.value.k !== "error") c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
+        return null
+    }
+    if (symbol.k !== "local") {
+        c.error(node, `Cannot assign to '${node.text}' because it is not a variable.`)
+        return null
+    }
+    if (!symbol.local.mutable) {
+        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
+        return null
+    }
+    capture(symbol.local, found.closures)
+    symbol.local.assigned = true
+    c.info.types.set(node, symbol.local.type)
+    return new AssignTargetClass(symbol.local.type, new LocalLValue(symbol.local))
+}
+
+/**
+ * An entry of a dictionary as the target of an assignment: only `=` and
+ * `??=` (with `entries`) assign to one, as it may be missing when read.
+ */
+function entryTarget(c: Checker, node: Node, dict: Expr, type: MapType, key: Expr, entries: bool): AssignTarget | null {
+    if (!entries) {
+        c.error(
+            node,
+            `An entry of a dictionary is assigned with '=' or '??=': it is '${typeToString(c.unionOf([type.value, types.null]))}' when read.`,
+        )
+        return null
+    }
+    const entry = dictTarget(c, node, dict, type, key)
+    if (entry === null) return null
+    c.info.types.set(node, type.value)
+    return new AssignTargetClass(type.value, null, null, entry)
+}
+
+/** The member `name` of an object as the target of an assignment: `object.name`, `object["name"]`. */
+function memberTarget(c: Checker, node: Node, object: Expr, nameId: Node, name: string): AssignTarget | null {
+    {
         const ot = object.type
         if (ot.kind === "unknown") {
             c.error(nameId, unknownObject)
@@ -899,7 +1036,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
             c.info.types.set(node, property.type)
             return new AssignTargetClass(property.type, null, new AccessorTarget(object, property, name))
         }
-        if (ot.kind === "union") return unionFieldTarget(c, node, object, ot, name)
+        if (ot.kind === "union") return unionFieldTarget(c, nameId, node, object, ot, name)
         const struct = ot.kind === "struct" ? ot : null
         const field = struct !== null ? findField(struct, name) : null
         if (struct === null || field === null) {
@@ -924,38 +1061,17 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         c.info.types.set(node, field.type)
         return new AssignTargetClass(field.type, new FieldLValue(object, name))
     }
-    if (!isIdentifier(node)) {
-        c.error(node, "Only variables, fields and array elements can be assigned to.")
-        return null
-    }
-    const found = scope.lookupCapturing(node.text)
-    if (found === null) {
-        c.error(node, `Cannot find name '${node.text}'.`)
-        return null
-    }
-    const symbol = found.symbol
-    c.info.definitions.set(node, symbol.decl)
-    if (symbol.k === "const") {
-        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
-        return null
-    }
-    if (symbol.k !== "local") {
-        c.error(node, `Cannot assign to '${node.text}' because it is not a variable.`)
-        return null
-    }
-    if (!symbol.local.mutable) {
-        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
-        return null
-    }
-    capture(symbol.local, found.closures)
-    symbol.local.assigned = true
-    c.info.types.set(node, symbol.local.type)
-    return new AssignTargetClass(symbol.local.type, new LocalLValue(symbol.local))
 }
 
 /** A field that every member of a union has, writable and of the same type in each: `stmt.line = 3`. */
-function unionFieldTarget(c: Checker, node: Node, object: Expr, union: UnionType, name: string): AssignTarget | null {
-    const nameId = nameNode(node)
+function unionFieldTarget(
+    c: Checker,
+    nameId: Node,
+    node: Node,
+    object: Expr,
+    union: UnionType,
+    name: string,
+): AssignTarget | null {
     const fields: (Field | null)[] = []
     if (!canBeNull(union)) for (const m of union.members) fields.push(memberField(m, name))
     if (fields.length === 0 || fields.some((f) => f === null)) {
@@ -1087,6 +1203,12 @@ export function checkConditional(c: Checker, node: Node, scope: Scope, expected:
  * context, else from the first element (an array's element type for a
  * spread); each spread must be an array of exactly that element type.
  */
+/** The characters of a string, as `Array.from(s)` and `[...s]` take them. */
+export function stringCharacters(value: Expr): Expr {
+    const str: Expr = sameType(value.type, types.string) ? value : new Recast(types.string, value)
+    return new StringMethod("split", arrayOf(types.string), str, [new StringLit(types.string, "")])
+}
+
 export function checkSpreadArray(c: Checker, node: Node, elems: Node[], scope: Scope, expected: Type | null): Operand {
     // The element type, once known: a flag rather than null, so that no
     // narrowing is involved, which stage 0 of the bootstrap does differently.
@@ -1128,18 +1250,23 @@ export function checkSpreadArray(c: Checker, node: Node, elems: Node[], scope: S
                 }
                 continue
             }
-            if (value.k !== "typed" || vt.kind !== "array")
-                return c.fail(inner, "Only an array or a tuple can be spread into an array.")
+            if (value.k !== "typed")
+                return c.fail(inner, "Only an array, a tuple or an iterable can be spread into an array.")
+            // Any other iterable: its elements as an array, the characters of a string as `Array.from` takes them.
+            const items = isStringLike(vt) ? stringCharacters(value.expr) : toArray(c, value.expr, inner)
+            if (items === null) return errorOperand
+            const at = items.type
+            if (at.kind !== "array") return errorOperand
             if (!known) {
-                elem = vt.elem
+                elem = at.elem
                 known = true
             }
-            if (!sameType(vt.elem, elem))
+            if (!sameType(at.elem, elem))
                 return c.fail(
                     inner,
-                    `An array of '${typeToString(vt.elem)}' cannot be spread into an array of '${typeToString(elem)}'.`,
+                    `An array of '${typeToString(at.elem)}' cannot be spread into an array of '${typeToString(elem)}'.`,
                 )
-            exprs.push(hold(value.expr))
+            exprs.push(hold(items))
             spread.push(true)
         } else {
             const value = checkExpr(c, e, scope, known ? elem : null)
@@ -1167,6 +1294,8 @@ function tupleContext(expected: Type | null, length: int): StructType | null {
     const tuples: StructType[] = []
     for (const m of membersOf(expected)) if (m.kind === "struct" && m.tuple) tuples.push(m)
     for (const t of tuples) if (t.fields.length === length) return t
+    // Or one that leaves out optional elements.
+    for (const t of tuples) if (length < t.fields.length && t.fields[length].optional) return t
     let arrays = false
     for (const m of membersOf(expected)) if (m.kind === "array") arrays = true
     return tuples.length === 1 && !arrays ? tuples[0] : null
@@ -1210,6 +1339,13 @@ function checkTupleLiteral(c: Checker, node: Node, elems: Node[], scope: Scope, 
             }
             count++
         }
+    }
+    // Optional elements left out are null.
+    while (count < n && tuple.fields[count].optional) {
+        const ft = tuple.fields[count].type
+        if (ft.kind !== "union") break
+        fields.push(new FieldInit(`${count}`, new NullLit(ft)))
+        count++
     }
     if (count !== n)
         return c.fail(node, `Expected ${n} element(s) for tuple type '${typeToString(tuple)}', got ${count}.`)
@@ -1596,6 +1732,8 @@ function returnsValue(node: Node | null): bool {
 }
 
 export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const dict = expectedDict(expected)
+    if (dict !== null) return dictLiteral(c, node, scope, dict)
     const withMethods = (p: Node): bool =>
         p.kind === "MethodDeclaration" || p.kind === "GetAccessor" || p.kind === "SetAccessor"
     if (properties(node).some(withMethods)) return objectWithMethods(c, node, scope, expected)
@@ -1625,6 +1763,22 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
     return objectOf(c, node, scope, expected, props)
 }
 
+/** The dictionary an object literal is for: the expected type, or its only dictionary member when it has no object members. */
+function expectedDict(expected: Type | null): MapType | null {
+    if (expected === null) return null
+    if (expected.kind === "map" && expected.dict) return expected
+    if (expected.kind !== "union") return null
+    let found: MapType | null = null
+    for (const m of expected.members) {
+        if (m.kind === "struct" || m.kind === "interface") return null
+        if (m.kind === "map" && m.dict) {
+            if (found !== null) return null
+            found = m
+        }
+    }
+    return found
+}
+
 /** The object of an object literal with these properties, of the expected type or of their shape. */
 function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, props: Prop[]): Operand {
     // The value of a property, checked against a type unless it already was.
@@ -1640,6 +1794,11 @@ function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, p
             props.every((p) => {
                 const type = fieldType(m, p.name)
                 if (type === null) return false
+                const k = p.value.kind
+                if (k === "TrueKeyword" || k === "FalseKeyword") {
+                    const value = k === "TrueKeyword" ? "true" : "false"
+                    return membersOf(type).some((t) => t.kind === "bool" && (t.literal === "" || t.literal === value))
+                }
                 if (!isStringLiteralNode(p.value)) return true
                 const lit = literalText(p.value)
                 return membersOf(type).some((t) => t.kind === "string" || (t.kind === "literal" && t.value === lit))
@@ -1733,13 +1892,64 @@ export function checkTemplate(c: Checker, node: Node, scope: Scope): Operand {
         const e = expression(span)
         const value = checkExpr(c, e, scope)
         if (value.k !== "error") {
-            const expr = c.toDefault(value, e)
+            const expr = stringified(c, c.toDefault(value, e))
             if (printable(c, expr, e)) parts.push(expr)
         }
         const text = templateText(literal(span))
         if (text !== "") parts.push(new StringLit(types.string, text))
     }
     return typed(new Concat(types.string, parts))
+}
+
+/**
+ * An object in a template, converted as JavaScript does: a class or an
+ * interface with a `toString(): string` method calls it, so an instance of
+ * the Error class gives "Name: message"; an `Error` interface value calls
+ * the method of the Error class it holds, or gives "Error: message" for
+ * another class. Other values are returned as they are.
+ */
+function stringified(c: Checker, expr: Expr): Expr {
+    const type = expr.type
+    if (type.kind === "struct" && type.nominal) {
+        const method = findMethod(type, "toString")
+        if (method !== null && !method.private) {
+            const ft = method.func.type
+            if (ft.params.length === 0 && ft.result.kind === "string") {
+                const call = new MethodCall(types.string, method.func, expr, [])
+                dispatch(c, call, "toString")
+                return call
+            }
+        }
+        return expr
+    }
+    if (type.kind !== "interface") return expr
+    for (let i = 0; i < type.members.length; i++) {
+        const m = type.members[i]
+        if (m.k === "method" && m.name === "toString") {
+            if (m.type.params.length === 0 && m.type.result.kind === "string")
+                return new IfaceCall(types.string, expr, i, m.type, [])
+        }
+    }
+    const basic = c.basicError
+    const errorType = c.errorType
+    if (type !== errorType || basic === null) return expr
+    const toString = findMethod(basic, "toString")
+    let messageIndex = -1
+    for (let i = 0; i < type.members.length; i++) if (type.members[i].name === "message") messageIndex = i
+    if (toString === null || messageIndex === -1) return expr
+    const local = c.newLocal("error", type, false)
+    const ref = new LocalRef(type, local)
+    const call = new MethodCall(types.string, toString.func, new Downcast(basic, ref), [])
+    dispatch(c, call, "toString")
+    const plain = new Concat(types.string, [
+        new StringLit(types.string, "Error: "),
+        new IfaceField(types.string, ref, messageIndex),
+    ])
+    return new Bind(
+        types.string,
+        [new BindLocal(local, expr)],
+        new Conditional(types.string, new Is(types.bool, ref, basic), call, plain),
+    )
 }
 
 /** Whether a value can be printed or interpolated; reports an error if not. */
@@ -1893,6 +2103,7 @@ export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
 export function member(c: Checker, value: Expr, nameNode_: Node, name: string): Operand {
     const type = value.type
     if (type.kind === "unknown") return c.fail(nameNode_, unknownObject)
+    if (type.kind === "map" && type.dict) return typed(dictGet(c, value, type, new StringLit(types.string, name)))
     if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
     if (name === "raw" && type.kind === "array" && type.template) return typed(templateRawOf(c, value))
     if (name === "length" && type.kind === "struct" && type.tuple) return new UntypedInt(bigOf(type.fields.length))
@@ -2001,6 +2212,14 @@ export function instanceTest(c: Checker, value: Expr, target: StructType | Inter
     if (type.kind === "struct" && related(type)) return new Is(types.bool, value, target)
     if (type.kind === "union" && type.members.some((m) => sameType(m, target) || related(m)))
         return new Is(types.bool, value, target)
+    // A class with the members of an interface is always an instance of it, as an error class is of `Error`.
+    if (
+        type.kind === "struct" &&
+        type.nominal &&
+        target.kind === "interface" &&
+        conformance(c, type, target).reason === null
+    )
+        return new BoolLit(types.bool, true)
     if (target.kind !== "struct") return null
     if (type.kind === "interface" && conformance(c, target, type).reason === null)
         return new Is(types.bool, value, target)
@@ -2073,11 +2292,24 @@ export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
     const target = checkExpr(c, expression(node), scope)
     if (target.k === "error") return target
     const value = c.toDefault(target, expression(node))
-    const element = (v: Expr): Operand => {
+    const element = (whole: Expr): Operand => {
+        const v = matchCaptures(whole) ?? whole
         const vt = v.type
         if (vt.kind === "struct" && vt.tuple) {
             const field = tupleField(c, vt, argumentExpression(node), scope)
             return field === null ? errorOperand : typed(new FieldGet(field.type, v, field.name))
+        }
+        if (vt.kind === "map" && vt.dict) {
+            const key = dictKey(c, argumentExpression(node), scope)
+            return key === null ? errorOperand : typed(dictGet(c, v, vt, key))
+        }
+        if (vt.kind === "struct" || vt.kind === "interface" || vt.kind === "union") {
+            const keyed = keyedMember(c, v, argumentExpression(node), scope)
+            if (keyed !== null) return keyed
+            return c.fail(
+                argumentExpression(node),
+                `Type '${typeToString(vt)}' is indexed by the name of a member, a string literal or a 'keyof' type.`,
+            )
         }
         const index = checkIndex(c, argumentExpression(node), scope)
         if (index === null) return errorOperand
@@ -2087,6 +2319,18 @@ export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
         return c.fail(expression(node), `Type '${typeToString(vt)}' cannot be indexed.`)
     }
     return questionDotToken(node) !== null ? optional(c, value, node, element) : element(value)
+}
+
+/**
+ * The captures of a `RegExpMatch`, which is indexed, destructured and
+ * iterated as JavaScript's match arrays are: `m[1]`, `const [, k, v] = m`;
+ * null for any other value.
+ */
+export function matchCaptures(v: Expr): Expr | null {
+    const t = v.type
+    if (t.kind !== "struct" || !t.nominal || t.name !== "RegExpMatch") return null
+    for (const f of t.fields) if (f.name === "captures") return new FieldGet(f.type, v, f.name)
+    return null
 }
 
 /** The element of a tuple at a constant index. */
@@ -2182,4 +2426,50 @@ function genericStatic(c: Checker, decl: Node, object: Node, nameId: Node): Valu
     }
     c.genericStatics.set(nameId.text + "@" + `${decl.start}`, symbol)
     return symbol
+}
+
+/**
+ * The type of `x as const`: literals keep their literal types, an array
+ * literal is a read-only tuple and an object literal has read-only fields,
+ * all the way down; any other value keeps its type.
+ */
+function constType(c: Checker, node: Node, scope: Scope): Type | null {
+    const k = node.kind
+    if (k === "ParenthesizedExpression") return constType(c, expression(node), scope)
+    if (k === "StringLiteral") return c.literal(stringText(node))
+    if (k === "NoSubstitutionTemplateLiteral") return c.literal(templateText(node))
+    if (k === "NumericLiteral") return c.numberLiteral(node.text)
+    if (k === "PrefixUnaryExpression" && c.text(node).startsWith("-") && operand(node).kind === "NumericLiteral")
+        return c.numberLiteral(`-${operand(node).text}`)
+    if (k === "ArrayLiteralExpression") {
+        const elems: Type[] = []
+        for (const e of elements(node)) {
+            if (e.kind === "SpreadElement") {
+                c.error(e, "'as const' takes array literals without spread elements.")
+                return null
+            }
+            const t = constType(c, e, scope)
+            if (t === null) return null
+            elems.push(t)
+        }
+        return c.tupleOf(elems, [], true)
+    }
+    if (k === "ObjectLiteralExpression") {
+        const fields: Field[] = []
+        for (const p of properties(node)) {
+            const value = p.kind === "PropertyAssignment" ? initializer(p) : null
+            const name = p.kind === "PropertyAssignment" ? c.memberName(nameNode(p)) : null
+            if (value === null || name === null) {
+                c.error(p, "'as const' takes object literals of 'name: value' properties.")
+                return null
+            }
+            const t = constType(c, value, scope)
+            if (t === null) return null
+            fields.push(new Field(name, t, true))
+        }
+        return c.shape(fields)
+    }
+    const value = checkExpr(c, node, scope)
+    if (value.k === "error") return null
+    return typeOf(c.toDefault(value, node))
 }

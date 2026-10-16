@@ -15,7 +15,7 @@ export type Pick<T, K extends keyof T> = { [P in K]: T[P] }
 /** The fields of T not named by K. */
 export type Omit<T, K extends string> = Pick<T, Exclude<keyof T, K>>
 
-/** An object type with a field of type V for each of the string literal types of K; for any string, use a Map. */
+/** An object type with a field of type V for each of the string literal types of K; for `string`, a dictionary of V. */
 export type Record<K extends string, V> = { [P in K]: V }
 
 /** The members of the union T that are not assignable to U. */
@@ -33,8 +33,26 @@ export type ReturnType<T> = T extends (...args: never) => infer R ? R : never
 /** The value a promise type T resolves to, through promises of promises; T itself when it is no promise. */
 export type Awaited<T> = T extends Promise<infer V> ? Awaited<V> : T
 
+/**
+ * What an iterator's `next()` returns: a value with `done: false`, or the
+ * iterator's return value with `done: true`.
+ */
+export type IteratorResult<T, TReturn = void> = { value: T; done: false } | { value: TReturn; done: true }
+
 /** The parameter types of the function type T, as a tuple. */
 export type Parameters<T> = T extends (...args: infer P) => never ? P : never
+
+/** The instance type of the constructor type T: `InstanceType<typeof C>` is `C`. */
+export type InstanceType<T> = T extends new (...args: never) => infer R ? R : never
+
+/** The parameter types of the constructor type T, as a tuple. */
+export type ConstructorParameters<T> = T extends new (...args: infer P) => never ? P : never
+
+/** T, from which a call does not infer its type arguments: they come from the other arguments. */
+export type NoInfer<T> = T
+
+/** An array of T that cannot be changed through this type: `readonly T[]`. */
+export type ReadonlyArray<T> = readonly T[]
 
 /** The string literal types of S in upper case. */
 export type Uppercase<S extends string> = intrinsic

@@ -9,10 +9,14 @@ import {
     Bind,
     BindLocal,
     Block,
+    BoolLit,
     CallValue,
     Closure,
     ExprStmt,
+    FieldGet,
+    FieldInit,
     LocalRef,
+    ObjectLit,
     ReturnStmt,
     Func,
     Itab,
@@ -35,6 +39,7 @@ import {
     LiteralType,
     NumberLiteralType,
     MapType,
+    dictOf,
     SetType,
     StructType,
     UnionType,
@@ -42,9 +47,11 @@ import {
     intRange,
     isNumberLiterals,
     isNumeric,
+    isBoolLiteral,
     isStringLike,
     isSubclass,
     membersOf,
+    readonlyTuple,
     sameType,
     typeKey,
     types,
@@ -65,7 +72,10 @@ import {
     parameters,
     questionToken,
     dotDotDotToken,
+    isOptionalTupleElement,
+    isRestTupleElement,
     stringText,
+    tupleElementType,
     typeArguments,
     typeName,
     typeNode,
@@ -88,6 +98,7 @@ import {
     type InterfaceInfo,
     type JsonImport,
     type ModuleInfo,
+    type Predicate,
     type Signature,
     CheckInfo,
 } from "./context"
@@ -97,7 +108,7 @@ import {
     floatLit,
     hashable,
     indexSignatureMessage,
-    isSymbolDispose,
+    wellKnownSymbol,
     memberOf,
     poison,
     conversionName,
@@ -105,6 +116,7 @@ import {
 } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
 import { type Generic, type NamespaceSymbol, type TypeSymbol, type ValueSymbol, Scope } from "./symbols"
+import { dictOfLiteral } from "./dicts"
 import { templateAsRaw } from "./templates"
 
 /** Two operands brought to a common type, or nulls when that failed: `[ir.Expr | undefined, ir.Expr | undefined]`. */
@@ -254,6 +266,8 @@ export class Checker {
     readonly signatures = new Map<Local[], Signature>()
     /** The declarations of functions, methods and constructors, for the notes of diagnostics at their parameters. */
     readonly funcDecls = new Map<Func, Node>()
+    /** The type predicates of functions and methods declared with one, such as `x is string`. */
+    readonly predicates = new Map<Func, Predicate>()
 
     /** C names of exported variables. */
     readonly exportedVariables = new Set<string>()
@@ -320,14 +334,20 @@ export class Checker {
                 this.error(node, "'undefined' is not supported in Ore. Use 'null'.")
                 return null
         }
+        // A type predicate's function returns a boolean, and an assertion's nothing.
+        if (node.kind === "TypePredicate") {
+            return node.child("assertsModifier") !== null ? types.void : types.bool
+        }
         if (node.kind === "LiteralType") {
             const lit = literal(node)
             if (lit.kind === "NullKeyword") return types.null
             if (lit.kind === "StringLiteral") return this.literal(stringText(lit))
             if (lit.kind === "NumericLiteral") return this.numberLiteral(lit.text)
+            if (lit.kind === "TrueKeyword") return types.boolTrue
+            if (lit.kind === "FalseKeyword") return types.boolFalse
             const operand = lit.kind === "PrefixUnaryExpression" ? lit.child("operand") : null
             if (operand !== null && operand.kind === "NumericLiteral") return this.numberLiteral(`-${operand.text}`)
-            this.error(node, "Only string and number literal types are supported yet.")
+            this.error(node, "Only string, number and boolean literal types are supported yet.")
             return null
         }
         if (node.kind === "UnionType") {
@@ -350,17 +370,59 @@ export class Checker {
         }
         if (node.kind === "TupleType") {
             // A tuple can hold `never` and numeric literal types in computations on types: `[D] extends [never]`.
+            // Names of elements are documentation only. An optional element `T?` is of type `T | null`, and
+            // a rest element `...T` spreads the elements of a tuple type `T` into this one.
             const elems: Type[] = []
+            const optional: bool[] = []
+            // Optional elements that a spread brings in become required, of type `T | null`, when required
+            // ones follow them, as in TypeScript; written ones cannot be followed by required ones.
+            let afterOptional = false
+            let writtenOptional = false
+            const self = this
+            function required(e: Node): bool {
+                if (!afterOptional) return true
+                if (writtenOptional) {
+                    self.error(e, "A required element cannot follow an optional element.")
+                    return false
+                }
+                for (let i = 0; i < optional.length; i++) optional[i] = false
+                afterOptional = false
+                return true
+            }
             for (const e of node.list("elements")) {
-                const type = this.resolveType(e, scope)
+                const inner = tupleElementType(e)
+                const type = this.resolveType(inner, scope)
                 if (type === null) return null
                 if (type.kind === "void") {
-                    this.error(e, "A value cannot have type 'void'.")
+                    this.error(inner, "A value cannot have type 'void'.")
                     return null
                 }
-                elems.push(type)
+                if (isRestTupleElement(e)) {
+                    if (type.kind !== "struct" || !type.tuple) {
+                        this.error(
+                            e,
+                            `A rest element of type '${typeToString(type)}' is not supported: tuples have a fixed length in Ore. Spread a tuple type, or use an array.`,
+                        )
+                        return null
+                    }
+                    for (const f of type.fields) {
+                        if (!f.optional && !required(e)) return null
+                        if (f.optional) afterOptional = true
+                        elems.push(f.type)
+                        optional.push(f.optional)
+                    }
+                    continue
+                }
+                const isOptional = isOptionalTupleElement(e)
+                if (!isOptional && !required(e)) return null
+                if (isOptional) {
+                    afterOptional = true
+                    writtenOptional = true
+                }
+                elems.push(isOptional ? this.unionOf([type, types.null]) : type)
+                optional.push(isOptional)
             }
-            return this.tupleOf(elems)
+            return this.tupleOf(elems, optional)
         }
         if (node.kind === "TypeReference") {
             const name = typeName(node)
@@ -429,6 +491,21 @@ export class Checker {
             }
             return symbol.type
         }
+        if (node.kind === "ThisType") {
+            // The class or interface whose non-static member this is: its scope declares `this`.
+            const symbol = scope.lookupType("this")
+            if (symbol === null) {
+                this.error(node, "A 'this' type is available only in a non-static member of a class or interface.")
+                return null
+            }
+            // An interface's `this` is the type of each class that implements it, whose methods would then not
+            // have the interface's types: not supported yet.
+            if (symbol.type.kind === "interface") {
+                this.error(node, "A 'this' type in an interface is not supported yet.")
+                return null
+            }
+            return symbol.type
+        }
         if (node.kind === "ParenthesizedType") return this.resolveType(typeNode(node)!, scope)
         if (node.kind === "IntersectionType") return intersection(this, node, scope)
         if (node.kind === "TypeOperator") return typeOperator(this, node, scope)
@@ -442,7 +519,7 @@ export class Checker {
             return null
         }
         if (node.kind === "TypeLiteral") return this.resolveTypeLiteral(node, scope)
-        if (node.kind === "FunctionType") {
+        if (node.kind === "FunctionType" || node.kind === "ConstructorType") {
             const typeParams = typeParameters(node)
             if (typeParams.length > 0) {
                 this.error(typeParams[0], "Generic function types are not supported.")
@@ -492,6 +569,7 @@ export class Checker {
             const type = new FuncType(params, result)
             if (required !== -1) type.required = required
             type.rest = rest
+            type.construct = node.kind === "ConstructorType"
             return type
         }
         this.error(node, "This kind of type is not supported yet.")
@@ -591,10 +669,37 @@ export class Checker {
     resolveTypeLiteral(node: Node, scope: Scope): Type | null {
         // An object type with methods is a structural interface, as `interface` declares one.
         if (members(node).some((m) => m.kind === "MethodSignature")) return objectInterface(this, node, scope)
+        const list = members(node)
+        if (list.length === 1 && list[0].kind === "IndexSignature") return this.indexSignatureType(list[0], scope)
         const shape = this.shape(this.literalFields(node, scope))
         // The first declaration of a shape is where its fields are defined.
         if (!this.memberDecls.has(shape)) this.memberDecls.set(shape, this.memberNodes(node))
         return shape
+    }
+
+    /**
+     * `{ [key: string]: V }`, an object type of only an index signature: a
+     * dictionary of string keys.
+     */
+    indexSignatureType(node: Node, scope: Scope): Type | null {
+        const params = parameters(node)
+        const annotation = typeNode(node)
+        const keyNode = params.length === 1 ? typeNode(params[0]) : null
+        if (keyNode === null || annotation === null) {
+            this.error(node, "An index signature has one parameter and a type: '[key: string]: T'.")
+            return null
+        }
+        const key = this.resolveType(keyNode, scope)
+        const value = this.resolveValueType(annotation, scope)
+        if (key === null || value === null) return null
+        if (key.kind !== "string") {
+            this.error(
+                keyNode,
+                `The keys of a dictionary are strings, not '${typeToString(key)}'; for other keys, use a 'Map<K, V>'.`,
+            )
+            return null
+        }
+        return dictOf(value, hasModifier(node, "ReadonlyKeyword"))
     }
 
     /** The members of an object type by name, for go to definition. */
@@ -607,10 +712,50 @@ export class Checker {
         return decls
     }
 
+    /**
+     * The field that an accessor signature of an interface or object type
+     * declares: `get x(): T` and `set x(value: T)` are a field `x: T`,
+     * read-only without a setter. Null for a setter that follows its getter,
+     * and after an error.
+     */
+    accessorSignature(member: Node, all: Node[], scope: Scope): Field | null {
+        const name = this.memberName(nameNode(member))
+        if (name === null) return null
+        const getter = member.kind === "GetAccessor"
+        let hasSetter = false
+        for (const m of all) {
+            if (m === member || (m.kind !== "GetAccessor" && m.kind !== "SetAccessor")) continue
+            if (this.text(nameNode(m)) !== name) continue
+            if (m.kind === "SetAccessor") hasSetter = true
+            // The pair declares one field, at its getter.
+            else if (!getter) return null
+        }
+        const params = parameters(member)
+        const annotation = getter ? typeNode(member) : params.length === 1 ? typeNode(params[0]) : null
+        if (annotation === null) {
+            this.error(
+                nameNode(member),
+                getter
+                    ? `Getter '${name}' must have a return type annotation.`
+                    : `Setter '${name}' must take one parameter with a type annotation.`,
+            )
+            return null
+        }
+        const type = this.resolveValueType(annotation, scope)
+        if (type === null) return null
+        this.info.types.set(nameNode(member), type)
+        return new Field(name, type, getter && !hasSetter)
+    }
+
     /** The fields of an object type `{ ... }`, in the order written. */
     literalFields(node: Node, scope: Scope): Field[] {
         const fields: Field[] = []
         for (const member of members(node)) {
+            if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
+                const field = this.accessorSignature(member, members(node), scope)
+                if (field !== null) fields.push(field)
+                continue
+            }
             if (member.kind !== "PropertySignature") {
                 this.error(
                     member,
@@ -707,6 +852,12 @@ export class Checker {
         // `number` includes every numeric literal type.
         if (members_.some((m) => m.kind === "float" && m.bits === 64))
             members_ = members_.filter((m) => m.kind !== "number-literal")
+        // `boolean` is `true | false`, and includes each of them.
+        const bools = members_.filter((m) => m.kind === "bool")
+        if (bools.length > 1) {
+            members_ = members_.filter((m) => m.kind !== "bool")
+            members_.push(types.bool)
+        }
         // A class includes its subclasses: `A | B` is `A` when `B extends A`.
         if (members_.filter((m) => m.kind === "struct").length > 1) {
             for (const m of members_) {
@@ -767,13 +918,24 @@ export class Checker {
         return struct
     }
 
-    /** The interned tuple type of these element types. */
-    tupleOf(elems: Type[]): StructType {
-        const key = `[${elems.map(typeKey).join(",")}]`
+    /**
+     * The interned tuple type of these element types; `optional` marks the
+     * optional elements, `T?`, which a literal can leave out as null, and a
+     * read-only tuple, `readonly [A, B]`, is a type of its own.
+     */
+    tupleOf(elems: Type[], optional: bool[] = [], readOnly: bool = false): StructType {
+        const keys: string[] = []
+        for (let i = 0; i < elems.length; i++)
+            keys.push(`${typeKey(elems[i])}${i < optional.length && optional[i] ? "?" : ""}`)
+        const key = `${readOnly && elems.length > 0 ? "readonly " : ""}[${keys.join(",")}]`
         let struct = this.shapes.get(key)
         if (struct === null) {
             const fields: Field[] = []
-            for (let i = 0; i < elems.length; i++) fields.push(new Field(`${i}`, elems[i], false))
+            for (let i = 0; i < elems.length; i++) {
+                const field = new Field(`${i}`, elems[i], readOnly)
+                field.optional = i < optional.length && optional[i]
+                fields.push(field)
+            }
             struct = new StructType(this.nextStructId++, null, false, fields, [])
             struct.tuple = true
             this.shapes.set(key, struct)
@@ -786,7 +948,10 @@ export class Checker {
     memberName(name: Node): string | null {
         if (isIdentifier(name)) return name.text
         if (name.kind === "StringLiteral") return stringText(name)
-        if (name.kind === "ComputedPropertyName" && isSymbolDispose(name.child("expression")!)) return disposeName
+        if (name.kind === "ComputedPropertyName") {
+            const symbol = wellKnownSymbol(name.child("expression")!)
+            if (symbol !== null) return symbol
+        }
         if (name.kind === "PrivateIdentifier")
             this.error(name, "'#' private names are forbidden in Ore. Use the 'private' modifier.")
         else this.error(name, "Computed property names are not supported.")
@@ -820,6 +985,30 @@ export class Checker {
         return type
     }
 
+    /**
+     * A copy of a tuple as a tuple type of as many elements, some of them
+     * optional, each of the same type or of the type with null added; null
+     * when it does not convert so.
+     */
+    private tupleCopy(expr: Expr, from: StructType, target: StructType, node: Node): Expr | null {
+        if (!from.tuple || !target.tuple || from.fields.length !== target.fields.length) return null
+        if (!target.fields.some((f) => f.optional)) return null
+        for (let i = 0; i < from.fields.length; i++) {
+            const a = from.fields[i].type
+            const b = target.fields[i].type
+            if (!sameType(a, b) && !(target.fields[i].optional && sameType(this.unionOf([a, types.null]), b)))
+                return null
+        }
+        const local = this.newLocal("tuple", from, false)
+        const fields: FieldInit[] = []
+        for (let i = 0; i < from.fields.length; i++) {
+            const f = from.fields[i]
+            const get = new FieldGet(f.type, new LocalRef(from, local), f.name)
+            fields.push(new FieldInit(f.name, this.coerce(new Typed(get), target.fields[i].type, node)))
+        }
+        return new Bind(target, [new BindLocal(local, expr)], new ObjectLit(target, fields))
+    }
+
     /** Converts an operand to `target`, reporting an error if it is not assignable. */
     coerce(value: Operand, target: Type, node: Node): Expr {
         switch (value.k) {
@@ -828,7 +1017,22 @@ export class Checker {
             case "typed": {
                 const expr = value.expr
                 const from = typeOf(expr)
+                // A read-only array is not assignable to a mutable one, which could change it.
+                if (from.kind === "array" && target.kind === "array" && from.readOnly && !target.readOnly) {
+                    this.error(
+                        node,
+                        `The type '${typeToString(from)}' is 'readonly' and cannot be assigned to the mutable type '${typeToString(target)}'.`,
+                    )
+                    return poison(target)
+                }
                 if (sameType(from, target) || from.kind === "never") return expr
+                // A tuple converts to the read-only tuple of the same elements, as it is.
+                if (from.kind === "struct" && target.kind === "struct" && from.tuple && readonlyTuple(target)) {
+                    const wanted = target.fields
+                    let same = from.fields.length === wanted.length
+                    for (let i = 0; same && i < wanted.length; i++) same = sameType(from.fields[i].type, wanted[i].type)
+                    if (same) return new Recast(target, expr)
+                }
                 // A function converts to a function type whose parameters convert to its own,
                 // as `(v: T | Promise<T>) => void` to `(v: T) => void`: through an adapter.
                 if (from.kind === "func" && target.kind === "func") {
@@ -863,6 +1067,26 @@ export class Checker {
                 }
                 // An instance of a subclass is an instance of its base classes, as it is.
                 if (from.kind === "struct" && target.kind === "struct" && isSubclass(from, target)) return expr
+                // An object literal is a dictionary of its properties, as TypeScript's object literal types fit index signatures.
+                if (expr.k === "object" && target.kind === "map" && target.dict && from.kind === "struct") {
+                    const literal = dictOfLiteral(this, expr, target, node)
+                    if (literal !== null) return literal
+                }
+                // A dictionary is a readonly one of the same values, as it is.
+                if (
+                    from.kind === "map" &&
+                    from.dict &&
+                    target.kind === "map" &&
+                    target.dict &&
+                    target.readonly &&
+                    sameType(from.value, target.value)
+                )
+                    return new Recast(target, expr)
+                // A tuple converts to a tuple type with optional elements, `[int, string]` to `[int, string?]`, as a copy.
+                if (from.kind === "struct" && target.kind === "struct") {
+                    const copy = this.tupleCopy(expr, from, target, node)
+                    if (copy !== null) return copy
+                }
                 const targetMembers = membersOf(target)
                 // A string literal expression has the literal type its context asks for.
                 if (expr.k === "string") {
@@ -873,6 +1097,19 @@ export class Checker {
                         }
                     }
                 }
+                // A boolean literal expression has the literal type its context asks for.
+                if (expr.k === "bool") {
+                    const wanted = expr.value ? "true" : "false"
+                    for (const m of targetMembers) {
+                        if (m.kind === "bool" && m.literal === wanted) {
+                            const retyped: Expr = new BoolLit(m, expr.value)
+                            return target.kind === "union" ? new Recast(target, retyped) : retyped
+                        }
+                    }
+                }
+                // Boolean literal types widen to `boolean`.
+                if (target.kind === "bool" && target.literal === "" && from.kind === "bool")
+                    return new Recast(target, expr)
                 // String literal types widen to `string`, and numeric literal types to `number`.
                 if (target.kind === "string" && membersOf(from).every(isStringLike)) return new Recast(target, expr)
                 if (target.kind === "float" && target.bits === 64 && isNumberLiterals(from))
@@ -940,7 +1177,14 @@ export class Checker {
                         return poison(target)
                     }
                 }
-                let message = `Type '${typeToString(from)}' is not assignable to type '${typeToString(target)}'.`
+                // A boolean literal given for a boolean literal type is named as its literal type, as TypeScript does.
+                const fromText =
+                    expr.k === "bool" && targetMembers.some(isBoolLiteral)
+                        ? expr.value
+                            ? "true"
+                            : "false"
+                        : typeToString(from)
+                let message = `Type '${fromText}' is not assignable to type '${typeToString(target)}'.`
                 if (isNumeric(from) && isNumeric(target))
                     message += ` Use an explicit conversion: '${typeToString(target)}(...)'.`
                 else if ((isNumeric(from) || from.kind === "bigint") && (isNumeric(target) || target.kind === "bigint"))

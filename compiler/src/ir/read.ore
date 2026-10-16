@@ -106,6 +106,7 @@ import {
     InterfaceType,
     LiteralType,
     MapType,
+    dictOf,
     NumberLiteralType,
     SetType,
     Method,
@@ -395,6 +396,10 @@ class Reader {
                 return types.f64
             case "bool":
                 return types.bool
+            case "true":
+                return types.boolTrue
+            case "false":
+                return types.boolFalse
             case "string":
                 return types.string
             case "bigint":
@@ -433,6 +438,12 @@ class Reader {
             const value = this.type(c)
             c.expect(">")
             return new MapType(key, value)
+        }
+        const frozen = c.eat("Dict!<")
+        if (frozen || c.eat("Dict<")) {
+            const value = this.type(c)
+            c.expect(">")
+            return dictOf(value, frozen)
         }
         if (c.eat("Set<")) {
             const elem = this.type(c)

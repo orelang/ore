@@ -9,7 +9,7 @@ import {
     type MethodCall,
     type Module,
 } from "../ir/nodes"
-import { type InterfaceType, type StructType, type Type } from "../ir/types"
+import { type InterfaceType, type MapType, type StructType, type Type } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Diagnostic } from "../syntax/diagnostic"
 import { type Source } from "../syntax/source"
@@ -120,6 +120,23 @@ export class FuncContext {
 
     /** In the body of an async function, where `await` is allowed. */
     inAsync = false
+
+    /** The type predicate of the function, whose returns and end are checked against it. */
+    predicate: Predicate | null = null
+
+    /** The parameter (or `this`) that the predicate is about. */
+    predicateLocal: Local | null = null
+    /** In the body of a generator: the generator that `yield` hands values to. */
+    generator: Local | null = null
+    /** In the body of a generator: the type of the values it yields, T of `Generator<T, TReturn, TNext>`. */
+    yieldType: Type | null = null
+    /** In the body of a generator: the type of the values `next` gives `yield`, TNext. */
+    nextType: Type | null = null
+    /**
+     * In the top-level code of a module or an arrow function in it, where
+     * `this` is null: JavaScript's `undefined` there.
+     */
+    nullThis = false
 
     /** In the constructor of a class with a base class: the `super(...)` call it must make. */
     superCall: Node | null = null
@@ -266,12 +283,22 @@ export class AccessorTarget {
     ) {}
 }
 
-/** Where an assignment stores: a place, or the setter of an accessor property. */
+/** An entry of a dictionary assigned to: `d[key] = value`, `d.name = value`. */
+export class DictTarget {
+    constructor(
+        readonly dict: Expr,
+        readonly type: MapType,
+        readonly key: Expr,
+    ) {}
+}
+
+/** Where an assignment stores: a place, the setter of an accessor property, or an entry of a dictionary. */
 export class AssignTarget {
     constructor(
         public type: Type,
         readonly lvalue: LValue | null = null,
         readonly accessor: AccessorTarget | null = null,
+        readonly entry: DictTarget | null = null,
     ) {}
 }
 
@@ -280,6 +307,23 @@ export class Fact {
     constructor(
         readonly key: string,
         readonly type: Type,
+    ) {}
+}
+
+/**
+ * The type predicate of a function: `x is T` (its result tells whether a
+ * parameter is of type T), `this is T`, `asserts x is T` (it returns only
+ * when the parameter is of type T) or `asserts x` (only when it is true).
+ */
+export class Predicate {
+    constructor(
+        /** The index of the parameter it is about; -1 for `this`. */
+        readonly param: int,
+        /** The name of the parameter, or "this". */
+        readonly name: string,
+        /** The type it tells; null for `asserts x`, which tells that x is true. */
+        readonly type: Type | null,
+        readonly asserts: bool,
     ) {}
 }
 
@@ -307,6 +351,9 @@ export class InterfaceInfo {
         readonly scope: Scope,
         public state: "declared" | "filling" | "filled",
     ) {}
+
+    /** The later declarations of the same interface in the same scope, whose members merge into it. */
+    public merged: Node[] = []
 }
 
 export class LoopContext {

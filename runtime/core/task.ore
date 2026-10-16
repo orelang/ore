@@ -1201,8 +1201,18 @@ export function wakeIn(t: Task, ms: int): void {
     t.wakeAt = now() + (ms > 0 ? ms : 0)
 }
 
+/** Milliseconds for a duration in nanoseconds, rounded up: the timers count whole milliseconds. */
+export function nanosToMillis(ns: int): int {
+    return ns > 0 ? (ns + 999_999) / 1_000_000 : 0
+}
+
+/** `task.sleep` and `time.sleep`: suspends the current task for `ns` nanoseconds, rounded up to a millisecond. */
 //ore:runtime ore_rt_sleep
-export function sleepMs(ms: int): void {
+export function sleepNanos(ns: int): void {
+    sleepMs(nanosToMillis(ns))
+}
+
+function sleepMs(ms: int): void {
     const s = scheduler()
     const t = current()
     wakeIn(t, ms)

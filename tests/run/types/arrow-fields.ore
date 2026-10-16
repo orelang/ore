@@ -1,0 +1,53 @@
+// Arrow functions in field initializers capture the instance, as in TypeScript.
+class Counter {
+    count = 0
+    step: int
+    increment = (): int => {
+        this.count += this.step
+        return this.count
+    }
+    read = (): int => this.count
+    // Nested arrows capture it too.
+    adder =
+        (n: int): (() => int) =>
+        () =>
+            this.count + n
+    constructor(step: int) {
+        this.step = step
+    }
+}
+
+const c = new Counter(2)
+// Detached from the instance, the arrow still has it.
+const inc = c.increment
+inc()
+inc()
+console.log(c.read(), c.count, c.adder(10)())
+
+// In a subclass, `this` is the subclass's instance.
+class Named {
+    constructor(readonly name: string) {}
+    greet = (): string => `hi ${this.name}`
+}
+class Loud extends Named {
+    shout = (): string => this.greet().toUpperCase()
+}
+const l = new Loud("ann")
+const shout = l.shout
+console.log(l.greet(), shout())
+
+// Callbacks keep the instance.
+class Button {
+    clicks = 0
+    onClick = (): void => {
+        this.clicks++
+    }
+}
+const b = new Button()
+const handlers: (() => void)[] = [b.onClick, b.onClick, b.onClick]
+for (const h of handlers) h()
+console.log(b.clicks)
+
+// Outside classes, an arrow function's `this` is null (undefined in JavaScript).
+const self = () => this
+console.log(self() === null)

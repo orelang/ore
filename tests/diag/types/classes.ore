@@ -32,6 +32,21 @@ function make(): int {
     return this // error: 'this' can only be used inside a class.
 }
 
+// Arrow functions in field initializers capture the instance; `this` directly there cannot be used.
+class Arrows {
+    x = 1
+    ok = (): int => this.x
+    twice = this.x * 2 // error: Field initializers cannot use 'this'.
+    wrong = (): string => this.x // error: Type 'i64' is not assignable to type 'string'.
+    plain = function (): int {
+        return this.x // error: 'this' can only be used inside a class.
+    }
+}
+// At the top level and in its arrow functions, `this` is null.
+const top = () => this
+const n: int = top() // error: Type 'null' is not assignable to type 'i64'.
+console.log(this.x) // error: Property 'x' does not exist on type 'null'.
+
 const p = new Point(1)
 console.log(p.secret) // error: 'secret' is private and only accessible inside class 'Point'.
 p.helper() // error: 'helper' is private and only accessible inside class 'Point'.

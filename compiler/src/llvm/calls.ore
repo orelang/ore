@@ -4,6 +4,7 @@
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
 import { intRange, isNumberLiterals, type FuncType, type Type, type UnionType } from "../ir/types"
 import { arrayBuiltin } from "./collections"
+import { structuredClone } from "./clone"
 import { counted, json } from "./json"
 import { inspectAt, inspectTop, inspectTopWith, inspectWith, printYellow, table } from "./inspect"
 import { ARRAY, FN, IFACE, STR } from "./context"
@@ -449,6 +450,7 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
     const name = e.name
     if (name.startsWith("console.")) return consoleBuiltin(g, e)
     if (name === "JSON.stringify" || name === "JSON.parse") return json(g, e)
+    if (name === "structuredClone") return structuredClone(g, e)
     if (name === "Array.new" || name === "Array.fromLength") return arrayBuiltin(g, e)
     if (name.startsWith("unsafe.")) return unsafeCall(g, e)
     const a: V[] = []
@@ -795,7 +797,10 @@ export function inlineAsm(g: Emitter, e: BuiltinCall): V {
 export function error(g: Emitter, e: BuiltinCall, message: V): V {
     const err = e.error
     if (err === null) process.panic(`${e.name} without an error constructor`)
-    const object = callDirect(g, err.ctor.name, "ptr", [message])
+    // The Error class's constructor takes options after the message: none.
+    const args: V[] = [message]
+    for (let i = 1; i < err.ctor.type.params.length; i++) args.push({ ty: "ptr", v: "null" })
+    const object = callDirect(g, err.ctor.name, "ptr", args)
     return g.aggregate(IFACE, [object, { ty: "ptr", v: g.names.itab(err.itab.id, err.itab.struct, err.itab.iface) }])
 }
 

@@ -1,0 +1,34 @@
+// The class of `new Error(message)`, which other classes extend: `class
+// NotFound extends Error`. The type `Error` stays the interface of
+// builtin.d.ore, which any class with a `message` implements.
+
+/** The options of `new Error(message, options)`: the error that caused this one. */
+export type ErrorOptions = { cause?: unknown }
+
+/**
+ * An error, as JavaScript's: its `name` is "Error" unless a subclass sets
+ * it, and `cause` is the one given to the constructor, or null.
+ */
+export class Error {
+    name: string = "Error"
+    message: string
+    cause: unknown = null
+
+    constructor(message: string = "", options: ErrorOptions | null = null) {
+        this.message = message
+        if (options !== null) this.cause = options.cause
+    }
+
+    /** "Name: message", or the name alone without a message, as in JavaScript. */
+    toString(): string {
+        if (this.message === "") return this.name
+        if (this.name === "") return this.message
+        return `${this.name}: ${this.message}`
+    }
+}
+
+/** How console.log prints an error and its subclasses: "Name: message", the first line of Node's. */
+//ore:runtime ore_rt_error_inspect
+function inspectError(e: Error): string {
+    return e.message === "" ? e.name : `${e.name}: ${e.message}`
+}

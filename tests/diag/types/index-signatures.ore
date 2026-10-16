@@ -1,29 +1,56 @@
-// Index signatures are parsed as TypeScript parses them, and rejected: a Map is the type of a dictionary.
+// An index signature alone is a dictionary type; as a member of an interface,
+// a class or an object type with other members it is rejected.
 
-interface Scores {
-    [name: string]: int // error: Index signatures are not supported. Use a 'Map<K, V>'.
-    readonly [index: number]: string // error: Index signatures are not supported.
+type Scores = { [name: string]: int }
+type Frozen = { readonly [name: string]: int }
+
+interface Table {
+    [name: string]: int // error: An index signature is a type alone, '{ [key: string]: T }'
     total: int
 }
 
-type Flags = { [flag: string]: bool; count: int } // error: Index signatures are not supported.
+type Flags = { [flag: string]: bool; count: int } // error: An index signature is a type alone
 
-class Table {
+class Grid {
     size = 0;
-    [key: string]: int // error: Index signatures are not supported.
+    [key: string]: int // error: An index signature is a type alone
 }
 
+type ByNumber = { [index: number]: string } // error: The keys of a dictionary are strings, not 'f64'; for other keys, use a 'Map<K, V>'.
+
+const const_enum = 0
 const enum Mode {
     // error: Enums are not supported in Ore.
     Read,
     Write,
 }
 
-function local(): void {
-    const enum Inner {
-        // error: Enums are not supported in Ore.
-        A,
-    }
-}
+const scores: Scores = { ada: 1 }
+const frozen: Frozen = scores
+frozen.ada = 2 // error: Index signature in type '{ readonly [key: string]: i64 }' only permits reading.
+frozen["ada"] = 2 // error: only permits reading.
+delete frozen.ada // error: The operand of a 'delete' operator cannot be a read-only property.
+scores.ada += 1 // error: An entry of a dictionary is assigned with '=' or '??=': it is 'i64 | null' when read.
+scores.ada++ // error: An entry of a dictionary is assigned with '=' or '??='
+const n: int = scores.ada // error: Type 'i64 | null' is not assignable to type 'i64'
+console.log(scores[1]) // error: The key of a dictionary is a string, not 'i64'.
+const m: Map<string, int> = scores // error: is not assignable to type 'Map<string, i64>'
+scores.get("ada") // error: A dictionary has no methods: 'get' is an entry, of type 'i64 | null'.
+for (const x of scores) console.log(x) // error: A dictionary is not iterable: loop over 'Object.keys(d)' or 'Object.entries(d)'.
+const bad: Scores = { a: "x" } // error: Type 'string' is not assignable to type 'i64'
+const point = { x: 1, label: "p" }
+const mixed: Scores = { ...point } // error: Type 'string' is not assignable to type 'i64'
+const strings: Record<string, string> = {}
+const spread: Scores = { ...strings } // error: Only a dictionary of 'i64' or an object can be spread into '{ [key: string]: i64 }', got '{ [key: string]: string }'.
+const method: Scores = { f() {} } // error: A literal of '{ [key: string]: i64 }' has only properties and spreads.
 
-console.log(new Table().size)
+const p = { x: 1 }
+delete p.x // error: 'delete' removes an entry of a dictionary, '{ [key: string]: T }', only.
+console.log("x" in p) // error: 'in' tests the keys of a dictionary, '{ [key: string]: T }', only, not of '{ x: i64 }'.
+const name: string = "x"
+console.log(p[name]) // error: Type '{ x: i64 }' is indexed by the name of a member, a string literal or a 'keyof' type.
+console.log(p["y"]) // error: Property 'y' does not exist on type '{ x: i64 }'.
+console.log(Object.keys([1])) // error: 'Object.keys' takes a dictionary, an object or a class instance, got 'i64[]'.
+console.log(Object.assign(p, scores)) // error: 'Object.assign' cannot copy '{ [key: string]: i64 }' into '{ x: i64 }': give it objects.
+console.log(Object.assign(p, { y: 1 })) // error: 'Object.assign' cannot copy the field 'y' into '{ x: i64 }': it has no writable field 'y'.
+console.log(new Grid().size, const_enum, n, m, bad, mixed, spread, method)

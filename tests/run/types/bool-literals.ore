@@ -1,0 +1,53 @@
+// Boolean literal types: `true` and `false` discriminate a union, as the Result pattern.
+type Result = { ok: true; value: int } | { ok: false; error: string }
+
+function parse(s: string): Result {
+    const n = Number.parseInt(s)
+    if (n === null) return { ok: false, error: `not a number: ${s}` }
+    return { ok: true, value: n }
+}
+
+function show(r: Result): string {
+    if (r.ok) return `value ${r.value}`
+    return `error ${r.error}`
+}
+
+function negated(r: Result): string {
+    if (!r.ok) return `error ${r.error}`
+    return `value ${r.value}`
+}
+
+function strict(r: Result): string {
+    if (r.ok === false) return `error ${r.error}`
+    return `value ${r.value}`
+}
+
+function switched(r: Result): string {
+    switch (r.ok) {
+        case true:
+            return `value ${r.value}`
+        case false:
+            return `error ${r.error}`
+    }
+}
+
+function both(r: Result, b: Result): int {
+    if (r.ok && b.ok) return r.value + b.value
+    return -1
+}
+
+const yes: true = true
+const no: false = false
+const flag: bool = yes
+const either: true | false = no
+let maybe: true | null = null
+maybe = true
+
+for (const s of ["12", "x"]) {
+    const r = parse(s)
+    console.log(show(r), negated(r), strict(r), switched(r))
+}
+console.log(both(parse("1"), parse("2")), both(parse("1"), parse("y")))
+console.log(yes, no, flag, either, maybe)
+const ok = parse("5").ok
+console.log(ok)

@@ -1,0 +1,32 @@
+// Private and protected constructors are called with `new` only inside their class.
+class Single {
+    private constructor(readonly id: int) {}
+    static make(): Single {
+        return new Single(1)
+    }
+}
+const s = new Single(2) // error: Constructor of class 'Single' is private and only accessible within the class declaration.
+
+class Shape {
+    protected constructor(readonly sides: int) {}
+}
+class Square extends Shape {
+    constructor() {
+        super(4)
+    }
+    copy(): Shape {
+        return new Shape(4) // error: Constructor of class 'Shape' is protected and only accessible within the class declaration.
+    }
+}
+const sq = new Square()
+const sh = new Shape(3) // error: Constructor of class 'Shape' is protected and only accessible within the class declaration.
+
+class Box<T> {
+    private constructor(readonly value: T) {}
+    static of<U>(value: U): Box<U> {
+        return new Box<U>(value)
+    }
+}
+const b = new Box<int>(1) // error: Constructor of class 'Box<i64>' is private and only accessible within the class declaration.
+
+class Sub extends Single {} // error: Cannot extend a class 'Single': its constructor is private.

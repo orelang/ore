@@ -26,6 +26,7 @@ Rules for this code:
 | `array.ore` | New arrays, push, pop, shift, unshift and splice, slicing, reverse, stable sort |
 | `map.ore` | Insertion-ordered hash maps, hashing of keys |
 | `collections.ore` | The methods of `Map` and `Set` that take callbacks or other sets (`forEach`, `union`, `isSubsetOf`...), generic functions the checker calls with the receiver first; the namespace `Map` (`Map.groupBy`) |
+| `object.ore` | The namespace `Object` on dictionaries (`fromEntries`, `groupBy`), and the copying and freezing of dictionaries that the checker calls for `Object.assign` and `Object.freeze` |
 | `format.ore` | Integers and booleans as strings |
 | `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript (Ryu for f64) |
 | `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |
@@ -44,6 +45,8 @@ Rules for this code:
 | `regexp-syntax.ore` | Regular expressions parsed and compiled into programs for the matcher, with JavaScript's syntax and errors; also imported by the compiler, which checks literals with it, so it uses only what stage 0 of the bootstrap compiles |
 | `regexp.ore` | The global classes `RegExp` and `RegExpMatch`: the backtracking matcher over UTF-8, `exec`, `test`, `lastIndex`, and the string methods that take a regular expression (`s.match(re)` calls `re`'s private `stringMatch`) |
 | `date.ore` | The global class `Date`: the calendar arithmetic of ECMAScript, the local time zone from `TZ` or `/etc/localtime` (TZif files and POSIX rules), `Date.parse`, the string forms, and how `console.log` and `JSON.stringify` write a date |
+| `text.ore` | The global classes `TextEncoder` and `TextDecoder` (UTF-8 as the Encoding Standard reads it) and the global functions `atob` and `btoa` (base64 of binary strings) |
+| `url.ore` | The global classes `URL` and `URLSearchParams`: the WHATWG URL Standard's parser and its state overrides for the setters, IPv4 and IPv6 hosts, percent-encoding, the form encoding of queries, and how `console.log` and `JSON.stringify` write them |
 | `spawn.ore` | Starting programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller: for `process` and `process.command` |
 | `process.ore` | The namespace `process` in Ore: `run`, `output` and `spawn` without options, `Child`, `Output`, `CommandOptions`, the environment |
 | `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |

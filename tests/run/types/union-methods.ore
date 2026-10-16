@@ -1,0 +1,59 @@
+// A method that every class of a union has is called on the class the value holds.
+class Cat {
+    constructor(readonly name: string) {}
+    speak(): string {
+        return `${this.name}: meow`
+    }
+    rename(to: string, times: int = 1): string {
+        return to.repeat(times)
+    }
+    log(): void {
+        console.log("cat", this.name)
+    }
+}
+class Dog {
+    constructor(readonly name: string) {}
+    speak(): string {
+        return `${this.name}: woof`
+    }
+    rename(to: string, times: int = 2): string {
+        return `${to}!`.repeat(times)
+    }
+    log(): void {
+        console.log("dog", this.name)
+    }
+}
+// A subclass overrides the method of a member.
+class Puppy extends Dog {
+    override speak(): string {
+        return `${this.name}: yip`
+    }
+}
+class Fox {
+    speak(): string {
+        return "?"
+    }
+}
+
+const speak = (a: Cat | Dog): string => a.speak()
+console.log(speak(new Cat("Tom")), speak(new Dog("Rex")), speak(new Puppy("Bit")))
+
+const animals: (Cat | Dog | Fox)[] = [new Cat("Tom"), new Fox(), new Puppy("Bit")]
+for (const a of animals) console.log(a.speak())
+
+// Arguments are evaluated once, in order, after the receiver; defaults are each class's.
+let count = 0
+const next = (): Cat | Dog => {
+    count++
+    return count % 2 === 1 ? new Cat("c") : new Dog("d")
+}
+const arg = (s: string): string => {
+    console.log("arg", s)
+    return s
+}
+console.log(next().rename(arg("a")), next().rename(arg("b")), count)
+console.log(next().rename("x", 3))
+
+// A void method, as a statement.
+const pets: (Cat | Dog)[] = [new Cat("Tom"), new Dog("Rex")]
+for (const a of pets) a.log()

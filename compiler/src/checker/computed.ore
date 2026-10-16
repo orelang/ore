@@ -4,7 +4,19 @@
 // type that names them is. A generic type alias is resolved for each list of
 // type arguments, so their type parameters are known types here.
 
-import { Field, FuncType, type Type, arrayOf, membersOf, typeToString, types } from "../ir/types"
+import {
+    Field,
+    FuncType,
+    type StructType,
+    type Type,
+    arrayOf,
+    dictOf,
+    isStringLike,
+    membersOf,
+    readonlyArrayOf,
+    typeToString,
+    types,
+} from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
     constraint,
@@ -16,15 +28,20 @@ import {
     expression,
     initializer,
     isIdentifier,
+    isOptionalTupleElement,
+    isRestTupleElement,
     nameNode,
     operand,
     parameters,
     properties,
+    questionToken,
+    tupleElementType,
     typeArguments,
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
 import { type Checker } from "./base"
+import { resolveBase } from "./classes"
 import { satisfiesConstraint } from "./declarations"
 import { checkExpr } from "./expressions"
 import { typeOf } from "./helpers"
@@ -43,6 +60,17 @@ function memberNames(type: Type): string[] | null {
         for (const m of type.members) names.push(m.name)
         return names
     }
+    // Of a union, as in TypeScript: the names that every member has.
+    if (type.kind === "union") {
+        let common: string[] | null = null
+        for (const m of type.members) {
+            const own = memberNames(m)
+            if (own === null) return null
+            const before = common
+            common = before === null ? own : before.filter((n) => own.includes(n))
+        }
+        return common
+    }
     return null
 }
 
@@ -52,6 +80,8 @@ export function keyofType(c: Checker, node: Node, scope: Scope): Type | null {
     if (inner === null) return null
     const type = c.resolveTypeArgument(inner, scope)
     if (type === null) return null
+    // The keys of a dictionary are any strings.
+    if (type.kind === "map" && type.dict) return types.string
     const names = memberNames(type)
     if (names === null || names.length === 0) {
         c.error(
@@ -76,6 +106,18 @@ function memberType(type: Type, name: string): Type | null {
         for (const m of type.members) if (m.name === name) return m.type
     }
     return null
+}
+
+/** The type of a member of a type by name, or null; of a union, the union of its members' types when each has it. */
+function indexedMember(c: Checker, type: Type, name: string): Type | null {
+    if (type.kind !== "union") return memberType(type, name)
+    const found: Type[] = []
+    for (const m of type.members) {
+        const t = memberType(m, name)
+        if (t === null) return null
+        found.push(t)
+    }
+    return c.unionOf(found)
 }
 
 /** `T["k"]`, `T["a" | "b"]`, `T[number]` of an array or tuple, `T[0]` of a tuple. */
@@ -110,6 +152,8 @@ export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
     const index = c.resolveType(indexNode, scope)
     if (index === null) return null
     if (index.kind === "never") return types.never
+    // Any string indexes a dictionary: `D[string]` and `D["a"]` are its values.
+    if (object.kind === "map" && object.dict && membersOf(index).every(isStringLike)) return object.value
     // A numeric literal type or `number` from a type parameter: `Prev[D]`, `T[K]` with K bound to number.
     if (index.kind === "number-literal" && object.kind === "struct" && object.tuple) {
         const element = memberType(object, index.value)
@@ -140,7 +184,7 @@ export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
     }
     const found: Type[] = []
     for (const k of keys) {
-        const t = memberType(object, k)
+        const t = indexedMember(c, object, k)
         if (t === null) {
             c.error(indexNode, `Property '${k}' does not exist on type '${typeToString(object)}'.`)
             return null
@@ -232,11 +276,63 @@ function knownType(c: Checker, init: Node, scope: Scope, depth: int): Type | nul
 function valueType(c: Checker, symbol: ValueSymbol, at: Node): Type | null {
     if (symbol.k === "local") return c.untyped.has(symbol.local) ? null : symbol.local.type
     if (symbol.k === "func") return symbol.func.type
+    // `typeof C` of a class: its constructor, `new (params) => C`.
+    if (symbol.k === "class") {
+        const cls = symbol.type
+        return cls === null ? null : constructorType(c, cls)
+    }
     if (symbol.k !== "const") return null
     const declared = symbol.type
     if (declared !== null) return declared
     const value = symbol.value
     return value.k === "error" ? null : typeOf(c.toDefault(value, at))
+}
+
+/**
+ * The constructor type of a class, `new (params) => C`. Type aliases are
+ * resolved before the members of classes are declared, so the parameters
+ * come from the constructor's declaration, or the base class's without one.
+ */
+function constructorType(c: Checker, cls: StructType): FuncType | null {
+    const info = c.classInfos.get(cls.id)
+    if (info === null) return null
+    let decl: Node | null = null
+    for (const m of info.decl.list("members")) if (m.kind === "Constructor") decl = m
+    if (decl === null) {
+        resolveBase(c, info)
+        const base = cls.base
+        const inherited = base === null ? null : constructorType(c, base)
+        const params: Type[] = inherited === null ? [] : inherited.params
+        const type = new FuncType(params, cls)
+        if (inherited !== null) {
+            type.required = inherited.required
+            type.rest = inherited.rest
+        }
+        type.construct = true
+        return type
+    }
+    const params: Type[] = []
+    let required = -1
+    let rest = false
+    const list = parameters(decl)
+    for (let i = 0; i < list.length; i++) {
+        const p = list[i]
+        const annotation = typeNode(p)
+        if (annotation === null) return null
+        const t = c.resolveValueType(annotation, info.scope)
+        if (t === null) return null
+        const optional = questionToken(p) !== null || initializer(p) !== null
+        if (optional || dotDotDotToken(p) !== null) {
+            if (required === -1) required = i
+        }
+        if (dotDotDotToken(p) !== null) rest = true
+        params.push(questionToken(p) !== null ? c.unionOf([t, types.null]) : t)
+    }
+    const type = new FuncType(params, cls)
+    type.required = required
+    type.rest = rest
+    type.construct = true
+    return type
 }
 
 /**
@@ -246,6 +342,11 @@ function valueType(c: Checker, symbol: ValueSymbol, at: Node): Type | null {
 function isData(node: Node): bool {
     const k = node.kind
     if (k === "ParenthesizedExpression") return isData(expression(node))
+    // `[...] as const`.
+    if (k === "AsExpression") {
+        const type = node.child("type")
+        return type !== null && type.kind === "TypeReference" && type.end - type.start === 5 && isData(expression(node))
+    }
     if (k === "ArrayLiteralExpression") return elements(node).every(isData)
     if (k === "ObjectLiteralExpression") {
         return properties(node).every((p) => {
@@ -320,10 +421,18 @@ export function typeQuery(c: Checker, node: Node, scope: Scope): Type | null {
 export function typeOperator(c: Checker, node: Node, scope: Scope): Type | null {
     const text = c.text(node)
     if (text.startsWith("keyof")) return keyofType(c, node, scope)
-    // `readonly T[]` is `T[]`: Ore does not have read-only arrays yet.
+    // `readonly T[]` and `readonly [A, B]`: arrays and tuples that cannot be changed through this type.
     if (text.startsWith("readonly")) {
         const inner = typeNode(node)
-        return inner !== null ? c.resolveType(inner, scope) : null
+        const type = inner !== null ? c.resolveType(inner, scope) : null
+        if (type !== null && type.kind === "array" && !type.template) return readonlyArrayOf(type.elem)
+        if (type !== null && type.kind === "struct" && type.tuple)
+            return c.tupleOf(
+                type.fields.map((f) => f.type),
+                type.fields.map((f) => f.optional),
+                true,
+            )
+        return type
     }
     c.error(node, "This type operator is not supported.")
     return null
@@ -346,6 +455,53 @@ function hasInfer(node: Node): bool {
 }
 
 /**
+ * Whether a tuple type matches a tuple pattern: `[infer H, ...infer R]` binds
+ * `H` to the first element and `R` to a tuple of the rest. A rest element of
+ * array type, `...unknown[]`, matches any number of elements of its type.
+ */
+function matchesTuple(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: Map<string, Type>): bool {
+    if (type.kind !== "struct" || !type.tuple) return false
+    const elems = pattern.list("elements")
+    const fields = type.fields
+    let rest = -1
+    for (let i = 0; i < elems.length; i++) {
+        if (!isRestTupleElement(elems[i])) continue
+        if (rest >= 0) return false
+        rest = i
+    }
+    function element(e: Node, f: Field): bool {
+        // An optional element `T?` matches an optional element of type `T`.
+        if (isOptionalTupleElement(e) !== f.optional) return false
+        const ft = f.optional ? c.withoutNull(f.type) : f.type
+        return matches(c, tupleElementType(e), ft, scope, bindings)
+    }
+    if (rest < 0) {
+        if (fields.length !== elems.length) return false
+        for (let i = 0; i < elems.length; i++) if (!element(elems[i], fields[i])) return false
+        return true
+    }
+    const after = elems.length - rest - 1
+    const n = fields.length
+    if (n < rest + after) return false
+    for (let i = 0; i < rest; i++) if (!element(elems[i], fields[i])) return false
+    for (let j = 0; j < after; j++) if (!element(elems[rest + 1 + j], fields[n - after + j])) return false
+    const middle: Type[] = []
+    const optional: bool[] = []
+    for (let i = rest; i < n - after; i++) {
+        middle.push(fields[i].type)
+        optional.push(fields[i].optional)
+    }
+    let inner = tupleElementType(elems[rest])
+    while (inner.kind === "ParenthesizedType") inner = typeNode(inner)!
+    if (inner.kind === "ArrayType") {
+        const elem = inner.child("elementType")!
+        for (const t of middle) if (!matches(c, elem, t, scope, bindings)) return false
+        return true
+    }
+    return matches(c, inner, c.tupleOf(middle, optional), scope, bindings)
+}
+
+/**
  * Whether a type matches the `extends` clause of a conditional type, binding
  * the names its `infer X` declare. A clause without `infer` matches the types
  * assignable to it; in a function type, only the parts with `infer` count.
@@ -362,6 +518,8 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
     const wildcard = matchesKind(c, pattern, type, scope)
     if (wildcard !== null) return wildcard
     if (pattern.kind === "TemplateLiteralType" && hasInfer(pattern)) return matchesTemplate(c, pattern, type, bindings)
+    if (pattern.kind === "TupleType" && (hasInfer(pattern) || pattern.list("elements").some(isRestTupleElement)))
+        return matchesTuple(c, pattern, type, scope, bindings)
     if (!hasInfer(pattern)) {
         const target = c.resolveType(pattern, scope)
         return target !== null && (satisfiesConstraint(c, type, target) || fitsShape(c, type, target))
@@ -369,13 +527,6 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
     if (pattern.kind === "ArrayType") {
         const elem = pattern.child("elementType")!
         return type.kind === "array" && matches(c, elem, type.elem, scope, bindings)
-    }
-    if (pattern.kind === "TupleType") {
-        const elems = pattern.list("elements")
-        if (type.kind !== "struct" || !type.tuple || type.fields.length !== elems.length) return false
-        for (let i = 0; i < elems.length; i++)
-            if (!matches(c, elems[i], type.fields[i].type, scope, bindings)) return false
-        return true
     }
     if (pattern.kind === "TypeLiteral") {
         // `{ a: infer X }`: the fields named, of an object type or a class.
@@ -388,8 +539,8 @@ function matches(c: Checker, pattern: Node, type: Type, scope: Scope, bindings: 
         }
         return true
     }
-    if (pattern.kind === "FunctionType") {
-        if (type.kind !== "func") return false
+    if (pattern.kind === "FunctionType" || pattern.kind === "ConstructorType") {
+        if (type.kind !== "func" || type.construct !== (pattern.kind === "ConstructorType")) return false
         const params = parameters(pattern)
         // `(...args: infer P) => R`: the parameters as a tuple.
         if (params.length === 1 && dotDotDotToken(params[0]) !== null) {
@@ -561,6 +712,27 @@ function homomorphicSource(c: Checker, keysNode: Node, valueNode: Node | null, p
     return source !== null && source.kind === "struct" ? source.fields : []
 }
 
+/**
+ * A mapped type over all strings, `{ [K in string]: X }` (`Record<string,
+ * X>`), or over the keys of a dictionary: the dictionary of `X` with `K`
+ * any string, readonly as its `readonly` modifier says or as the source was.
+ */
+function mappedDict(c: Checker, node: Node, parameter: Node, wasReadonly: bool, scope: Scope): Type | null {
+    const valueNode = typeNode(node)
+    if (valueNode === null) {
+        c.error(node, "A mapped type needs the type of its fields: '{ [K in Keys]: T }'.")
+        return null
+    }
+    const inner = new Scope(scope)
+    inner.declareType(nameNode(parameter).text, new TypeSymbol(types.string, parameter))
+    const value = c.resolveValueType(valueNode, inner)
+    if (value === null) return null
+    const readonlyToken = node.child("readonlyToken")
+    let isReadonly = wasReadonly
+    if (readonlyToken !== null) isReadonly = readonlyToken.kind !== "MinusToken"
+    return dictOf(value, isReadonly)
+}
+
 /** `{ readonly [K in Keys as Name]?: X }`: an object type with a field for each key. */
 export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
     const parameter = node.child("typeParameter")!
@@ -577,6 +749,7 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
             const elem = c.resolveValueType(valueNode, inner)
             return elem === null ? null : arrayOf(elem)
         }
+        if (source.kind === "map" && source.dict) return mappedDict(c, node, parameter, source.readonly, scope)
         if (source.kind !== "struct" && source.kind !== "interface") return source
     }
     const keys = c.resolveType(keysNode, scope)
@@ -586,6 +759,9 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
         c.error(node, "A mapped type needs the type of its fields: '{ [K in Keys]: T }'.")
         return null
     }
+    // Over all strings, as `Record<string, V>`: a dictionary.
+    if (membersOf(keys).some((t) => t.kind === "string") && node.child("nameType") === null)
+        return mappedDict(c, node, parameter, false, scope)
     const source = homomorphicSource(c, keysNode, valueNode, parameter, scope)
     const readonlyToken = node.child("readonlyToken")
     const questionToken = node.child("questionToken")
@@ -594,7 +770,7 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
         if (key.kind !== "literal") {
             c.error(
                 keysNode,
-                `The keys of a mapped type are string literal types, not '${typeToString(key)}'; for any string, use a Map.`,
+                `The keys of a mapped type are string literal types or 'string', not '${typeToString(key)}'.`,
             )
             return null
         }

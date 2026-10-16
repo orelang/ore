@@ -101,11 +101,14 @@ import {
     asteriskToken,
 } from "../syntax/nodes"
 import { asyncValue, checkAsyncBody, isAsync, promiseOf } from "./async"
+import { checkGeneratorBody, isGenerator, iteratorModule } from "./generators"
+import { isProtocolIterable, iteratorOf, iteratorValue, protocolLoop } from "./iteration"
 import { type Checker } from "./base"
 import { dispatch, initStatics } from "./classes"
 import { type AssignTarget, Condition, Fact, FactPair, FuncContext, LoopContext } from "./context"
 import {
     declareGenericClosure,
+    declareTypeAliases,
     directives,
     exportVariable,
     paramScope,
@@ -114,7 +117,17 @@ import {
     threadLocal,
     unsupportedTopLevel,
 } from "./declarations"
-import { assignTarget, checkExpr, compare, interfaceFor, member, narrowTo, settle, writeAccessor } from "./expressions"
+import {
+    assignTarget,
+    checkExpr,
+    compare,
+    interfaceFor,
+    matchCaptures,
+    member,
+    narrowTo,
+    settle,
+    writeAccessor,
+} from "./expressions"
 import {
     disposeName,
     canBeNull,
@@ -130,6 +143,14 @@ import {
     zeroValue,
 } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
+import {
+    assertionFacts,
+    assertionReturn,
+    declarePredicate,
+    enterPredicate,
+    predicateFacts,
+    predicateReturn,
+} from "./predicates"
 import { type ValueSymbol, ConstSymbol, LocalSymbol, Scope } from "./symbols"
 
 export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
@@ -140,6 +161,10 @@ export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
     // start of the block, can call each other, and see every variable of the
     // block. Their signatures are declared first and their bodies checked last.
     const all = statements(block)
+    // Type aliases are scoped to the block, and declared before the rest, as
+    // in TypeScript: the block's functions and statements can name them.
+    const aliases = all.filter((s) => s.kind === "TypeAliasDeclaration")
+    if (aliases.length > 0) declareTypeAliases(c, aliases, inner)
     const nested = all.filter((s) => s.kind === "FunctionDeclaration")
     const locals: (Local | null)[] = nested.map((decl) => declareNestedFunction(c, decl, inner))
     const stmts: Stmt[] = []
@@ -284,19 +309,24 @@ export function checkUsing(c: Checker, stmt: Node, rest: Node[], scope: Scope, o
 
 /** A call of `[Symbol.dispose]()` on a value, if its type has that method. */
 export function disposeCall(c: Checker, value: Expr): Expr | null {
+    return symbolMethodCall(c, value, disposeName)
+}
+
+/** A call of the method `name` without arguments, such as `[Symbol.iterator]()`, if the value's type has it. */
+export function symbolMethodCall(c: Checker, value: Expr, name: string): Expr | null {
     const type = value.type
     if (type.kind === "struct") {
-        const method = findMethod(type, disposeName)
+        const method = findMethod(type, name)
         if (method !== null && method.func.params.length === 0) {
             const call: Expr = new MethodCall(method.func.type.result, method.func, value, [])
-            dispatch(c, call, disposeName)
+            dispatch(c, call, name)
             return call
         }
     }
     if (type.kind === "interface") {
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
-            if (m.name !== disposeName) continue
+            if (m.name !== name) continue
             if (m.k === "method" && m.type.params.length === 0)
                 return new IfaceCall(m.type.result, value, index, m.type, [])
             return null
@@ -368,7 +398,11 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
     else if (k === "VariableStatement") checkVariables(c, declarationList(stmt), scope, out, stmt)
     else if (k === "ExpressionStatement") {
         const value = checkExpr(c, expression(stmt), scope)
-        if (value.k === "typed") out.push(new ExprStmt(value.expr))
+        if (value.k === "typed") {
+            out.push(new ExprStmt(value.expr))
+            // After a call of an assertion function, its assertion holds.
+            addFacts(c, assertionFacts(c, expression(stmt), value.expr, scope))
+        }
     } else if (k === "IfStatement") {
         const cond = condition(c, expression(stmt), scope)
         // Each branch starts from the facts before the `if`, and ends with its own.
@@ -408,6 +442,9 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
                 isTrue(cond.expr) ? null : cond.expr,
             ),
         )
+        // A loop left only through its condition ends with the condition false: after
+        // `while (!r.done) r = next()`, r is done.
+        if (!breaks(statement(stmt), false)) addFacts(c, cond.whenFalse)
     } else if (k === "DoStatement") {
         invalidateAssigned(c, stmt, scope)
         const loop = checkLoopBody(c, statement(stmt), scope)
@@ -439,6 +476,8 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
         }
     } else if (k === "ReturnStatement") {
         out.push(checkReturn(c, stmt, scope))
+    } else if (k === "TypeAliasDeclaration") {
+        // Declared at the start of its block (see `checkBlock`).
     } else if (k === "EmptyStatement") {
         // nothing
     } else if (k === "FunctionDeclaration") {
@@ -724,6 +763,8 @@ export function bindPattern(c: Checker, name: Node, value: Expr, mutable: bool, 
         }
         return
     }
+    const captures = matchCaptures(whole)
+    if (captures !== null) whole = captures
     const array = whole.type
     const elems = elements(name)
     for (let i = 0; i < elems.length; i++) {
@@ -1124,7 +1165,40 @@ export function checkFor(c: Checker, stmt: Node, outer: Scope): Stmt {
     return new Block(prelude)
 }
 
-export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | null {
+/** A loop over a collection for one over the iterator of its `keys()`, `values()` or `entries()`. */
+class DirectIteration {
+    constructor(
+        readonly source: Expr,
+        /** The keys of a map, without its values. */
+        readonly keyOnly: bool,
+        /** The values of a map, without a key variable. */
+        readonly valueOnly: bool,
+    ) {}
+}
+
+/**
+ * For an iterable made by `array.values()`, `set.values()`, `set.keys()`,
+ * `map.keys()`, `map.values()` or `map.entries()` destructured as
+ * `[key, value]`: the collection to loop over instead, as the iterator
+ * would visit it.
+ */
+function directIteration(c: Checker, iterable: Expr, pattern: Node): DirectIteration | null {
+    if (iterable.k !== "call" || iterable.args.length !== 1) return null
+    const f = iterable.func
+    const file = f.file
+    if (file === null || !file.startsWith(iteratorModule)) return null
+    const name = f.sourceName
+    const source = iterable.args[0]
+    if (name.startsWith("arrayValues<") || name.startsWith("setValues<"))
+        return new DirectIteration(source, false, false)
+    if (name.startsWith("mapKeys<")) return new DirectIteration(source, true, false)
+    if (name.startsWith("mapValues<")) return new DirectIteration(source, false, true)
+    if (name.startsWith("mapEntries<") && pattern.kind === "ArrayBindingPattern")
+        return new DirectIteration(source, false, false)
+    return null
+}
+
+export function checkForOf(c: Checker, stmt: Node, outer: Scope): Stmt | null {
     const list = initializer(stmt)!
     const kind = list.kind === "VariableDeclarationList" ? declarationKind(list, c.sourceOf(list).text) : "var"
     if (kind !== "const" && kind !== "let") {
@@ -1138,13 +1212,37 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
 
     const value = checkExpr(c, expression(stmt), outer)
     if (value.k === "error") return null
-    const iterable = c.toDefault(value, expression(stmt))
+    const whole = c.toDefault(value, expression(stmt))
+    let iterable = matchCaptures(whole) ?? whole
+    // `values()`, `keys()` and `entries()` of a collection loop over the collection itself, as fast.
+    const direct = directIteration(c, iterable, nameNode(decl))
+    if (direct !== null) iterable = direct.source
     const type = iterable.type
     const mutable = kind === "let"
+    if (type.kind === "map" && type.dict) {
+        c.error(expression(stmt), "A dictionary is not iterable: loop over 'Object.keys(d)' or 'Object.entries(d)'.")
+        return null
+    }
     // Names and types of the loop variables: one, or `[key, value]` for a map.
     const names: Node[] = []
     const elemTypes: Type[] = []
-    if (type.kind === "map") {
+    // Of a class or interface: its iterator, by the iteration protocol.
+    let iterator: Expr | null = null
+    if (direct !== null && direct.keyOnly) {
+        names.push(nameNode(decl))
+        elemTypes.push(type.kind === "map" ? type.key : types.void)
+    } else if (direct !== null && direct.valueOnly && type.kind === "map") {
+        // The key is a hidden loop variable.
+        names.push(nameNode(decl))
+        elemTypes.push(type.key)
+        names.push(nameNode(decl))
+        elemTypes.push(type.value)
+    } else if (isProtocolIterable(type)) {
+        iterator = iteratorOf(c, iterable, expression(stmt))
+        if (iterator === null) return null
+        names.push(nameNode(decl))
+        elemTypes.push(iteratorValue(c, iterator.type)!)
+    } else if (type.kind === "map") {
         const pattern = nameNode(decl)
         const found: (Node | null)[] = []
         if (pattern.kind === "ArrayBindingPattern") {
@@ -1185,6 +1283,10 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
     for (let i = 0; i < names.length; i++) {
         const name = names[i]
         const t = elemTypes[i]
+        if (direct !== null && direct.valueOnly && type.kind === "map" && i === 0) {
+            locals.push(c.newLocal("key", t, false))
+            continue
+        }
         if (!isIdentifier(name)) {
             const local = c.newLocal("item", t, false)
             bindPattern(c, name, new LocalRef(t, local), mutable, scope, prologue)
@@ -1198,6 +1300,8 @@ export function checkForOf(c: Checker, stmt: Node, outer: Scope): ForOfStmt | nu
         locals.push(local)
     }
     const loop = checkLoopBody(c, statement(stmt), scope)
+    if (iterator !== null)
+        return protocolLoop(c, iterator, locals[0], loop.context.id, loop.context.labeled, prologue, loop.body, stmt)
     let loopBody = loop.body
     if (prologue.length > 0)
         loopBody = new Block(prepend(prologue, loopBody.k === "block" ? loopBody.body : [loopBody]))
@@ -1281,8 +1385,11 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
             narrowable = leaves
         }
     }
-    // A switch over a union of literals that has a case for each is exhaustive.
+    // A switch over a union of literals that has a case for each is exhaustive;
+    // `boolean` is `true | false`.
     const exhaustive = membersOf(type).every((m) => {
+        if (m.kind === "bool" && m.literal === "")
+            return allCases.has(literalKey(types.boolTrue)!) && allCases.has(literalKey(types.boolFalse)!)
         const key = literalKey(m)
         return key !== null && allCases.has(key)
     })
@@ -1295,6 +1402,27 @@ export class LoopBody {
         readonly context: LoopContext,
         readonly body: Stmt,
     ) {}
+}
+
+/**
+ * Whether a loop body has a `break` that may leave the loop: an unlabeled one
+ * outside nested loops and switches, or any labeled one.
+ */
+function breaks(node: Node, nested: bool): bool {
+    const k = node.kind
+    if (k === "BreakStatement") return label(node) !== null || !nested
+    if (k === "FunctionDeclaration" || k === "FunctionExpression" || k === "ArrowFunction" || k === "ClassDeclaration")
+        return false
+    const inner =
+        nested ||
+        k === "WhileStatement" ||
+        k === "DoStatement" ||
+        k === "ForStatement" ||
+        k === "ForOfStatement" ||
+        k === "ForInStatement" ||
+        k === "SwitchStatement"
+    for (const child of node.children) if (breaks(child, inner)) return true
+    return false
 }
 
 export function checkLoopBody(c: Checker, stmt: Node, scope: Scope): LoopBody {
@@ -1338,8 +1466,11 @@ export function checkReturn(c: Checker, stmt: Node, scope: Scope): ReturnStmt {
     }
     if (valueNode === null) {
         if (current.kind !== "void") c.error(stmt, `A return value of type '${typeToString(current)}' is required.`)
+        else assertionReturn(c, stmt)
         return new ReturnStmt()
     }
+    const tested = predicateReturn(c, valueNode, scope)
+    if (tested !== null) return new ReturnStmt(tested)
     const value = checkExpr(c, valueNode, scope, current)
     if (current.kind === "void") {
         // `return f()` of a void `f` calls it and returns.
@@ -1393,7 +1524,7 @@ export function checkClosure(
     const typeParams = typeParameters(node)
     if (typeParams.length > 0 && instance === null) return c.fail(typeParams[0], "Generic closures are not supported.")
     const asterisk = asteriskToken(node)
-    if (asterisk !== null) return c.fail(asterisk, "Generators are not supported in Ore.")
+    if (asterisk !== null && isAsync(node)) return c.fail(asterisk, "Async generators are not supported in Ore.")
     // The expected function type, also from a union such as `(() => void) | null`.
     const funcs: FuncType[] = []
     if (expected !== null) for (const m of membersOf(expected)) if (m.kind === "func") funcs.push(m)
@@ -1499,6 +1630,7 @@ export function checkClosure(
     func.type.required = required
     func.type.rest = rest
     c.module.functions.push(func)
+    declarePredicate(c, node, func, outer, false)
     if (declared !== null) declared(func)
     const prologue: Stmt[] = []
     const scope = paramScope(c, params_, named, new Scope(outer, func), prologue)
@@ -1526,7 +1658,7 @@ export function checkClosure(
     const captures: Func[] = [func]
     if (isArrow && outerFn !== null && outerFn.thisCaptures !== null)
         for (const f of outerFn.thisCaptures) captures.push(f)
-    c.fn = new FuncContext(
+    const inner = new FuncContext(
         result,
         [],
         0,
@@ -1535,6 +1667,10 @@ export function checkClosure(
         self !== null ? self : isArrow && outerFn !== null ? outerFn.thisLocal : null,
         self !== null ? null : isArrow && outerFn !== null ? outerFn.cls : null,
     )
+    // An arrow function keeps a null `this` too.
+    inner.nullThis = self === null && isArrow && outerFn !== null && outerFn.nullThis
+    c.fn = inner
+    enterPredicate(c, func, scope)
     // Default values, computed in the closure when their arguments are null, before the patterns.
     const start: Stmt[] = []
     for (let k = 0; k < defaultNodes.length; k++) {
@@ -1548,7 +1684,9 @@ export function checkClosure(
     for (const s of prologue) start.push(s)
     const ok = isAsync(node)
         ? asyncClosureBody(c, node, func, scope, start, resultNode, name)
-        : closureBody(c, node, func, scope, start, resultNode)
+        : isGenerator(node)
+          ? generatorClosureBody(c, node, func, scope, start, name)
+          : closureBody(c, node, func, scope, start, resultNode)
     c.fn = savedFn
     c.facts = savedFacts
     if (!ok) return errorOperand
@@ -1582,6 +1720,21 @@ function asyncClosureBody(
     return true
 }
 
+/** The body of a generator function expression: its result type comes from an annotation or the context. */
+function generatorClosureBody(c: Checker, node: Node, func: Func, scope: Scope, prologue: Stmt[], name: string): bool {
+    const result = c.fn!.result
+    if (result === null) {
+        c.error(node, "A generator function needs a return type annotation, such as 'Generator<T>'.")
+        return false
+    }
+    func.body = new Block(prepend(prologue, checkGeneratorBody(c, node, scope, result, name)))
+    const done = new FuncTypeClass(func.type.params, result)
+    done.required = func.type.required
+    done.rest = func.type.rest
+    func.type = done
+    return true
+}
+
 /** The body of a closure being checked; false when its expression body has an error. */
 function closureBody(
     c: Checker,
@@ -1595,7 +1748,19 @@ function closureBody(
     const fnBody = body(node)!
     if (fnBody.kind === "Block") {
         func.body = checkBlock(c, fnBody, scope)
+        if (!terminates(func.body)) assertionReturn(c, resultNode ?? node)
     } else {
+        // The value of a function literal with a type predicate must test its parameter.
+        const tested = predicateReturn(c, fnBody, scope)
+        if (tested !== null) {
+            func.body = new Block([new ReturnStmt(tested)])
+            func.body.body = prepend(prologue, func.body.body)
+            const typed_ = new FuncTypeClass(func.type.params, fn.result ?? types.bool)
+            typed_.required = func.type.required
+            typed_.rest = func.type.rest
+            func.type = typed_
+            return true
+        }
         // An expression body returns its value, or is evaluated for a void result.
         const value = checkExpr(c, fnBody, scope, fn.result)
         if (value.k === "error") return false
@@ -1715,6 +1880,28 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             )
         }
     }
+    // A call of a function with a type predicate narrows its argument.
+    if (node.kind === "CallExpression") {
+        const expr = checkCondition(c, node, scope)
+        const pair = predicateFacts(c, node, expr, scope)
+        return pair !== null ? new Condition(expr, pair.yes, pair.no) : new Condition(expr, [], [])
+    }
+    // A reference of a boolean type, such as `r.ok`, is a test that it is `true`.
+    if (isIdentifier(node) || node.kind === "PropertyAccessExpression") {
+        const expr = checkCondition(c, node, scope)
+        const type = c.info.types.get(node)
+        if (type === null || type.kind !== "bool") return new Condition(expr, [], [])
+        const values = new Set<string>()
+        values.add(literalKey(types.boolTrue)!)
+        const pair = literalFacts(c, node, values, scope)
+        // A `boolean` itself is `true` when the test is, and `false` when not.
+        const key = refKey(c, node, scope)
+        if (key !== null && type.literal === "") {
+            pair.yes.push(new Fact(key, types.boolTrue))
+            pair.no.push(new Fact(key, types.boolFalse))
+        }
+        return new Condition(expr, pair.yes, pair.no)
+    }
     return new Condition(checkCondition(c, node, scope), [], [])
 }
 
@@ -1753,8 +1940,14 @@ function covers(type: Type, values: Set<string>): string {
     const keys: string[] = []
     for (const m of members_) {
         const key = literalKey(m)
+        if (key === null && m.kind === "bool" && members_.length === 1) continue
         if (key === null) return "both"
         keys.push(key)
+    }
+    // `boolean` is `true | false`.
+    if (keys.length === 0 && members_.every((m) => m.kind === "bool")) {
+        keys.push(literalKey(types.boolTrue)!)
+        keys.push(literalKey(types.boolFalse)!)
     }
     if (keys.every((k) => values.has(k))) return "yes"
     if (keys.every((k) => !values.has(k))) return "no"
@@ -1768,6 +1961,7 @@ function covers(type: Type, values: Set<string>): string {
 function literalKey(type: Type): string | null {
     if (type.kind === "literal") return type.value
     if (type.kind === "number-literal") return `\n#${type.value}`
+    if (type.kind === "bool" && type.literal !== "") return `\n!${type.literal}`
     return null
 }
 
@@ -1776,6 +1970,8 @@ function literalNodeKey(c: Checker, node: Node): string | null {
     if (node.kind === "ParenthesizedExpression") return literalNodeKey(c, expression(node))
     if (isStringLiteralNode(node)) return stringText(node)
     if (node.kind === "NumericLiteral") return literalKey(c.numberLiteral(node.text))
+    if (node.kind === "TrueKeyword") return literalKey(types.boolTrue)
+    if (node.kind === "FalseKeyword") return literalKey(types.boolFalse)
     if (node.kind === "PrefixUnaryExpression" && prefixOperator(node, c.sourceOf(node).text) === "-") {
         const inner = operand(node)
         if (inner.kind === "NumericLiteral") return literalKey(c.numberLiteral(`-${inner.text}`))

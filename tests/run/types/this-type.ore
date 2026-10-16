@@ -1,0 +1,90 @@
+// The type `this` of a class member is the type of the receiver: fluent methods keep the subclass.
+class Builder {
+    parts: string[] = []
+    add(s: string): this {
+        this.parts.push(s)
+        return this
+    }
+    build(): string {
+        return this.parts.join("")
+    }
+}
+
+class Html extends Builder {
+    tag(t: string): this {
+        return this.add(`<${t}>`)
+    }
+}
+
+const h = new Html().add("a").tag("b").add("c")
+const html: Html = h
+console.log(html.tag("i").build())
+
+// A parameter of the type `this` takes the receiver's type.
+class Point {
+    constructor(
+        readonly x: int,
+        readonly y: int,
+    ) {}
+    equals(other: this): bool {
+        return this.x === other.x && this.y === other.y
+    }
+}
+
+class Point3 extends Point {
+    constructor(
+        x: int,
+        y: int,
+        readonly z: int,
+    ) {
+        super(x, y)
+    }
+}
+
+const p = new Point3(1, 2, 3)
+console.log(p.equals(new Point3(1, 2, 4)), new Point(1, 2).equals(p))
+
+// A field of the type `this`, a local inside a method, and a generic method.
+class ListNode {
+    next: this | null = null
+    constructor(readonly value: int) {}
+    append(node: this): this {
+        const self: this = this
+        self.next = node
+        return this
+    }
+    visit<T>(f: (value: int) => T): this {
+        f(this.value)
+        return this
+    }
+}
+
+class Named extends ListNode {
+    name = "named"
+}
+
+const a = new Named(1)
+const b = new Named(2)
+const tail: Named = a.visit((v) => console.log("visit", v)).append(b)
+console.log(tail.name, tail.next !== null ? tail.next.value : 0)
+
+// An override returns the type of the method it overrides; calls through a subclass still get the subclass.
+class Shape {
+    name = "shape"
+    rename(name: string): this {
+        this.name = name
+        return this
+    }
+}
+
+class Circle extends Shape {
+    radius = 1
+    override rename(name: string): this {
+        return super.rename(`circle ${name}`)
+    }
+}
+
+const shapes: Shape[] = [new Shape(), new Circle()]
+for (const s of shapes) console.log(s.rename("x").name)
+const c = new Circle().rename("y")
+console.log(c.name, c.radius)

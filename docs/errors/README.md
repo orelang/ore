@@ -70,7 +70,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2001](ORE2001.md) | 'any' is not supported in Ore. |
 | [ORE2002](ORE2002.md) | 'unknown' is not supported yet. |
 | [ORE2003](ORE2003.md) | 'undefined' is not supported in Ore. Use 'null'. |
-| [ORE2004](ORE2004.md) | Only string and number literal types are supported yet. |
+| [ORE2004](ORE2004.md) | Only string, number and boolean literal types are supported yet. |
 | [ORE2005](ORE2005.md) | A union cannot contain '…'. |
 | [ORE2006](ORE2006.md) | 'Map' expects exactly 2 type arguments. |
 | [ORE2007](ORE2007.md) | 'Set' expects exactly 1 type argument. |
@@ -112,7 +112,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2043](ORE2043.md) | Exponent … is too large. |
 | [ORE2044](ORE2044.md) | Shift count must not be negative. |
 | [ORE2045](ORE2045.md) | Shift count … is too large. |
-| [ORE2046](ORE2046.md) | Index signatures are not supported. Use a 'Map<K, V>'. |
+| [ORE2046](ORE2046.md) | An index signature is a type alone, '{ [key: string]: T }', not a member of a class, an interface or an object type with other members. |
 | [ORE2047](ORE2047.md) | Cannot find name '…'. Use '…'. |
 | [ORE2048](ORE2048.md) | Type '…' cannot be converted to or from JSON: the keys of a Map must be strings. |
 | [ORE2049](ORE2049.md) | Type '…' cannot be converted to or from JSON. |
@@ -125,7 +125,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2056](ORE2056.md) | '…' is not known yet here: give it a type annotation to use 'typeof …' before it. |
 | [ORE2057](ORE2057.md) | 'typeof …' needs a variable or a function with a known type. |
 | [ORE2058](ORE2058.md) | This type operator is not supported. |
-| [ORE2059](ORE2059.md) | The keys of a mapped type are string literal types, not '…'; for any string, use a Map. |
+| [ORE2059](ORE2059.md) | The keys of a mapped type are string literal types or 'string', not '…'. |
 | [ORE2060](ORE2060.md) | A key of a mapped type is a string literal type, not '…'. |
 | [ORE2061](ORE2061.md) | A mapped type needs the type of its fields: '{ [K in Keys]: T }'. |
 | [ORE2062](ORE2062.md) | 'infer' declares a type only in the 'extends' clause of a conditional type. |
@@ -134,18 +134,23 @@ The codes are grouped by the part of the language they concern:
 | [ORE2065](ORE2065.md) | An integer constant is not assignable to type 'bigint'. Write a bigint literal: '…n'. |
 | [ORE2066](ORE2066.md) | Type '…' exists only in computations on types: values cannot have 'never' in a tuple or an object type yet. |
 | [ORE2067](ORE2067.md) | Constant … is not assignable to type '…'. |
+| [ORE2068](ORE2068.md) | An index signature has one parameter and a type: '[key: string]: T'. |
+| [ORE2069](ORE2069.md) | The keys of a dictionary are strings, not '…'; for other keys, use a 'Map<K, V>'. |
+| [ORE2070](ORE2070.md) | The type '…' is 'readonly' and cannot be assigned to the mutable type '…'. |
+| [ORE2071](ORE2071.md) | A required element cannot follow an optional element. |
+| [ORE2072](ORE2072.md) | A rest element of type '…' is not supported: tuples have a fixed length in Ore. Spread a tuple type, or use an array. |
 
 ## ORE3xxx: Expressions
 
 | Code | Message |
 |---|---|
 | [ORE3001](ORE3001.md) | Field initializers cannot use 'this'. |
-| [ORE3002](ORE3002.md) | A static method has no 'this'; name the class: '….name'. |
+| [ORE3002](ORE3002.md) | A static method or block has no 'this'; name the class: '….name'. |
 | [ORE3003](ORE3003.md) | 'this' can only be used inside a class. |
 | [ORE3004](ORE3004.md) | 'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'. |
 | [ORE3005](ORE3005.md) | Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'. |
 | [ORE3006](ORE3006.md) | 'await' is only allowed in async functions and in the top-level code of a module. |
-| [ORE3007](ORE3007.md) | 'delete' is not supported in Ore. |
+| [ORE3007](ORE3007.md) | 'delete' removes an entry of a dictionary, '{ [key: string]: T }', only. |
 | [ORE3008](ORE3008.md) | This expression is not supported yet. |
 | [ORE3009](ORE3009.md) | '…' is a class. Create an instance with 'new …(...)'. |
 | [ORE3010](ORE3010.md) | '…' is a generic function and cannot be used as a value. |
@@ -157,7 +162,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3016](ORE3016.md) | '…' is not supported in Ore. Use '…'. |
 | [ORE3017](ORE3017.md) | '>>>' is not supported in Ore. Use '>>' on an unsigned type. |
 | [ORE3018](ORE3018.md) | The comma operator is not supported in Ore. |
-| [ORE3019](ORE3019.md) | 'in' is not supported in Ore. |
+| [ORE3019](ORE3019.md) | 'in' tests the keys of a dictionary, '{ [key: string]: T }', only, not of '…'. |
 | [ORE3020](ORE3020.md) | Operator '…' is not supported. |
 | [ORE3021](ORE3021.md) | Operator '…' requires integer operands, got '…' and '…'. |
 | [ORE3022](ORE3022.md) | Only strings can be concatenated with '+'. Use a template literal: `${a}${b}`. |
@@ -184,7 +189,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3043](ORE3043.md) | Cannot assign to '…' because it is a constant. |
 | [ORE3044](ORE3044.md) | Cannot assign to '…': its type differs between the members of '…'. |
 | [ORE3045](ORE3045.md) | Branches of '?:' cannot be 'void'. |
-| [ORE3046](ORE3046.md) | Only an array or a tuple can be spread into an array. |
+| [ORE3046](ORE3046.md) | Only an array, a tuple or an iterable can be spread into an array. |
 | [ORE3047](ORE3047.md) | An array cannot contain values of type '…'. |
 | [ORE3048](ORE3048.md) | Only a tuple can be spread into a tuple. |
 | [ORE3049](ORE3049.md) | Expected … element(s) for tuple type '…', got …. |
@@ -221,14 +226,25 @@ The codes are grouped by the part of the language they concern:
 | [ORE3080](ORE3080.md) | An expression of type 'void' cannot be awaited. |
 | [ORE3081](ORE3081.md) | A union of promises and other values cannot be awaited yet. |
 | [ORE3082](ORE3082.md) | Static members cannot reference class type parameters. |
+| [ORE3083](ORE3083.md) | The key of a dictionary is a string, not '…'. |
+| [ORE3084](ORE3084.md) | Index signature in type '…' only permits reading. |
+| [ORE3085](ORE3085.md) | The operand of a 'delete' operator cannot be a read-only property. |
+| [ORE3086](ORE3086.md) | Only a dictionary of '…' or an object can be spread into '…', got '…'. |
+| [ORE3087](ORE3087.md) | A literal of '…' has only properties and spreads. |
+| [ORE3088](ORE3088.md) | Type '…' is indexed by the name of a member, a string literal or a 'keyof' type. |
+| [ORE3089](ORE3089.md) | Only a member named by a string literal can be assigned to: 'object["name"] = value'. |
+| [ORE3090](ORE3090.md) | An entry of a dictionary is assigned with '=' or '??=': it is '…' when read. |
+| [ORE3091](ORE3091.md) | 'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'. |
+| [ORE3092](ORE3092.md) | 'as const' takes array literals without spread elements. |
+| [ORE3093](ORE3093.md) | 'as const' takes object literals of 'name: value' properties. |
 
 ## ORE4xxx: Calls and built-in functions
 
 | Code | Message |
 |---|---|
 | [ORE4001](ORE4001.md) | Type arguments are only allowed for generic functions. |
-| [ORE4002](ORE4002.md) | '[Symbol.dispose]' takes no arguments. |
-| [ORE4003](ORE4003.md) | A constant is not disposable. |
+| [ORE4002](ORE4002.md) | '…' takes no arguments. |
+| [ORE4003](ORE4003.md) | A constant has no '…' method. |
 | [ORE4004](ORE4004.md) | Type '…' has no '[Symbol.dispose]' method. |
 | [ORE4005](ORE4005.md) | '…' has no member '…'. |
 | [ORE4006](ORE4006.md) | Spread arguments are not supported yet. |
@@ -249,7 +265,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE4021](ORE4021.md) | An array of '…' cannot be spread into '…' of '…'. |
 | [ORE4022](ORE4022.md) | '…' expects … argument(s), got …. |
 | [ORE4023](ORE4023.md) | '…' expects 1 to 3 argument(s), got …. |
-| [ORE4024](ORE4024.md) | The second argument of 'JSON.stringify' is a replacer, and only null is supported: write 'JSON.stringify(value, null, 2)' to indent. |
+| [ORE4024](ORE4024.md) | The second argument of 'JSON.stringify' is a replacer, null or an array of keys: write 'JSON.stringify(value, null, 2)' to indent. |
 | [ORE4025](ORE4025.md) | 'JSON.parse' needs the type to read, e.g. 'JSON.parse<Config>(text)'. |
 | [ORE4026](ORE4026.md) | '…' expects 1 argument(s), got …. |
 | [ORE4027](ORE4027.md) | '…' takes one type argument. |
@@ -307,9 +323,19 @@ The codes are grouped by the part of the language they concern:
 | [ORE4079](ORE4079.md) | Cannot infer the type of the array. Write 'new Array<T>(length)' or annotate the variable. |
 | [ORE4080](ORE4080.md) | 'new Array(length)' needs elements with a zero value, and '…' has none. Use 'Array.from({ length }, (_, i) => ...)'. |
 | [ORE4081](ORE4081.md) | 'Array.isArray' cannot test an 'unknown' yet. |
-| [ORE4082](ORE4082.md) | 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '…'. |
+| [ORE4082](ORE4082.md) | 'Array.from' takes an iterable (an array, a string, a set, a map, a generator...) or '{ length: n }', got '…'. |
 | [ORE4083](ORE4083.md) | 'Array.from' takes an object only as '{ length: n }'. |
 | [ORE4084](ORE4084.md) | 'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'. |
+| [ORE4085](ORE4085.md) | A dictionary has no methods: '…' is an entry, of type '…'. |
+| [ORE4086](ORE4086.md) | '…' takes a dictionary, an object or a class instance, got '…'. |
+| [ORE4087](ORE4087.md) | '…' cannot copy '…' into '…': give it …. |
+| [ORE4088](ORE4088.md) | '…' cannot copy the field '…' into '…': it has no writable field '…'. |
+| [ORE4089](ORE4089.md) | A dictionary is not iterable: use 'new Map(Object.entries(d))'. |
+| [ORE4090](ORE4090.md) | structuredClone cannot clone a function: '…' could not be cloned. |
+| [ORE4091](ORE4091.md) | structuredClone cannot clone '…': an instance of a class with methods would lose them, as JavaScript copies it into a plain object. |
+| [ORE4092](ORE4092.md) | structuredClone cannot clone '…': its values could not be cloned. |
+| [ORE4093](ORE4093.md) | Method '…' has different types in the members of '…': '…' and '…'. |
+| [ORE4094](ORE4094.md) | Spread arguments are not supported in a call of '…' on a union. |
 
 ## ORE5xxx: Classes and interfaces
 
@@ -327,7 +353,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5010](ORE5010.md) | Optional field '…' needs a type annotation. |
 | [ORE5011](ORE5011.md) | Field '…' needs a type annotation or an initializer. |
 | [ORE5012](ORE5012.md) | Methods cannot be 'readonly'. |
-| [ORE5013](ORE5013.md) | Generators are not supported in Ore. |
+| [ORE5013](ORE5013.md) | Async generators are not supported in Ore. |
 | [ORE5014](ORE5014.md) | Optional methods are not supported. |
 | [ORE5015](ORE5015.md) | Abstract methods can only appear within an abstract class. |
 | [ORE5016](ORE5016.md) | Method '…' cannot have an implementation because it is marked abstract. |
@@ -367,12 +393,17 @@ The codes are grouped by the part of the language they concern:
 | [ORE5050](ORE5050.md) | Duplicate type '…'. |
 | [ORE5051](ORE5051.md) | Member '…' conflicts with an inherited member of a different type. |
 | [ORE5052](ORE5052.md) | Interface '…' extends itself. |
-| [ORE5053](ORE5053.md) | An interface can only extend interfaces. |
+| [ORE5053](ORE5053.md) | An interface can only extend interfaces and classes. |
 | [ORE5054](ORE5054.md) | Call and construct signatures are not supported. |
 | [ORE5055](ORE5055.md) | Generic methods are not supported in interfaces: calls through an interface cannot pick an instance. |
 | [ORE5056](ORE5056.md) | This interface member is not supported. |
 | [ORE5057](ORE5057.md) | '…' is protected and only accessible inside class '…' and its subclasses. |
 | [ORE5058](ORE5058.md) | '…' is private and only accessible inside class '…'. |
+| [ORE5059](ORE5059.md) | A 'this' type is available only in a non-static member of a class or interface. |
+| [ORE5060](ORE5060.md) | A 'this' type in an interface is not supported yet. |
+| [ORE5061](ORE5061.md) | A method returning 'this' must return 'this' or what a method returning 'this' returns on it. |
+| [ORE5062](ORE5062.md) | Constructor of class '…' is … and only accessible within the class declaration. |
+| [ORE5063](ORE5063.md) | Cannot extend a class '…': its constructor is private. |
 
 ## ORE6xxx: Declarations, functions, generics, modules and C
 
@@ -451,6 +482,16 @@ The codes are grouped by the part of the language they concern:
 | [ORE6071](ORE6071.md) | A generic function value must be instantiated: give its type arguments or call it. |
 | [ORE6072](ORE6072.md) | '…' calls itself, so it needs a return type annotation. |
 | [ORE6073](ORE6073.md) | Module '…' has already exported a member named '…'. Consider explicitly re-exporting to resolve the ambiguity. |
+| [ORE6074](ORE6074.md) | Cannot find parameter '…'. |
+| [ORE6075](ORE6075.md) | A 'this' type predicate is allowed only in a method. |
+| [ORE6076](ORE6076.md) | A type predicate's type must be assignable to its parameter's type: '…' is not assignable to '…'. |
+| [ORE6077](ORE6077.md) | This result does not show that '…' is '…': return a check of '…' that narrows it, such as 'typeof x === "string"' or 'x instanceof C', or false. |
+| [ORE6078](ORE6078.md) | The function can return here without showing that '…' is '…': it must panic or exit where the assertion does not hold. |
+| [ORE6079](ORE6079.md) | A generator function needs a return type annotation, such as 'Generator<T>'. |
+| [ORE6080](ORE6080.md) | The return type of a generator function must be 'Generator<T, TReturn, TNext>', 'Iterator<T>' or 'IterableIterator<T>', not '…'. |
+| [ORE6081](ORE6081.md) | 'yield' is only allowed in generator functions. |
+| [ORE6082](ORE6082.md) | 'yield' without a value yields null, which type '…' does not include. |
+| [ORE6083](ORE6083.md) | 'yield*' takes a generator of the same value and next types: '…' and '…'. |
 
 ## ORE7xxx: Statements
 
@@ -500,3 +541,5 @@ The codes are grouped by the part of the language they concern:
 | [ORE7042](ORE7042.md) | A rest element must be last in a destructuring pattern. |
 | [ORE7043](ORE7043.md) | A rest element cannot have a default value. |
 | [ORE7044](ORE7044.md) | The rest of an object pattern must be a name, not a pattern. |
+| [ORE7045](ORE7045.md) | A dictionary is not iterable: loop over 'Object.keys(d)' or 'Object.entries(d)'. |
+| [ORE7046](ORE7046.md) | Type '…' is not iterable: it needs a '[Symbol.iterator]()' method. |

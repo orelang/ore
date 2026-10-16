@@ -1,0 +1,38 @@
+// Read-only arrays and tuples, and the utility types InstanceType,
+// ConstructorParameters, NoInfer and ReadonlyArray.
+class Point {
+    constructor(
+        readonly x: int,
+        readonly label: string,
+    ) {}
+}
+type P = InstanceType<typeof Point>
+type A = ConstructorParameters<typeof Point>
+const p: P = new Point(1, "a")
+const a: A = [2, "b"]
+console.log(p.x, p.label, a[0], a[1])
+
+function pick<T>(xs: T[], fallback: NoInfer<T>): T {
+    return xs.length > 0 ? xs[0] : fallback
+}
+console.log(pick(["a", "b"], "z"), pick<string>([], "z"))
+
+// A read-only array is read like any array; a mutable one converts to it.
+const ro: ReadonlyArray<int> = [1, 2, 3]
+const same: readonly int[] = ro
+console.log(same.length, same[1], ro.map((x) => x * 2).join(","), ro.includes(3))
+function sum(xs: readonly int[]): int {
+    let s = 0
+    for (const x of xs) s += x
+    return s
+}
+const mutable = [4, 5]
+console.log(sum([1, 2, 3]), sum(ro), sum(mutable))
+// Through the mutable reference, the array still changes.
+mutable.push(6)
+console.log(sum(mutable))
+
+const rt: readonly [int, string] = [1, "a"]
+const pair: [int, string] = [2, "b"]
+const view: readonly [int, string] = pair
+console.log(rt[0], rt[1], rt.length, view[1])

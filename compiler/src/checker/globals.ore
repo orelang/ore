@@ -1,0 +1,78 @@
+// `globalThis`: the global names as members of one value, `globalThis.Math`
+// or `globalThis.Date`, resolved at compile time. A module's own top-level
+// declarations are not on it, as in ES modules, and nothing can be added to
+// it. Each `globalThis.name` in a module, in an expression or as a qualified
+// type name, is replaced by one identifier `globalThis.name`, declared in the
+// root scope as the global `name`: a declaration of the module that shadows
+// `name` does not hide it, and no identifier the program writes can collide
+// with it.
+
+import { Node } from "../syntax/ast"
+import { isIdentifier } from "../syntax/nodes"
+import { type Source } from "../syntax/source"
+import { type Checker } from "./base"
+import { globalClasses } from "./builtins"
+import { errorOperand } from "./operand"
+import { ConstSymbol, type Scope } from "./symbols"
+
+/** The name of the global object. */
+export const globalObject = "globalThis"
+
+/** Replaces the accesses `globalThis.name` in the modules by the global names. */
+export function resolveGlobalThis(c: Checker, sources: Source[], root: Scope): void {
+    for (const source of sources) if (source.text.includes(globalObject)) rewrite(c, source.ast, source, root)
+}
+
+function rewrite(c: Checker, node: Node, source: Source, root: Scope): void {
+    for (let i = 0; i < node.children.length; i++) {
+        const child = node.children[i]
+        rewrite(c, child, source, root)
+        const replaced = globalMember(c, child, node.kind === "TypeReference", source, root)
+        if (replaced !== null) node.children[i] = replaced
+    }
+}
+
+/**
+ * The identifier that replaces `globalThis.name`, or null for any other
+ * node; `inType` when the node names a type.
+ */
+function globalMember(c: Checker, node: Node, inType: bool, source: Source, root: Scope): Node | null {
+    // A tree checked before, as the language server checks a module again.
+    if (isIdentifier(node) && node.text.startsWith(`${globalObject}.`)) {
+        declareGlobal(c, node, node.text.slice(globalObject.length + 1), inType, root)
+        return null
+    }
+    const qualified = node.kind === "QualifiedName"
+    if (!qualified && node.kind !== "PropertyAccessExpression") return null
+    const left = node.child(qualified ? "left" : "expression")
+    const right = node.child(qualified ? "right" : "name")
+    if (left === null || right === null || !isIdentifier(left) || !isIdentifier(right)) return null
+    if (left.text !== globalObject) return null
+    // `globalThis.globalThis` is `globalThis`.
+    if (right.text === globalObject) return left
+    const id = new Node("Identifier", node.start, node.end)
+    id.text = `${globalObject}.${right.text}`
+    c.sources.set(id, source)
+    declareGlobal(c, id, right.text, inType, root)
+    return id
+}
+
+/**
+ * Declares `globalThis.name` in the root scope as the global `name`; reports
+ * a value that is no global (a type is reported as a type that is not found).
+ */
+function declareGlobal(c: Checker, id: Node, name: string, inType: bool, root: Scope): void {
+    const value = root.ownValue(name)
+    const type = root.ownType(name)
+    // The functions of the runtime that are global names, `atob` and `btoa`, are declared later.
+    const later = value === null && type === null && globalClasses.includes(name)
+    if (value === null && type === null && !inType && !later)
+        c.error(id, `Property '${name}' does not exist on type 'typeof ${globalObject}'.`)
+    const qualified = id.text
+    if (root.ownValue(qualified) !== null || root.ownType(qualified) !== null) return
+    if (value !== null) root.declareValue(qualified, value)
+    if (type !== null) root.declareType(qualified, type)
+    // Checked as an error that is not reported again.
+    if (value === null && type === null && !inType && !later)
+        root.declareValue(qualified, new ConstSymbol(errorOperand, null, id))
+}

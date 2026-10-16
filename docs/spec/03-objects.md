@@ -43,10 +43,20 @@
   structural interface, as in TypeScript: classes with those members, and
   object literals with those fields and methods, fit it. An interface's
   method can be a field of a function type in the class or object.
+- An interface or object type can declare a field with accessor
+  signatures: `get x(): T` alone is `readonly x: T`, and with
+  `set x(value: T)` it is a writable `x: T`. Fields and accessors of classes
+  and objects implement them alike.
 - `...object` in an object literal copies the fields of an object: the
   public fields of a class instance (not its methods), the fields of an
   object type or an interface. A later property replaces an earlier one
   (`{ ...p, y: 0 }`); the values are evaluated once, in order.
+- `p["x"]` is `p.x`, on objects, interfaces and class instances, read and
+  assigned. `p[k]` with `k` of a `keyof` type (string literal types) reads
+  the field that `k` names, of the union of their types (`P[K]`); it is
+  not assigned to ([ORE3089](../errors/ORE3089.md)). Any other string does
+  not index an object ([ORE3088](../errors/ORE3088.md)): use a
+  [dictionary](#dictionaries).
 
 ## Classes
 
@@ -63,6 +73,10 @@
   may have type parameters of its own (`static of<T>(x: T): T[]`), inferred
   from each call's arguments or written (`List.of<string>("a")`).
   `private` static members are used only inside the class declaration.
+- A `static { ... }` block runs where the class is declared, in order with
+  the initializers of the static fields around it. Its variables are local
+  to it, and like a static method it has no `this`
+  ([ORE3002](../errors/ORE3002.md)): it names the class.
 - A generic class can have static fields and methods, generic methods too
   (`Box.of<U>(v)`), as in TypeScript: one field or function shared by every
   instance of the class, which cannot name the class's type parameters
@@ -75,7 +89,13 @@
   fields (see [Interfaces](#interfaces)).
 - `new C(...)` allocates an instance, assigns parameter properties, runs
   field initializers in order, then the constructor body. Field initializers
-  cannot use `this`.
+  cannot use `this` directly, but arrow functions in them capture the
+  instance, as in TypeScript: `onClick = () => this.count++` keeps `this`
+  when the function is detached from the object.
+- Outside classes, at the top level of a module and in its arrow functions,
+  `this` is `null` (JavaScript's `undefined`), of type `null`. In a function
+  declaration or expression outside a class it is an error
+  ([ORE3003](../errors/ORE3003.md)).
 - A field without an initializer starts at its zero value (`0`, `false`,
   `""`, `[]`, a new map, or `null` for a type that includes it). A field of a
   type without a zero value (class, object or interface) must be assigned at
@@ -91,15 +111,22 @@
   cannot be reserved words, nor the words strict mode reserves (`implements`,
   `interface`, `let`, `package`, `private`, `protected`, `public`, `static`,
   `yield`): Ore modules are always in strict mode.
-- Index signatures (`[key: string]: T`) are not supported in interfaces,
-  object types and classes; use a `Map<K, V>`.
+- An index signature (`[key: string]: T`) is a [dictionary](#dictionaries)
+  type alone, not a member of a class, an interface or an object type with
+  other members ([ORE2046](../errors/ORE2046.md)).
 - `private` members are accessible only inside the class that declares them,
   `protected` members inside that class and its subclasses. Neither counts
   for interfaces. `readonly` fields can be assigned only by the constructor
   of the class that declares them.
 - Methods are called on instances; `obj.method` without a call is a
   function value bound to `obj`.
-- `class C implements I` checks that `C` has the members of `I`.
+- `class C implements I` checks that `C` has the members of `I`; `I` may be
+  an instance of a generic interface, `class C implements It<int>`.
+- A `private` constructor is called with `new` only inside the class
+  declaration (a static factory, a method), and the class cannot be
+  extended ([ORE5063](../errors/ORE5063.md)). A `protected` constructor is
+  also called with `new` only inside the class declaration, and subclasses
+  call it through `super(...)` ([ORE5062](../errors/ORE5062.md)).
 
 ## Inheritance
 
@@ -141,6 +168,23 @@
   abstract methods without a body, `abstract area(): f64`, which a class
   that is not abstract must override (directly or through a base class).
   `super.m(...)` cannot call an abstract method.
+- The type `this`, in the field, parameter, result and local types of the
+  non-static members of a class, is the type of the receiver: inside the
+  class it is the class (for a method that overrides another, the class
+  that first declared the method, so that the types stay the same), and at
+  a call through a receiver of static type `S`, a subclass, a result or
+  parameter of the type `this` has the type `S`. Fluent methods keep the
+  subclass: with `add(s: string): this` in `Builder` and `class Html extends
+  Builder`, `new Html().add("a")` is an `Html`, without a conversion, the
+  value being the receiver. A method whose result is `this` must therefore
+  return the receiver: each `return` gives `this`, a call on it (or on
+  `super`) of a method whose result is `this`, or a conditional of these;
+  TypeScript also allows other values of the type `this`, such as a
+  parameter of that type, which Ore rejects. Fields read through a subclass
+  keep the class's type. `this` in a static member or outside a class is an
+  error, as in TypeScript; in an interface it is not supported yet, since
+  the methods of a class implementing it would not have the interface's
+  types.
 - `x instanceof B` checks the class of the instance at run time when `x` has
   type `A`, a union with a member related to `B`, or an interface type; it
   narrows `x` to `B`. On a union, `instanceof A` is also true for members
@@ -183,7 +227,15 @@ on that slot reads the class table.
   offset, as before.
 - Interfaces are structural: interfaces with the same members are the same
   type. An interface converts implicitly to an interface with a subset of its
-  members. `interface A extends B` includes the members of `B`.
+  members. `interface A extends B` includes the members of `B`; when `B` is
+  a class, its public instance fields and methods, as in TypeScript (its
+  private and protected members and its accessors are left out, so object
+  literals and unrelated classes conform too).
+- Two declarations of an interface in one scope merge, as in TypeScript:
+  the members and `extends` clauses of both make one interface. A member
+  declared in both must have the same type. Generic interfaces and other
+  kinds of declarations (an interface and a class, two classes) do not
+  merge ([ORE5050](../errors/ORE5050.md)).
 - An interface value refers to the original object: fields read and written
   through the interface are the object's fields, and `===` compares the
   objects.
@@ -205,6 +257,10 @@ on that slot reads the class table.
   type without an initializer starts as `null`. There is no `undefined`.
 - A string literal type such as `"circle"` has strings as values. A string
   literal expression takes the literal type its context asks for.
+  So do `true` and `false`. An object literal for a union of object types
+  is the member whose literal-typed fields match its string and boolean
+  constants: `{ done: false, value: 1 }` for
+  `{ done: false; value: T } | { done: true; value: R }`.
 - A value converts implicitly to a union containing its type. A class or
   object converts to a union member that is an interface it implements, if
   exactly one does.
@@ -213,6 +269,14 @@ on that slot reads the class table.
   (`stmt.line`); its type is the union of the members' field types. It can
   be assigned (`stmt.line = 3`, `stmt.count++`) when it is writable and has
   the same type in every member.
+- A method that every member of a union of classes (without `null`) has,
+  public and with the same parameter and result types, can be called
+  without narrowing (`(a: Cat | Dog) => a.speak()`): the receiver and the
+  arguments are evaluated once, then the method of the class the value
+  holds runs (an override in a subclass too), with that class's default
+  values. Methods of different types are an error
+  ([ORE4093](../errors/ORE4093.md)), and spread arguments are not
+  supported there ([ORE4094](../errors/ORE4094.md)).
 - Representation: a reference type with `null` is a nullable reference; a
   union of string literals is a string, and one of numeric literals an
   `f64` (see [numeric literal types](02-types.md#numeric-literal-types));
@@ -226,13 +290,16 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
 - `x !== null` and `x === null`;
 - `x === "lit"` and `x === 1` for a union of literal types, and
   `x.kind === "lit"` for a union of objects whose `kind` fields have
-  literal types (discriminated unions);
+  literal types (discriminated unions), with `x.ok === true`, or the
+  test `if (x.ok)` itself, when the field has a boolean literal type
+  (see [boolean literal types](02-types.md#boolean-literal-types));
 - `typeof x === "string" | "number" | "boolean" | "object"`;
 - `x instanceof C` for a class `C` (also on interface values, which then
   narrow to the class, and on instances of a base class of `C`) and
   `x instanceof I` for an interface member of a union;
 - the same checks of an `unknown`, which unbox it (see
   [unknown](02-types.md#unknown)).
+- a call of a function with a type predicate (see below).
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the
 operands of `&&`, `||` and `?:` (where `a || b` narrows a reference to the
@@ -240,7 +307,10 @@ union of what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`),
 and `switch` clauses on a literal (clauses reached by falling through code
 are not narrowed). An assignment narrows to the assigned value's type until
 the next assignment; a `?:` keeps the union of its branches' types
-(`u = t !== null ? t : "none"` makes `u` a string).
+(`u = t !== null ? t : "none"` makes `u` a string). A `while` loop
+without a `break` that leaves it ends with its condition false: after
+`while (!r.done) r = it.next()`, `r` is narrowed to the member whose
+`done` is `true`.
 
 Narrowing follows the flow of the code: after an `if`, a reference is
 narrowed to the union of its types at the ends of the branches that do not
@@ -267,6 +337,38 @@ when assigned.
 A `switch` over a union of string or numeric literals with a case for every
 literal is exhaustive: like a `default`, it lets a function end without
 `return`.
+
+### Type predicates
+
+A function, method or function literal can declare what its result tells
+about a parameter, as in TypeScript:
+
+- `function isText(x: unknown): x is string` returns a `boolean`; a call
+  `isText(v)` narrows `v` to `string` where it is true, and, for a union,
+  to the other members where it is false, in `if` / `else`, `&&`, `||`,
+  `!` and `?:`. A method `isDog(): this is Dog` narrows its receiver the
+  same way.
+- `arr.filter(f)` with such a callback, a function (`shapes.filter(isCircle)`)
+  or a literal (`xs.filter((x): x is string => x !== null)`), is an array
+  of the narrowed type.
+- `function assertText(x: unknown): asserts x is string` returns nothing,
+  and narrows `x` after a call statement `assertText(v)`; `asserts cond`
+  narrows what `cond` would narrow as a condition:
+  `check(x !== null)` makes `x` not null after it.
+- The type of `x is T` must be one that the parameter can have.
+
+Unlike TypeScript, Ore checks the body against the predicate, because a
+narrowed value is checked at run time and a wrong predicate would make the
+program panic later, where the caller reads the value. Each value that a
+function with `x is T` returns must be `false` or a check that narrows `x`
+to `T` when true, with the facts that hold at the `return`:
+`return typeof x === "string"`, `return s.kind === "circle"`,
+`return isOther(x) && x.length > 0`, or `return true` after
+`if (typeof x !== "string") return false`. `return true` alone, or a check
+of something else, is an error ([ORE6077](../errors/ORE6077.md)). An
+assertion function may return, with `return` or at its end, only where
+the checks before have narrowed `x` to `T` (or `cond` to `true`), so it
+must panic or exit on the other paths ([ORE6078](../errors/ORE6078.md)).
 
 ## Generics
 
@@ -315,7 +417,11 @@ names them is:
   the public fields and methods of a class or an object type, the members of
   an interface. `keyof { x: int; y: int }` is `"x" | "y"`.
 - `T["k"]` is the type of member `k` of T; `T["a" | "b"]` the union of the
-  types of both. `T[number]` is the element type of an array, or the union of
+  types of both. Of a union of object types, `U["k"]` is the union of the
+  members' types of `k`, which every member must have, and `keyof U` the
+  names that every member has; so `Omit<U, "k">`, as in TypeScript, is not
+  distributive: one object type of the common members but `k`, each of the
+  union of its types. `T[number]` is the element type of an array, or the union of
   the element types of a tuple; `T[0]` an element of a tuple.
 - `typeof x` is the type of a variable or a function, and `typeof x.y` that of
   a field of one. Types are resolved before the values of top-level variables
@@ -351,9 +457,13 @@ names them is:
   intersection has the types common to both, and is optional only when it
   is optional in both.
 - The utility types of TypeScript are global names: `Partial`, `Required`,
-  `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys; a Map for any
-  string), `Exclude`, `Extract`, `NonNullable`, `ReturnType` and
-  `Parameters`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
+  `Readonly`, `Pick`, `Omit`, `Record` (of string literal keys an object
+  type, of `string` a [dictionary](#dictionaries)), `Exclude`, `Extract`,
+  `NonNullable`, `ReturnType`, `Parameters`, `InstanceType` and
+  `ConstructorParameters` (of `typeof C`, a class's constructor type
+  `new (params) => C`, which exists only in computations on types),
+  `NoInfer` (a generic call does not infer its type arguments from that
+  position) and `ReadonlyArray`, and more: `PartialExcept`, `PartialOmit`, `PartialPick`,
   `PartialWithExclusion`, `DeepPartial`, `DeepRequired`, `DeepReadonly`,
   `DeepMutable`, `PickByValueType`, `OmitByValueType`, `KeysOfType`,
   `PartialByKeys`, `RequiredByKeys`, `ReadonlyByKeys`, `MutableByKeys`,
@@ -361,6 +471,68 @@ names them is:
   `NullableByKeys`, `NonNullableByKeys`, `OptionalNullable`, `RequiredKeys`,
   `OptionalKeys`, `Exact`, `Paths`, `Join`, `PathValue` and `Prev`
   (declared in runtime/core/types.ore).
+
+## Dictionaries
+
+- `{ [key: string]: V }` and `Record<string, V>` are the dictionary of
+  values `V`: a reference to a hash table of string keys that keeps
+  insertion order (the one of `Map`), used with the syntax of objects. It is
+  a type of its own: a `Map<string, V>` does not convert to it, nor it to a
+  map. `{ readonly [key: string]: V }` (as `Readonly<...>` and
+  `Object.freeze` give) is read-only; a dictionary converts to the
+  read-only one of the same values.
+- An object literal for a dictionary type creates one: `{ a: 1, "b c": 2,
+  [key]: 3, ...other }`, with the entries in order; a spread copies the
+  entries of a dictionary of the same values or the fields of an object
+  (each converted to `V`). A dictionary field without an initializer starts
+  empty.
+- `d.name` and `d[key]` (any string) read an entry: `V | null`, null when
+  it is missing, as TypeScript's `noUncheckedIndexedAccess` makes it
+  `V | undefined`. `d.name = v` and `d[key] = v` add or replace an entry;
+  `d[key] ??= v` sets a missing one and gives the entry's value. `+=`,
+  `++` and the other compound assignments are errors on entries
+  ([ORE3090](../errors/ORE3090.md)): write `d.n = (d.n ?? 0) + 1`.
+- `delete d[key]` and `delete d.name` remove an entry and are `true`, as in
+  JavaScript; `key in d` tests one. `delete` and `in` apply to dictionaries
+  only ([ORE3007](../errors/ORE3007.md), [ORE3019](../errors/ORE3019.md)).
+- A dictionary has no methods (`d.get` is the entry `get`) and is not
+  iterable, as an object is not: `Object.keys(d)`, `Object.values(d)` and
+  `Object.entries(d)` list it, in insertion order. `keyof` of a dictionary
+  is `string`, and indexing its type by any string gives `V`.
+- `console.log` prints a dictionary as Node prints an object (`{ a: 1,
+  'b c': 2 }`), and `JSON.stringify` and `JSON.parse` convert it to and
+  from a JSON object.
+- Keys are strings only: `{ [i: number]: V }` is an error
+  ([ORE2069](../errors/ORE2069.md)); use a `Map` for other keys.
+
+## The namespace Object
+
+The functions of `Object` take dictionaries, objects and class instances.
+The keys of an object are the names of its fields: of a class instance in
+declaration order (base class first), of an object type in name order, the
+order in which Ore keeps the fields of object types; an optional field that
+is null is left out, as an absent property. Methods are not keys; accessors
+of object literals are not either.
+
+- `Object.keys(o)`, `Object.values(o)` and `Object.entries(o)`: `string[]`,
+  `V[]` and `[string, V][]`, where `V` is the type of a dictionary's values
+  or the union of the types of an object's fields.
+- `Object.hasOwn(o, key)`: whether a dictionary has the entry, or an object
+  a field of that name (holding a value when it is optional).
+- `Object.fromEntries(pairs)`: a dictionary of an array of `[string, V]`
+  pairs, a later key replacing an earlier one.
+- `Object.groupBy(items, (element, index) => key)`: a dictionary of arrays,
+  by the string key the function gives, the keys in the order they first
+  appear.
+- `Object.assign(target, ...sources)`: copies the entries of dictionaries of
+  the same values and the fields of objects into a dictionary, or the fields
+  of objects into an object that has them writable; the value is `target`.
+- `Object.freeze(d)` freezes a dictionary: setting or deleting an entry
+  then panics with JavaScript's message (`Cannot add property c, object is
+  not extensible`), and the result is read-only. `Object.isFrozen(d)` tells
+  whether it is. Of an object, `freeze` returns it as it is, and
+  `isFrozen` is whether all its fields are `readonly`; a primitive is
+  always frozen, an array, a map or a set never.
 
 ## Maps
 
@@ -372,13 +544,14 @@ names them is:
   `[key, value]` pairs, set in order (a repeated key keeps its first place
   and its last value). Without type arguments or a context, the key and
   value types are those of the first pair. Any other array of `[K, V]`
-  [tuples](02-types.md#tuples) works the same, and `new Map(other)` copies
-  another map.
+  [tuples](02-types.md#tuples) works the same, and so does any other
+  iterable of them, such as a generator; `new Map(other)` copies another
+  map.
 - `get(key)` returns `V | null`; `set(key, value)` returns the map;
   `has`, `delete` (returns whether the key was present), `clear`, `size`.
-  `keys()`, `values()` and `entries()` (`[key, value]` tuples) return arrays
-  in insertion order (JavaScript returns iterators; Ore will too once it has
-  them).
+  `keys()`, `values()` and `entries()` (`[key, value]` tuples) return lazy
+  iterators in insertion order, as in JavaScript (see
+  [Generators and iteration](04-functions.md#generators-and-iteration)).
 - `forEach((value, key, map) => ...)` calls the function for each entry in
   insertion order; entries set during the loop are visited, deleted ones
   are not, and `clear` ends it. The function may take fewer parameters.
@@ -401,12 +574,11 @@ names them is:
   with the hashing and equality of `Map` keys (unions included).
   `new Set<T>()` creates one; the type may come from the context; a
   variable or field without an initializer starts as a new empty set.
-- `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`) or
-  of another set; without a type argument, `T` is their element type.
+- `new Set(values)` adds the elements of an array (`new Set([1, 2, 2])`),
+  of another set or of any other iterable; without a type argument, `T` is their element type.
 - `add(value)` returns the set; `has`, `delete` (returns whether the value
-  was present), `clear`, `size`; `values()` and `keys()` return an array in
-  insertion order, `entries()` an array of `[value, value]` tuples (arrays
-  for now, as for maps). `forEach((value, value2, set) => ...)` passes each
+  was present), `clear`, `size`; `values()` and `keys()` return a lazy iterator in
+  insertion order, `entries()` one of `[value, value]` tuples, as for maps. `forEach((value, value2, set) => ...)` passes each
   value twice, as JavaScript does, and visits values added during the loop.
 - The set methods of ES2024 take another `Set<T>` and return a new set or a
   `bool`: `union` (the elements of this set, then the new ones of the

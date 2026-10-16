@@ -10,6 +10,7 @@ import { type Program } from "../project/load"
 import { Checker } from "./base"
 import {
     builtinScope,
+    errorModule,
     globalClasses,
     globalClassModules,
     globalTypeModule,
@@ -24,11 +25,12 @@ import {
     declareClass,
     declareClassMembers,
     declareInterface,
+    extendsClass,
     fillInterface,
     finishClasses,
     resolveBase,
 } from "./classes"
-import { CheckResult, ExportEntry, FuncContext, ModuleInfo } from "./context"
+import { CheckResult, ExportEntry, FuncContext, type InterfaceInfo, ModuleInfo } from "./context"
 import {
     checkDirectives,
     checkStrictNames,
@@ -47,6 +49,7 @@ import {
     typeJsonImports,
     unsupportedTopLevel,
 } from "./declarations"
+import { globalObject, resolveGlobalThis } from "./globals"
 import { isDeclaration } from "./helpers"
 import { checkStatements } from "./statements"
 import { addTemplateSites } from "./templates"
@@ -137,6 +140,14 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
                 builtins.scope.declareType(generic.name, new TypeSymbol(types.never, stmt, generic))
             }
         }
+        // The class of `new Error(...)`, which classes extend with `extends Error`.
+        if (m.source.path === errorModule) {
+            const errorClass = m.scope.ownType("Error")
+            if (errorClass !== null) {
+                const t = errorClass.type
+                if (t.kind === "struct") c.basicError = t
+            }
+        }
         for (let i = 0; i < globalClasses.length; i++) {
             if (m.source.path !== globalClassModules[i]) continue
             const name = globalClasses[i]
@@ -146,6 +157,10 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
             if (value !== null) builtins.scope.declareValue(name, value)
         }
     }
+    // `globalThis.name`, now that every global name is declared.
+    const sources: Source[] = []
+    for (const m of modules) sources.push(m.source)
+    resolveGlobalThis(c, sources, builtins.scope)
 
     // Pass 2: type aliases, then signatures of functions and class members,
     // so that they can be used before their declaration and recursively.
@@ -156,17 +171,32 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
         declareTypeAliases(c, aliases, module.scope)
     }
     c.prefix = ""
-    for (const [_, info] of c.interfaces) fillInterface(c, info, info.scope)
+    // Interfaces that extend a class wait for the members of classes.
+    const late: InterfaceInfo[] = []
+    for (const [_, info] of c.interfaces)
+        if (extendsClass(c, info)) late.push(info)
+        else fillInterface(c, info, info.scope)
     for (const info of c.classes) resolveBase(c, info)
     each((stmt, m) => {
         if (stmt.kind !== "FunctionDeclaration") return
         const func = declareFunction(c, stmt, m.scope)
         if (func !== null) bodies.push(new Body(stmt, func, m.scope))
     })
+    // The functions of the runtime that are global names, `atob` and `btoa`, now declared.
+    for (const m of modules) {
+        for (let i = 0; i < globalClasses.length; i++) {
+            if (m.source.path !== globalClassModules[i] || m.scope.ownType(globalClasses[i]) !== null) continue
+            const value = m.scope.ownValue(globalClasses[i])
+            if (value === null) continue
+            builtins.scope.declareValue(globalClasses[i], value)
+            builtins.scope.declareValue(`${globalObject}.${globalClasses[i]}`, value)
+        }
+    }
     // Overload signatures without an implementation after them.
     for (const [_, decls] of c.overloadDecls)
         for (const d of decls) c.error(nameNode(d), "This overload signature has no implementation after it.")
     for (const info of c.classes) declareClassMembers(c, info, info.scope)
+    for (const info of late) fillInterface(c, info, info.scope)
     checkExports(c, modules)
     typeJsonImports(c)
 
@@ -214,10 +244,13 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
     return new CheckResult(hasErrors ? null : c.module, c.diagnostics, c.info)
 }
 
-/** Whether a class declaration has static fields, which its top-level code initializes. */
+/** Whether a class declaration has static fields or blocks, which its top-level code initializes and runs. */
 function hasStaticFields(stmt: Node): bool {
     if (stmt.kind !== "ClassDeclaration") return false
-    for (const m of members(stmt)) if (m.kind === "PropertyDeclaration" && hasModifier(m, "StaticKeyword")) return true
+    for (const m of members(stmt)) {
+        if (m.kind === "PropertyDeclaration" && hasModifier(m, "StaticKeyword")) return true
+        if (m.kind === "ClassStaticBlockDeclaration") return true
+    }
     return false
 }
 
@@ -239,7 +272,9 @@ function checkTopLevel(c: Checker, module: ModuleInfo, isCode: (stmt: Node) => b
     c.prefix = module.prefix
     c.globals = module.scope
     c.facts = [new Map<string, Type>()]
-    c.fn = new FuncContext(types.void, [], 0, null, null, null, null, false, false, true)
+    const fn = new FuncContext(types.void, [], 0, null, null, null, null, false, false, true)
+    fn.nullThis = true
+    c.fn = fn
     c.pushFacts([])
     checkStatements(c, c.statementsOf(module.source).filter(isCode), module.scope, func.body.body)
     c.popFacts()

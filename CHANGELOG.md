@@ -11,6 +11,170 @@ before 1.0, a minor version may change the language.
   on a group around a lookaround (`(?:(?<=a))*`) is no longer rejected. Both
   found by tests/fuzz/regexp, which now matches tens of thousands of random
   patterns as Node does.
+- `Array.prototype.sort` is faster: still a stable merge sort, now with
+  insertion-sorted runs of 16, merges that skip runs already in order and a
+  buffer for half the elements instead of all of them, and inlined where it
+  is called, so that the element size is a constant, elements move by
+  loads and stores instead of `memmove`, and the comparison (the default
+  order or the comparator's closure) is inlined too. `bench/sort` takes 40%
+  less CPU time.
+- bigint arithmetic is faster: addition and subtraction work two limbs at a
+  time, multiplication runs its long operand in the inner loop, has a path
+  for a one-limb operand and uses Karatsuba's algorithm when both operands
+  have 40 limbs or more, and `toString()` in decimal divides by a constant.
+  `bench/bigint` takes 40% less CPU time; its wall time is mostly
+  allocation of the immutable results.
+- Dictionaries: `{ [key: string]: V }` and `Record<string, V>` are a type
+  of their own, a hash table of string keys in insertion order used with
+  the syntax of objects. Object literals create them (computed keys and
+  spreads included); `d.a` and `d[k]` read an entry as `V | null`;
+  `d[k] = v`, `d[k] ??= v`, `delete d[k]` and `k in d` work on them, as
+  `delete` and `in` do on nothing else. `console.log` prints them as Node
+  prints objects, `console.table` lists them, and JSON converts them to and
+  from objects. `Object.freeze` makes one read-only, and writing it then
+  panics with JavaScript's TypeError message. An index signature next to
+  other members, or with keys other than strings, is still an error.
+- The namespace `Object`: `keys`, `values`, `entries`, `hasOwn`, `assign`,
+  `fromEntries`, `groupBy`, `freeze` and `isFrozen`, on dictionaries, objects
+  and class instances (whose keys are their fields).
+- `p["x"]` reads and assigns the member `x` of an object, an interface or a
+  class instance, and `p[k]` with `k: keyof P` reads the field `k` names, of
+  type `P[K]`.
+- Type aliases inside functions and blocks, generic ones too, scoped to
+  their block (they used to be ORE7016).
+- Indexed access and `keyof` on a union of object types, as in
+  TypeScript: `U["x"]` is the union of the members' field types, and
+  `keyof U` their common names, so `Omit<U, "z">` gives one object type of
+  the common fields but `z` (TypeScript's `Omit` is not distributive).
+- Type predicates, as in TypeScript: `x is T` and `this is T` narrow the
+  argument or receiver of a call in conditions, `filter` with such a
+  callback gives an array of `T`, and `asserts x is T` and `asserts x`
+  narrow after the call. Unlike TypeScript, the body is checked: each
+  result must be `false` or a check that narrows the parameter to `T`,
+  and an assertion function must panic or exit where the assertion does
+  not hold. `x is T` used to be a parse error.
+- Boolean literal types: `true` and `false` are types, and `boolean` is
+  their union. A field of such a type discriminates a union of objects, as
+  in the Result pattern `{ ok: true; value: T } | { ok: false; error: E }`:
+  `if (r.ok)`, `if (!r.ok)`, `r.ok === false` and `switch (r.ok)` narrow
+  `r`. An object literal for such a union picks its member by its `true`
+  or `false` constant, and a `while` loop without a `break` narrows by its
+  condition after it: after `while (!r.done) r = it.next()`, `r` is done.
+- A class can implement an instance of a generic interface
+  (`implements It<int>`).
+- Generators and the iteration protocol, as in TypeScript: generator
+  functions, methods and function expressions (`function*`, `*m()`,
+  `*[Symbol.iterator]()`) return a `Generator<T, TReturn = void, TNext =
+  null>` with `next()`, `next(value)` and `return(value)`; `yield`,
+  `yield value` and `yield* iterable` (of a generator, its return value).
+  A generator runs its body on a fiber of its own, the async functions'
+  fibers. `Symbol.iterator` names methods as `Symbol.dispose` does, and the
+  global `Iterator`, `Iterable` and `IterableIterator` interfaces and the
+  `IteratorResult` type describe the protocol. `for...of`, spread,
+  `Array.from`, `new Map` and `new Set` take any iterable; `for...of`
+  calls `return()` when it leaves a loop early, which ends a generator's
+  fiber. `keys()`, `values()` and `entries()` of arrays, maps and sets
+  return lazy iterators, as in JavaScript, instead of arrays: code that
+  indexed their result or read its `length` now spreads it,
+  `[...map.keys()]`, or passes it to `Array.from`. Async generators are
+  not supported ([ORE5013](docs/errors/ORE5013.md)), and there is no
+  `throw()` (Ore has no exceptions).
+- `JSON.stringify(value, replacer, space)` takes a replacer array, the
+  keys of objects to keep, in its order, at every level (maps too), and a
+  string `space`, its first 10 characters indenting each level; a number
+  `space` is at most 10, as in JavaScript.
+- `TextEncoder` and `TextDecoder` (UTF-8: `encode`, `encodeInto`, `decode`
+  with `fatal` and `ignoreBOM`) and `atob` and `btoa` (base64 of binary
+  strings), global names as in JavaScript, with `u8[]` for `Uint8Array`.
+- A `RegExpMatch` is indexed, destructured and iterated as JavaScript's
+  match arrays: `m[1]`, `const [, key, value] = s.match(re)!`,
+  `for (const c of m)`, over its captures (`string | null`). Assigning to
+  `m[i]` is an error (ORE3084).
+- `globalThis`: the global names as members of one value, as in
+  JavaScript (`globalThis.Math.max(1, 2)`, `new globalThis.Date(0)`,
+  `globalThis.Promise<int>` as a type), resolved at compile time. A
+  module's own top-level declarations are not on it, as in ES modules;
+  nothing can be added to it, and it is no value itself (`const g =
+  globalThis` is an error, ORE3091).
+- `Promise.withResolvers<T>()`: `{ promise, resolve }`, a pending promise
+  and the function that resolves it (no `reject`: promises do not reject).
+- `fs.appendFile(path, data)`, Node's `appendFileSync`: appends to a file,
+  created if missing. `process.platform` (`"darwin"`, `"linux"`) and
+  `process.arch` (`"arm64"`, `"x64"`), Node's names for the target.
+- Breaking: `task.sleep(ns)` and `task.after(ns, handler)` count
+  nanoseconds, as everything in `time`: `task.sleep(10 * time.millisecond)`
+  (they counted milliseconds). The timers still wait whole milliseconds,
+  rounding up.
+- `structuredClone(value)`, JavaScript's deep copy, as a global function:
+  numbers, strings, bigints, arrays, tuples, `Map`s, `Set`s, `Date`s,
+  object types, classes with only fields and unions, keeping shared
+  references and cycles, by code generated for each type. Types holding
+  functions (ORE4090), classes with methods (ORE4091), interfaces,
+  `unknown` and channels (ORE4092) are compile-time errors.
+- `URL` and `URLSearchParams` are global classes, JavaScript's, written in
+  Ore (runtime/core/url.ore) after the WHATWG URL Standard's parser:
+  special schemes with their default ports dropped and `\` read as `/`,
+  dot segments resolved, the percent-encode sets of each component, IPv4
+  hosts in all their forms and IPv6 hosts compressed, `file` URLs with
+  drive letters, opaque hosts and paths of other schemes, and relative
+  references resolved against a base (`new URL("../x", base)`). Every
+  property but `origin` and `searchParams` has its setter; `searchParams`
+  is linked both ways to the query; `URL.canParse` and `URL.parse`;
+  `new URL` panics with `TypeError: Invalid URL` where JavaScript throws.
+  `console.log` and `JSON.stringify` write them as Node does. Domains
+  outside ASCII are not converted to Punycode.
+- `as const`: literals keep their literal types, array literals are
+  read-only tuples and object literals have read-only fields, so
+  `(typeof Dirs)[number]` of `const Dirs = ["n", "s"] as const` is the
+  union `"n" | "s"`.
+- Interfaces and object types can declare fields with accessor
+  signatures, `get x(): T` (read-only) and `set x(value: T)`.
+- `readonly T[]` and `ReadonlyArray<T>` are enforced: the methods that
+  change an array and index assignment are errors through them, and a
+  read-only array does not convert to a mutable one. `readonly [A, B]` is a
+  tuple of read-only elements. New utility types: `InstanceType` and
+  `ConstructorParameters` of `typeof C` (a class's constructor type,
+  `new (params) => C`), and `NoInfer`.
+- Tuple types take the other forms of TypeScript: named elements
+  `[x: f64, y: f64]` (documentation only), optional elements `[int,
+  string?]` of type `T | null` that literals can leave out, rest elements
+  that spread tuple types `[...A, ...B]`, and `infer` with rest elements in
+  conditional types (`T extends [infer H, ...infer R] ? ...`). A rest
+  element of array type in the type of a value is reported (ORE2072), as
+  tuples have a fixed length.
+- The type `this` in the non-static members of a class: a method
+  `add(s: string): this` called on a subclass returns the subclass, so
+  fluent APIs keep it, and parameters and fields can be of the type `this`
+  (`equals(other: this): bool`, `next: this | null`). A method returning
+  `this` must return the receiver (ORE5061); `this` in a static member or
+  outside a class is an error as in TypeScript (ORE5059), and in an
+  interface not supported yet (ORE5060).
+- A template literal calls `toString()`: `` `${obj}` `` of a class or an
+  interface with a `toString(): string` method gives what it returns, and
+  of an error `"Name: message"`, instead of reporting ORE3060.
+- `Error` is a class to extend, as in JavaScript: `class NotFound extends
+  Error` calls `super(message)` and sets `this.name`; `new Error(message,
+  { cause })` keeps the cause; errors have `name`, `message`, `cause` and
+  `toString()`, `instanceof Error` is true for the subclasses, and
+  `console.log` prints `Name: message`. The type `Error` stays the
+  interface that any class with a `message` implements.
+- Arrow functions in field initializers capture the instance, as in
+  TypeScript: `h = (): int => this.x` works instead of reporting that
+  `this` is only allowed inside a class. At the top level of a module and in
+  its arrow functions, `this` is `null`.
+- `static { ... }` blocks in classes, run where the class is declared, in
+  order with the static field initializers.
+- Methods can be called on a union of classes when every class has the
+  method with the same type: `(a: Cat | Dog) => a.speak()` runs the method
+  of the class the value holds, instead of reporting ORE4071.
+- `private constructor` and `protected constructor` are enforced, as in
+  TypeScript: `new C()` outside the class declaration is ORE5062, and
+  extending a class with a private constructor is ORE5063; subclasses call
+  a protected one through `super(...)`.
+- Interfaces merge and extend classes, as in TypeScript: a second
+  `interface X` adds its members to the first instead of reporting
+  ORE5050, and `interface I extends SomeClass` takes the class's public
+  fields and methods instead of reporting ORE5053.
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

@@ -1,0 +1,90 @@
+// Type predicates narrow at call sites; assertion functions narrow after the call.
+type Circle = { kind: "circle"; r: f64 }
+type Square = { kind: "square"; side: f64 }
+type Shape = Circle | Square
+
+function isString(x: unknown): x is string {
+    return typeof x === "string"
+}
+
+function isCircle(s: Shape): s is Circle {
+    return s.kind === "circle"
+}
+
+function isNonEmpty(x: string | null): x is string {
+    if (x === null) return false
+    return x.length > 0 && x !== null
+}
+
+function assertString(x: unknown): asserts x is string {
+    if (typeof x !== "string") process.panic("not a string")
+}
+
+function assert(cond: bool, message: string): asserts cond {
+    if (!cond) process.panic(message)
+}
+
+class Animal {
+    constructor(readonly name: string) {}
+    isDog(): this is Dog {
+        return this instanceof Dog
+    }
+}
+
+class Dog extends Animal {
+    bark(): string {
+        return `${this.name}: woof`
+    }
+}
+
+function area(s: Shape): f64 {
+    if (isCircle(s)) return 3.0 * s.r * s.r
+    return s.side * s.side
+}
+
+function describe(x: unknown): string {
+    if (!isString(x)) return "not a string"
+    return `string of ${x.length}`
+}
+
+function both(a: Shape, b: Shape): f64 {
+    if (isCircle(a) && isCircle(b)) return a.r + b.r
+    return 0.0
+}
+
+function either(s: Shape): string {
+    if (!isCircle(s) || s.r > 1.0) return "square or big"
+    return `small circle ${s.r}`
+}
+
+const shapes: Shape[] = [
+    { kind: "circle", r: 1 },
+    { kind: "square", side: 2 },
+    { kind: "circle", r: 3 },
+]
+console.log(shapes.map(area))
+console.log(describe("hello"), describe(5))
+console.log(both(shapes[0], shapes[2]), both(shapes[0], shapes[1]))
+console.log(either(shapes[0]), either(shapes[1]))
+
+const circles: Circle[] = shapes.filter(isCircle)
+console.log(circles.map((c) => c.r))
+const big = shapes.filter((s): s is Circle => s.kind === "circle" && s.r > 2)
+console.log(big.length, big[0].r)
+const names: (string | null)[] = ["a", null, "", "bc"]
+const present: string[] = names.filter(isNonEmpty)
+console.log(present)
+
+const v: unknown = "asserted"
+assertString(v)
+console.log(v.toUpperCase())
+
+const maybe: string | null = present.length > 0 ? present[0] : null
+assert(maybe !== null, "missing")
+console.log(maybe.length)
+
+const pets: Animal[] = [new Animal("cat"), new Dog("rex")]
+for (const p of pets) {
+    if (p.isDog()) console.log(p.bark())
+    else console.log(p.name)
+}

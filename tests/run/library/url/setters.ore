@@ -1,0 +1,97 @@
+// The setters of URL, which parse their component as the standard's state
+// override does and leave the URL as it is when the value is invalid.
+const u = new URL("https://user:pw@example.com:8080/a/b?x=1#frag")
+function show(): void {
+    console.log(u.href)
+}
+
+u.hash = "new hash"
+show()
+u.hash = "#"
+show()
+u.hash = ""
+show()
+u.search = "?a=b c&d='e'"
+show()
+console.log(u.searchParams.get("a"), u.searchParams.get("d"))
+u.search = "plain"
+show()
+u.search = ""
+show()
+console.log(u.searchParams.size)
+u.pathname = "/x/./y/../z w"
+show()
+u.pathname = "no-slash"
+show()
+u.pathname = "\\back\\slash"
+show()
+u.port = "443"
+show()
+u.port = "9090abc"
+show()
+u.port = "abc"
+show()
+u.port = "70000"
+show()
+u.port = ""
+show()
+u.hostname = "Other.ORG"
+show()
+u.hostname = "bad host"
+show()
+u.hostname = "x:1"
+show()
+u.host = "h.com:81"
+show()
+u.host = "[::1]:82"
+show()
+u.host = "only.host"
+show()
+u.host = ""
+show()
+u.username = "a b@c"
+show()
+u.password = "p:q/r"
+show()
+u.password = ""
+u.username = ""
+show()
+u.protocol = "http"
+show()
+u.protocol = "WSS:"
+show()
+u.protocol = "foo"
+show()
+u.protocol = "1bad"
+show()
+u.href = "http://new.example/path?q=1"
+show()
+console.log(u.searchParams.get("q"), u.origin)
+
+// Between non-special schemes, and an opaque path.
+const v = new URL("foo://h/p")
+v.protocol = "bar"
+v.protocol = "https"
+v.port = "12"
+v.host = "x"
+console.log(v.href)
+const m = new URL("mailto:a@b")
+m.pathname = "c@d"
+m.host = "h"
+m.hash = "x"
+console.log(m.href, m.pathname)
+const d = new URL("data:a b #x")
+console.log(d.href, d.pathname)
+d.hash = ""
+console.log(d.href, d.pathname)
+
+// file URLs have no port or credentials.
+const f = new URL("file:///tmp/x")
+f.port = "8"
+f.username = "u"
+f.host = "server"
+console.log(f.href)
+f.protocol = "http"
+console.log(f.href)
+f.host = "localhost"
+console.log(f.href)

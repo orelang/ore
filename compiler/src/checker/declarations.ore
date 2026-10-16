@@ -52,6 +52,8 @@ import {
     initializer,
     isAssignmentOperator,
     isIdentifier,
+    isOptionalTupleElement,
+    isRestTupleElement,
     isStringLiteralNode,
     typeName,
     members,
@@ -69,6 +71,7 @@ import {
     thenStatement,
     elseStatement,
     typeArguments,
+    tupleElementType,
     typeNode,
     typeParameters,
     types as typeNodes,
@@ -79,6 +82,7 @@ import { type Source } from "../syntax/source"
 import { leadingCommentRanges } from "../syntax/nodes"
 import { checkAssigned } from "./assigned"
 import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseValue } from "./async"
+import { checkGeneratorBody, isGenerator } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import {
     conformance,
@@ -119,6 +123,7 @@ import {
     typed,
 } from "./helpers"
 import { type Operand, Typed } from "./operand"
+import { assertionReturn, declarePredicate, enterPredicate } from "./predicates"
 import { capture, checkBlock, checkClosure, checkTupleOf, bindPattern } from "./statements"
 import {
     type Exported,
@@ -1014,7 +1019,7 @@ export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | nu
         return null
     }
     const asterisk = asteriskToken(decl)
-    if (asterisk !== null) c.error(asterisk, "Generators are not supported in Ore.")
+    if (asterisk !== null && isAsync(decl)) c.error(asterisk, "Async generators are not supported in Ore.")
     for (const mod of modifiers(decl)) {
         if (mod.kind === "AsyncKeyword") continue
         else if (mod.kind === "DefaultKeyword") c.error(mod, "Default exports are not supported in Ore.")
@@ -1177,6 +1182,8 @@ export function resultType(c: Checker, decl: Node, scope: Scope): Type {
         return t
     }
     if (isAsync(decl)) return promiseOf(c, types.void, decl) ?? types.void
+    if (isGenerator(decl))
+        c.error(nameNode(decl), "A generator function needs a return type annotation, such as 'Generator<T>'.")
     return types.void
 }
 
@@ -1205,6 +1212,7 @@ export function makeFunc(
     )
     c.module.functions.push(func)
     c.funcDecls.set(func, decl)
+    declarePredicate(c, decl, func, scope, false)
     return func
 }
 
@@ -1688,10 +1696,25 @@ export function inferFrom(
         if (type.kind === "array") inferFrom(c, elementType(n), type.elem, names, bindings, scope)
         return
     }
+    // `readonly T[]`: as `T[]`.
+    if (n.kind === "TypeOperator" && c.text(n).startsWith("readonly")) {
+        inferFrom(c, typeNode(n)!, type, names, bindings, scope)
+        return
+    }
     if (n.kind === "TupleType") {
+        // Names of elements are documentation only; rest elements infer nothing.
         const elems = n.list("elements")
-        if (type.kind === "struct" && type.tuple && type.fields.length === elems.length)
-            for (let i = 0; i < elems.length; i++) inferFrom(c, elems[i], type.fields[i].type, names, bindings, scope)
+        if (
+            type.kind === "struct" &&
+            type.tuple &&
+            type.fields.length === elems.length &&
+            !elems.some(isRestTupleElement)
+        )
+            for (let i = 0; i < elems.length; i++) {
+                const f = type.fields[i]
+                const ft = isOptionalTupleElement(elems[i]) && f.optional ? c.withoutNull(f.type) : f.type
+                inferFrom(c, tupleElementType(elems[i]), ft, names, bindings, scope)
+            }
         return
     }
     if (n.kind === "UnionType") {
@@ -1705,7 +1728,9 @@ export function inferFrom(
             if (!bindings.has(name)) bindings.set(name, type)
             return
         }
-        if (name === "Array" && typeArgs.length === 1) {
+        // `NoInfer<T>`: the type arguments come from the other arguments.
+        if (name === "NoInfer" && typeArgs.length === 1) return
+        if ((name === "Array" || name === "ReadonlyArray") && typeArgs.length === 1) {
             if (type.kind === "array") inferFrom(c, typeArgs[0], type.elem, names, bindings, scope)
             return
         }
@@ -1766,6 +1791,21 @@ export function inferFrom(
                 const t = i < inner.length ? found.get(inner[i]) : null
                 if (t !== null) inferFrom(c, typeArgs[i], t, names, bindings, scope)
             }
+        }
+        return
+    }
+    // `{ [key: string]: V }` and `{ [K in string]: V }` (`Record<string, V>`): V from the values of a
+    // dictionary, or from the fields of an object literal, which converts to one.
+    const list: Node[] = n.kind === "TypeLiteral" ? members(n) : []
+    let valueNode: Node | null = null
+    if (list.length === 1 && list[0].kind === "IndexSignature") valueNode = typeNode(list[0])
+    if (n.kind === "MappedType") valueNode = typeNode(n)
+    if (valueNode !== null) {
+        if (type.kind === "map" && type.dict) inferFrom(c, valueNode, type.value, names, bindings, scope)
+        else if (type.kind === "struct" && !type.tuple && type.name === null && type.fields.length > 0) {
+            const values: Type[] = []
+            for (const f of type.fields) values.push(f.type)
+            inferFrom(c, valueNode, c.unionOf(values), names, bindings, scope)
         }
         return
     }
@@ -2145,12 +2185,17 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     const scope = paramScope(c, parameters(decl), func.params, outer, prologue)
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(func.type.result, [], 0)
+    enterPredicate(c, func, scope)
     const value = isAsync(decl) ? promiseValue(c, func.type.result) : null
     if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    else if (isGenerator(decl))
+        func.body = new Block(checkGeneratorBody(c, decl, scope, func.type.result, func.sourceName))
     else func.body = checkBlock(c, body(decl)!, scope)
+    if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
-    checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
+    // A generator's body is a closure, checked on its own; the function returns the generator.
+    if (!isGenerator(decl)) checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
     // Without a frame, a naked function can branch only on what is known at compile time.
     const attributes = func.attributes
     if (attributes !== null && attributes.naked) {

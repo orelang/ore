@@ -38,7 +38,7 @@ with `install.sh`, Homebrew and `ore update`) are done.
 
 What TypeScript has and Ore should, before the GC changes the runtime under
 it. Not gaps but choices (Go's semantics): `any`, `undefined`, `var`, enums,
-namespaces, exceptions, generators, `delete`, `in`, `for...in`, default
+namespaces, exceptions, `delete`, `in`, `for...in`, default
 exports, type assertions (Ore converts: `i32(x)`).
 
 - Expressions and statements, in order:
@@ -77,6 +77,11 @@ exports, type assertions (Ore converts: `i32(x)`).
   - methods in object types (`{ f(): void }`, done), optional members of
     interfaces (done; not methods), generic methods in interfaces;
   - `keyof`, `typeof x` as a type, indexed access `T["k"]` (done);
+  - dictionaries, `{ [key: string]: V }` and `Record<string, V>`, with
+    the syntax of objects, `delete` and `in` (done; an index signature with
+    other members is not supported); the namespace `Object` (done);
+    `obj["k"]` and `obj[k]` with `k: keyof T` (done; `obj[k] = v` by a
+    `keyof` key is not);
   - conditional types, mapped types and template literal types, and with
     them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...)
     (done); numeric literal types in computations on types, `infer` in
@@ -94,12 +99,16 @@ exports, type assertions (Ore converts: `i32(x)`).
 - `Date` from MDN, with the local time zone from TZif files (done;
   `toLocale*String` know only `en-US`, and time zone names in `toString`
   only the common abbreviations).
+- `URL` and `URLSearchParams` from MDN, with the WHATWG URL Standard's
+  parser (done; no IDNA or Punycode for domains outside ASCII, and
+  `URLSearchParams` is not iterable until Ore has iterators).
 - `globalThis`, as in JavaScript: the global names (`globalThis.console`,
   `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
   members of one value, with the type `typeof globalThis`; a module's own
   top-level declarations are not on it, as in ES modules. Adding properties
   at run time is not possible: declared names only, checked at compile
-  time.
+  time (done: resolved at compile time as the namespaces are, so
+  `globalThis` itself is no value).
 - Import attributes as in JavaScript (`import x from "./f" with { type: ... }`,
   see [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import/with)):
   `type: "json"` imports a JSON file as a typed value, checked against the
@@ -215,10 +224,16 @@ an LLVM coroutine. Left:
 - `Promise`'s internal members (`resolveWith`, `react`, `fulfill`,
   `values`) are public, as the runtime's functions use them; members
   private to a module would hide them.
-- `Promise.withResolvers`, `await` of a union of a promise and other values.
-- `task.sleep(ms)` and `task.after(ms)` still count milliseconds: to
-  nanoseconds, as the rest of `time`.
-- Generators and iterators on the same fibers.
+- `await` of a union of a promise and other values (`Promise.withResolvers`
+  is done).
+- Generators and iterators on the same fibers (done). A generator step is
+  two task switches through the scheduler (about 1.4 µs on a loaded
+  machine for `for...of` over a generator); a direct switch between the
+  caller and the generator's fiber, or compiling generators to state
+  machines, would make it tens of nanoseconds. A generator dropped before
+  its end keeps a parked stack until the program ends: the collector could
+  free the fibers of unreachable generators. Iterator helpers (ES2025
+  `map`, `filter`, `toArray`...) and async generators.
 
 ## Later
 

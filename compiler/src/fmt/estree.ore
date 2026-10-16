@@ -55,6 +55,8 @@ export class ENode {
     prefix = false
     isAsync = false
     generator = false
+    /** For a YieldExpression: `yield*`. */
+    delegate = false
     declare = false
     isAbstract = false
     definite = false
@@ -281,6 +283,27 @@ export class Converter {
     private modifier(node: Node, kind: NodeKind): bool {
         for (const m of node.list("modifiers")) if (m.kind === kind) return true
         return false
+    }
+
+    /** The members of an interface or object type, where accessors are signatures: `get x(): T`. */
+    private typeMembers(nodes: Node[]): ENode[] {
+        const out: ENode[] = []
+        for (const n of nodes) {
+            if (n.kind !== "GetAccessor" && n.kind !== "SetAccessor") {
+                const converted = this.convert(n)
+                if (converted !== null) out.push(converted)
+                continue
+            }
+            const signature = this.make("TSMethodSignature", n)
+            this.key(signature, must(n.child("name")))
+            signature.kind = n.kind === "GetAccessor" ? "get" : "set"
+            signature.readonly = this.modifier(n, "ReadonlyKeyword")
+            signature.setAll("params", this.params(n.list("parameters")))
+            const type = n.child("type")
+            if (type !== null) signature.set("returnType", this.typeAnnotation(type))
+            out.push(signature)
+        }
+        return out
     }
 
     private convertList(nodes: Node[]): ENode[] {
@@ -593,6 +616,11 @@ export class Converter {
             }
             case "AwaitExpression":
                 return this.make("AwaitExpression", node).set("argument", this.req(node.child("expression")))
+            case "YieldExpression": {
+                const y = this.make("YieldExpression", node).set("argument", this.opt(node.child("expression")))
+                y.delegate = node.child("asteriskToken") !== null
+                return y
+            }
             case "ParenthesizedExpression":
                 return this.req(node.child("expression"))
             case "CallExpression": {
@@ -684,6 +712,8 @@ export class Converter {
             case "VoidKeyword":
             case "IntrinsicKeyword":
                 return this.make(`TS${node.kind}`, node)
+            case "ThisType":
+                return this.make("TSThisType", node)
             case "LiteralType": {
                 const literal = must(node.child("literal"))
                 if (literal.kind === "NullKeyword") return this.make("TSNullKeyword", node)
@@ -704,8 +734,9 @@ export class Converter {
             }
             case "ParenthesizedType":
                 return this.req(node.child("type"))
-            case "FunctionType": {
-                const fn = this.make("TSFunctionType", node)
+            case "FunctionType":
+            case "ConstructorType": {
+                const fn = this.make(node.kind === "FunctionType" ? "TSFunctionType" : "TSConstructorType", node)
                 fn.set("typeParameters", this.typeParams("TSTypeParameterDeclaration", node.list("typeParameters")))
                 fn.setAll("params", this.params(node.list("parameters")))
                 const type = node.child("type")
@@ -713,7 +744,7 @@ export class Converter {
                 return fn
             }
             case "TypeLiteral":
-                return this.make("TSTypeLiteral", node).setAll("members", this.convertList(node.list("members")))
+                return this.make("TSTypeLiteral", node).setAll("members", this.typeMembers(node.list("members")))
             case "PropertySignature": {
                 const signature = this.make("TSPropertySignature", node)
                 this.key(signature, must(node.child("name")))
@@ -746,6 +777,16 @@ export class Converter {
                 const type = node.child("type")
                 if (type !== null) signature.set("returnType", this.typeAnnotation(type))
                 return signature
+            }
+            case "TypePredicate": {
+                const predicate = this.make("TSTypePredicate", node).set(
+                    "parameterName",
+                    this.req(node.child("parameterName")),
+                )
+                const type = node.child("type")
+                if (type !== null) predicate.set("typeAnnotation", this.req(type))
+                predicate.operator = node.child("assertsModifier") !== null ? "asserts" : ""
+                return predicate
             }
             case "TypeQuery":
                 return this.make("TSTypeQuery", node).set("exprName", this.req(node.child("exprName")))
@@ -799,6 +840,19 @@ export class Converter {
             }
             case "TupleType":
                 return this.make("TSTupleType", node).setAll("elementTypes", this.convertList(node.list("elements")))
+            case "OptionalType":
+                return this.make("TSOptionalType", node).set("typeAnnotation", this.req(node.child("type")))
+            case "RestType":
+                return this.make("TSRestType", node).set("typeAnnotation", this.req(node.child("type")))
+            case "NamedTupleMember": {
+                // `...name: T` is a rest type of a named member, as typescript-estree has it.
+                const member = this.make("TSNamedTupleMember", node)
+                    .set("label", this.req(node.child("name")))
+                    .set("elementType", this.req(node.child("type")))
+                member.optional = node.child("questionToken") !== null
+                if (node.child("dotDotDotToken") === null) return member
+                return this.make("TSRestType", node).set("typeAnnotation", member)
+            }
             case "TypeParameter": {
                 const parameter = this.make("TSTypeParameter", node)
                     .set("name", this.req(node.child("name")))
@@ -993,6 +1047,10 @@ export class Converter {
         switch (node.kind) {
             case "SemicolonClassElement":
                 return null
+            case "ClassStaticBlockDeclaration": {
+                const block = this.make("StaticBlock", node)
+                return block.setAll("body", this.convertList(must(node.child("body")).list("statements")))
+            }
             case "IndexSignature":
                 return this.convert(node)
             case "PropertyDeclaration": {
@@ -1071,7 +1129,7 @@ export class Converter {
         declaration.setAll("extends", extends_)
         const open = this.find("OpenBraceToken", this.headerEnd(node))
         const body = new ENode("TSInterfaceBody", open.start, node.end)
-        return declaration.set("body", body.setAll("body", this.convertList(node.list("members"))))
+        return declaration.set("body", body.setAll("body", this.typeMembers(node.list("members"))))
     }
 
     private importDeclaration(node: Node): ENode {

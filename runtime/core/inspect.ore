@@ -145,6 +145,21 @@ export function field(s: Inspection, key: string, value: string): void {
     entry(s, `${key}: ${value}`)
 }
 
+/**
+ * A key of a dictionary as Node writes a property name: as it is when it is
+ * an identifier of ASCII letters, digits and `_`, else quoted, in green.
+ */
+//ore:runtime ore_rt_inspect_key
+function key(s: Inspection, name: string): string {
+    let plain = name.length > 0
+    for (let i = 0; i < name.length && plain; i++) {
+        const c = name[i]
+        const letter = (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || c === 0x5f
+        if (!letter && !(i > 0 && c >= 0x30 && c <= 0x39)) plain = false
+    }
+    return plain ? name : paint(s, quote(name), 32, 39)
+}
+
 /** Adds an entry of a map, `key => value`. */
 //ore:runtime ore_rt_inspect_pair
 function pair(s: Inspection, key: string, value: string): void {

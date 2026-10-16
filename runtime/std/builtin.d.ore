@@ -276,6 +276,34 @@ declare namespace Map {
 }
 
 /**
+ * The static methods of `Object`, on dictionaries (`{ [key: string]: V }`)
+ * and on objects and class instances, whose keys are the names of their
+ * fields in order. The compiler checks the calls; `fromEntries` and
+ * `groupBy` are written in Ore, in runtime/core/object.ore, whose exports
+ * are members of the namespace: these declarations document them.
+ */
+declare namespace Object {
+    /** The keys of a dictionary, or the names of an object's fields (an optional one when it holds a value). */
+    function keys<T>(o: T): string[]
+    /** The values of a dictionary, or of an object's fields, of the union of their types. */
+    function values<T>(o: T): T[]
+    /** The `[key, value]` pairs of a dictionary or an object. */
+    function entries<T>(o: T): [string, T][]
+    /** Whether a dictionary has an entry for `key`, or an object a field named `key` that holds a value. */
+    function hasOwn<T>(o: T, key: string): bool
+    /** Sets the entries or fields of each source in `target`, in order; returns `target`. */
+    function assign<T>(target: T, ...sources: T[]): T
+    /** Freezes a dictionary: setting or deleting an entry then panics; returns it, readonly. An object is returned as it is. */
+    function freeze<T>(o: T): T
+    /** Whether a dictionary is frozen; an object is when its fields are all readonly, a primitive always is. */
+    function isFrozen<T>(o: T): bool
+    /** A dictionary of `[key, value]` pairs, a later key replacing an earlier one. */
+    function fromEntries<V>(entries: [string, V][]): { [key: string]: V }
+    /** The elements of `items` grouped by the key `keyFn` returns, the keys in the order they first appear. */
+    function groupBy<T>(items: T[], keyFn: (element: T, index: int) => string): { [key: string]: T[] }
+}
+
+/**
  * Files, read and written whole as UTF-8 text, open file descriptors such as
  * stdin, directories and file metadata. Calls block only their OS thread.
  * The members from `readDir` on are written in Ore, in runtime/core/fs.ore,
@@ -285,6 +313,8 @@ declare namespace fs {
     function readFile(path: string): string | Error
     /** Writes a file, created or truncated. */
     function writeFile(path: string, data: string): Error | null
+    /** Appends to a file, created if it does not exist. */
+    function appendFile(path: string, data: string): Error | null
     function exists(path: string): bool
     /**
      * Reads up to `max` bytes from a file descriptor, such as 0 for standard
@@ -390,8 +420,8 @@ declare namespace time {
 declare namespace task {
     /** Starts a task. The program ends when the top-level code ends, even if tasks still run. */
     function spawn(body: () => void): void
-    /** Suspends the current task for `ms` milliseconds. */
-    function sleep(ms: int): void
+    /** Suspends the current task for `ns` nanoseconds (`10 * time.millisecond`), rounded up to a millisecond: `time.sleep`. */
+    function sleep(ns: int): void
     /** Lets other tasks run before the current one continues. */
     function yield(): void
     /**
@@ -400,8 +430,8 @@ declare namespace task {
      * instead of waiting if no case can proceed now.
      */
     function select(cases: SelectCase[], otherwise?: () => void): void
-    /** A select case that proceeds after `ms` milliseconds. */
-    function after(ms: int, handler: () => void): SelectCase
+    /** A select case that proceeds after `ns` nanoseconds (`time.second`), rounded up to a millisecond. */
+    function after(ns: int, handler: () => void): SelectCase
     /**
      * Queues `job` on the event loop after the current code and the microtasks
      * before it, ahead of any timer: `queueMicrotask`.
@@ -532,6 +562,10 @@ declare namespace internal {
 declare namespace process {
     /** The command-line arguments after the program name. */
     const args: string[]
+    /** The operating system, as in Node: "darwin" (macOS) or "linux"; `target.os`, known at compile time. */
+    const platform: string
+    /** The processor, as in Node: "arm64" or "x64"; `target.arch` names the latter "x86_64". */
+    const arch: string
 
     /** The value of an environment variable, or null. */
     function getenv(name: string): string | null
@@ -610,6 +644,16 @@ declare namespace process {
 }
 
 /**
+ * The global names as members of one value, as in JavaScript:
+ * `globalThis.Math.max(1, 2)`, `new globalThis.Date(0)`, `globalThis.console`.
+ * Its members are the namespaces and classes declared here and the global
+ * classes of the runtime; a module's own top-level declarations are not on
+ * it, as in ES modules. It is resolved at compile time: no member can be
+ * added, and it is no value itself.
+ */
+declare namespace globalThis {}
+
+/**
  * Making arrays, as in JavaScript; the compiler checks the calls, and these
  * declarations document them.
  */
@@ -633,10 +677,12 @@ declare namespace JSON {
     /**
      * The JSON text of a value: a number, boolean, string, null, array, `Map`
      * with string keys, object or class instance (all its fields). As in
-     * JavaScript, the replacer must be null; with a `space`, nested values go
-     * on their own lines, indented by that many spaces per level.
+     * JavaScript, a replacer array keeps only its keys of each object, in its
+     * order; with a `space`, nested values go on their own lines, indented
+     * per level by that many spaces (at most 10) or by the string (its first
+     * 10 characters).
      */
-    function stringify<T>(value: T, replacer?: null, space?: int): string
+    function stringify<T>(value: T, replacer?: string[] | null, space?: int | string): string
 
     /**
      * Reads a value of type `T` from JSON text, checking its shape:
@@ -645,6 +691,16 @@ declare namespace JSON {
      */
     function parse<T>(text: string): T | Error
 }
+
+/**
+ * A deep copy of a value, as JavaScript's `structuredClone`: numbers,
+ * booleans, strings, bigints, null, arrays, tuples, `Map`s, `Set`s, `Date`s,
+ * object types, classes without methods and unions of these. An object
+ * reached twice is copied once, so shared references and cycles are kept.
+ * Functions, interfaces, `unknown`, channels and classes with methods cannot
+ * be cloned, a compile-time error.
+ */
+declare function structuredClone<T>(value: T): T
 
 /**
  * A resource released at the end of the block that declares it with
@@ -656,7 +712,10 @@ interface Disposable {
 
 /**
  * An error value. Fallible functions return `T | Error`; any class with a
- * `message` field is an `Error`. `new Error(message)` creates a basic one.
+ * `message` field is an `Error`. `new Error(message)` and
+ * `new Error(message, { cause })` create an instance of the runtime's Error
+ * class (runtime/core/error.ore), which has `name`, `message`, `cause` and
+ * `toString()`, and which classes extend: `class NotFound extends Error`.
  */
 interface Error {
     readonly message: string

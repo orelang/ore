@@ -187,6 +187,9 @@ export const nullOperand: Expr = new NullLit(types.null)
 /** The member name of `[Symbol.dispose]`. */
 export const disposeName = "[Symbol.dispose]"
 
+/** The member name of `[Symbol.iterator]`. */
+export const iteratorName = "[Symbol.iterator]"
+
 /** The words that strict mode reserves, which cannot name bindings in Ore. */
 export const strictReserved = [
     "implements",
@@ -201,12 +204,22 @@ export const strictReserved = [
 ]
 
 /** The error of an index signature (`[key: string]: T`) in an interface, an object type or a class. */
-export const indexSignatureMessage = "Index signatures are not supported. Use a 'Map<K, V>'."
+export const indexSignatureMessage =
+    "An index signature is a type alone, '{ [key: string]: T }', not a member of a class, an interface or an object type with other members."
 
 export function isSymbolDispose(node: Node): bool {
-    if (node.kind !== "PropertyAccessExpression") return false
+    return wellKnownSymbol(node) === disposeName
+}
+
+/** The member name of a well-known symbol, `Symbol.dispose` or `Symbol.iterator`, or null for any other expression. */
+export function wellKnownSymbol(node: Node): string | null {
+    if (node.kind !== "PropertyAccessExpression") return null
     const object = node.child("expression")
-    return object !== null && isIdentifier(object) && object.text === "Symbol" && nameNode(node).text === "dispose"
+    if (object === null || !isIdentifier(object) || object.text !== "Symbol") return null
+    const name = nameNode(node).text
+    if (name === "dispose") return disposeName
+    if (name === "iterator") return iteratorName
+    return null
 }
 
 /** Built-in functions that moved into namespaces. */
@@ -275,6 +288,7 @@ export function memberOf(from: Type, m: Type): bool {
     return (
         sameType(from, m) ||
         (from.kind === "literal" && m.kind === "string") ||
+        (from.kind === "bool" && m.kind === "bool" && m.literal === "") ||
         (from.kind === "number-literal" && (m.kind === "float" || m.kind === "int")) ||
         (from.kind === "struct" && m.kind === "struct" && isSubclass(from, m))
     )
