@@ -19,6 +19,11 @@ before 1.0, a minor version may change the language.
   intrinsic string types. The utility types `Partial`, `Required`,
   `Readonly`, `Pick`, `Omit`, `Record`, `Exclude`, `Extract`, `NonNullable`,
   `ReturnType` and `Parameters` are global names.
+- Getters and setters in object literals (`{ get x(): int { ... }, set x(v:
+  int) { ... } }`), as in classes: closures whose `this` is the object,
+  called by reads and writes of the property; a property with only a getter
+  is read-only. Like those of classes, they do not implement interface
+  fields yet, which a type error now says.
 - Types computed from others: `keyof T`, indexed access `T["k"]`,
   `T["a" | "b"]` and `T[number]`, and `typeof x` (or `typeof x.y`) as a type.
 - Benchmarks in `bench/`: the same algorithms in Ore, TypeScript (Bun and

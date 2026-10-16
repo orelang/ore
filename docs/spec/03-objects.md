@@ -24,8 +24,16 @@
   object; it can use the variables around it, as any closure. Its parameter
   and result types come from its annotations or from the type the literal is
   written for (a method that returns a value needs one or the other).
-  Spreads work as in other literals; accessors are not supported in such a
-  literal yet.
+  Spreads work as in other literals.
+- An object literal can have getters and setters, `{ celsius: 20.0, get
+  fahrenheit(): f64 { return this.celsius * 9 / 5 + 32 } }`, with the rules
+  of [class accessors](#classes): a getter needs a return type annotation, a
+  setter one annotated parameter of the same type, and a property with only
+  a getter is read-only. They are closures whose `this` is the object, held
+  in the object and called by reads and writes of the property; the type of
+  the literal has the property (printed `{ get fahrenheit(): f64 }`), and two
+  literals with the same properties and accessors have the same type. As in
+  classes, accessors do not implement interface fields.
 - An intersection `A & B` of object types is the object type with the fields
   of both; with an interface among the parts, it is the interface with the
   members of all. A member in two parts must have the same type in both
