@@ -1,0 +1,27 @@
+// Sort: sorts pseudo-random integers and then a fifth as many strings with
+// the built-in sort, and prints checksums of the sorted orders.
+
+const n = (process.args.length > 0 ? Number.parseInt(process.args[0]) : null) ?? 5000000
+
+// A 32-bit xorshift generator, the same in every language.
+let state: u32 = 2463534242
+function next(): int {
+    state ^= state << 13
+    state ^= state >> 17
+    state ^= state << 5
+    return int(state >> 1)
+}
+
+const numbers: int[] = []
+for (let i = 0; i < n; i++) numbers.push(next())
+numbers.sort((a, b) => a - b)
+let sum = 0
+for (const x of numbers) sum = (sum * 31 + x) % 1000000007
+
+const words: string[] = []
+for (let i = 0; i < n / 5; i++) words.push(`w${next()}`)
+words.sort()
+let hash = 0
+for (const w of words) hash = (hash * 31 + w.length * 256 + int(w[w.length - 1])) % 1000000007
+
+console.log(sum, hash, words[0], words[words.length - 1])
