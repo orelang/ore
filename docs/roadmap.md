@@ -246,8 +246,8 @@ an LLVM coroutine. Left:
   machines, would make it tens of nanoseconds. A generator dropped before
   its end keeps a parked stack until the program ends: the collector could
   free the fibers of unreachable generators. Iterator helpers (done; the
-  callback results of `flatMap` are iterated on a generator each, a fiber
-  per inner iterable). Async generators and `for await` (done; an async
+  callback results of `flatMap` are stepped directly, as `Iterator.from`
+  gives their iterators). Async generators and `for await` (done; an async
   generator is a fiber too, and the async iterator helpers of a later
   ECMAScript are not there). Iterator objects of strings,
   arrays, maps and sets from `[Symbol.iterator]()`, a lazy `matchAll` and

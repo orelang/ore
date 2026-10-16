@@ -1,0 +1,74 @@
+// flatMap takes what Iterator.from takes: iterables, and iterators with only
+// next(), each stepped in turn; return() closes the inner one by its return().
+
+class Countdown {
+    constructor(private n: int) {}
+
+    next(): IteratorResult<int, void> {
+        if (this.n === 0) return { value: null, done: true }
+        const value = this.n
+        this.n--
+        return { value, done: false }
+    }
+}
+
+console.log(
+    [1, 2, 3]
+        .values()
+        .flatMap((x) => new Countdown(x))
+        .toArray(),
+)
+
+// An iterable whose iterator has only next().
+class Pair {
+    [Symbol.iterator](): Countdown {
+        return new Countdown(2)
+    }
+}
+console.log(
+    ["a", "b"]
+        .values()
+        .flatMap((s) => new Pair())
+        .map((x) => x * 10)
+        .toArray(),
+)
+
+// Arrays, sets, maps and generators, in one chain.
+function* letters(): Generator<string> {
+    yield "x"
+    yield "y"
+}
+console.log(
+    [1]
+        .values()
+        .flatMap((x) => [x, x + 1])
+        .flatMap((x) => new Set([x, -x]))
+        .toArray(),
+)
+console.log(
+    [0]
+        .values()
+        .flatMap((x) => letters())
+        .toArray(),
+)
+
+// return() in the middle of an inner iterator calls its return().
+class Endless {
+    i = 0
+
+    next(): IteratorResult<int, void> {
+        this.i++
+        return { value: this.i, done: false }
+    }
+
+    return(): IteratorResult<int, void> {
+        console.log("inner return at", this.i)
+        return { value: null, done: true }
+    }
+}
+const endless = new Endless()
+const flat = [1, 2]
+    .values()
+    .flatMap((x) => endless)
+    .take(3)
+console.log(flat.toArray())

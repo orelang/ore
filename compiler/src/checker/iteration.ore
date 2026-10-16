@@ -87,6 +87,28 @@ export function iteratorValue(c: Checker, iterator: Type): Type | null {
 }
 
 /**
+ * The runtime's `IteratedOf<R>`: the type of the values of an iterable type
+ * as `yield*`, `Iterator.from` and `flatMap` give them. The elements of an
+ * array or a set, the `[key, value]` entries of a map, and for a class or an
+ * interface the values of the iterator its `[Symbol.iterator]()` returns, or
+ * of itself when it has only `next()`; `never` for any other type, a string
+ * too.
+ */
+export function iteratedOf(c: Checker, type: Type): Type {
+    if (type.kind === "array") return type.elem
+    if (type.kind === "set") return type.elem
+    if (type.kind === "map" && !type.dict) return c.tupleOf([type.key, type.value])
+    let iterator: Type = type
+    if (type.kind === "struct") {
+        const m = findMethod(type, iteratorName)
+        if (m !== null && m.func.params.length === 0) iterator = m.func.type.result
+    } else if (type.kind === "interface") {
+        for (const m of type.members) if (m.name === iteratorName && m.k === "method") iterator = m.type.result
+    } else return types.never
+    return iteratorValue(c, iterator) ?? types.never
+}
+
+/**
  * The iterator of an iterable value of a class or interface type: the value
  * itself for a generator or another `IteratorObject`, else its
  * `[Symbol.iterator]()`. Reports a type that is not iterable.

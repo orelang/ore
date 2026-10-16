@@ -208,10 +208,13 @@ strings, see [Strings](02-types.md#strings)).
   `find` close the iterator when they stop early, as `for...of` over an
   `IteratorObject` does. `take(n)` and `drop(n)` take an `int` (not
   `Infinity`) and panic with `RangeError: n must be positive` for a
-  negative one. The callback of `flatMap` returns an array, a set, a map
-  (its entries) or an iterator with the helpers, iterated in turn as
-  `yield*` does, on a generator of its own; strings are rejected, as in
-  JavaScript. `reduce(f)` without an initial value starts from the first
+  negative one. The callback of `flatMap` returns what `Iterator.from`
+  takes but a string: an array, a set, a map (its entries), an iterator
+  with the helpers, another iterable, or an object with only `next()`;
+  each is stepped in turn through the iterator `Iterator.from` gives for
+  it, without a generator in between, and the helper's `return()` closes
+  the current one (an object's own `return()`, if it has one). Strings are
+  rejected, as in JavaScript. `reduce(f)` without an initial value starts from the first
   value, and panics with `TypeError: Reduce of a done iterator with no
   initial value` when there is none. A class may extend `IteratorObject<T>`
   with a `next()` of its own, as a JavaScript class extends `Iterator`, and

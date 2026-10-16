@@ -21,6 +21,7 @@
 // parked until `return()` ends it; `for...of` ends it when it leaves the
 // loop early, as JavaScript calls `return()`.
 
+import { from } from "ore:runtime/iterator-from"
 import { mapCount, mapKey, mapLive, mapValue } from "ore:runtime/map"
 import { type Task, endFiber, handBack, handTo, newFiber } from "ore:runtime/task"
 
@@ -41,22 +42,16 @@ export interface IterableIterator<T, TReturn = void, TNext = null> {
 }
 
 /**
- * The type of the values of the iterable type R: what `for...of` and
- * `yield*` give, the `[key, value]` entries of a map.
+ * The type of the values of the iterable type R, as `yield*`,
+ * `Iterator.from` and `flatMap` give them: the elements of an array or a
+ * set, the `[key, value]` entries of a map, and the values of the iterator
+ * of a class or an interface, by its `[Symbol.iterator]()`, or of itself
+ * when it has only `next()`; `never` for another type. The compiler
+ * computes it as it finds the iterator of a value (`iteratedOf` in
+ * checker/iteration.ore), which a conditional type could not do for a class
+ * that only has the methods of an iterator.
  */
-export type IteratedOf<R> = R extends (infer E)[]
-    ? E
-    : R extends Set<infer E>
-      ? E
-      : R extends Map<infer K, infer V>
-        ? [K, V]
-        : R extends IteratorObject<infer E, infer TReturn, infer TNext>
-          ? E
-          : R extends IterableIterator<infer E, infer TReturn, infer TNext>
-            ? E
-            : R extends Iterable<infer E>
-              ? E
-              : never
+export type IteratedOf<R> = intrinsic
 
 /**
  * An iterator with the iterator helpers of ES2025, JavaScript's
@@ -147,14 +142,17 @@ export abstract class IteratorObject<T, TReturn = void, TNext = null> {
     }
 
     /**
-     * The values of the iterables that `mapper` returns, in turn: arrays,
-     * sets, maps (their entries), generators and other iterables, each
-     * iterated as `yield*` iterates it, on a generator of its own.
+     * The values of the iterables and iterators that `mapper` returns, in
+     * turn, as JavaScript's GetIteratorFlattenable takes them: the iterator
+     * `Iterator.from` gives for each (of an array, a set, a map's entries, a
+     * generator or another `IteratorObject` itself, the iterator of another
+     * iterable, or an object with only `next()`), stepped directly. Strings
+     * are not objects, and are rejected as in JavaScript.
      */
     flatMap<R extends object>(mapper: (value: T, index: int) => R): IteratorHelper<IteratedOf<R>> {
         let counter = 0
-        // The generator of the current inner iterable: one element, or none between them.
-        let inner: Generator<IteratedOf<R>>[] = []
+        // The steps of the current inner iterator: one element, or none between them.
+        let inner: IteratorHelper<IteratedOf<R>>[] = []
         return new IteratorHelper<IteratedOf<R>>(
             () => {
                 while (true) {
@@ -165,7 +163,17 @@ export abstract class IteratorObject<T, TReturn = void, TNext = null> {
                     }
                     const r = this.next()
                     if (r.done) return { value: null, done: true }
-                    inner = [flatten<R>(mapper(r.value, counter++))]
+                    const it = from(mapper(r.value, counter++))
+                    inner = [
+                        new IteratorHelper<IteratedOf<R>>(
+                            () => {
+                                const x = it.next()
+                                if (x.done) return { value: null, done: true }
+                                return { value: x.value, done: false }
+                            },
+                            () => it.close(),
+                        ),
+                    ]
                 }
             },
             () => {
@@ -301,7 +309,7 @@ export class IteratorHelper<T> extends IteratorObject<T> {
     }
 }
 
-/** The values of an iterable on a generator, as `yield*` gives them: what `flatMap` and `Iterator.from` iterate. */
+/** The values of an iterable on a generator, as `yield*` gives them: the declared body of `Iterator.from`, whose calls the compiler checks. */
 export function* flatten<R extends object>(iterable: R): Generator<IteratedOf<R>> {
     yield* iterable
 }

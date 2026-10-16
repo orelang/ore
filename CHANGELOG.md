@@ -44,6 +44,12 @@ before 1.0, a minor version may change the language.
   dictionaries of `unknown`s; it returns an `unknown`, which holds the
   `Error` when the text is not JSON. An `unknown` in a type, a field
   `body: unknown`, is read the same way.
+- The callback of an iterator's `flatMap` may return what `Iterator.from`
+  takes but a string, an object with only `next()` too, and each result is
+  stepped directly through the iterator `Iterator.from` gives for it,
+  where it was iterated on a generator, a fiber, of its own. The type of
+  its values is found as `for...of` finds an iterator, also for a class
+  that only has `[Symbol.iterator]()` or `next()`.
 
 - The timers of the web and Node are global names: `setTimeout(f, ms?,
   ...args)`, `setInterval`, `setImmediate`, `clearTimeout`,

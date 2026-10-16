@@ -46,6 +46,7 @@ import { type Checker } from "./base"
 import { resolveBase } from "./classes"
 import { satisfiesConstraint } from "./declarations"
 import { checkExpr } from "./expressions"
+import { iteratedOf } from "./iteration"
 import { typeOf } from "./helpers"
 import { type ValueSymbol, Scope, TypeSymbol } from "./symbols"
 
@@ -864,8 +865,16 @@ export function templateLiteralType(c: Checker, node: Node, scope: Scope): Type 
     return c.unionOf(literals)
 }
 
-/** `Uppercase<S>` and the other intrinsic string types, of a string literal type or a union of them. */
+/**
+ * `Uppercase<S>` and the other intrinsic string types, of a string literal
+ * type or a union of them, and the runtime's `IteratedOf<R>`.
+ */
 export function intrinsicType(c: Checker, name: string, args: Type[], node: Node): Type | null {
+    if (name === "IteratedOf") {
+        const values: Type[] = []
+        for (const m of membersOf(args[0])) values.push(iteratedOf(c, m))
+        return c.unionOf(values)
+    }
     if (name !== "Uppercase" && name !== "Lowercase" && name !== "Capitalize" && name !== "Uncapitalize") {
         c.error(node, "'intrinsic' is only the type of Uppercase, Lowercase, Capitalize and Uncapitalize.")
         return null
