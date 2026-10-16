@@ -32,6 +32,27 @@ Numeric literals are untyped constants (as in Go):
   (`let x: f64 = 1`). A float literal may not be used where an integer type is
   expected.
 
+## Numeric literal types
+
+A numeric literal type such as `0`, `-1` or `0.5` has one number as its
+value; a union of them, such as `type Angle = 0 | 90 | 180 | 270`, has
+those numbers. They are subtypes of `number`:
+
+- Representation: a value of a numeric literal type, or of a union of only
+  numeric literal types, is an `f64`, as numbers are in JavaScript, also
+  when the numbers are integers. In a union with other types (`"auto" | 0`,
+  `Angle | null`), each literal is a member of the tagged union.
+- An untyped constant fits a numeric literal type when it equals one of its
+  numbers: `const a: Angle = 90`; `const b: Angle = 45` is an error.
+- A value of such a type widens to `number` (`f64`), not to the other
+  numeric types: `const i: int = a` needs `int(a)`. `number` absorbs
+  numeric literal types in a union.
+- Arithmetic, unary operators and comparisons see numbers: `a + 90` and
+  `-a` are `f64`, and assigning `a + 90` back to `a` is an error.
+- `a === 90` and `switch (a)` with numeric cases narrow `a` as they narrow
+  unions of string literals, and a `switch` with a case for each number is
+  exhaustive.
+
 ## Conversions
 
 There are no implicit conversions between distinct numeric types. Conversions

@@ -1118,7 +1118,12 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
     if (operand_.k === "error") return null
     const value = c.toDefault(operand_, subject)
     const type = value.type
-    if (!(isNumeric(type) || type.kind === "bigint" || type.kind === "bool" || membersOf(type).every(isStringLike))) {
+    if (!(
+        isNumeric(type) ||
+        type.kind === "bigint" ||
+        type.kind === "bool" ||
+        membersOf(type).every((m) => isStringLike(m) || m.kind === "number-literal")
+    )) {
         c.error(subject, `Cannot switch on a value of type '${typeToString(type)}'.`)
         return null
     }
@@ -1132,19 +1137,21 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
     const scope = new Scope(outer)
     const clauses: SwitchClause[] = []
     let hasDefault = false
-    // String literal cases narrow the subject: within a clause, the values of
-    // the cases that lead to it without falling through code; in default, the rest.
+    // String and number literal cases narrow the subject: within a clause, the
+    // values of the cases that lead to it without falling through code; in
+    // default, the rest.
     const allCases = new Set<string>()
     for (const clause of caseClauses(stmt)) {
-        if (clause.kind === "CaseClause" && isStringLiteralNode(expression(clause)))
-            allCases.add(stringText(expression(clause)))
+        const key = clause.kind === "CaseClause" ? literalNodeKey(c, expression(clause)) : null
+        if (key !== null) allCases.add(key)
     }
     let entering = new Set<string>()
     let narrowable = true
     for (const clause of caseClauses(stmt)) {
         let facts: Fact[] = []
         if (clause.kind === "CaseClause") {
-            if (isStringLiteralNode(expression(clause))) entering.add(stringText(expression(clause)))
+            const key = literalNodeKey(c, expression(clause))
+            if (key !== null) entering.add(key)
             else narrowable = false
             if (narrowable) facts = literalFacts(c, subject, entering, scope).yes
         } else if (narrowable && entering.size === 0) {
@@ -1175,8 +1182,11 @@ export function checkSwitch(c: Checker, stmt: Node, outer: Scope): SwitchStmt | 
             narrowable = leaves
         }
     }
-    // A switch over a union of string literals that has a case for each is exhaustive.
-    const exhaustive = membersOf(type).every((m) => m.kind === "literal" && allCases.has(m.value))
+    // A switch over a union of literals that has a case for each is exhaustive.
+    const exhaustive = membersOf(type).every((m) => {
+        const key = literalKey(m)
+        return key !== null && allCases.has(key)
+    })
     return new SwitchStmt(loop.id, loop.labeled, exhaustive, local, value, clauses)
 }
 
@@ -1522,16 +1532,13 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
                     ? new Condition(expr, [], notNull)
                     : new Condition(expr, notNull, [])
             }
-            const literalSide = isStringLiteralNode(right(node))
-                ? right(node)
-                : isStringLiteralNode(left(node))
-                  ? left(node)
-                  : null
-            if (literalSide !== null) {
-                const subject = literalSide === right(node) ? left(node) : right(node)
+            const rightKey = literalNodeKey(c, right(node))
+            const leftKey = rightKey === null ? literalNodeKey(c, left(node)) : null
+            if (rightKey !== null || leftKey !== null) {
+                const subject = rightKey !== null ? left(node) : right(node)
                 const expr = checkCondition(c, node, scope)
                 const values = new Set<string>()
-                values.add(stringText(literalSide))
+                values.add(rightKey !== null ? rightKey : (leftKey ?? ""))
                 const pair = literalFacts(c, subject, values, scope)
                 return op === "EqualsEqualsEqualsToken"
                     ? new Condition(expr, pair.yes, pair.no)
@@ -1596,9 +1603,37 @@ function concatFacts(a: Fact[], b: Fact[]): Fact[] {
 /** Whether a type's values are all in `values` ("yes"), none ("no"), or some ("both"). */
 function covers(type: Type, values: Set<string>): string {
     const members_ = membersOf(type)
-    if (members_.every((m) => m.kind === "literal" && values.has(m.value))) return "yes"
-    if (members_.every((m) => m.kind === "literal" && !values.has(m.value))) return "no"
+    const keys: string[] = []
+    for (const m of members_) {
+        const key = literalKey(m)
+        if (key === null) return "both"
+        keys.push(key)
+    }
+    if (keys.every((k) => values.has(k))) return "yes"
+    if (keys.every((k) => !values.has(k))) return "no"
     return "both"
+}
+
+/**
+ * The key of a literal type among the values a check compares with: a
+ * string's text, or a number's canonical text after a newline and `#`.
+ */
+function literalKey(type: Type): string | null {
+    if (type.kind === "literal") return type.value
+    if (type.kind === "number-literal") return `\n#${type.value}`
+    return null
+}
+
+/** The key of a literal a check compares with, as `literalKey` gives it: `"a"`, `90`, `-1.5`; null for other expressions. */
+function literalNodeKey(c: Checker, node: Node): string | null {
+    if (node.kind === "ParenthesizedExpression") return literalNodeKey(c, expression(node))
+    if (isStringLiteralNode(node)) return stringText(node)
+    if (node.kind === "NumericLiteral") return literalKey(c.numberLiteral(node.text))
+    if (node.kind === "PrefixUnaryExpression" && prefixOperator(node, c.sourceOf(node).text) === "-") {
+        const inner = operand(node)
+        if (inner.kind === "NumericLiteral") return literalKey(c.numberLiteral(`-${inner.text}`))
+    }
+    return null
 }
 
 function narrowFacts(c: Checker, target: Node, scope: Scope, matches: (member: Type) => string): FactPair {

@@ -2,7 +2,7 @@
 // inline assembly).
 
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
-import { intRange, type FuncType, type Type, type UnionType } from "../ir/types"
+import { intRange, isNumberLiterals, type FuncType, type Type, type UnionType } from "../ir/types"
 import { counted, json } from "./json"
 import { inspectTop, printYellow } from "./inspect"
 import { ARRAY, FN, IFACE, STR } from "./context"
@@ -229,6 +229,7 @@ export function concat(g: Emitter, parts: Part[]): V {
 }
 
 export function toStr(g: Emitter, v: V, t: Type): V {
+    if (isNumberLiterals(t)) return g.rt("ore_rt_str_from_f64", [v])
     if (t.kind === "union") return g.b.value(STR, `call ${STR} ${unionToStr(g, t)}(${v.ty} ${v.v})`)
     switch (t.kind) {
         case "string":

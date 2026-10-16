@@ -201,8 +201,7 @@ export class LiteralType {
 
 /**
  * A numeric literal type such as `0` or `-1.5`, by its number's canonical
- * text. It exists in computations on types (`Prev[D]`, `D extends number`);
- * values cannot have it yet.
+ * text. Its values are numbers, held as an `f64` equal to it.
  */
 export class NumberLiteralType {
     readonly kind: "number-literal" = "number-literal"
@@ -389,6 +388,12 @@ export const types = {
 
 export function isNumeric(t: Type): bool {
     return t.kind === "int" || t.kind === "float"
+}
+
+/** Whether values of a type are numbers held as an `f64`: a numeric literal type, or a union of only those. */
+export function isNumberLiterals(t: Type): bool {
+    if (t.kind === "number-literal") return true
+    return t.kind === "union" && t.members.every((m) => m.kind === "number-literal")
 }
 
 /**
@@ -586,7 +591,7 @@ export function isStringLike(type: Type): bool {
 
 /** What JavaScript's `typeof` says of a value of a type. */
 export function typeofName(type: Type): string {
-    if (isNumeric(type)) return "number"
+    if (isNumeric(type) || type.kind === "number-literal") return "number"
     if (type.kind === "bigint") return "bigint"
     if (type.kind === "bool") return "boolean"
     if (isStringLike(type)) return "string"
@@ -597,6 +602,11 @@ export function typeofName(type: Type): string {
 /** `{ k: "strings" }`: only string literal types, as a string; the value tells the member. */
 export class StringsRepr {
     readonly k: "strings" = "strings"
+}
+
+/** `{ k: "numbers" }`: only numeric literal types, as an `f64`; the value tells the member. */
+export class NumbersRepr {
+    readonly k: "numbers" = "numbers"
 }
 
 /** `{ k: "nullable", base }`: one reference type (or only string literals) and `null`, as the reference or null. */
@@ -614,12 +624,13 @@ export class TaggedRepr {
 /**
  * How a union is represented at run time:
  * - `strings`: only string literal types, as a string; the value tells the member;
+ * - `numbers`: only numeric literal types, as an `f64`; the value tells the member;
  * - `nullable`: one reference type (or only string literals) and `null`, as
  *   the reference or null;
  * - `tagged`: a tag selecting one of `slots`, with the value of that slot.
  *   `null` has a slot without a value.
  */
-export type UnionRepr = StringsRepr | NullableRepr | TaggedRepr
+export type UnionRepr = StringsRepr | NumbersRepr | NullableRepr | TaggedRepr
 
 export function unionRepr(u: UnionType): UnionRepr {
     const others: Type[] = []
@@ -631,6 +642,7 @@ export function unionRepr(u: UnionType): UnionRepr {
         if (hasNull) return new NullableRepr(types.string)
         return new StringsRepr()
     }
+    if (!hasNull && others.every((m) => m.kind === "number-literal")) return new NumbersRepr()
     if (others.length === 1 && hasNull && isReference(others[0])) return new NullableRepr(others[0])
     return new TaggedRepr(u.members)
 }

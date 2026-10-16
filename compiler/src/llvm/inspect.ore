@@ -8,6 +8,7 @@ import {
     type StructType,
     type Type,
     type UnionType,
+    isNumberLiterals,
     isNumeric,
     types,
     unionRepr,
@@ -130,8 +131,8 @@ function inspectorNamed(g: Emitter, t: Type, key: string, exact: bool): string {
 
 /** Whether Node aligns the entries of an array of this type to the right: numbers. */
 function numeric(t: Type): bool {
-    if (t.kind === "union") return t.members.every((m) => isNumeric(m))
-    return isNumeric(t)
+    if (t.kind === "union") return t.members.every((m) => isNumeric(m) || m.kind === "number-literal")
+    return isNumeric(t) || t.kind === "number-literal"
 }
 
 /** A property name as Node writes it: bare when an identifier, else quoted. */
@@ -189,6 +190,8 @@ function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
             )
         case "float":
             return yellowText(g, s, g.rt(t.bits === 32 ? "ore_rt_inspect_f32" : "ore_rt_inspect_f64", [v]))
+        case "number-literal":
+            return yellowText(g, s, g.rt("ore_rt_inspect_f64", [v]))
         case "bool":
             return yellowText(g, s, g.rt("ore_rt_str_from_bool", [v]))
         case "bigint":
@@ -299,6 +302,7 @@ function inspectEntries(g: Emitter, v: V, keyType: Type, valueType: Type | null,
 
 /** A union value: by the inspector of the member it holds. */
 function inspectUnion(g: Emitter, t: UnionType, v: V, s: V, depth: V): V {
+    if (isNumberLiterals(t)) return yellowText(g, s, g.rt("ore_rt_inspect_f64", [v]))
     if (unionRepr(t).k === "strings") return paint(g, s, g.rt("ore_rt_inspect_string", [v]), green, defaultColor)
     for (let i = 0; i < t.members.length; i++) {
         const m = t.members[i]

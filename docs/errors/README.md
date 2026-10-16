@@ -129,7 +129,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE2063](ORE2063.md) | 'infer' is supported in array, tuple, object, function, Map, Set and generic class types. |
 | [ORE2064](ORE2064.md) | 'intrinsic' is only the type of Uppercase, Lowercase, Capitalize and Uncapitalize. |
 | [ORE2065](ORE2065.md) | An integer constant is not assignable to type 'bigint'. Write a bigint literal: '…n'. |
-| [ORE2066](ORE2066.md) | Type '…' exists only in computations on types: values cannot have numeric literal types, or 'never' in a tuple or an object type, yet. |
+| [ORE2066](ORE2066.md) | Type '…' exists only in computations on types: values cannot have 'never' in a tuple or an object type yet. |
+| [ORE2067](ORE2067.md) | Constant … is not assignable to type '…'. |
 
 ## ORE3xxx: Expressions
 

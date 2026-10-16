@@ -75,7 +75,8 @@ exports, type assertions (Ore converts: `i32(x)`).
     (done); numeric literal types in computations on types, `infer` in
     template literal types, `object`, `Function` and `unknown` in conditional
     types, and a library of more utility types (`DeepPartial`, `Paths`,
-    `PathValue`, ...) (done); numeric literal types as types of values.
+    `PathValue`, ...) (done); numeric literal types as types of values
+    (done).
 - Regular expressions: literals `/re/`, `RegExp` and the string methods
   that take one, with a backtracking engine in the runtime, lookbehind and
   the flags `d`, `u` and `v` (done; not the string disjunctions `\q{...}` of

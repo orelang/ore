@@ -17,6 +17,7 @@ import {
 } from "../ir/nodes"
 import {
     findField,
+    isNumberLiterals,
     isStringLike,
     isSubclass,
     sameType,
@@ -743,7 +744,9 @@ export function convert(g: Emitter, v: V, from: Type, to: Type): V {
     return g.b.value(target, `${from.signed ? "sext" : "zext"} ${v.ty} ${v.v} to ${target}`)
 }
 
-export function compare(g: Emitter, op: CompareOp, l: V, r: V, type: Type): V {
+export function compare(g: Emitter, op: CompareOp, l: V, r: V, type_: Type): V {
+    // Numeric literal types are numbers, held as an `f64`.
+    const type = isNumberLiterals(type_) ? types.f64 : type_
     if (type.kind === "bigint" && op !== "===" && op !== "!==") {
         const c = g.rt("ore_rt_big_cmp", [l, r])
         let pred = "sge"
@@ -786,6 +789,7 @@ export function compare(g: Emitter, op: CompareOp, l: V, r: V, type: Type): V {
 /** `===` of two values of a type. */
 export function equals(g: Emitter, a: V, b: V, type: Type): V {
     if (type.kind === "unknown") return unknownEquals(g, a, b)
+    if (isNumberLiterals(type)) return g.b.value("i1", `fcmp oeq double ${a.v}, ${b.v}`)
     if (type.kind === "union") {
         const repr = unionRepr(type)
         if (repr.k === "tagged")
@@ -837,6 +841,11 @@ export function unionEquals(g: Emitter, u: UnionType): string {
     return name
 }
 
+/** The `f64` constant of a numeric literal type. */
+export function numberConstant(type: Type): string {
+    return floatConstant(type.kind === "number-literal" ? (Number.parseFloat(type.value) ?? 0.0) : 0.0, 64)
+}
+
 /** Whether a union value holds member `i`. */
 export function slotTest(g: Emitter, u: UnionType, v: V, i: int): V {
     const repr = unionRepr(u)
@@ -845,6 +854,8 @@ export function slotTest(g: Emitter, u: UnionType, v: V, i: int): V {
     // Members that are string literals are told apart by the value.
     const literal = (): V => g.rtBool("ore_rt_str_eq", [v, g.str(member.kind === "literal" ? member.value : "")])
     if (repr.k === "strings") return literal()
+    // Members that are numeric literals too.
+    if (repr.k === "numbers") return g.b.value("i1", `fcmp oeq double ${v.v}, ${numberConstant(member)}`)
     if (member.kind === "null") return isNullRef(g, v, repr.base)
     const present = g.b.value("i1", `xor i1 ${isNullRef(g, v, repr.base).v}, true`)
     if (member.kind !== "literal") return present
@@ -872,7 +883,7 @@ export function payload(g: Emitter, u: UnionType, v: V, i: int): V {
 export function inject(g: Emitter, u: UnionType, i: int, p: V | null): V {
     const repr = unionRepr(u)
     const isNull = u.members[i].kind === "null"
-    if (repr.k === "strings") return p ?? voidValue
+    if (repr.k === "strings" || repr.k === "numbers") return p ?? voidValue
     if (repr.k === "nullable") return isNull ? g.zero(repr.base) : (p ?? voidValue)
     const ty = g.unionType(u)
     const s = g.b.alloca(ty)
@@ -1003,6 +1014,8 @@ export function recast(g: Emitter, v: V, from: Type, to: Type): V {
     if (from.kind === "unknown") return unbox(g, v, to)
     // Unions of string literals widen to `string` without a change.
     if (from.kind === "union" && unionRepr(from).k === "strings" && to.kind === "string") return v
+    // And unions of numeric literals to `number`.
+    if (isNumberLiterals(from) && to.kind === "float" && to.bits === 64) return v
     if (from.kind !== "union") {
         if (to.kind !== "union") return v
         return inject(g, to, memberIndex(to, from), v)

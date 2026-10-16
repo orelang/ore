@@ -62,6 +62,7 @@ import {
     arrayOf,
     findField,
     findMethod,
+    isNumberLiterals,
     isNumeric,
     isSubclass,
     isStringLike,
@@ -339,8 +340,10 @@ export function checkBinary(c: Checker, node: Node, scope: Scope): Operand {
     return c.fail(opNode, `Operator '${c.text(opNode)}' is not supported.`)
 }
 
-export function arith(c: Checker, op: ArithOp, l: Operand, r: Operand, node: Node): Operand {
-    if (l.k === "error" || r.k === "error") return errorOperand
+export function arith(c: Checker, op: ArithOp, l_: Operand, r_: Operand, node: Node): Operand {
+    if (l_.k === "error" || r_.k === "error") return errorOperand
+    const l = widened(l_)
+    const r = widened(r_)
     const opNode = operatorToken(node)
     const shift = op === "<<" || op === ">>"
 
@@ -394,6 +397,12 @@ export function arith(c: Checker, op: ArithOp, l: Operand, r: Operand, node: Nod
     return c.fail(opNode, `Operator '${op}' cannot be applied to type '${typeToString(type)}'.`)
 }
 
+/** An operand of a numeric literal type, or a union of them, as a `number`: arithmetic and comparisons see numbers. */
+export function widened(value: Operand): Operand {
+    if (value.k === "typed" && isNumberLiterals(value.expr.type)) return typed(new Recast(types.f64, value.expr))
+    return value
+}
+
 /** Whether an operand is a `bigint` value. */
 function isBigInt(value: Operand): bool {
     return value.k === "typed" && value.expr.type.kind === "bigint"
@@ -429,13 +438,15 @@ function isEquatable(type: Type): bool {
 export function compare(
     c: Checker,
     op: CompareOp,
-    l: Operand,
-    r: Operand,
+    l_: Operand,
+    r_: Operand,
     opNode: Node,
     leftNode: Node,
     rightNode: Node,
 ): Operand {
-    if (l.k === "error" || r.k === "error") return errorOperand
+    if (l_.k === "error" || r_.k === "error") return errorOperand
+    const l = widened(l_)
+    const r = widened(r_)
     const ul = untypedOf(l)
     const ur = untypedOf(r)
     if (ul !== null && ur !== null) {
@@ -900,7 +911,7 @@ export function checkPrefixUnary(c: Checker, node: Node, scope: Scope): Operand 
     const operator = prefixOperator(node, c.sourceOf(node).text)
     if (operator === "++" || operator === "--") return checkIncDec(c, operand(node), operator, true, scope)
     if (operator === "!") return typed(new Not(types.bool, checkCondition(c, operand(node), scope)))
-    const value = checkExpr(c, operand(node), scope)
+    const value = widened(checkExpr(c, operand(node), scope))
     if (value.k === "error") return value
     const op = operator === "-" ? "-" : operator === "~" ? "~" : "+"
     const untyped = untypedOf(value)
@@ -1656,7 +1667,13 @@ export function printable(c: Checker, expr: Expr, node: Node): bool {
     const type = expr.type
     if (
         membersOf(type).every(
-            (t) => isNumeric(t) || t.kind === "bigint" || t.kind === "bool" || isStringLike(t) || t.kind === "null",
+            (t) =>
+                isNumeric(t) ||
+                t.kind === "number-literal" ||
+                t.kind === "bigint" ||
+                t.kind === "bool" ||
+                isStringLike(t) ||
+                t.kind === "null",
         )
     )
         return true

@@ -32,6 +32,7 @@ import {
     UnionType,
     arrayOf,
     intRange,
+    isNumberLiterals,
     isNumeric,
     isStringLike,
     isSubclass,
@@ -758,7 +759,7 @@ export class Checker {
         if (type !== null && typeOnly(type, new Set<Type>())) {
             this.error(
                 node,
-                `Type '${typeToString(type)}' exists only in computations on types: values cannot have numeric literal types, or 'never' in a tuple or an object type, yet.`,
+                `Type '${typeToString(type)}' exists only in computations on types: values cannot have 'never' in a tuple or an object type yet.`,
             )
             return null
         }
@@ -788,8 +789,10 @@ export class Checker {
                         }
                     }
                 }
-                // String literal types widen to `string`.
+                // String literal types widen to `string`, and numeric literal types to `number`.
                 if (target.kind === "string" && membersOf(from).every(isStringLike)) return new Recast(target, expr)
+                if (target.kind === "float" && target.bits === 64 && isNumberLiterals(from))
+                    return new Recast(target, expr)
                 if (from.kind === "null") {
                     if (target.kind === "union") {
                         for (const m of targetMembers) if (m.kind === "null") return new NullLit(target)
@@ -798,10 +801,7 @@ export class Checker {
                     return poison(target)
                 }
                 // A member, or a union of members, converts to a union containing them.
-                if (
-                    target.kind === "union" &&
-                    membersOf(from).every((f) => targetMembers.some((m) => memberOf(f, m)))
-                ) {
+                if (target.kind === "union" && membersOf(from).every((f) => targetMembers.some((m) => holds(f, m)))) {
                     return new Recast(target, expr)
                 }
                 // A union of subclasses converts to their base class.
@@ -862,6 +862,7 @@ export class Checker {
             case "untyped-int": {
                 if (target.kind === "unknown") return new Recast(target, this.coerce(value, types.i64, node))
                 if (target.kind === "union") return this.coerceToUnion(value, target, node)
+                if (target.kind === "number-literal") return this.coerceToNumberLiteral(value, target, node)
                 if (target.kind === "int") {
                     const range = intRange(target)
                     if (bigLt(value.value, bigOf(range.min)) || bigGt(value.value, bigOfU64(range.max))) {
@@ -888,6 +889,7 @@ export class Checker {
             case "untyped-float": {
                 if (target.kind === "unknown") return new Recast(target, this.coerce(value, types.f64, node))
                 if (target.kind === "union") return this.coerceToUnion(value, target, node)
+                if (target.kind === "number-literal") return this.coerceToNumberLiteral(value, target, node)
                 if (target.kind === "float") return floatLit(target, value.value)
                 if (target.kind === "int")
                     this.error(
@@ -902,6 +904,10 @@ export class Checker {
 
     /** Converts an untyped constant to the numeric member of a union: its default type if present, else the only one. */
     coerceToUnion(value: Operand, target: UnionType, node: Node): Expr {
+        // A constant equal to a numeric literal member is that member.
+        const literal = this.constantLiteral(value)
+        for (const m of target.members)
+            if (sameType(m, literal)) return new Recast(target, numberLit(literal, constantValue(value)))
         // A float constant fits only float members; an integer constant fits any numeric member.
         const numeric = target.members.filter((m) => (value.k === "untyped-float" ? m.kind === "float" : isNumeric(m)))
         const fallback = this.defaultType(value)
@@ -912,12 +918,28 @@ export class Checker {
             this.error(
                 node,
                 numeric.length === 0
-                    ? `A numeric constant is not assignable to type '${typeToString(target)}'.`
+                    ? target.members.some((m) => m.kind === "number-literal")
+                        ? `Constant ${literal.value} is not assignable to type '${typeToString(target)}'.`
+                        : `A numeric constant is not assignable to type '${typeToString(target)}'.`
                     : `Ambiguous constant for type '${typeToString(target)}'. Convert it explicitly, e.g. '${typeToString(numeric[0])}(...)'.`,
             )
             return poison(target)
         }
         return new Recast(target, this.coerce(value, preferred, node))
+    }
+
+    /** Converts an untyped constant to a numeric literal type: it must be that number. */
+    coerceToNumberLiteral(value: Operand, target: NumberLiteralType, node: Node): Expr {
+        const literal = this.constantLiteral(value)
+        if (literal === target) return numberLit(target, constantValue(value))
+        this.error(node, `Constant ${literal.value} is not assignable to type '${target.value}'.`)
+        return poison(target)
+    }
+
+    /** The numeric literal type of an untyped constant's value. */
+    constantLiteral(value: Operand): NumberLiteralType {
+        const v = constantValue(value)
+        return this.numberLiteral(v === 0 ? "0" : `${v}`)
     }
 
     /** Gives an untyped constant its default type: `int` for integers, `f64` for floats. */
@@ -1095,13 +1117,33 @@ export function structOrInterface(type: Type): StructType | InterfaceType | null
     return null
 }
 
-/** Whether a type has a part that values cannot have yet: a numeric literal type, or `never` in a tuple or object type. */
+/** The value of an untyped constant as an `f64`. */
+function constantValue(value: Operand): f64 {
+    if (value.k === "untyped-int") return bigToF64(value.value)
+    if (value.k === "untyped-float") return value.value
+    return 0.0
+}
+
+/** A number of a numeric literal type: its `f64`, as the literal type. */
+function numberLit(type: NumberLiteralType, value: f64): Expr {
+    return new Recast(type, floatLit(types.f64, value))
+}
+
+/**
+ * Whether a value of type `from` converts to member `m` of a union, as
+ * `memberOf` says, except that a numeric literal fits only itself and
+ * `number`: its values are held as an `f64`.
+ */
+function holds(from: Type, m: Type): bool {
+    if (from.kind === "number-literal") return sameType(from, m) || (m.kind === "float" && m.bits === 64)
+    return memberOf(from, m)
+}
+
+/** Whether a type has a part that values cannot have yet: `never` in a tuple or object type. */
 function typeOnly(type: Type, seen: Set<Type>): bool {
     if (seen.has(type)) return false
     seen.add(type)
     switch (type.kind) {
-        case "number-literal":
-            return true
         case "union":
             return type.members.some((m) => typeOnly(m, seen))
         case "array":

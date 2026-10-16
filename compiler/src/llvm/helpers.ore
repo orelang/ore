@@ -36,10 +36,20 @@ function baseIndex(u: UnionType, s: StructType): int {
     return baseIndex(u, base)
 }
 
-/** The member of a union that holds values of a type; a string literal also fits `string`, and an instance of a class its base class. */
+/**
+ * The member of a union that holds values of a type; a string literal also
+ * fits `string`, a numeric literal `number`, and an instance of a class its
+ * base class.
+ */
 export function memberIndex(u: UnionType, type: Type): int {
     for (let i = 0; i < u.members.length; i++) if (sameType(u.members[i], type)) return i
     if (type.kind === "struct") return baseIndex(u, type)
+    if (type.kind === "number-literal") {
+        for (let i = 0; i < u.members.length; i++) {
+            const m = u.members[i]
+            if (m.kind === "float" && m.bits === 64) return i
+        }
+    }
     if (type.kind !== "literal") return -1
     for (let i = 0; i < u.members.length; i++) if (u.members[i].kind === "string") return i
     return -1

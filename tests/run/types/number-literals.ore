@@ -1,0 +1,67 @@
+// Numeric literal types as types of values: numbers held as an f64.
+
+type Dice = 1 | 2 | 3 | 4 | 5 | 6
+type Angle = 0 | 90 | 180 | 270
+
+// A switch with a case for each literal is exhaustive.
+function turn(d: Angle): Angle {
+    switch (d) {
+        case 0:
+            return 90
+        case 90:
+            return 180
+        case 180:
+            return 270
+        case 270:
+            return 0
+    }
+}
+
+function name(d: Dice): string {
+    if (d === 1) return "one"
+    if (d === 6) return "six"
+    return `pips ${d}`
+}
+
+// Narrowing to one literal.
+function only(d: 0 | 90): 0 {
+    if (d !== 90) return d
+    return 0
+}
+
+const n: 1 | 2 = 1
+const half: 0.5 = 0.5
+const neg: -1 | 1 = -1
+let a: Angle = 0
+a = turn(a)
+a = turn(a)
+console.log(n, half, neg, a)
+
+// Widening to number: arithmetic and comparisons see numbers.
+const x: number = a
+console.log(x + 1, a * 2, -a, a > 100, a === n)
+console.log(name(1), name(6), name(3), only(0), only(90))
+
+const dice: Dice[] = [1, 2, 6]
+console.log(dice, dice[2] === 6)
+
+// Mixed with string literals and null: a tagged union.
+let m: "none" | 0 | 1 = "none"
+console.log(m)
+m = 1
+console.log(m, m === 1, m === "none")
+switch (m) {
+    case "none":
+        console.log("none")
+        break
+    case 0:
+    case 1:
+        console.log("number", m + 1)
+}
+let maybe: Angle | null = null
+console.log(maybe)
+maybe = 270
+if (maybe !== null) console.log(maybe + 1)
+
+const wide: number | string = a
+console.log(wide, typeof a, `${half}`)

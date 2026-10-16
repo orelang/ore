@@ -17,6 +17,13 @@ before 1.0, a minor version may change the language.
   with `===`, tested for `null` and narrowed with `typeof` (to `string`,
   `f64`, `bool` or `bigint`) and `instanceof` (to a class), which unbox it;
   anything else is an error, `Object is of type 'unknown'.` (ORE3078).
+- Numeric literal types are types of values: `const n: 1 | 2 = 1`,
+  `function rotate(d: 0 | 90 | 180 | 270)`, `type Dice = 1 | 2 | 3 | 4 | 5 | 6`.
+  Their values are numbers held as an `f64`; they widen to `number`, and
+  arithmetic and comparisons see numbers. A constant fits when it equals a
+  member (ORE2067); `===` and `switch` narrow them, and a `switch` with a
+  case for each is exhaustive. ORE2066 now concerns only `never` inside
+  tuples and object types.
 - Numeric literal types in computations on types (`Prev[D]`,
   `D extends number = 10`, `[D] extends [never]`); `infer` in template
   literal types; `unknown`, `object`, `Function` and `readonly unknown[]`

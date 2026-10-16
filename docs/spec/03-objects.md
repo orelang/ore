@@ -186,7 +186,8 @@ on that slot reads the class table.
 ## Unions and null
 
 - `A | B` is a union type. Unions are normalized: nested unions are
-  flattened, duplicates removed, and `string` absorbs string literal types.
+  flattened, duplicates removed, `string` absorbs string literal types and
+  `number` numeric literal types.
 - `null` is a value only of unions that contain `null`. A variable of such a
   type without an initializer starts as `null`. There is no `undefined`.
 - A string literal type such as `"circle"` has strings as values. A string
@@ -200,7 +201,9 @@ on that slot reads the class table.
   be assigned (`stmt.line = 3`, `stmt.count++`) when it is writable and has
   the same type in every member.
 - Representation: a reference type with `null` is a nullable reference; a
-  union of string literals is a string; other unions are tagged values.
+  union of string literals is a string, and one of numeric literals an
+  `f64` (see [numeric literal types](02-types.md#numeric-literal-types));
+  other unions are tagged values.
 
 ## Narrowing
 
@@ -208,9 +211,9 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
 `this.head.next`:
 
 - `x !== null` and `x === null`;
-- `x === "lit"` for a union of literal types, and `x.kind === "lit"` for a
-  union of objects whose `kind` fields have literal types (discriminated
-  unions);
+- `x === "lit"` and `x === 1` for a union of literal types, and
+  `x.kind === "lit"` for a union of objects whose `kind` fields have
+  literal types (discriminated unions);
 - `typeof x === "string" | "number" | "boolean" | "object"`;
 - `x instanceof C` for a class `C` (also on interface values, which then
   narrow to the class, and on instances of a base class of `C`) and
@@ -247,8 +250,9 @@ on booleans, `x ||= y` assigns only when `x` is false and `x &&= y` only
 when it is true. The target (`o.f`, `a[i]`) is evaluated once, and `y` only
 when assigned.
 
-A `switch` over a union of string literals with a case for every literal is
-exhaustive: like a `default`, it lets a function end without `return`.
+A `switch` over a union of string or numeric literals with a case for every
+literal is exhaustive: like a `default`, it lets a function end without
+`return`.
 
 ## Generics
 
@@ -302,10 +306,11 @@ names them is:
   of the string literal types in it, and `string` with any other type.
   `Uppercase`, `Lowercase`, `Capitalize` and `Uncapitalize` change their
   letters.
-- Numeric literal types (`0`, `-1.5`) and `never` inside tuples and object
-  types take part in computations on types, as in `Prev[D]`,
-  `D extends number = 10` and `[D] extends [never]`; values cannot have them
-  yet. In the `extends` clause of a conditional type, `unknown` matches any
+- Numeric literal types (`0`, `-1.5`) take part in computations on types,
+  as in `Prev[D]` and `D extends number = 10`, and are types of values too
+  (see [numeric literal types](02-types.md#numeric-literal-types)). `never`
+  inside tuples and object types takes part in them, as in
+  `[D] extends [never]`; values cannot have it yet. In the `extends` clause of a conditional type, `unknown` matches any
   type, `object` any value that is not a primitive, `Function` any function
   and `readonly unknown[]` any array or tuple; `{}` matches object types
   structurally (`{} extends Pick<T, K>` when K is optional in T); and a
