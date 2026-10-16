@@ -41,6 +41,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `Object.keys`, printing and JSON of an object type | the order each object's properties were added | the order the shape was first written, the same for every object of it |
 | `Object.groupBy(...)` | an object with a null prototype | a dictionary, printed as an object |
 | `Object.freeze(o)` of an object or class instance | freezes it | returns it unchanged; `readonly` fields are the frozen ones |
+| `a.pop()`, `a.shift()` of an empty array | `undefined` | panics, as reading null would (check `a.length` first) |
 | `a.length = n` | truncates, or grows with holes | truncates; a larger `n` panics (no holes) |
 | `generator.next()` after the generator returned `v` | `{ value: undefined, done: true }` | `{ value: v, done: true }` (the value of `return()` after it) |
 | `generator.throw(e)` | throws `e` at the `yield` | does not exist (no exceptions) |
