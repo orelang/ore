@@ -5,6 +5,7 @@
 | [spec](spec/README.md) | The language specification, by chapter |
 | [errors](errors/README.md) | A page for each diagnostic code (`ORE1001`...), linked from the compiler and the language server |
 | [architecture.md](architecture.md) | Principles, the compiler pipeline, the runtime, testing |
+| [environment.md](environment.md) | The environment variables of programs and of `ore` |
 | [roadmap.md](roadmap.md) | What comes next, in order |
 | [assets](assets) | The banner and the brand's colors (`banner.html`), rendered to `banner.png` by `render.sh` |
 
