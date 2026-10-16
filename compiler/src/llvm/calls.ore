@@ -750,45 +750,75 @@ export function stringMethod(g: Emitter, e: StringMethod): V {
     const s = expr(g, e.value)
     const a: V[] = []
     for (const x of e.args) a.push(expr(g, x))
-    const space = g.str(" ")
     const yes: V = { ty: "i1", v: "true" }
     const no: V = { ty: "i1", v: "false" }
+    // An optional argument, or its default.
+    const arg = (i: int, value: V): V => (a.length > i ? a[i] : value)
+    const zero = g.i64(0)
+    const max = g.i64(I64_MAX)
     switch (e.method) {
+        case "at":
+            return g.rt("ore_rt_str_char_at_relative", [s, arg(0, zero)])
+        case "charAt":
+            return g.rt("ore_rt_str_char_at", [s, arg(0, zero)])
+        case "charCodeAt":
+            return g.rt("ore_rt_str_char_code_at", [s, arg(0, zero)])
+        case "codePointAt":
+            return g.rt("ore_rt_str_code_point_at", [s, arg(0, zero)])
         case "indexOf":
-            return g.rt("ore_rt_str_index_of", [s, a[0], a.length > 1 ? a[1] : g.i64(0)])
+            return g.rt("ore_rt_str_index_of", [s, a[0], arg(1, zero)])
         case "lastIndexOf":
-            return g.rt("ore_rt_str_last_index_of", [s, a[0]])
+            return g.rt("ore_rt_str_last_index_of", [s, a[0], arg(1, max)])
         case "includes":
-            return g.b.value("i1", `icmp ne i64 ${g.rt("ore_rt_str_index_of", [s, a[0], g.i64(0)]).v}, -1`)
+            return g.b.value("i1", `icmp ne i64 ${g.rt("ore_rt_str_index_of", [s, a[0], arg(1, zero)]).v}, -1`)
         case "startsWith":
-            return g.rtBool("ore_rt_str_starts_with", [s, a[0]])
+            return g.rtBool("ore_rt_str_starts_with", [s, a[0], arg(1, zero)])
         case "endsWith":
-            return g.rtBool("ore_rt_str_ends_with", [s, a[0]])
+            return g.rtBool("ore_rt_str_ends_with", [s, a[0], arg(1, max)])
         case "split":
-            return g.rt("ore_rt_str_split", [s, a[0]])
+            return g.rt("ore_rt_str_split", [s, a[0], arg(1, g.i64(-1))])
         case "trim":
             return g.rt("ore_rt_str_trim", [s, g.i64(3)])
         case "trimStart":
+        case "trimLeft":
             return g.rt("ore_rt_str_trim", [s, g.i64(1)])
         case "trimEnd":
+        case "trimRight":
             return g.rt("ore_rt_str_trim", [s, g.i64(2)])
         case "toUpperCase":
+        case "toLocaleUpperCase":
             return g.rt("ore_rt_str_case", [s, yes])
         case "toLowerCase":
+        case "toLocaleLowerCase":
             return g.rt("ore_rt_str_case", [s, no])
+        case "normalize":
+            return g.rt("ore_rt_str_normalize", [s, arg(0, g.str("NFC"))])
+        case "isWellFormed":
+            return g.rtBool("ore_rt_str_is_well_formed", [s])
+        case "toWellFormed":
+            return g.rt("ore_rt_str_to_well_formed", [s])
+        case "localeCompare":
+            return g.rt("ore_rt_str_cmp", [s, a[0]])
         case "replace":
             return g.rt("ore_rt_str_replace", [s, a[0], a[1], no])
         case "replaceAll":
             return g.rt("ore_rt_str_replace", [s, a[0], a[1], yes])
+        case "replaceWith":
+            return g.rt("ore_rt_str_replace_with", [s, a[0], a[1], no])
+        case "replaceAllWith":
+            return g.rt("ore_rt_str_replace_with", [s, a[0], a[1], yes])
         case "repeat":
             return g.rt("ore_rt_str_repeat", [s, a[0]])
         case "padStart":
-            return g.rt("ore_rt_str_pad", [s, a[0], a.length > 1 ? a[1] : space, yes])
+            return g.rt("ore_rt_str_pad", [s, a[0], arg(1, g.str(" ")), yes])
         case "padEnd":
-            return g.rt("ore_rt_str_pad", [s, a[0], a.length > 1 ? a[1] : space, no])
-        case "codePointAt":
-            return g.rt("ore_rt_str_code_point_at", [s, a[0]])
+            return g.rt("ore_rt_str_pad", [s, a[0], arg(1, g.str(" ")), no])
+        case "substr":
+            return g.rt("ore_rt_str_substr", [s, a[0], arg(1, max)])
+        case "toString":
+        case "valueOf":
+            return s
         default:
-            return g.rt("ore_rt_str_substring", [s, a[0], a.length > 1 ? a[1] : g.i64(I64_MAX)])
+            return g.rt("ore_rt_str_substring", [s, a[0], arg(1, max)])
     }
 }

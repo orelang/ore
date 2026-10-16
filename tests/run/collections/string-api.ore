@@ -1,0 +1,101 @@
+// The methods of String.prototype, as JavaScript has them, on UTF-8 strings:
+// positions are byte offsets, and the results match node's for ASCII text.
+
+// Characters and code units.
+const s = "hello"
+console.log(s.at(0), s.at(-1), s.at(5), s.at(-6), s.at())
+console.log(s.charAt(1), s.charAt(9) === "", s.charAt(-1) === "", s.charAt())
+console.log(s.charCodeAt(1), s.charCodeAt(5), s.charCodeAt(), s.codePointAt(4), s.codePointAt(-1), s.codePointAt())
+
+// Searching from a position.
+console.log(s.indexOf("l", 3), s.indexOf("", 3), s.indexOf("", 99), s.indexOf("l", -5))
+console.log(
+    s.lastIndexOf("l"),
+    s.lastIndexOf("l", 2),
+    s.lastIndexOf("l", -1),
+    s.lastIndexOf("h", -1),
+    s.lastIndexOf("", 99),
+)
+console.log(s.includes("ell"), s.includes("ell", 2), s.includes("", 99))
+console.log(s.startsWith("ll", 2), s.startsWith("he", -3), s.startsWith("o", 99), s.startsWith("", 99))
+console.log(s.endsWith("ll", 4), s.endsWith("lo", 99), s.endsWith("he", 2), s.endsWith("h", -1))
+
+// Parts.
+console.log(s.slice(1, -1), s.substring(4, 1), s.substr(1, 3), s.substr(-3), s.substr(-9, 2), s.substr(2, -1) === "")
+console.log("a,b,c".split(","), "a,b,c".split(",", 2), "a,b,c".split(",", 0), "a,b,c".split(",", -1))
+console.log("".split(","), "".split(""), "abc".split("", 2), "abc".split("abc"))
+console.log(s.concat(), s.concat(" ", "world", "!"), s.toString(), s.valueOf())
+
+// Replacing with patterns and functions.
+console.log("aXbX".replace("X", "$&$&"), "aXbX".replaceAll("X", "[$`|$']"), "a-b".replace("-", "$$ $1 $<n> $"))
+console.log("abc".replace("", "-"), "abc".replaceAll("", "-"), "aaaa".replaceAll("aa", "b"), "abc".replace("x", "y"))
+console.log(
+    "x-y-z".replace("-", (m, at, all) => `<${m}${at}${all.length}>`),
+    "x-y-z".replaceAll("-", (m) => m + m),
+)
+const shout = (m: string, at: int, all: string) => m.toUpperCase()
+console.log("ab ab".replaceAll("ab", shout))
+
+// Padding, repeating, trimming.
+console.log(
+    s.padStart(8, "ab"),
+    s.padEnd(8, "ab"),
+    s.padStart(2),
+    s.padEnd(7) + "|",
+    s.padStart(9, ""),
+    "ab".repeat(0) === "",
+)
+console.log(
+    `[${" \t\n x \r\n".trim()}] [${"  x ".trimStart()}] [${"  x ".trimLeft()}] [${" x  ".trimEnd()}] [${" x  ".trimRight()}]`,
+)
+
+// Comparing, well-formedness.
+console.log(
+    "a".localeCompare("b"),
+    "b".localeCompare("a"),
+    "a".localeCompare("a"),
+    "a".isWellFormed(),
+    "a".toWellFormed(),
+)
+
+// Case and normalization.
+console.log("Hello".toUpperCase(), "Hello".toLowerCase(), "Hello".toLocaleUpperCase(), "Hello".toLocaleLowerCase())
+console.log(
+    "é ß straße ﬃ ŉ".toUpperCase(),
+    "ÀÉÎ ΣΑΣ Σ ΑΣ.".toLowerCase(),
+    "İ".toLowerCase().length,
+    "Ǆ ǅ ǆ".toLowerCase(),
+)
+console.log(
+    "café".normalize() === "café",
+    "e\u0301".normalize() === "é",
+    "é".normalize("NFD").length,
+    "ﬁ ① ㎏".normalize("NFKC"),
+)
+console.log(
+    "한글".normalize("NFD").length,
+    "한글".normalize("NFD").normalize("NFC") === "한글",
+    "Å".normalize("NFKD").length,
+)
+
+// Byte offsets: a character is the one that starts at the offset.
+const word = "aé😀"
+console.log(word.at(1), word.at(-4), word.charAt(3), word.charAt(2).length, word.charCodeAt(1), word.codePointAt(3))
+console.log(
+    "x".padStart(4, "é"),
+    "x".padStart(4, "é").length,
+    "x".padEnd(3, "é"),
+    "aéb".split(""),
+    "é".replaceAll("", "|"),
+)
+console.log(`[${"\u00a0\u3000x\u2028\ufeff".trim()}]`, "\u2003x".trimStart().length)
+
+// Bytes that are not UTF-8 stay as they are; toWellFormed replaces them.
+const broken = "é".slice(0, 1) + "x"
+console.log(
+    broken.isWellFormed(),
+    broken.toWellFormed() === "\ufffdx",
+    broken.toUpperCase().slice(1),
+    broken.toUpperCase().length,
+)
+console.log(broken.normalize("NFD").length, "aé".isWellFormed())

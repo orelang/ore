@@ -447,15 +447,53 @@ functions.
 - `<`, `<=`, `>`, `>=` compare strings byte-wise; `===` compares contents.
 - `for (const r of s)` iterates runes as `i32`. Invalid UTF-8 yields
   U+FFFD (65533) for each invalid byte.
-- Methods, as in JavaScript but on byte offsets: `indexOf(s, from?)`,
-  `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `split(sep)` (an empty
-  separator splits into UTF-8 characters), `trim`, `trimStart`, `trimEnd`,
-  `toUpperCase` and `toLowerCase` (ASCII letters), `replace` (the first
-  occurrence), `replaceAll`, `repeat(n)`, `padStart(n, pad?)`,
-  `padEnd(n, pad?)`, `substring(start, end?)`.
-- `s.codePointAt(i)` is the code point (`int | null`) of the character that
-  starts at byte `i`: U+FFFD if no valid character starts there, `null` if
-  `i` is out of range (JavaScript's `undefined`).
+- The methods of `String.prototype` are JavaScript's, with byte offsets for
+  positions and lengths (JavaScript counts UTF-16 code units):
+  `at(i?)`, `charAt(i?)`, `charCodeAt(i?)`, `codePointAt(i?)`,
+  `concat(...strings)`, `endsWith(s, end?)`, `includes(s, from?)`,
+  `indexOf(s, from?)`, `lastIndexOf(s, from?)`, `isWellFormed()`,
+  `localeCompare(s)`, `match`, `matchAll`, `normalize(form?)`,
+  `padEnd(n, pad?)`, `padStart(n, pad?)`, `repeat(n)`, `replace`,
+  `replaceAll`, `search`, `slice(start?, end?)`, `split(sep, limit?)`,
+  `startsWith(s, from?)`, `substring(start, end?)`, `substr(start, length?)`,
+  `toLowerCase()`, `toUpperCase()`, `toLocaleLowerCase()`,
+  `toLocaleUpperCase()`, `toString()`, `toWellFormed()`, `trim()`,
+  `trimStart()`, `trimEnd()`, `trimLeft()`, `trimRight()`, `valueOf()`.
+  Positions are clamped and default as in JavaScript (`"abc".indexOf("", 9)`
+  is 3, `"abc".lastIndexOf("c", -5)` is -1), and `split`'s limit is taken
+  modulo 2^32, so -1 is no limit.
+- A position names the character that starts at that byte: `"aé😀".at(-4)`
+  and `charAt(3)` are `"😀"`, `codePointAt(3)` is 128512. Where no valid
+  character starts (inside one), `at` and `charAt` give that one byte and
+  `codePointAt` U+FFFD. `at` out of range is `null` (JavaScript's
+  `undefined`). `charCodeAt(i)` is the byte at `i` — UTF-8's code unit, as
+  JavaScript's is UTF-16's — or `null` out of range (JavaScript's `NaN`).
+- An empty separator splits into characters, and an empty pattern of
+  `replaceAll` is at the start and after each character.
+- `replace` and `replaceAll` with a string pattern read `$$`, `$&`,
+  `` $` `` and `$'` in the replacement (`"aXbX".replace("X", "$&$&")` is
+  `"aXXbX"`); a function `(matched: string, offset: int, input: string) =>
+  string` computes each replacement, as in JavaScript.
+- `padStart` and `padEnd` cut the last repetition of the padding where a
+  character starts, so the result may be up to 3 bytes shorter than asked
+  rather than invalid UTF-8 (`"x".padStart(4, "é")` is `"éx"`).
+- `trim` removes JavaScript's white space and line terminators (`\u00a0`,
+  `\u2028`, `\ufeff` and the others), not only ASCII's.
+- `toUpperCase` and `toLowerCase` use Unicode's full case mappings without
+  a locale, as JavaScript does: `"é ß".toUpperCase()` is `"É SS"`, `"İ"`
+  lowers to `"i̇"`, and a capital sigma at the end of a word lowers to
+  `ς`. The `toLocale` forms take no locale and do the same.
+  `normalize(form = "NFC")` gives the forms NFC, NFD, NFKC and NFKD; another
+  form panics (JavaScript's `RangeError`). The data is Unicode 17.0's, as in
+  node 24 (`runtime/core/unicode-tables.ore`).
+- `localeCompare` compares by code point (byte-wise, like `<`): `-1`, `0`
+  or `1`, where JavaScript compares by the locale's collation (`"a"` before
+  `"B"`).
+- `isWellFormed()` is whether the bytes are valid UTF-8, and
+  `toWellFormed()` replaces each byte that is not part of a valid character
+  by U+FFFD; the other methods keep such bytes as they are. `repeat` with a
+  negative count panics (JavaScript's `RangeError`).
+- `String.raw` is not supported: Ore has no tagged templates.
 - `String.fromCharCode(...codes)` makes a string of UTF-16 code units, each
   taken modulo 2^16, and `String.fromCodePoint(...points)` of code points, as
   in JavaScript: a high surrogate followed by a low surrogate is one

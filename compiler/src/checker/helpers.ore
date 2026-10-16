@@ -87,30 +87,53 @@ export class StringMethodSig {
         readonly params: Type[],
         readonly optional: int,
         readonly result: Type,
+        /** Whether the result is `result | null`, which the checker makes. */
+        readonly nullable: bool,
     ) {}
 }
 
-/** String methods: parameter types, how many trailing ones are optional, and the result. */
+function sig(params: Type[], optional: int, result: Type): StringMethodSig {
+    return new StringMethodSig(params, optional, result, false)
+}
+
+/**
+ * String methods: parameter types, how many trailing ones are optional, and
+ * the result. `replace` and `replaceAll` also take a function, and `concat`
+ * any number of strings: the checker handles those.
+ */
 export const stringMethods = new Map<string, StringMethodSig>([
-    ["indexOf", new StringMethodSig([types.string, types.i64], 1, types.i64)],
-    ["lastIndexOf", new StringMethodSig([types.string], 0, types.i64)],
-    ["includes", new StringMethodSig([types.string], 0, types.bool)],
-    ["startsWith", new StringMethodSig([types.string], 0, types.bool)],
-    ["endsWith", new StringMethodSig([types.string], 0, types.bool)],
-    ["split", new StringMethodSig([types.string], 0, arrayOf(types.string))],
-    ["trim", new StringMethodSig([], 0, types.string)],
-    ["trimStart", new StringMethodSig([], 0, types.string)],
-    ["trimEnd", new StringMethodSig([], 0, types.string)],
-    ["toUpperCase", new StringMethodSig([], 0, types.string)],
-    ["toLowerCase", new StringMethodSig([], 0, types.string)],
-    ["replace", new StringMethodSig([types.string, types.string], 0, types.string)],
-    ["replaceAll", new StringMethodSig([types.string, types.string], 0, types.string)],
-    ["repeat", new StringMethodSig([types.i64], 0, types.string)],
-    ["padStart", new StringMethodSig([types.i64, types.string], 1, types.string)],
-    ["padEnd", new StringMethodSig([types.i64, types.string], 1, types.string)],
-    ["substring", new StringMethodSig([types.i64, types.i64], 1, types.string)],
-    // `int | null`: the checker makes the union.
-    ["codePointAt", new StringMethodSig([types.i64], 0, types.i64)],
+    ["at", new StringMethodSig([types.i64], 1, types.string, true)],
+    ["charAt", sig([types.i64], 1, types.string)],
+    ["charCodeAt", new StringMethodSig([types.i64], 1, types.i64, true)],
+    ["codePointAt", new StringMethodSig([types.i64], 1, types.i64, true)],
+    ["indexOf", sig([types.string, types.i64], 1, types.i64)],
+    ["lastIndexOf", sig([types.string, types.i64], 1, types.i64)],
+    ["includes", sig([types.string, types.i64], 1, types.bool)],
+    ["startsWith", sig([types.string, types.i64], 1, types.bool)],
+    ["endsWith", sig([types.string, types.i64], 1, types.bool)],
+    ["split", sig([types.string, types.i64], 1, arrayOf(types.string))],
+    ["trim", sig([], 0, types.string)],
+    ["trimStart", sig([], 0, types.string)],
+    ["trimEnd", sig([], 0, types.string)],
+    ["trimLeft", sig([], 0, types.string)],
+    ["trimRight", sig([], 0, types.string)],
+    ["toUpperCase", sig([], 0, types.string)],
+    ["toLowerCase", sig([], 0, types.string)],
+    ["toLocaleUpperCase", sig([], 0, types.string)],
+    ["toLocaleLowerCase", sig([], 0, types.string)],
+    ["normalize", sig([types.string], 1, types.string)],
+    ["isWellFormed", sig([], 0, types.bool)],
+    ["toWellFormed", sig([], 0, types.string)],
+    ["localeCompare", sig([types.string], 0, types.i64)],
+    ["replace", sig([types.string, types.string], 0, types.string)],
+    ["replaceAll", sig([types.string, types.string], 0, types.string)],
+    ["repeat", sig([types.i64], 0, types.string)],
+    ["padStart", sig([types.i64, types.string], 1, types.string)],
+    ["padEnd", sig([types.i64, types.string], 1, types.string)],
+    ["substring", sig([types.i64, types.i64], 1, types.string)],
+    ["substr", sig([types.i64, types.i64], 1, types.string)],
+    ["toString", sig([], 0, types.string)],
+    ["valueOf", sig([], 0, types.string)],
 ])
 
 /** The minimum and maximum argument counts of an array method; a maximum of -1 is no limit. */

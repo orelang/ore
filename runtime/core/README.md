@@ -20,7 +20,9 @@ Rules for this code:
 | Module | Contents |
 |---|---|
 | `frames.ore` | `ore_rt_top`, the top of the shadow stack of debug builds, per OS thread |
-| `string.ore` | Comparison, concatenation, UTF-8 decoding, search, slicing, split and join, trim, case, replace, repeat, pad |
+| `string.ore` | Comparison, concatenation, search, slicing, split and join, trim, replace, repeat, pad: the methods of `String.prototype` on bytes |
+| `unicode.ore` | UTF-8 decoding and encoding, full case mapping with the final sigma, the normalization forms NFC, NFD, NFKC and NFKD |
+| `unicode-tables.ore` | The Unicode data of `unicode.ore`, generated from node by [`ci/unicode-tables.js`](../../ci/unicode-tables.js) |
 | `array.ore` | New arrays, push, pop, shift, unshift and splice, slicing, reverse, stable sort |
 | `map.ore` | Insertion-ordered hash maps, hashing of keys |
 | `collections.ore` | The methods of `Map` and `Set` that take callbacks or other sets (`forEach`, `union`, `isSubsetOf`...), generic functions the checker calls with the receiver first; the namespace `Map` (`Map.groupBy`) |

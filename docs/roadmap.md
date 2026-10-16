@@ -83,6 +83,10 @@ exports, type assertions (Ore converts: `i32(x)`).
   that take one, with a backtracking engine in the runtime, lookbehind and
   the flags `d`, `u` and `v` with the string disjunctions `\q{...}` (done;
   `\p{...}` knows only the letter and number categories and four scripts).
+- The methods of `String.prototype` from MDN, on byte offsets, with
+  Unicode's full case mappings and the four normalization forms (done;
+  `localeCompare` compares by code point, `String.raw` needs tagged
+  templates).
 - Import attributes as in JavaScript (`import x from "./f" with { type: ... }`,
   see [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import/with)):
   `type: "json"` imports a JSON file as a typed value, checked against the
