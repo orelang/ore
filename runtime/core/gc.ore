@@ -1063,14 +1063,17 @@ export function writeBarrierRange(to: ptr, bytes: int): void {
 
 //ore:noinline
 function shadeWords(slot: ptr, words: int): void {
-    // A stop waits until the shaded objects are in the thread's buffer, where the collector finds them.
+    // A stop waits until the shaded objects are in the thread's buffer, where the collector finds them. The
+    // barrier can run inside a region that already keeps the collector waiting (`enterNoStop`), which it
+    // must leave as it was: only the region that started it stops the thread afterwards.
     const t = threadRecord()
-    if (!isNil(t)) unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    const outer = isNil(t) ? 1 : unsafe.atomicLoad<i64>(unsafe.add(t, threadInAlloc))
+    if (outer === 0) unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
     for (let i = 0; i < words; i++) {
         const object = greyen(unsafe.load<u64>(unsafe.add(slot, i * 8)))
         if (!isNil(object)) shade(object)
     }
-    if (isNil(t)) return
+    if (outer !== 0) return
     unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
     if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
 }
@@ -1228,7 +1231,8 @@ function assist(t: ptr): void {
         m = newMarker()
         setPointer(t, threadAssist, m)
     }
-    unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
+    const outer = unsafe.atomicLoad<i64>(unsafe.add(t, threadInAlloc))
+    if (outer === 0) unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 1)
     lock(poolLock)
     take(m)
     unlock(poolLock)
@@ -1245,6 +1249,7 @@ function assist(t: ptr): void {
         unlock(poolLock)
         setField(m, markerTop, 0)
     }
+    if (outer !== 0) return
     unsafe.atomicStore<i64>(unsafe.add(t, threadInAlloc), 0)
     if (unsafe.atomicLoad<i64>(unsafe.add(t, threadStopRequested)) !== 0) stopHere(t)
 }
@@ -1304,9 +1309,25 @@ function stopWorld(self: ptr): int {
         others++
     }
     // Every other thread has stopped once it acknowledged this stop.
+    const since = nowNs(clock)
+    let warned = false
     for (let t = threads; !isNil(t); t = pointerAt(t, threadNext)) {
         if (t === self) continue
-        while (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) nanosleep(pause, nil())
+        while (unsafe.atomicLoad<i64>(unsafe.add(t, threadStoppedFor)) !== generation) {
+            nanosleep(pause, nil())
+            // A stop should take microseconds: after 5 s, say which thread holds it up, once.
+            if (!warned && nowNs(clock) - since > 5000000000) {
+                warned = true
+                dprintf(
+                    2,
+                    "gc: thread %lx has not stopped for 5 s (in allocation or barrier: %ld, stop requested: %ld, marking: %ld)\n",
+                    i64(unsafe.toInt(pointerAt(t, threadId))),
+                    field(t, threadInAlloc),
+                    field(t, threadStopRequested),
+                    unsafe.atomicLoad<i64>(markingCell),
+                )
+            }
+        }
     }
     return others
 }
