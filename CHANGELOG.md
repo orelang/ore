@@ -3,7 +3,9 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
-## Unreleased
+## 0.2.0
+
+Closing the gaps with TypeScript, and the toolchain around the language.
 
 - Diagnostics point at the places related to them: the first declaration of
   a name declared twice, the declaration of a variable read before it is
