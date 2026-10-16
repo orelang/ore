@@ -10,15 +10,19 @@ time.timeout(() => {
     console.log("cancel after firing is harmless")
 }, 10 * time.millisecond)
 
+// The third tick arms the canceller, due well before the fourth tick, so that
+// a late tick on a slow machine keeps the order.
 let count = 0
 const interval = time.interval(() => {
     count++
     console.log("interval", count)
-}, 15 * time.millisecond)
-time.timeout(() => {
-    interval.cancel()
-    console.log("interval cancelled by another timer")
-}, 50 * time.millisecond)
+    if (count === 3)
+        time.timeout(() => {
+            interval.cancel()
+            console.log("interval cancelled by another timer")
+            time.timeout(() => console.log("done"), 30 * time.millisecond)
+        }, 20 * time.millisecond)
+}, 60 * time.millisecond)
 
 const immediate = time.immediate(() => console.log("never immediate"))
 immediate.cancel()
@@ -33,4 +37,3 @@ second = time.timeout(
     () => console.log("never: cancelled by an earlier timer due at the same time"),
     20 * time.millisecond,
 )
-time.timeout(() => console.log("done"), 80 * time.millisecond)
