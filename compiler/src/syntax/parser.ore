@@ -1729,7 +1729,7 @@ export class Parser {
                 this.next()
                 const node = new Node("TupleType", start, start)
                 while (!this.at("CloseBracketToken") && !this.at("EndOfFileToken")) {
-                    node.add(this.type(), "elements")
+                    node.add(this.tupleElement(), "elements")
                     if (!this.eat("CommaToken")) break
                 }
                 this.expect("CloseBracketToken")
@@ -1745,6 +1745,35 @@ export class Parser {
         const reference = new Node("TypeReference", start, start).add(name, "typeName")
         if (this.at("LessThanToken") && !this.token().newline) reference.addAll(this.typeArguments(), "typeArguments")
         return this.finish(reference, start)
+    }
+
+    /** An element of a tuple type: `T`, `T?`, `...T`, or named, `name: T`, `name?: T`, `...name: T`. */
+    private tupleElement(): Node {
+        const start = this.token().start
+        const rest = this.at("DotDotDotToken")
+        const n = rest ? 1 : 0
+        const named =
+            this.isIdentifier(this.peek(n).kind) &&
+            (this.peek(n + 1).kind === "ColonToken" ||
+                (this.peek(n + 1).kind === "QuestionToken" && this.peek(n + 2).kind === "ColonToken"))
+        if (named) {
+            const node = new Node("NamedTupleMember", start, start)
+            if (rest) node.add(this.tokenNode(), "dotDotDotToken")
+            node.add(this.identifier(), "name")
+            if (this.at("QuestionToken")) node.add(this.tokenNode(), "questionToken")
+            this.expect("ColonToken")
+            node.add(this.type(), "type")
+            return this.finish(node, start)
+        }
+        if (rest) {
+            this.next()
+            const inner = this.type()
+            return this.make("RestType", start).add(inner, "type")
+        }
+        const type = this.type()
+        if (!this.at("QuestionToken")) return type
+        this.next()
+        return this.make("OptionalType", start).add(type, "type")
     }
 
     private typeArguments(): Node[] {

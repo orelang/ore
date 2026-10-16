@@ -136,6 +136,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE2068](ORE2068.md) | An index signature has one parameter and a type: '[key: string]: T'. |
 | [ORE2069](ORE2069.md) | The keys of a dictionary are strings, not '…'; for other keys, use a 'Map<K, V>'. |
 | [ORE2070](ORE2070.md) | The type '…' is 'readonly' and cannot be assigned to the mutable type '…'. |
+| [ORE2071](ORE2071.md) | A required element cannot follow an optional element. |
+| [ORE2072](ORE2072.md) | A rest element of type '…' is not supported: tuples have a fixed length in Ore. Spread a tuple type, or use an array. |
 
 ## ORE3xxx: Expressions
 

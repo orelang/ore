@@ -52,6 +52,8 @@ import {
     initializer,
     isAssignmentOperator,
     isIdentifier,
+    isOptionalTupleElement,
+    isRestTupleElement,
     isStringLiteralNode,
     typeName,
     members,
@@ -69,6 +71,7 @@ import {
     thenStatement,
     elseStatement,
     typeArguments,
+    tupleElementType,
     typeNode,
     typeParameters,
     types as typeNodes,
@@ -1695,9 +1698,19 @@ export function inferFrom(
         return
     }
     if (n.kind === "TupleType") {
+        // Names of elements are documentation only; rest elements infer nothing.
         const elems = n.list("elements")
-        if (type.kind === "struct" && type.tuple && type.fields.length === elems.length)
-            for (let i = 0; i < elems.length; i++) inferFrom(c, elems[i], type.fields[i].type, names, bindings, scope)
+        if (
+            type.kind === "struct" &&
+            type.tuple &&
+            type.fields.length === elems.length &&
+            !elems.some(isRestTupleElement)
+        )
+            for (let i = 0; i < elems.length; i++) {
+                const f = type.fields[i]
+                const ft = isOptionalTupleElement(elems[i]) && f.optional ? c.withoutNull(f.type) : f.type
+                inferFrom(c, tupleElementType(elems[i]), ft, names, bindings, scope)
+            }
         return
     }
     if (n.kind === "UnionType") {

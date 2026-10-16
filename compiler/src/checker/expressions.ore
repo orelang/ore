@@ -1286,6 +1286,8 @@ function tupleContext(expected: Type | null, length: int): StructType | null {
     const tuples: StructType[] = []
     for (const m of membersOf(expected)) if (m.kind === "struct" && m.tuple) tuples.push(m)
     for (const t of tuples) if (t.fields.length === length) return t
+    // Or one that leaves out optional elements.
+    for (const t of tuples) if (length < t.fields.length && t.fields[length].optional) return t
     let arrays = false
     for (const m of membersOf(expected)) if (m.kind === "array") arrays = true
     return tuples.length === 1 && !arrays ? tuples[0] : null
@@ -1329,6 +1331,13 @@ function checkTupleLiteral(c: Checker, node: Node, elems: Node[], scope: Scope, 
             }
             count++
         }
+    }
+    // Optional elements left out are null.
+    while (count < n && tuple.fields[count].optional) {
+        const ft = tuple.fields[count].type
+        if (ft.kind !== "union") break
+        fields.push(new FieldInit(`${count}`, new NullLit(ft)))
+        count++
     }
     if (count !== n)
         return c.fail(node, `Expected ${n} element(s) for tuple type '${typeToString(tuple)}', got ${count}.`)
@@ -2376,7 +2385,7 @@ function constType(c: Checker, node: Node, scope: Scope): Type | null {
             if (t === null) return null
             elems.push(t)
         }
-        return c.tupleOf(elems, true)
+        return c.tupleOf(elems, [], true)
     }
     if (k === "ObjectLiteralExpression") {
         const fields: Field[] = []

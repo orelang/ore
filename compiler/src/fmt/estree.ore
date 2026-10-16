@@ -838,6 +838,19 @@ export class Converter {
             }
             case "TupleType":
                 return this.make("TSTupleType", node).setAll("elementTypes", this.convertList(node.list("elements")))
+            case "OptionalType":
+                return this.make("TSOptionalType", node).set("typeAnnotation", this.req(node.child("type")))
+            case "RestType":
+                return this.make("TSRestType", node).set("typeAnnotation", this.req(node.child("type")))
+            case "NamedTupleMember": {
+                // `...name: T` is a rest type of a named member, as typescript-estree has it.
+                const member = this.make("TSNamedTupleMember", node)
+                    .set("label", this.req(node.child("name")))
+                    .set("elementType", this.req(node.child("type")))
+                member.optional = node.child("questionToken") !== null
+                if (node.child("dotDotDotToken") === null) return member
+                return this.make("TSRestType", node).set("typeAnnotation", member)
+            }
             case "TypeParameter": {
                 const parameter = this.make("TSTypeParameter", node)
                     .set("name", this.req(node.child("name")))

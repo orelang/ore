@@ -931,6 +931,24 @@ Standard, whose parser they follow over the UTF-8 bytes of the input:
   parameters such as `t: [A, B]` infer from tuples.
 - `t[0]` reads and writes an element; the index must be a constant within
   the tuple. `t.length` is a constant.
+- Elements can be named, `[x: f64, y: f64]`: the names are documentation
+  only, and the type is the same as `[f64, f64]`.
+- An optional element `T?` (or `name?: T`) is of type `T | null`, and a
+  literal can leave it out: `const t: [int, string?] = [1]` gives
+  `t[1] === null`. Only the last elements can be optional: a required
+  element cannot follow an optional one. Unlike TypeScript, `t.length` is
+  still the length of the type (2 here), printing leaves out optional
+  elements that are null, and JSON decodes an array with or without them. A
+  tuple converts to a tuple type that makes some of its elements optional,
+  `[int, string]` to `[int, string?]`, as a copy.
+- A rest element `...T` spreads the elements of a tuple type `T` in:
+  `[...Pair, bool]`. Since tuples have a fixed length, a rest element of
+  array type such as `[int, ...string[]]` is not supported in the type of
+  a value. In the `extends` clause of a conditional type it matches any
+  number of elements of its type, and `...infer R` binds `R` to a tuple of
+  the elements matched: `T extends [infer H, ...unknown[]] ? H : never` is
+  the first element of a tuple type, and `T extends [unknown, ...infer R] ?
+  R : never` the others.
 - Tuples are the entries of maps: `new Map(entries)` takes an array of
   `[K, V]` tuples (or another map), and `map.entries()` returns them.
 - `...t` spreads a tuple's elements into the arguments of any call, built-in

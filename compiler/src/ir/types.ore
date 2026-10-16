@@ -420,7 +420,7 @@ export function readonlyTuple(t: StructType): bool {
 /** A tuple as written: `[i64, string]`, `readonly [1, "a"]`. */
 function tupleToString(t: StructType): string {
     const elems: string[] = []
-    for (const f of t.fields) elems.push(typeToString(f.type))
+    for (const f of t.fields) elems.push(tupleElementToString(f))
     return `${readonlyTuple(t) ? "readonly " : ""}[${elems.join(", ")}]`
 }
 
@@ -532,6 +532,16 @@ function withoutNullMembers(u: UnionType): string {
     for (const m of u.members)
         if (m.kind !== "null") members.push(m.kind === "func" ? `(${typeToString(m)})` : typeToString(m))
     return members.join(" | ")
+}
+
+/** An element of a tuple type: an optional one as `T?`, without its null. */
+function tupleElementToString(f: Field): string {
+    const ft = f.type
+    if (!f.optional || ft.kind !== "union") return typeToString(ft)
+    let count = 0
+    for (const m of ft.members) if (m.kind !== "null") count++
+    const inner = withoutNullMembers(ft)
+    return count > 1 ? `(${inner})?` : `${inner}?`
 }
 
 export function typeToString(t: Type): string {

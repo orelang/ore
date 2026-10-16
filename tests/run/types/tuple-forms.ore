@@ -1,0 +1,61 @@
+// Optional, named and rest elements of tuple types, and `infer` in tuple patterns.
+
+// An optional element is of type `T | null`, and a literal can leave it out.
+const short: [int, string?] = [1]
+const full: [int, string?] = [2, "two"]
+console.log(short[0], short[1] === null, full[1])
+const s1 = short[1]
+console.log(s1 ?? "none")
+
+function describe(p: [x: int, label?: string]): string {
+    return `${p[0]}:${p[1] ?? "-"}`
+}
+console.log(describe([1]), describe([2, "b"]))
+
+// Names are documentation only: a named tuple is the same type as an unnamed one.
+type Point = [x: f64, y: f64]
+const p: Point = [1.5, 2.5]
+const q: [f64, f64] = p
+console.log(q[0] + q[1])
+
+// Spreading tuple types into a tuple type.
+type Pair = [int, string]
+type Triple = [...Pair, bool]
+const t: Triple = [1, "a", true]
+console.log(t[0], t[1], t[2], t.length)
+type Concat<A, B> = A extends [...infer X] ? B extends [...infer Y] ? [...X, ...Y] : never : never
+const joined: Concat<[int], [string, bool]> = [7, "seven", false]
+console.log(joined[0], joined[1], joined[2])
+// Optional elements spread in before required ones are required, and nullable.
+type Opened = [...[int, string?], bool]
+const opened: Opened = [1, null, true]
+console.log(opened[1] === null, opened.length)
+
+// `infer` in tuple patterns, with rest elements.
+type Head<T> = T extends [infer H, ...unknown[]] ? H : never
+type Tail<T> = T extends [unknown, ...infer R] ? R : never
+type Last<T> = T extends [...unknown[], infer L] ? L : never
+type First2<T> = T extends [infer A, infer B, ...unknown[]] ? [B, A] : never
+const h: Head<[string, int]> = "head"
+const tl: Tail<[string, int, bool]> = [3, true]
+const l: Last<[string, int, bool]> = false
+const f2: First2<[int, string, bool]> = ["b", 1]
+console.log(h, tl[0], tl[1], l, f2[0], f2[1])
+type IsEmpty<T> = T extends [] ? "empty" : "not empty"
+const e1: IsEmpty<[]> = "empty"
+const e2: IsEmpty<Tail<[int]>> = "empty"
+console.log(e1, e2)
+type Opt<T> = T extends [infer A, (infer B)?] ? B : never
+const o: Opt<[int, string?]> = "opt"
+console.log(o)
+
+// A tuple converts to a tuple type with optional elements, as a copy.
+const pair: [int, string] = [3, "c"]
+const widened: [int, string?] = pair
+console.log(widened[1] ?? "-")
+
+// Printing leaves out optional elements that are null; JSON decodes an array with or without them.
+console.log(short, full)
+console.log(JSON.stringify(short))
+const decoded = JSON.parse<[int, string?]>("[5]")
+console.log(decoded)
