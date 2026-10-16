@@ -1,12 +1,10 @@
 #!/bin/sh
-# Prints the notes of a GitHub Release: its section of CHANGELOG.md (and, for
-# the first release of a minor version, the sections of that minor version),
-# how to install it, and its archives and editor extensions.
+# Prints the notes of a GitHub Release: its section of CHANGELOG.md, how to
+# install it, and its archives and editor extensions.
 #   ci/notes.sh <tag>
 set -eu
 tag=$1
 version=${tag#v}
-minor=${version%.*}
 cat <<EOF
 ## Install
 
@@ -32,11 +30,8 @@ install "Ore" (\`orelang.ore\`) from the Marketplace or Open VSX, or
 (Zed builds it with Rust, which must be installed with rustup).
 
 EOF
-# The sections of this version and the earlier ones of its minor version.
-awk -v minor="$minor" -v version="$version" '
-    /^## / {
-        v = $2
-        keep = (v == version) || (index(v, minor ".") == 1 && v < version) || (v == minor)
-    }
+# The section of this version: releases are small and frequent, each with its own notes.
+awk -v version="$version" '
+    /^## / { keep = ($2 == version) }
     keep { print }
 ' CHANGELOG.md | sed 's/^## /## What is in /'
