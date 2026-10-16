@@ -232,7 +232,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3086](ORE3086.md) | Only a dictionary of '…' or an object can be spread into '…', got '…'. |
 | [ORE3087](ORE3087.md) | A literal of '…' has only properties and spreads. |
 | [ORE3088](ORE3088.md) | Type '…' is indexed by the name of a member, a string literal or a 'keyof' type. |
-| [ORE3089](ORE3089.md) | Only a member named by a string literal can be assigned to: 'object["name"] = value'. |
+| [ORE3089](ORE3089.md) | Only a member named by a string literal or a 'keyof' type can be assigned to: 'object["name"] = value'. |
 | [ORE3090](ORE3090.md) | An entry of a dictionary is assigned with '=' or '??=': it is '…' when read. |
 | [ORE3091](ORE3091.md) | 'globalThis' cannot be used as a value; use its members, as 'globalThis.Math'. |
 | [ORE3092](ORE3092.md) | 'as const' takes array literals without spread elements. |

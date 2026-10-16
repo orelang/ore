@@ -126,6 +126,7 @@ import {
     member,
     narrowTo,
     settle,
+    storeKeyed,
     writeAccessor,
 } from "./expressions"
 import {
@@ -1102,6 +1103,12 @@ function destructure(c: Checker, state: Destructuring, target: Node, part: Expr,
     }
     const key = refKey(c, target, scope)
     if (key !== null) invalidate(c, key)
+    const keyed = lvalue.keyed
+    if (keyed !== null) {
+        const write = storeKeyed(c, target, lvalue, keyed, typed(part), target, null)
+        if (write.k === "typed") state.assigns.push(write.expr)
+        return
+    }
     if (lvalue.accessor !== null) {
         const write = writeAccessor(
             c,

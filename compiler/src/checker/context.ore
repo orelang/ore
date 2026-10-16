@@ -1,6 +1,7 @@
 // Types shared by the layers of the checker.
 
 import {
+    type BindLocal,
     type BoundMethod,
     type Expr,
     type Func,
@@ -292,13 +293,31 @@ export class DictTarget {
     ) {}
 }
 
-/** Where an assignment stores: a place, the setter of an accessor property, or an entry of a dictionary. */
+/**
+ * A member chosen at run time by a key of a `keyof` type: `object[key] = value`.
+ * The object and the key are evaluated once, into `locals`; `key` reads the
+ * key, and `targets` holds the member each of `names` stands for.
+ */
+export class KeyedTarget {
+    constructor(
+        readonly locals: BindLocal[],
+        readonly key: Expr,
+        readonly names: string[],
+        readonly targets: AssignTarget[],
+    ) {}
+}
+
+/**
+ * Where an assignment stores: a place, the setter of an accessor property, an
+ * entry of a dictionary, or a member chosen by a `keyof` key.
+ */
 export class AssignTarget {
     constructor(
         public type: Type,
         readonly lvalue: LValue | null = null,
         readonly accessor: AccessorTarget | null = null,
         readonly entry: DictTarget | null = null,
+        readonly keyed: KeyedTarget | null = null,
     ) {}
 }
 

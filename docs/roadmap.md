@@ -80,8 +80,7 @@ exports, type assertions (Ore converts: `i32(x)`).
   - dictionaries, `{ [key: string]: V }` and `Record<string, V>`, with
     the syntax of objects, `delete` and `in` (done; an index signature with
     other members is not supported); the namespace `Object` (done);
-    `obj["k"]` and `obj[k]` with `k: keyof T` (done; `obj[k] = v` by a
-    `keyof` key is not);
+    `obj["k"]` and `obj[k]` with `k: keyof T`, read and assigned (done);
   - conditional types, mapped types and template literal types, and with
     them the utility types (`Partial`, `Pick`, `Record`, `ReturnType`, ...)
     (done); numeric literal types in computations on types, `infer` in

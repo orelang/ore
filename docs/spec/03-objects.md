@@ -53,9 +53,15 @@
   (`{ ...p, y: 0 }`); the values are evaluated once, in order.
 - `p["x"]` is `p.x`, on objects, interfaces and class instances, read and
   assigned. `p[k]` with `k` of a `keyof` type (string literal types) reads
-  the field that `k` names, of the union of their types (`P[K]`); it is
-  not assigned to ([ORE3089](../errors/ORE3089.md)). Any other string does
-  not index an object ([ORE3088](../errors/ORE3088.md)): use a
+  the field that `k` names, of the union of their types (`P[K]`). It is
+  assigned as TypeScript writes `P[K]`: `p[k] = v` evaluates `p`, `k` and
+  `v` once and stores `v` into the field `k` names, so `v` must convert to
+  the type of each field `k` can name, none of them read-only;
+  `p[k] += v`, `p[k]++`, `??=`, `||=` and `&&=` need fields of one type.
+  With `K extends keyof T` in a generic function, `o[k] = v` with `v: T[K]`
+  stores into the field of the key's type at each call. Any other string
+  does not index an object ([ORE3088](../errors/ORE3088.md)) nor is
+  assigned through ([ORE3089](../errors/ORE3089.md)): use a
   [dictionary](#dictionaries).
 
 ## Classes

@@ -5,6 +5,10 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- A member is assigned through a key of a `keyof` type, as in TypeScript:
+  `o[k] = v`, `o[k] += v`, `o[k]++` and `o[k] ??= v` store into the member
+  `k` names, and `v` must convert to the type of each member `k` can name;
+  so does `o[k] = v` with `K extends keyof T` in a generic function.
 - `reduce` and `reduceRight` with a number as the initial value give the
   accumulator the element's type when the number fits it, as TypeScript
   does: `xs.reduce((a, b) => a + b, 0)` of a `number[]` is a `number`.

@@ -1,0 +1,90 @@
+// Members assigned through a key of a `keyof` type: `o[k] = v` stores into the
+// member `k` names, chosen at run time; the value converts to the type of
+// each member `k` can name. The output is node's for the same program.
+
+type Point = { x: int; y: int; label: string }
+const p: Point = { x: 1, y: 2, label: "p" }
+
+function setCoordinate(o: Point, k: "x" | "y", v: int) {
+    o[k] = v
+}
+setCoordinate(p, "y", 7)
+console.log(p)
+
+const keys: ("x" | "y")[] = ["x", "y", "y"]
+for (const k of keys) p[k] += 10
+console.log(p)
+for (const k of keys) p[k]++
+console.log(p)
+console.log(++p[keys[0]], p[keys[1]]--)
+console.log(p)
+
+// The object and the key are evaluated once, before the value.
+let calls = 0
+function point(): Point {
+    calls++
+    return p
+}
+function key(): "x" | "y" {
+    calls++
+    return "x"
+}
+point()[key()] *= 2
+console.log(calls, p.x)
+
+function relabel(o: Point, k: "label", v: string): string {
+    o[k] = "q"
+    return (o[k] = v)
+}
+console.log(p.label, relabel(p, "label", "r"))
+console.log(p)
+
+type Maybe = { a: int | null; b: int | null }
+const m: Maybe = { a: null, b: 4 }
+const mk: (keyof Maybe)[] = ["a", "b"]
+for (const k of mk) console.log(k, (m[k] ??= 1))
+console.log(m)
+
+type Flags = { on: bool; off: bool }
+const f: Flags = { on: true, off: false }
+const fk: keyof Flags = "off"
+f[fk] ||= true
+console.log(f)
+
+// A generic setter: `K` is the key's literal type, `T[K]` its member's type.
+function set<T, K extends keyof T>(o: T, k: K, v: T[K]) {
+    o[k] = v
+}
+set(p, "label", "s")
+set(p, "x", 0)
+console.log(p)
+
+class Counter {
+    count = 3
+    total = 0
+    get double(): int {
+        return this.count * 2
+    }
+    set double(v: int) {
+        this.count = v / 2
+    }
+}
+const c = new Counter()
+const ck: ("count" | "total" | "double")[] = ["count", "total", "double"]
+for (const k of ck) c[k] += 4
+console.log(c.count, c.total, c.double)
+
+interface Box {
+    width: int
+    height: int
+}
+const b: Box = { width: 1, height: 2 }
+const bk: keyof Box = "height"
+b[bk] = 9
+b[bk] -= 1
+console.log(b)
+
+// In a destructuring assignment.
+const pair: ("x" | "y")[] = ["y", "x"]
+;[p[pair[0]], p[pair[1]]] = [p[pair[1]], p[pair[0]]]
+console.log(p)

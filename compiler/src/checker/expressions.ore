@@ -59,6 +59,9 @@ import {
 } from "../ir/nodes"
 import {
     type ArrayType,
+    type BigIntType,
+    type FloatType,
+    type IntType,
     type InterfaceType,
     type MapType,
     type StructType,
@@ -128,7 +131,7 @@ import {
     genericStaticField,
     staticMember,
 } from "./classes"
-import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
+import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact, KeyedTarget } from "./context"
 import {
     checkDelete,
     checkIn,
@@ -608,12 +611,6 @@ function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): O
     }
     if (target.accessor !== null)
         return c.fail(left(node), `'${op}=' cannot assign to an accessor; write 'x = x ${op} v'.`)
-    const place = target.lvalue!
-    if (place.k === "local" && c.untyped.has(place.local)) {
-        c.readEarly.add(place.local)
-        return c.readBeforeAssigned(left(node), place.local)
-    }
-    const type = target.type
     // The parts of the target, held so that they are evaluated once.
     const locals: BindLocal[] = []
     const hold = (value: Expr): Expr => {
@@ -621,25 +618,52 @@ function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): O
         locals.push(new BindLocal(local, value))
         return new LocalRef(value.type, local)
     }
-    let lvalue: LValue
+    const notField = `'${op}=' cannot assign to a field of an interface or a union; write 'x = x ${op} v'.`
+    let type = target.type
     let read: Expr
-    if (place.k === "local") {
-        lvalue = place
-        read = new LocalRef(type, place.local)
-    } else if (place.k === "element") {
-        const array = hold(place.array)
-        const index = hold(place.index)
-        lvalue = new ElementLValue(array, index)
-        read = new Index(type, array, index)
-    } else if (place.k === "field") {
-        const object = hold(place.object)
-        lvalue = new FieldLValue(object, place.name)
-        read = new FieldGet(type, object, place.name)
+    let write: (value: Expr) => Expr | null
+    const keyed = target.keyed
+    if (keyed !== null) {
+        // By a `keyof` key: the member the key names, read and written through the held object.
+        const common = keyedType(keyed)
+        if (common === null)
+            return c.fail(left(node), `Operator '${op}=' cannot be applied to type '${typeToString(target.type)}'.`)
+        type = common
+        for (const t of keyed.targets) {
+            if (t.accessor !== null)
+                return c.fail(left(node), `'${op}=' cannot assign to an accessor; write 'x = x ${op} v'.`)
+            if (t.lvalue!.k !== "field") return c.fail(left(node), notField)
+        }
+        const field = (t: AssignTarget, make: (place: FieldLValue) => Expr): Operand => {
+            const place = t.lvalue!
+            return place.k === "field" ? typed(make(place)) : errorOperand
+        }
+        for (const l of keyed.locals) locals.push(l)
+        read = chooseKeyed(c, keyed, common, node, (t) => field(t, (p) => new FieldGet(common, p.object, p.name)))!
+        write = (value) => chooseKeyed(c, keyed, common, node, (t) => field(t, (p) => new Assign(common, p, value)))
     } else {
-        return c.fail(
-            left(node),
-            `'${op}=' cannot assign to a field of an interface or a union; write 'x = x ${op} v'.`,
-        )
+        const place = target.lvalue!
+        if (place.k === "local" && c.untyped.has(place.local)) {
+            c.readEarly.add(place.local)
+            return c.readBeforeAssigned(left(node), place.local)
+        }
+        let lvalue: LValue
+        if (place.k === "local") {
+            lvalue = place
+            read = new LocalRef(type, place.local)
+        } else if (place.k === "element") {
+            const array = hold(place.array)
+            const index = hold(place.index)
+            lvalue = new ElementLValue(array, index)
+            read = new Index(type, array, index)
+        } else if (place.k === "field") {
+            const object = hold(place.object)
+            lvalue = new FieldLValue(object, place.name)
+            read = new FieldGet(type, object, place.name)
+        } else {
+            return c.fail(left(node), notField)
+        }
+        write = (value) => new Assign(type, lvalue, value)
     }
     let result: Expr
     if (op === "??") {
@@ -650,7 +674,8 @@ function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): O
         if (value.k === "error") return errorOperand
         const fresh = c.newLocal("value", nonNull, false)
         const ref: Expr = new LocalRef(nonNull, fresh)
-        const assign: Expr = new Assign(type, lvalue, c.coerce(typed(ref), type, right(node)))
+        const assign = write(c.coerce(typed(ref), type, right(node)))
+        if (assign === null) return errorOperand
         const fallback: Expr = new Bind(
             nonNull,
             [new BindLocal(fresh, c.coerce(value, nonNull, right(node)))],
@@ -661,7 +686,16 @@ function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): O
         if (type.kind !== "bool")
             return c.fail(left(node), `Operator '${op}=' needs a boolean, got '${typeToString(type)}'.`)
         const value = checkCondition(c, right(node), scope)
-        const assign: Expr = new Assign(type, lvalue, value)
+        let assign: Expr | null
+        if (keyed !== null) {
+            // The value is evaluated once, after the member is read.
+            const fresh = c.newLocal("value", types.bool, false)
+            const stored = write(new LocalRef(types.bool, fresh))
+            assign = stored === null ? null : new Bind(types.bool, [new BindLocal(fresh, value)], stored)
+        } else {
+            assign = write(value)
+        }
+        if (assign === null) return errorOperand
         result = new Logical(types.bool, op === "||" ? "||" : "&&", read, assign)
     }
     const key = refKey(c, left(node), scope)
@@ -783,6 +817,7 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
         c.readEarly.add(untyped)
         return c.readBeforeAssigned(target_, untyped)
     }
+    if (target !== null && target.keyed !== null) return assignKeyed(c, node, target, target.keyed, op, scope)
     const value = checkExpr(
         c,
         right(node),
@@ -794,15 +829,28 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
         if (!settle(c, untyped, value, right(node))) return errorOperand
         target.type = untyped.type
     }
+    return store(c, node, target, value, right(node), op, c.declarationOf(target_))
+}
+
+/** Stores a value into the target of an assignment, or combines the old value with it by `op`. */
+function store(
+    c: Checker,
+    node: Node,
+    target: AssignTarget,
+    value: Operand,
+    valueNode: Node,
+    op: ArithOp | null,
+    decl: Node | null,
+): Operand {
     const entry = target.entry
     if (entry !== null) {
         if (value.k === "error") return value
-        return typed(dictAssign(c, entry, c.coerce(value, target.type, right(node))))
+        return typed(dictAssign(c, entry, c.coerce(value, target.type, valueNode)))
     }
     if (target.accessor !== null) {
         if (value.k === "error") return value
         if (op === null)
-            return writeAccessor(c, target, node, (old) => c.coerce(value, target.type, right(node)), false, false)
+            return writeAccessor(c, target, node, (old) => c.coerce(value, target.type, valueNode), false, false)
         const compoundOp = op
         return writeAccessor(
             c,
@@ -818,8 +866,7 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     }
     const lvalue = target.lvalue!
     const type = target.type
-    if (op === null)
-        return typed(new Assign(type, lvalue, c.coerceTo(value, type, right(node), c.declarationOf(target_))))
+    if (op === null) return typed(new Assign(type, lvalue, c.coerceTo(value, type, valueNode, decl)))
 
     if (lvalue.k === "local") {
         // Reading a local has no side effects: expand `x op= v` to `x = x op v`.
@@ -839,6 +886,114 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     return typed(new Assign(type, lvalue, rightExpr, op))
 }
 
+/**
+ * `object[key] = value` by a key of a `keyof` type: the value is evaluated
+ * once and stored into the member the key names, so it must convert to the
+ * type of each member the key can name, as TypeScript writes `T[K]`;
+ * `object[key] op= value` needs members of one type.
+ */
+function assignKeyed(
+    c: Checker,
+    node: Node,
+    target: AssignTarget,
+    keyed: KeyedTarget,
+    op: ArithOp | null,
+    scope: Scope,
+): Operand {
+    const common = keyedType(keyed)
+    if (op !== null && common === null)
+        return c.fail(left(node), `Operator '${op}=' cannot be applied to type '${typeToString(target.type)}'.`)
+    return storeKeyed(c, node, target, keyed, checkExpr(c, right(node), scope, common), right(node), op)
+}
+
+/** Stores a value into the member a `keyof` key names, or combines it with the member by `op`. */
+export function storeKeyed(
+    c: Checker,
+    node: Node,
+    target: AssignTarget,
+    keyed: KeyedTarget,
+    value: Operand,
+    valueNode: Node,
+    op: ArithOp | null,
+): Operand {
+    if (value.k === "error") return value
+    const locals = keyed.locals.slice()
+    let each: Operand = value
+    if (value.k === "typed") {
+        const type = value.expr.type
+        const local = c.newLocal("value", type, false)
+        locals.push(new BindLocal(local, value.expr))
+        each = typed(new LocalRef(type, local))
+    }
+    const chosen = chooseKeyed(c, keyed, target.type, node, (t) => store(c, node, t, each, valueNode, op, null))
+    if (chosen === null) return errorOperand
+    return typed(new Bind(target.type, locals, chosen))
+}
+
+/** The type of the members a `keyof` key can name, when it is the same for all. */
+function keyedType(keyed: KeyedTarget): Type | null {
+    const first = keyed.targets[0].type
+    return keyed.targets.every((t) => sameType(t.type, first)) ? first : null
+}
+
+/** What `each` makes of the member each name of a `keyof` key stands for, chosen by the key at run time. */
+function chooseKeyed(
+    c: Checker,
+    keyed: KeyedTarget,
+    type: Type,
+    node: Node,
+    each: (target: AssignTarget) => Operand,
+): Expr | null {
+    const exprs: Expr[] = []
+    for (const t of keyed.targets) {
+        const e = each(t)
+        if (e.k !== "typed") return null
+        exprs.push(c.coerce(e, type, node))
+    }
+    let chosen = exprs[exprs.length - 1]
+    for (let i = exprs.length - 2; i >= 0; i--) {
+        const test: Expr = new Compare(types.bool, "===", keyed.key, new StringLit(types.string, keyed.names[i]))
+        chosen = new Conditional(type, test, exprs[i], chosen)
+    }
+    return chosen
+}
+
+/**
+ * `object[key]` by a key of a `keyof` type as the target of an assignment:
+ * the object and the key, evaluated once, and the member of each name the
+ * key can be. A key of other types is not a member's name.
+ */
+function keyedTarget(c: Checker, node: Node, object: Expr, indexNode: Node, scope: Scope): AssignTarget | null {
+    const index = checkExpr(c, indexNode, scope)
+    if (index.k === "error") return null
+    const key = index.k === "typed" ? index.expr : null
+    const names: string[] = []
+    if (key !== null) for (const m of membersOf(key.type)) if (m.kind === "literal") names.push(m.value)
+    if (key === null || names.length === 0 || names.length !== membersOf(key.type).length) {
+        c.error(
+            indexNode,
+            "Only a member named by a string literal or a 'keyof' type can be assigned to: 'object[\"name\"] = value'.",
+        )
+        return null
+    }
+    const type = object.type
+    const o = c.newLocal("object", type, false)
+    const k = c.newLocal("key", types.string, false)
+    const oRef: Expr = new LocalRef(type, o)
+    const targets: AssignTarget[] = []
+    // The member is reported at the whole access: the key names no member of its own.
+    for (const name of names) {
+        const t = memberTarget(c, node, oRef, node, name)
+        if (t === null) return null
+        targets.push(t)
+    }
+    const locals = [new BindLocal(o, object), new BindLocal(k, c.coerce(index, types.string, indexNode))]
+    const keyed = new KeyedTarget(locals, new LocalRef(types.string, k), names, targets)
+    const result = keyedType(keyed) ?? c.unionOf(targets.map((t) => t.type))
+    c.info.types.set(node, result)
+    return new AssignTargetClass(result, null, null, null, keyed)
+}
+
 export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bool, scope: Scope): Operand {
     const target = assignTarget(c, node, scope)
     if (target === null) return errorOperand
@@ -850,6 +1005,23 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
     const op: "++" | "--" = operator === "++" ? "++" : "--"
     const type = arithType(target.type)
     if (type === null) return c.fail(node, `Operator '${op}' cannot be applied to type '${typeToString(target.type)}'.`)
+    const keyed = target.keyed
+    if (keyed !== null) {
+        const chosen = chooseKeyed(c, keyed, target.type, node, (t) => incDec(c, node, t, type, op, prefix))
+        return chosen === null ? errorOperand : typed(new Bind(target.type, keyed.locals, chosen))
+    }
+    return incDec(c, node, target, type, op, prefix)
+}
+
+/** `x++` and the like of a target of a numeric type. */
+function incDec(
+    c: Checker,
+    node: Node,
+    target: AssignTarget,
+    type: IntType | FloatType | BigIntType,
+    op: "++" | "--",
+    prefix: bool,
+): Operand {
     if (target.accessor !== null) {
         let one: Expr
         if (type.kind === "int") one = new IntLit(type, 1)
@@ -864,7 +1036,7 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
             true,
         )
     }
-    return typed(new IncDec(type, place!, op, prefix))
+    return typed(new IncDec(type, target.lvalue!, op, prefix))
 }
 
 export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool = false): AssignTarget | null {
@@ -887,9 +1059,10 @@ export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool
         const indexNode = argumentExpression(node)
         if ((at.kind === "struct" && !at.tuple) || at.kind === "interface" || at.kind === "union") {
             if (indexNode.kind !== "StringLiteral" && indexNode.kind !== "NoSubstitutionTemplateLiteral") {
+                if (at.kind !== "union") return keyedTarget(c, node, array, indexNode, scope)
                 c.error(
                     indexNode,
-                    "Only a member named by a string literal can be assigned to: 'object[\"name\"] = value'.",
+                    "Only a member named by a string literal or a 'keyof' type can be assigned to: 'object[\"name\"] = value'.",
                 )
                 return null
             }
