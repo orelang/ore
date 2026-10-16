@@ -6,9 +6,21 @@ import { type Source, utf16Length } from "./source"
 
 export type Severity = "error" | "warning"
 
+/** A place related to a diagnostic, with a short message: `'x' is declared here.` */
+export class Related {
+    constructor(
+        readonly source: Source,
+        readonly start: int,
+        readonly length: int,
+        readonly message: string,
+    ) {}
+}
+
 /** A message about the bytes from `start` to `start + length` of a source, with the code of the message (see ./codes). */
 export class Diagnostic {
     readonly code: string
+    /** The places related to the message, as the declaration of a name declared twice. */
+    readonly related: Related[] = []
 
     constructor(
         readonly source: Source,
@@ -26,10 +38,16 @@ export function diagnosticAt(source: Source, node: Node, message: string, severi
     return new Diagnostic(source, node.start, node.end - node.start, severity, message)
 }
 
+/** A related place spanning a node. */
+export function relatedAt(source: Source, node: Node, message: string): Related {
+    return new Related(source, node.start, node.end - node.start, message)
+}
+
 /**
  * Styles a part of a formatted diagnostic: "error" or "warning" for the
  * label (`error[ORE2033]`), "caret" for the carets under the span, "link"
- * for the line with the address of the code's page.
+ * for the line with the address of the code's page, "note" for the label of
+ * a related place.
  */
 export type Paint = (part: string, text: string) => string
 
@@ -40,8 +58,10 @@ function plain(part: string, text: string): string {
 
 /**
  * Formats a diagnostic as `path:line:col: severity[code]: message` followed by
- * the source line, a caret, and the address of the code's page. Columns and
- * widths count UTF-16 code units, as the TypeScript compiler does.
+ * the source line, a caret, and the address of the code's page, then each
+ * related place indented as `  path:line:col: note: message` with its own
+ * source line and caret. Columns and widths count UTF-16 code units, as the
+ * TypeScript compiler does.
  */
 export function formatDiagnostic(d: Diagnostic): string {
     return paintDiagnostic(d, plain)
@@ -49,17 +69,32 @@ export function formatDiagnostic(d: Diagnostic): string {
 
 /** `formatDiagnostic` with its parts styled by `paint`, as for a terminal (cli/style.ore). */
 export function paintDiagnostic(d: Diagnostic, paint: Paint): string {
-    const { line, column } = d.source.position(d.start)
-    const text = d.source.line(line)
-    const length = utf16Length(d.source.text, d.start, d.start + d.length)
-    const textLength = utf16Length(text, 0, text.length)
-    const width = Math.max(1, Math.min(length, textLength - column))
+    const lines: string[] = []
     const label = paint(d.severity, `${d.severity}${d.code === "" ? "" : `[${d.code}]`}`)
-    const lines = [
-        `${d.source.path}:${line + 1}:${column + 1}: ${label}: ${d.message}`,
-        `  ${text}`,
-        `  ${" ".repeat(column)}${paint("caret", "^".repeat(width))}`,
-    ]
+    pushPlace(lines, d.source, d.start, d.length, label, d.message, "", paint)
     if (d.code !== "") lines.push(`  ${paint("link", `see ${docsUrl(d.code)}`)}`)
+    for (const r of d.related)
+        pushPlace(lines, r.source, r.start, r.length, paint("note", "note"), r.message, "  ", paint)
     return lines.join("\n")
+}
+
+/** Pushes `path:line:col: label: message`, the source line and a caret under the span, indented by `indent`. */
+function pushPlace(
+    lines: string[],
+    source: Source,
+    start: int,
+    length: int,
+    label: string,
+    message: string,
+    indent: string,
+    paint: Paint,
+) {
+    const { line, column } = source.position(start)
+    const text = source.line(line)
+    const width16 = utf16Length(source.text, start, start + length)
+    const textLength = utf16Length(text, 0, text.length)
+    const width = Math.max(1, Math.min(width16, textLength - column))
+    lines.push(`${indent}${source.path}:${line + 1}:${column + 1}: ${label}: ${message}`)
+    lines.push(`${indent}  ${text}`)
+    lines.push(`${indent}  ${" ".repeat(column)}${paint("caret", "^".repeat(width))}`)
 }

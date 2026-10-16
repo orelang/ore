@@ -241,7 +241,7 @@ export function checkUsing(c: Checker, stmt: Node, rest: Node[], scope: Scope, o
     const local = c.newLocal(nameNode(decl).text, init.type, false)
     if (scope === c.globals) local.global = true
     if (!scope.declareValue(local.name, new LocalSymbol(local, decl)))
-        c.error(nameNode(decl), `Cannot redeclare '${local.name}' in the same scope.`)
+        c.duplicate(scope, local.name, nameNode(decl), `Cannot redeclare '${local.name}' in the same scope.`)
     c.info.types.set(nameNode(decl), local.type)
 
     // The resource, or null, must have `[Symbol.dispose](): void`.
@@ -321,7 +321,7 @@ export function declareNestedFunction(c: Checker, decl: Node, scope: Scope): Loc
     // Assigned once its closure exists; a recursive function captures itself through a box.
     local.assigned = true
     if (!scope.declareValue(name.text, new LocalSymbol(local, decl)))
-        c.error(name, `Cannot redeclare '${name.text}' in the same scope.`)
+        c.duplicate(scope, name.text, name, `Cannot redeclare '${name.text}' in the same scope.`)
     c.info.types.set(name, local.type)
     return local
 }
@@ -584,7 +584,8 @@ export function checkVariables(c: Checker, list: Node, scope: Scope, out: Stmt[]
             const initType = init_ !== null ? c.info.types.get(init_) : null
             if (initType !== null) narrowTo(c, `L${local.id}`, type, initType)
         }
-        if (!scope.declareValue(name, symbol)) c.error(nameId, `Cannot redeclare '${name}' in the same scope.`)
+        if (!scope.declareValue(name, symbol))
+            c.duplicate(scope, name, nameId, `Cannot redeclare '${name}' in the same scope.`)
     }
 }
 
@@ -791,7 +792,7 @@ export function declareBinding(c: Checker, name: Node, init: Expr, mutable: bool
     const local = c.newLocal(name.text, init.type, mutable)
     if (scope === c.globals) local.global = true
     if (!scope.declareValue(local.name, new LocalSymbol(local, name)))
-        c.error(name, `Cannot redeclare '${local.name}' in the same scope.`)
+        c.duplicate(scope, local.name, name, `Cannot redeclare '${local.name}' in the same scope.`)
     c.info.types.set(name, init.type)
     out.push(new LetStmt(local, init))
 }

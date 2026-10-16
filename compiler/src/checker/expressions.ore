@@ -257,7 +257,7 @@ export function symbolValue(c: Checker, symbol: ValueSymbol, node: Node): Operan
             if (c.untyped.has(local)) {
                 // Its type comes from its first assignment, which has not been seen yet.
                 c.readEarly.add(local)
-                return c.fail(node, `Variable '${local.name}' is used before being assigned.`)
+                return c.readBeforeAssigned(node, local)
             }
             const ref = new LocalRef(local.type, local)
             if (c.unassigned.has(local)) c.refNodes.set(ref, node)
@@ -510,7 +510,7 @@ function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): O
     const place = target.lvalue!
     if (place.k === "local" && c.untyped.has(place.local)) {
         c.readEarly.add(place.local)
-        return c.fail(left(node), `Variable '${place.local.name}' is used before being assigned.`)
+        return c.readBeforeAssigned(left(node), place.local)
     }
     const type = target.type
     // The parts of the target, held so that they are evaluated once.
@@ -651,7 +651,7 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     const untyped = place !== null && place.k === "local" && c.untyped.has(place.local) ? place.local : null
     if (untyped !== null && op !== null) {
         c.readEarly.add(untyped)
-        return c.fail(target_, `Variable '${untyped.name}' is used before being assigned.`)
+        return c.readBeforeAssigned(target_, untyped)
     }
     const value = checkExpr(
         c,
@@ -683,7 +683,8 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     }
     const lvalue = target.lvalue!
     const type = target.type
-    if (op === null) return typed(new Assign(type, lvalue, c.coerce(value, type, right(node))))
+    if (op === null)
+        return typed(new Assign(type, lvalue, c.coerceTo(value, type, right(node), c.declarationOf(target_))))
 
     if (lvalue.k === "local") {
         // Reading a local has no side effects: expand `x op= v` to `x = x op v`.
@@ -709,7 +710,7 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
     const place = target.lvalue
     if (place !== null && place.k === "local" && c.untyped.has(place.local)) {
         c.readEarly.add(place.local)
-        return c.fail(node, `Variable '${place.local.name}' is used before being assigned.`)
+        return c.readBeforeAssigned(node, place.local)
     }
     const op: "++" | "--" = operator === "++" ? "++" : "--"
     const type = arithType(target.type)

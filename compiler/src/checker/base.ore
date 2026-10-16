@@ -42,7 +42,7 @@ import {
     typeToString,
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
-import { Diagnostic, diagnosticAt } from "../syntax/diagnostic"
+import { Diagnostic, diagnosticAt, relatedAt } from "../syntax/diagnostic"
 import {
     defaultType as defaultTypeNode,
     args,
@@ -107,6 +107,8 @@ export class Unified {
 /** A program being checked; see `run` in checker.ore. */
 export class Checker {
     readonly diagnostics: Diagnostic[] = []
+    /** The diagnostic `error` reported last, which `note` adds places to; null when it was a repeat. */
+    private lastReported: Diagnostic | null = null
 
     readonly info = new CheckInfo()
 
@@ -218,6 +220,8 @@ export class Checker {
 
     /** Optional and rest parameters of functions, by their parameter list. */
     readonly signatures = new Map<Local[], Signature>()
+    /** The declarations of functions, methods and constructors, for the notes of diagnostics at their parameters. */
+    readonly funcDecls = new Map<Func, Node>()
 
     /** C names of exported variables. */
     readonly exportedVariables = new Set<string>()
@@ -830,6 +834,7 @@ export class Checker {
                             node,
                             `Type '${typeToString(from)}' is not assignable to type '${target.name}': ${result.reason}.`,
                         )
+                        this.noteMember(target, result.member)
                         return poison(target)
                     }
                 }
@@ -967,7 +972,64 @@ export class Checker {
         // Generic instances can repeat the same error.
         let seen = false
         for (const e of this.diagnostics) if (e.start === d.start && e.message === d.message) seen = true
+        this.lastReported = seen ? null : d
         if (!seen) this.diagnostics.push(d)
+    }
+
+    /** Adds a related place, with a short message, to the error reported last. */
+    note(node: Node, message: string) {
+        const d = this.lastReported
+        const source = this.sources.get(node)
+        if (d === null || source === null) return
+        d.related.push(relatedAt(source, node, message))
+    }
+
+    /** Notes the declaration of a name, at its name: `'x' is declared here.` */
+    noteDeclaration(decl: Node) {
+        const at = decl.kind === "Identifier" ? decl : (decl.child("name") ?? decl)
+        const source = this.sources.get(at)
+        if (source !== null) this.note(at, `'${source.text.slice(at.start, at.end)}' is declared here.`)
+    }
+
+    /** Notes the declaration of a member of a class or an interface: `'name' is declared here.` */
+    noteMember(type: StructType | InterfaceType, name: string) {
+        const decls = this.memberDecls.get(type)
+        const decl = decls === null ? null : decls.get(name)
+        if (decl !== null) this.noteDeclaration(decl)
+    }
+
+    /** The declaration a reference names, as go to definition finds it: an identifier's, or a property access's member. */
+    declarationOf(node: Node): Node | null {
+        const name = node.kind === "PropertyAccessExpression" ? node.child("name") : node
+        return name === null ? null : this.info.definitions.get(name)
+    }
+
+    /** `coerce`, with a note at the declaration `decl` takes the value of when the value does not convert. */
+    coerceTo(value: Operand, target: Type, node: Node, decl: Node | null): Expr {
+        const before = this.diagnostics.length
+        const expr = this.coerce(value, target, node)
+        if (decl !== null && this.diagnostics.length > before) this.noteDeclaration(decl)
+        return expr
+    }
+
+    /** Reports a variable read before it is assigned, with a note at its declaration. */
+    readBeforeAssigned(node: Node, local: Local): Operand {
+        this.error(node, `Variable '${local.name}' is used before being assigned.`)
+        const decl = this.declNodes.get(local)
+        if (decl !== null && decl !== node) this.note(decl, `'${local.name}' is declared here.`)
+        return errorOperand
+    }
+
+    /**
+     * Reports a name declared twice in a scope at `at`, with a note at the
+     * declaration already there.
+     */
+    duplicate(scope: Scope, name: string, at: Node, message: string) {
+        this.error(at, message)
+        const value = scope.ownValue(name)
+        const type = scope.ownType(name)
+        const decl = value !== null ? value.decl : type !== null ? type.decl : null
+        if (decl !== null && decl !== at && decl.child("name") !== at) this.noteDeclaration(decl)
     }
 
     fail(node: Node, message: string): Operand {
@@ -977,6 +1039,7 @@ export class Checker {
 
     /** Drops the diagnostics reported since there were `count`. */
     truncateDiagnostics(count: int) {
+        this.lastReported = null
         while (this.diagnostics.length > count) this.diagnostics.pop()
     }
 

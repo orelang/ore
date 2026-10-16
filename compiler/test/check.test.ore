@@ -5,6 +5,9 @@ import { test, expect, fail } from "ore:test"
 import { check } from "../src/checker/checker"
 import { type CheckResult } from "../src/checker/context"
 import { dump } from "../src/ir/dump"
+import { docsUrl } from "../src/syntax/codes"
+import { formatDiagnostic } from "../src/syntax/diagnostic"
+import { type Source } from "../src/syntax/source"
 import { LoadOptions, loadProgram } from "../src/project/load"
 
 /** The path of the program checked; its text is an override, never on disk. */
@@ -234,4 +237,73 @@ test("branches of ?: take an expected literal union", () => {
 
 test("messages name a union by its alias", () => {
     errorsAre(["Type 'string' is not assignable to type 'Kind'."], 'const k: Kind = "c"', 'type Kind = "a" | "b"')
+})
+
+// Related places
+
+/** Each diagnostic of a program as `line:col message`, then its notes indented as `  line:col message`. */
+function withNotes(text: string): string[] {
+    const lines: string[] = []
+    const at = (source: Source, offset: int) => {
+        const p = source.position(offset)
+        return `${p.line + 1}:${p.column + 1}`
+    }
+    for (const d of program(text).diagnostics) {
+        lines.push(`${at(d.source, d.start)} ${d.message}`)
+        for (const r of d.related) lines.push(`  ${at(r.source, r.start)} ${r.message}`)
+    }
+    return lines
+}
+
+function notesAre(want: string[], text: string) {
+    const got = withNotes(text)
+    if (got.join("\n") !== want.join("\n")) fail(`expected:\n${want.join("\n")}\ngot:\n${got.join("\n")}`)
+}
+
+test("a name declared twice notes its first declaration", () => {
+    notesAre(["2:7 Duplicate declaration 'f'.", "  1:10 'f' is declared here."], "function f(): void {}\nconst f = 1\n")
+    notesAre(
+        ["3:9 Cannot redeclare 'x' in the same scope.", "  2:9 'x' is declared here."],
+        "function g(): void {\n    let x = 1\n    let x = 2\n}\n",
+    )
+})
+
+test("a value that does not convert notes the declaration it is for", () => {
+    notesAre(
+        ["2:3 Type 'string' is not assignable to type 'i64'.", "  1:12 'n' is declared here."],
+        'function f(n: int): void {}\nf("a")\n',
+    )
+    notesAre(
+        ["3:11 Type 'string' is not assignable to type 'i64'.", "  1:13 'value' is declared here."],
+        'class Box { value: int = 0 }\nconst b = new Box()\nb.value = "s"\n',
+    )
+    notesAre(
+        [
+            "3:18 Type 'Box' is not assignable to type 'Shape': property 'name' is missing.",
+            "  1:19 'name' is declared here.",
+        ],
+        "interface Shape { name: string }\nclass Box {}\nconst s: Shape = new Box()\n",
+    )
+})
+
+test("a variable read before it is assigned notes its declaration", () => {
+    notesAre(
+        ["3:17 Variable 'late' is used before being assigned.", "  2:9 'late' is declared here."],
+        "function g(): void {\n    let late\n    console.log(late)\n    late = 1\n}\n",
+    )
+})
+
+test("notes are printed under the error, indented, with their source line", () => {
+    const d = program("const a = 1\nconst a = 2\n").diagnostics[0]
+    const want = [
+        "/ore-check-test/test.ore:2:7: error[ORE5003]: Duplicate declaration 'a'.",
+        "  const a = 2",
+        "        ^",
+        `  see ${docsUrl("ORE5003")}`,
+        "  /ore-check-test/test.ore:1:7: note: 'a' is declared here.",
+        "    const a = 1",
+        "          ^",
+    ].join("\n")
+    const got = formatDiagnostic(d)
+    if (got !== want) fail(`expected:\n${want}\ngot:\n${got}`)
 })

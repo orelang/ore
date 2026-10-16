@@ -334,7 +334,12 @@ function overloadedCall(c: Checker, name: string, overloads: Func[], args: Node[
     }
     const signatures: string[] = []
     for (const func of overloads) signatures.push(`(${paramsToString(func.type)}) => ${typeToString(func.type.result)}`)
-    return c.fail(node, `No overload of '${name}' takes these arguments. Its signatures: ${signatures.join("; ")}.`)
+    c.error(node, `No overload of '${name}' takes these arguments. Its signatures: ${signatures.join("; ")}.`)
+    for (const func of overloads) {
+        const decl = c.funcDecls.get(func)
+        if (decl !== null) c.note(decl, "An overload signature is declared here.")
+    }
+    return errorOperand
 }
 
 /** A checked callback: the function value, how many arguments it takes, and its result. */
@@ -1496,11 +1501,15 @@ export function callFunc(
         const count = rest ? `at least ${required}` : required === fixed ? `${fixed}` : `${required} to ${fixed}`
         return c.fail(node, `${what} expects ${count} argument(s), got ${args.length}.`)
     }
+    // The parameters' declarations, for a note at the one an argument does not convert to.
+    const decl = c.funcDecls.get(func)
+    const declared: Node[] = decl !== null ? parameters(decl) : []
     const values: Expr[] = []
     for (let i = 0; i < given.length; i++) {
         const operand_ =
             operands !== null && i < operands.length ? operands[i] : checkExpr(c, given[i], scope, params[i])
-        values.push(c.coerce(operand_, params[i], given[i]))
+        const parameter = i < declared.length ? declared[i] : null
+        values.push(c.coerceTo(operand_, params[i], given[i], parameter))
     }
 
     // Extra arguments form the rest array.

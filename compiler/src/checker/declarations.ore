@@ -385,7 +385,7 @@ export function checkUnassigned(c: Checker) {
         checkAssigned(func.body, c.unassigned, (local, at) => {
             if (c.readEarly.has(local) || c.untyped.has(local)) return
             const written = at.k === "local" ? c.refNodes.get(at) : at.k === "closure" ? c.closureNodes.get(at) : null
-            c.error(written ?? c.declNodes.get(local)!, `Variable '${local.name}' is used before being assigned.`)
+            c.readBeforeAssigned(written ?? c.declNodes.get(local)!, local)
         })
     }
 }
@@ -553,7 +553,8 @@ export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
     if (bindings.kind === "NamespaceImport") {
         const name = nameNode(bindings).text
         const symbol: ValueSymbol = new ModuleSymbol(name, (n) => exportOf(c, target, n), bindings)
-        if (!module.scope.declareValue(name, symbol)) c.error(nameNode(bindings), `Duplicate declaration '${name}'.`)
+        if (!module.scope.declareValue(name, symbol))
+            c.duplicate(module.scope, name, nameNode(bindings), `Duplicate declaration '${name}'.`)
         return
     }
     for (const element of elements(bindings)) {
@@ -567,7 +568,8 @@ export function declareImport(c: Checker, stmt: Node, module: ModuleInfo) {
             continue
         }
         if (!module.scope.declareAlias(nameNode(element).text, () => exportOf(c, target, imported))) {
-            c.error(nameNode(element), `Duplicate declaration '${nameNode(element).text}'.`)
+            const local = nameNode(element)
+            c.duplicate(module.scope, local.text, local, `Duplicate declaration '${local.text}'.`)
         }
         c.specifiers.push(() => {
             const exported = exportOf(c, target, imported)
@@ -601,7 +603,7 @@ export function declareTextImport(c: Checker, stmt: Node, module: ModuleInfo) {
     if (contents === null) return
     const value: Operand = new Typed(new StringLit(types.string, contents))
     if (!module.scope.declareValue(name.text, new ConstSymbol(value, types.string, clause)))
-        c.error(name, `Duplicate declaration '${name.text}'.`)
+        c.duplicate(module.scope, name.text, name, `Duplicate declaration '${name.text}'.`)
 }
 
 /**
@@ -878,7 +880,7 @@ export function declareFunction(c: Checker, decl: Node, scope: Scope): Func | nu
     const func = makeFunc(c, decl, scope, name.text, c.prefix + cIdent(name.text), exported)
     applyFuncDirectives(c, decl, func)
     if (!scope.declareValue(name.text, new FuncSymbol(func, decl))) {
-        c.error(name, `Duplicate declaration '${name.text}'.`)
+        c.duplicate(scope, name.text, name, `Duplicate declaration '${name.text}'.`)
         return null
     }
     return func
@@ -930,7 +932,7 @@ function declareOverloaded(c: Checker, decl: Node, scope: Scope, signatures: Nod
     const symbol = new FuncSymbol(impl, decl)
     symbol.overloads = overloads
     if (!scope.declareValue(name.text, symbol)) {
-        c.error(name, `Duplicate declaration '${name.text}'.`)
+        c.duplicate(scope, name.text, name, `Duplicate declaration '${name.text}'.`)
         return null
     }
     return impl
@@ -1016,7 +1018,8 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
         variadic,
     )
     c.module.functions.push(func)
-    if (!scope.declareValue(name, new FuncSymbol(func, decl))) c.error(nameId, `Duplicate declaration '${name}'.`)
+    if (!scope.declareValue(name, new FuncSymbol(func, decl)))
+        c.duplicate(scope, name, nameId, `Duplicate declaration '${name}'.`)
 }
 
 /** A function with the signature of a declaration, resolved in `scope`; the body is checked later. */
@@ -1045,6 +1048,7 @@ export function makeFunc(
         c.sourceOf(decl).path,
     )
     c.module.functions.push(func)
+    c.funcDecls.set(func, decl)
     return func
 }
 
@@ -1065,7 +1069,7 @@ export function declareGeneric(c: Checker, decl: Node, scope: Scope) {
         if (declared && decl.kind === "ClassDeclaration")
             declared = scope.declareValue(name, new ClassSymbol(null, decl))
     }
-    if (!declared) c.error(nameNode(decl), `Duplicate declaration '${name}'.`)
+    if (!declared) c.duplicate(scope, name, nameNode(decl), `Duplicate declaration '${name}'.`)
 }
 
 /**
@@ -1742,7 +1746,7 @@ export function checkTopLevelConstants(c: Checker, stmt: Node, scope: Scope): bo
     if (c.diagnostics.length === errors && nonLiteral) return false
     for (const k of constants) {
         if (!scope.declareValue(k.name.text, new ConstSymbol(k.value, k.type, k.decl)))
-            c.error(k.name, `Duplicate declaration '${k.name.text}'.`)
+            c.duplicate(scope, k.name.text, k.name, `Duplicate declaration '${k.name.text}'.`)
     }
     return true
 }

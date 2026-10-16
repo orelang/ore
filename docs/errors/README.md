@@ -13,6 +13,21 @@ main.ore:2:25: error[ORE3022]: Only strings can be concatenated with '+'. Use a 
   see https://github.com/orelang/ore/blob/main/docs/errors/ORE3022.md
 ```
 
+A diagnostic may point at places related to it, such as the first declaration
+of a name declared twice; each is printed under it as a note, and sent by the
+language server as `relatedInformation`:
+
+```console
+$ ore check main.ore
+main.ore:2:5: error[ORE7003]: Cannot redeclare 'count' in the same scope.
+  let count = 2
+      ^^^^^
+  see https://github.com/orelang/ore/blob/main/docs/errors/ORE7003.md
+  main.ore:1:5: note: 'count' is declared here.
+    let count = 1
+        ^^^^^
+```
+
 Each page gives the message, with `…` for the parts that vary (names, types,
 numbers), then:
 

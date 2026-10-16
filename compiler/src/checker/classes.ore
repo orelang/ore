@@ -117,7 +117,7 @@ export function declareClass(c: Checker, decl: Node, scope: Scope) {
         !scope.declareType(name, new TypeSymbol(type, decl)) ||
         !scope.declareValue(name, new ClassSymbol(type, decl))
     ) {
-        c.error(nameId, `Duplicate declaration '${name}'.`)
+        c.duplicate(scope, name, nameId, `Duplicate declaration '${name}'.`)
         return
     }
     c.module.structs.push(type)
@@ -365,7 +365,9 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                 info.paramProps.push(params[i])
             }
             info.ctorParams = params
-            type.ctor = ctorFunc(c, info, params, member)
+            const ctor = ctorFunc(c, info, params, member)
+            c.funcDecls.set(ctor, member)
+            type.ctor = ctor
         } else if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
             declareAccessor(c, member, info, scope, flags)
         } else {
@@ -1023,6 +1025,7 @@ export function makeMethod(
         c.newLocal("this", info.type, false),
     )
     c.module.functions.push(func)
+    c.funcDecls.set(func, decl)
     return func
 }
 
@@ -1051,8 +1054,10 @@ export function checkImplements(c: Checker, info: ClassInfo, scope: Scope) {
             }
             const iface = type.type
             const result = conformance(c, info.type, iface)
-            if (result.reason !== null)
+            if (result.reason !== null) {
                 c.error(ref, `Class '${info.type.name}' does not implement '${iface.name}': ${result.reason}.`)
+                c.noteMember(iface, result.member)
+            }
         }
     }
 }
@@ -1302,6 +1307,8 @@ export class Conformance {
     constructor(
         readonly reason: string | null,
         readonly indices: int[] | null,
+        /** The name of the interface member the reason is about. */
+        readonly member: string = "",
     ) {}
 }
 
@@ -1318,16 +1325,18 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
             for (let i = 0; i < from.members.length; i++)
                 if (index === -1 && from.members[i].name === member.name) index = i
             const source = index === -1 ? null : from.members[index]
-            if (source === null || source.k !== member.k) return new Conformance(`${what} is missing`, null)
+            if (source === null || source.k !== member.k)
+                return new Conformance(`${what} is missing`, null, member.name)
             if (!sameType(source.type, member.type))
                 return new Conformance(
                     `${what} has type '${typeToString(source.type)}' instead of '${typeToString(member.type)}'`,
                     null,
+                    member.name,
                 )
             if (source.k === "field" && member.k === "field" && source.readonly && !member.readonly)
-                return new Conformance(`${what} is read-only`, null)
+                return new Conformance(`${what} is read-only`, null, member.name)
             if (source.k === "field" && member.k === "field" && source.optional && !member.optional)
-                return new Conformance(`${what} is optional`, null)
+                return new Conformance(`${what} is optional`, null, member.name)
             indices.push(index)
         } else if (member.k === "field") {
             const field = findField(from, member.name)
@@ -1337,24 +1346,27 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
                 return new Conformance(
                     `${what} is an accessor, and accessors do not implement interface fields yet`,
                     null,
+                    member.name,
                 )
-            if (field === null || field.private) return new Conformance(`${what} is missing`, null)
+            if (field === null || field.private) return new Conformance(`${what} is missing`, null, member.name)
             if (!sameType(field.type, member.type))
                 return new Conformance(
                     `${what} has type '${typeToString(field.type)}' instead of '${typeToString(member.type)}'`,
                     null,
+                    member.name,
                 )
-            if (field.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null)
+            if (field.readonly && !member.readonly) return new Conformance(`${what} is read-only`, null, member.name)
         } else {
             const method = findMethod(from, member.name)
             // A field holding a function of the method's type serves as the method (object literals' methods).
             const field = method === null ? findField(from, member.name) : null
             if (field !== null && !field.private && sameType(field.type, member.type)) continue
-            if (method === null || method.private) return new Conformance(`${what} is missing`, null)
+            if (method === null || method.private) return new Conformance(`${what} is missing`, null, member.name)
             if (!sameType(method.func.type, member.type))
                 return new Conformance(
                     `${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'`,
                     null,
+                    member.name,
                 )
         }
     }
