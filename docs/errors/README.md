@@ -450,6 +450,11 @@ The codes are grouped by the part of the language they concern:
 | [ORE6071](ORE6071.md) | A generic function value must be instantiated: give its type arguments or call it. |
 | [ORE6072](ORE6072.md) | '…' calls itself, so it needs a return type annotation. |
 | [ORE6073](ORE6073.md) | Module '…' has already exported a member named '…'. Consider explicitly re-exporting to resolve the ambiguity. |
+| [ORE6074](ORE6074.md) | Cannot find parameter '…'. |
+| [ORE6075](ORE6075.md) | A 'this' type predicate is allowed only in a method. |
+| [ORE6076](ORE6076.md) | A type predicate's type must be assignable to its parameter's type: '…' is not assignable to '…'. |
+| [ORE6077](ORE6077.md) | This result does not show that '…' is '…': return a check of '…' that narrows it, such as 'typeof x === "string"' or 'x instanceof C', or false. |
+| [ORE6078](ORE6078.md) | The function can return here without showing that '…' is '…': it must panic or exit where the assertion does not hold. |
 
 ## ORE7xxx: Statements
 

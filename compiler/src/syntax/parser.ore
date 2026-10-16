@@ -718,7 +718,29 @@ export class Parser {
     private signature(node: Node) {
         if (this.at("LessThanToken")) node.addAll(this.typeParameters(), "typeParameters")
         node.addAll(this.parameters(), "parameters")
-        if (this.eat("ColonToken")) node.add(this.type(), "type")
+        if (this.eat("ColonToken")) node.add(this.returnType(), "type")
+    }
+
+    /** A return type, or a type predicate: `x is T`, `this is T`, `asserts x is T` or `asserts x`. */
+    private returnType(): Node {
+        const start = this.token().start
+        const asserts =
+            this.at("AssertsKeyword") &&
+            !this.peek(1).newline &&
+            (this.isIdentifier(this.peek(1).kind) || this.peek(1).kind === "ThisKeyword")
+        const at = asserts ? 1 : 0
+        const name = this.peek(at)
+        const is = this.peek(at + 1)
+        const named = this.isIdentifier(name.kind) || name.kind === "ThisKeyword"
+        if (!named || (!asserts && (is.kind !== "IsKeyword" || is.newline))) return this.type()
+        const node = new Node("TypePredicate", start, start)
+        if (asserts) node.add(this.tokenNode(), "assertsModifier")
+        node.add(this.at("ThisKeyword") ? this.tokenNode() : this.nameNode(), "parameterName")
+        if (this.at("IsKeyword") && !this.token().newline) {
+            this.next()
+            node.add(this.type(), "type")
+        }
+        return this.finish(node, start)
     }
 
     private typeParameters(): Node[] {
@@ -1589,7 +1611,7 @@ export class Parser {
         if (this.at("LessThanToken")) node.addAll(this.typeParameters(), "typeParameters")
         node.addAll(this.parameters(), "parameters")
         this.expect("EqualsGreaterThanToken")
-        node.add(this.type(), "type")
+        node.add(this.returnType(), "type")
         return this.finish(node, start)
     }
 

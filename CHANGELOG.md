@@ -5,6 +5,13 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Type predicates, as in TypeScript: `x is T` and `this is T` narrow the
+  argument or receiver of a call in conditions, `filter` with such a
+  callback gives an array of `T`, and `asserts x is T` and `asserts x`
+  narrow after the call. Unlike TypeScript, the body is checked: each
+  result must be `false` or a check that narrows the parameter to `T`,
+  and an assertion function must panic or exit where the assertion does
+  not hold. `x is T` used to be a parse error.
 - Boolean literal types: `true` and `false` are types, and `boolean` is
   their union. A field of such a type discriminates a union of objects, as
   in the Result pattern `{ ok: true; value: T } | { ok: false; error: E }`:

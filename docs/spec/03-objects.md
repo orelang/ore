@@ -235,6 +235,7 @@ Checks narrow the type of a variable, of `this`, or of a field path such as
   `x instanceof I` for an interface member of a union;
 - the same checks of an `unknown`, which unbox it (see
   [unknown](02-types.md#unknown)).
+- a call of a function with a type predicate (see below).
 
 Narrowing applies inside `if` / `else`, `while` and `for` bodies, the
 operands of `&&`, `||` and `?:` (where `a || b` narrows a reference to the
@@ -269,6 +270,38 @@ when assigned.
 A `switch` over a union of string or numeric literals with a case for every
 literal is exhaustive: like a `default`, it lets a function end without
 `return`.
+
+### Type predicates
+
+A function, method or function literal can declare what its result tells
+about a parameter, as in TypeScript:
+
+- `function isText(x: unknown): x is string` returns a `boolean`; a call
+  `isText(v)` narrows `v` to `string` where it is true, and, for a union,
+  to the other members where it is false, in `if` / `else`, `&&`, `||`,
+  `!` and `?:`. A method `isDog(): this is Dog` narrows its receiver the
+  same way.
+- `arr.filter(f)` with such a callback, a function (`shapes.filter(isCircle)`)
+  or a literal (`xs.filter((x): x is string => x !== null)`), is an array
+  of the narrowed type.
+- `function assertText(x: unknown): asserts x is string` returns nothing,
+  and narrows `x` after a call statement `assertText(v)`; `asserts cond`
+  narrows what `cond` would narrow as a condition:
+  `check(x !== null)` makes `x` not null after it.
+- The type of `x is T` must be one that the parameter can have.
+
+Unlike TypeScript, Ore checks the body against the predicate, because a
+narrowed value is checked at run time and a wrong predicate would make the
+program panic later, where the caller reads the value. Each value that a
+function with `x is T` returns must be `false` or a check that narrows `x`
+to `T` when true, with the facts that hold at the `return`:
+`return typeof x === "string"`, `return s.kind === "circle"`,
+`return isOther(x) && x.length > 0`, or `return true` after
+`if (typeof x !== "string") return false`. `return true` alone, or a check
+of something else, is an error ([ORE6077](../errors/ORE6077.md)). An
+assertion function may return, with `return` or at its end, only where
+the checks before have narrowed `x` to `T` (or `cond` to `true`), so it
+must panic or exit on the other paths ([ORE6078](../errors/ORE6078.md)).
 
 ## Generics
 

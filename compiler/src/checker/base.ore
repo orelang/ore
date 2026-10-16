@@ -90,6 +90,7 @@ import {
     type InterfaceInfo,
     type JsonImport,
     type ModuleInfo,
+    type Predicate,
     type Signature,
     CheckInfo,
 } from "./context"
@@ -256,6 +257,8 @@ export class Checker {
     readonly signatures = new Map<Local[], Signature>()
     /** The declarations of functions, methods and constructors, for the notes of diagnostics at their parameters. */
     readonly funcDecls = new Map<Func, Node>()
+    /** The type predicates of functions and methods declared with one, such as `x is string`. */
+    readonly predicates = new Map<Func, Predicate>()
 
     /** C names of exported variables. */
     readonly exportedVariables = new Set<string>()
@@ -321,6 +324,10 @@ export class Checker {
             case "UndefinedKeyword":
                 this.error(node, "'undefined' is not supported in Ore. Use 'null'.")
                 return null
+        }
+        // A type predicate's function returns a boolean, and an assertion's nothing.
+        if (node.kind === "TypePredicate") {
+            return node.child("assertsModifier") !== null ? types.void : types.bool
         }
         if (node.kind === "LiteralType") {
             const lit = literal(node)

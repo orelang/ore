@@ -121,6 +121,12 @@ export class FuncContext {
     /** In the body of an async function, where `await` is allowed. */
     inAsync = false
 
+    /** The type predicate of the function, whose returns and end are checked against it. */
+    predicate: Predicate | null = null
+
+    /** The parameter (or `this`) that the predicate is about. */
+    predicateLocal: Local | null = null
+
     /** In the constructor of a class with a base class: the `super(...)` call it must make. */
     superCall: Node | null = null
 
@@ -280,6 +286,23 @@ export class Fact {
     constructor(
         readonly key: string,
         readonly type: Type,
+    ) {}
+}
+
+/**
+ * The type predicate of a function: `x is T` (its result tells whether a
+ * parameter is of type T), `this is T`, `asserts x is T` (it returns only
+ * when the parameter is of type T) or `asserts x` (only when it is true).
+ */
+export class Predicate {
+    constructor(
+        /** The index of the parameter it is about; -1 for `this`. */
+        readonly param: int,
+        /** The name of the parameter, or "this". */
+        readonly name: string,
+        /** The type it tells; null for `asserts x`, which tells that x is true. */
+        readonly type: Type | null,
+        readonly asserts: bool,
     ) {}
 }
 

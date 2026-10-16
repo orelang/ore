@@ -130,6 +130,14 @@ import {
     zeroValue,
 } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
+import {
+    assertionFacts,
+    assertionReturn,
+    declarePredicate,
+    enterPredicate,
+    predicateFacts,
+    predicateReturn,
+} from "./predicates"
 import { type ValueSymbol, ConstSymbol, LocalSymbol, Scope } from "./symbols"
 
 export function checkBlock(c: Checker, block: Node, scope: Scope): Block {
@@ -368,7 +376,11 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
     else if (k === "VariableStatement") checkVariables(c, declarationList(stmt), scope, out, stmt)
     else if (k === "ExpressionStatement") {
         const value = checkExpr(c, expression(stmt), scope)
-        if (value.k === "typed") out.push(new ExprStmt(value.expr))
+        if (value.k === "typed") {
+            out.push(new ExprStmt(value.expr))
+            // After a call of an assertion function, its assertion holds.
+            addFacts(c, assertionFacts(c, expression(stmt), value.expr, scope))
+        }
     } else if (k === "IfStatement") {
         const cond = condition(c, expression(stmt), scope)
         // Each branch starts from the facts before the `if`, and ends with its own.
@@ -1341,8 +1353,11 @@ export function checkReturn(c: Checker, stmt: Node, scope: Scope): ReturnStmt {
     }
     if (valueNode === null) {
         if (current.kind !== "void") c.error(stmt, `A return value of type '${typeToString(current)}' is required.`)
+        else assertionReturn(c, stmt)
         return new ReturnStmt()
     }
+    const tested = predicateReturn(c, valueNode, scope)
+    if (tested !== null) return new ReturnStmt(tested)
     const value = checkExpr(c, valueNode, scope, current)
     if (current.kind === "void") {
         // `return f()` of a void `f` calls it and returns.
@@ -1502,6 +1517,7 @@ export function checkClosure(
     func.type.required = required
     func.type.rest = rest
     c.module.functions.push(func)
+    declarePredicate(c, node, func, outer, false)
     if (declared !== null) declared(func)
     const prologue: Stmt[] = []
     const scope = paramScope(c, params_, named, new Scope(outer, func), prologue)
@@ -1538,6 +1554,7 @@ export function checkClosure(
         self !== null ? self : isArrow && outerFn !== null ? outerFn.thisLocal : null,
         self !== null ? null : isArrow && outerFn !== null ? outerFn.cls : null,
     )
+    enterPredicate(c, func, scope)
     // Default values, computed in the closure when their arguments are null, before the patterns.
     const start: Stmt[] = []
     for (let k = 0; k < defaultNodes.length; k++) {
@@ -1598,7 +1615,19 @@ function closureBody(
     const fnBody = body(node)!
     if (fnBody.kind === "Block") {
         func.body = checkBlock(c, fnBody, scope)
+        if (!terminates(func.body)) assertionReturn(c, resultNode ?? node)
     } else {
+        // The value of a function literal with a type predicate must test its parameter.
+        const tested = predicateReturn(c, fnBody, scope)
+        if (tested !== null) {
+            func.body = new Block([new ReturnStmt(tested)])
+            func.body.body = prepend(prologue, func.body.body)
+            const typed_ = new FuncTypeClass(func.type.params, fn.result ?? types.bool)
+            typed_.required = func.type.required
+            typed_.rest = func.type.rest
+            func.type = typed_
+            return true
+        }
         // An expression body returns its value, or is evaluated for a void result.
         const value = checkExpr(c, fnBody, scope, fn.result)
         if (value.k === "error") return false
@@ -1718,6 +1747,12 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
             )
         }
     }
+    // A call of a function with a type predicate narrows its argument.
+    if (node.kind === "CallExpression") {
+        const expr = checkCondition(c, node, scope)
+        const pair = predicateFacts(c, node, expr, scope)
+        return pair !== null ? new Condition(expr, pair.yes, pair.no) : new Condition(expr, [], [])
+    }
     // A reference of a boolean type, such as `r.ok`, is a test that it is `true`.
     if (isIdentifier(node) || node.kind === "PropertyAccessExpression") {
         const expr = checkCondition(c, node, scope)
@@ -1726,6 +1761,12 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
         const values = new Set<string>()
         values.add(literalKey(types.boolTrue)!)
         const pair = literalFacts(c, node, values, scope)
+        // A `boolean` itself is `true` when the test is, and `false` when not.
+        const key = refKey(c, node, scope)
+        if (key !== null && type.literal === "") {
+            pair.yes.push(new Fact(key, types.boolTrue))
+            pair.no.push(new Fact(key, types.boolFalse))
+        }
         return new Condition(expr, pair.yes, pair.no)
     }
     return new Condition(checkCondition(c, node, scope), [], [])
