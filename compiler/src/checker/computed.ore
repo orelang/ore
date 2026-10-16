@@ -4,7 +4,7 @@
 // type that names them is. A generic type alias is resolved for each list of
 // type arguments, so their type parameters are known types here.
 
-import { Field, FuncType, type Type, arrayOf, membersOf, typeToString, types } from "../ir/types"
+import { Field, FuncType, type Type, arrayOf, dictOf, isStringLike, membersOf, typeToString, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
     constraint,
@@ -52,6 +52,8 @@ export function keyofType(c: Checker, node: Node, scope: Scope): Type | null {
     if (inner === null) return null
     const type = c.resolveTypeArgument(inner, scope)
     if (type === null) return null
+    // The keys of a dictionary are any strings.
+    if (type.kind === "map" && type.dict) return types.string
     const names = memberNames(type)
     if (names === null || names.length === 0) {
         c.error(
@@ -110,6 +112,8 @@ export function indexedType(c: Checker, node: Node, scope: Scope): Type | null {
     const index = c.resolveType(indexNode, scope)
     if (index === null) return null
     if (index.kind === "never") return types.never
+    // Any string indexes a dictionary: `D[string]` and `D["a"]` are its values.
+    if (object.kind === "map" && object.dict && membersOf(index).every(isStringLike)) return object.value
     // A numeric literal type or `number` from a type parameter: `Prev[D]`, `T[K]` with K bound to number.
     if (index.kind === "number-literal" && object.kind === "struct" && object.tuple) {
         const element = memberType(object, index.value)
@@ -561,6 +565,27 @@ function homomorphicSource(c: Checker, keysNode: Node, valueNode: Node | null, p
     return source !== null && source.kind === "struct" ? source.fields : []
 }
 
+/**
+ * A mapped type over all strings, `{ [K in string]: X }` (`Record<string,
+ * X>`), or over the keys of a dictionary: the dictionary of `X` with `K`
+ * any string, readonly as its `readonly` modifier says or as the source was.
+ */
+function mappedDict(c: Checker, node: Node, parameter: Node, wasReadonly: bool, scope: Scope): Type | null {
+    const valueNode = typeNode(node)
+    if (valueNode === null) {
+        c.error(node, "A mapped type needs the type of its fields: '{ [K in Keys]: T }'.")
+        return null
+    }
+    const inner = new Scope(scope)
+    inner.declareType(nameNode(parameter).text, new TypeSymbol(types.string, parameter))
+    const value = c.resolveValueType(valueNode, inner)
+    if (value === null) return null
+    const readonlyToken = node.child("readonlyToken")
+    let isReadonly = wasReadonly
+    if (readonlyToken !== null) isReadonly = readonlyToken.kind !== "MinusToken"
+    return dictOf(value, isReadonly)
+}
+
 /** `{ readonly [K in Keys as Name]?: X }`: an object type with a field for each key. */
 export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
     const parameter = node.child("typeParameter")!
@@ -577,6 +602,7 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
             const elem = c.resolveValueType(valueNode, inner)
             return elem === null ? null : arrayOf(elem)
         }
+        if (source.kind === "map" && source.dict) return mappedDict(c, node, parameter, source.readonly, scope)
         if (source.kind !== "struct" && source.kind !== "interface") return source
     }
     const keys = c.resolveType(keysNode, scope)
@@ -586,6 +612,9 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
         c.error(node, "A mapped type needs the type of its fields: '{ [K in Keys]: T }'.")
         return null
     }
+    // Over all strings, as `Record<string, V>`: a dictionary.
+    if (membersOf(keys).some((t) => t.kind === "string") && node.child("nameType") === null)
+        return mappedDict(c, node, parameter, false, scope)
     const source = homomorphicSource(c, keysNode, valueNode, parameter, scope)
     const readonlyToken = node.child("readonlyToken")
     const questionToken = node.child("questionToken")
@@ -594,7 +623,7 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
         if (key.kind !== "literal") {
             c.error(
                 keysNode,
-                `The keys of a mapped type are string literal types, not '${typeToString(key)}'; for any string, use a Map.`,
+                `The keys of a mapped type are string literal types or 'string', not '${typeToString(key)}'.`,
             )
             return null
         }

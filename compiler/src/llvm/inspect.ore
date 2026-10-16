@@ -257,6 +257,7 @@ function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
             ])
         }
         case "map":
+            if (t.dict) return inspectDict(g, v, t.value, s, depth)
             return inspectEntries(g, v, t.key, t.value, s, depth)
         case "set":
             return inspectEntries(g, v, t.elem, null, s, depth)
@@ -265,6 +266,33 @@ function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
         default:
             return g.str(`[${t.kind}]`)
     }
+}
+
+/** A dictionary, as Node prints an object: `{ a: 1, 'b-c': 2 }`, every entry. */
+function inspectDict(g: Emitter, v: V, valueType: Type, s: V, depth: V): V {
+    const n = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 8)}`)
+    returnUnlessEmpty(g, g.rt("ore_rt_inspect_begin", [s, v, n, depth, g.str("{"), g.str("}"), g.str("[Object]")]))
+    const deeper = g.b.value("i64", `add i64 %depth, 1`)
+    liveEntries(g, v, (i) => {
+        const key = g.rt("ore_rt_inspect_key", [s, g.load(g.rt("ore_rt_map_key", [v, i]).v, types.string)])
+        const value = g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType)
+        g.rt("ore_rt_inspect_field", [s, key, inspectAt(g, value, valueType, s, deeper)])
+    })
+    return g.rt("ore_rt_inspect_end", [s, g.str("{"), g.str("}"), depth, g.i64(0), g.i64(0)])
+}
+
+/** Runs `body` for the index of each live entry of a map, in insertion order. */
+function liveEntries(g: Emitter, v: V, body: (i: V) => void) {
+    const slots = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 6)}`)
+    counted(g, slots, (i) => {
+        const live = g.b.label("live")
+        const skip = g.b.label("skip")
+        g.b.condBr(g.rtBool("ore_rt_map_live", [v, i]), live, skip)
+        g.b.start(live)
+        body(i)
+        g.b.br(skip)
+        g.b.start(skip)
+    })
 }
 
 /** A map, `Map(1) { 'a' => 1 }`, or a set without values, `Set(1) { 'a' }`. */
@@ -569,6 +597,17 @@ export function table(g: Emitter, v: V, t: Type, only: V | null) {
         return
     }
     const tb = g.rt("ore_rt_table_new", [])
+    // A dictionary as an object: a row for each entry, by its key.
+    if (t.kind === "map" && t.dict) {
+        const valueType = t.value
+        liveEntries(g, v, (i) => {
+            g.rt("ore_rt_table_row", [tb, g.load(g.rt("ore_rt_map_key", [v, i]).v, types.string)])
+            tableItem(g, tb, g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType), valueType)
+        })
+        if (only !== null) g.rt("ore_rt_table_only", [tb, only])
+        printTable(g, tb)
+        return
+    }
     // Node shows all the columns of a map or a set: their properties do not apply.
     if (t.kind === "map") {
         entriesTable(g, tb, v, t.key, t.value)
@@ -659,6 +698,16 @@ function tableItem(g: Emitter, tb: V, v: V, t: Type) {
             const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${k.v}`)
             const text = cell(g, g.load(place.v, elem), elem)
             g.rt("ore_rt_table_cell", [tb, g.rt("ore_rt_str_from_i64", [k]), text])
+        })
+        return
+    }
+    // A dictionary has a cell for each entry, by its key.
+    if (t.kind === "map" && t.dict) {
+        const valueType = t.value
+        liveEntries(g, v, (i) => {
+            const key = g.load(g.rt("ore_rt_map_key", [v, i]).v, types.string)
+            const value = g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType)
+            g.rt("ore_rt_table_cell", [tb, key, cell(g, value, valueType)])
         })
         return
     }

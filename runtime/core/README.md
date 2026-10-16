@@ -26,6 +26,7 @@ Rules for this code:
 | `array.ore` | New arrays, push, pop, shift, unshift and splice, slicing, reverse, stable sort |
 | `map.ore` | Insertion-ordered hash maps, hashing of keys |
 | `collections.ore` | The methods of `Map` and `Set` that take callbacks or other sets (`forEach`, `union`, `isSubsetOf`...), generic functions the checker calls with the receiver first; the namespace `Map` (`Map.groupBy`) |
+| `object.ore` | The namespace `Object` on dictionaries (`fromEntries`, `groupBy`), and the copying and freezing of dictionaries that the checker calls for `Object.assign` and `Object.freeze` |
 | `format.ore` | Integers and booleans as strings |
 | `float.ore` | Floats as strings: the shortest decimal that reads back, laid out as in JavaScript (Ryu for f64) |
 | `float-tables.ore` | The 128-bit powers of 5 that Ryu multiplies by, generated with exact integers |

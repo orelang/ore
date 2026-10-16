@@ -55,6 +55,7 @@ import {
 import {
     type ArrayType,
     type InterfaceType,
+    type MapType,
     type StructType,
     type Type,
     type UnionType,
@@ -121,6 +122,17 @@ import {
     staticMember,
 } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
+import {
+    checkDelete,
+    checkIn,
+    dictAssign,
+    dictCoalesceAssign,
+    dictGet,
+    dictKey,
+    dictLiteral,
+    dictTarget,
+    keyedMember,
+} from "./dicts"
 import { checkFunctionBody, inContext, makeFunc } from "./declarations"
 import { cIdent } from "./helpers"
 import { foldBinary, foldUnary } from "./fold"
@@ -252,7 +264,7 @@ function checkExprInner(c: Checker, node: Node, scope: Scope, expected: Type | n
         return typed(new TypeOf(types.string, c.toDefault(value, expression(node))))
     }
     if (k === "AwaitExpression") return checkAwait(c, node, scope, expected)
-    if (k === "DeleteExpression") return c.fail(node, "'delete' is not supported in Ore.")
+    if (k === "DeleteExpression") return checkDelete(c, node, scope)
     return c.fail(node, "This expression is not supported yet.")
 }
 
@@ -360,7 +372,7 @@ export function checkBinary(c: Checker, node: Node, scope: Scope): Operand {
     if (op === "CommaToken") return c.fail(opNode, "The comma operator is not supported in Ore.")
     if (op === "QuestionQuestionToken") return checkCoalesce(c, node, scope)
     if (op === "InstanceOfKeyword") return checkInstanceOf(c, node, scope)
-    if (op === "InKeyword") return c.fail(opNode, "'in' is not supported in Ore.")
+    if (op === "InKeyword") return checkIn(c, left(node), right(node), scope)
     return c.fail(opNode, `Operator '${c.text(opNode)}' is not supported.`)
 }
 
@@ -557,8 +569,14 @@ export function checkAssign(c: Checker, node: Node, op: ArithOp | null, scope: S
  * evaluated once, and the expression is the value `x` ends with.
  */
 function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): Operand {
-    const target = assignTarget(c, left(node), scope)
+    const target = assignTarget(c, left(node), scope, op === "??")
     if (target === null) return errorOperand
+    const entry = target.entry
+    if (entry !== null) {
+        const value = checkExpr(c, right(node), scope, target.type)
+        if (value.k === "error") return value
+        return typed(dictCoalesceAssign(c, entry, value, right(node)))
+    }
     if (target.accessor !== null)
         return c.fail(left(node), `'${op}=' cannot assign to an accessor; write 'x = x ${op} v'.`)
     const place = target.lvalue!
@@ -728,7 +746,7 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
         const truncated = assignLength(c, node, target_, scope)
         if (truncated !== null) return truncated
     }
-    const target = assignTarget(c, target_, scope)
+    const target = assignTarget(c, target_, scope, op === null)
     // The first assignment of a variable declared without a type gives its type.
     const place = target !== null ? target.lvalue : null
     const untyped = place !== null && place.k === "local" && c.untyped.has(place.local) ? place.local : null
@@ -746,6 +764,11 @@ function checkAssignInner(c: Checker, node: Node, op: ArithOp | null, scope: Sco
     if (untyped !== null) {
         if (!settle(c, untyped, value, right(node))) return errorOperand
         target.type = untyped.type
+    }
+    const entry = target.entry
+    if (entry !== null) {
+        if (value.k === "error") return value
+        return typed(dictAssign(c, entry, c.coerce(value, target.type, right(node))))
     }
     if (target.accessor !== null) {
         if (value.k === "error") return value
@@ -815,13 +838,29 @@ export function checkIncDec(c: Checker, node: Node, operator: string, prefix: bo
     return typed(new IncDec(type, place!, op, prefix))
 }
 
-export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget | null {
-    if (node.kind === "ParenthesizedExpression") return assignTarget(c, expression(node), scope)
+export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool = false): AssignTarget | null {
+    if (node.kind === "ParenthesizedExpression") return assignTarget(c, expression(node), scope, entries)
     if (node.kind === "ElementAccessExpression") {
         const target = checkExpr(c, expression(node), scope)
         if (target.k !== "typed") return null
         const array = target.expr
         const at = array.type
+        if (at.kind === "map" && at.dict) {
+            const key = dictKey(c, argumentExpression(node), scope)
+            if (key === null) return null
+            return entryTarget(c, node, array, at, key, entries)
+        }
+        const indexNode = argumentExpression(node)
+        if ((at.kind === "struct" && !at.tuple) || at.kind === "interface" || at.kind === "union") {
+            if (indexNode.kind !== "StringLiteral" && indexNode.kind !== "NoSubstitutionTemplateLiteral") {
+                c.error(
+                    indexNode,
+                    "Only a member named by a string literal can be assigned to: 'object[\"name\"] = value'.",
+                )
+                return null
+            }
+            return memberTarget(c, node, array, indexNode, stringText(indexNode))
+        }
         if (at.kind === "string") {
             c.error(node, "Strings are immutable.")
             return null
@@ -868,6 +907,61 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         const nameId = nameNode(node)
         const name = nameId.text
         const ot = object.type
+        if (ot.kind === "map" && ot.dict)
+            return entryTarget(c, node, object, ot, new StringLit(types.string, name), entries)
+        return memberTarget(c, node, object, nameId, name)
+    }
+    if (!isIdentifier(node)) {
+        c.error(node, "Only variables, fields and array elements can be assigned to.")
+        return null
+    }
+    const found = scope.lookupCapturing(node.text)
+    if (found === null) {
+        c.error(node, `Cannot find name '${node.text}'.`)
+        return null
+    }
+    const symbol = found.symbol
+    c.info.definitions.set(node, symbol.decl)
+    if (symbol.k === "const") {
+        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
+        return null
+    }
+    if (symbol.k !== "local") {
+        c.error(node, `Cannot assign to '${node.text}' because it is not a variable.`)
+        return null
+    }
+    if (!symbol.local.mutable) {
+        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
+        return null
+    }
+    capture(symbol.local, found.closures)
+    symbol.local.assigned = true
+    c.info.types.set(node, symbol.local.type)
+    return new AssignTargetClass(symbol.local.type, new LocalLValue(symbol.local))
+}
+
+/**
+ * An entry of a dictionary as the target of an assignment: only `=` and
+ * `??=` (with `entries`) assign to one, as it may be missing when read.
+ */
+function entryTarget(c: Checker, node: Node, dict: Expr, type: MapType, key: Expr, entries: bool): AssignTarget | null {
+    if (!entries) {
+        c.error(
+            node,
+            `An entry of a dictionary is assigned with '=' or '??=': it is '${typeToString(c.unionOf([type.value, types.null]))}' when read.`,
+        )
+        return null
+    }
+    const entry = dictTarget(c, node, dict, type, key)
+    if (entry === null) return null
+    c.info.types.set(node, type.value)
+    return new AssignTargetClass(type.value, null, null, entry)
+}
+
+/** The member `name` of an object as the target of an assignment: `object.name`, `object["name"]`. */
+function memberTarget(c: Checker, node: Node, object: Expr, nameId: Node, name: string): AssignTarget | null {
+    {
+        const ot = object.type
         if (ot.kind === "unknown") {
             c.error(nameId, unknownObject)
             return null
@@ -899,7 +993,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
             c.info.types.set(node, property.type)
             return new AssignTargetClass(property.type, null, new AccessorTarget(object, property, name))
         }
-        if (ot.kind === "union") return unionFieldTarget(c, node, object, ot, name)
+        if (ot.kind === "union") return unionFieldTarget(c, nameId, node, object, ot, name)
         const struct = ot.kind === "struct" ? ot : null
         const field = struct !== null ? findField(struct, name) : null
         if (struct === null || field === null) {
@@ -924,38 +1018,17 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         c.info.types.set(node, field.type)
         return new AssignTargetClass(field.type, new FieldLValue(object, name))
     }
-    if (!isIdentifier(node)) {
-        c.error(node, "Only variables, fields and array elements can be assigned to.")
-        return null
-    }
-    const found = scope.lookupCapturing(node.text)
-    if (found === null) {
-        c.error(node, `Cannot find name '${node.text}'.`)
-        return null
-    }
-    const symbol = found.symbol
-    c.info.definitions.set(node, symbol.decl)
-    if (symbol.k === "const") {
-        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
-        return null
-    }
-    if (symbol.k !== "local") {
-        c.error(node, `Cannot assign to '${node.text}' because it is not a variable.`)
-        return null
-    }
-    if (!symbol.local.mutable) {
-        c.error(node, `Cannot assign to '${node.text}' because it is a constant.`)
-        return null
-    }
-    capture(symbol.local, found.closures)
-    symbol.local.assigned = true
-    c.info.types.set(node, symbol.local.type)
-    return new AssignTargetClass(symbol.local.type, new LocalLValue(symbol.local))
 }
 
 /** A field that every member of a union has, writable and of the same type in each: `stmt.line = 3`. */
-function unionFieldTarget(c: Checker, node: Node, object: Expr, union: UnionType, name: string): AssignTarget | null {
-    const nameId = nameNode(node)
+function unionFieldTarget(
+    c: Checker,
+    nameId: Node,
+    node: Node,
+    object: Expr,
+    union: UnionType,
+    name: string,
+): AssignTarget | null {
     const fields: (Field | null)[] = []
     if (!canBeNull(union)) for (const m of union.members) fields.push(memberField(m, name))
     if (fields.length === 0 || fields.some((f) => f === null)) {
@@ -1596,6 +1669,8 @@ function returnsValue(node: Node | null): bool {
 }
 
 export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
+    const dict = expectedDict(expected)
+    if (dict !== null) return dictLiteral(c, node, scope, dict)
     const withMethods = (p: Node): bool =>
         p.kind === "MethodDeclaration" || p.kind === "GetAccessor" || p.kind === "SetAccessor"
     if (properties(node).some(withMethods)) return objectWithMethods(c, node, scope, expected)
@@ -1623,6 +1698,22 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         if (first !== i) return c.fail(props[i].node, `Duplicate property '${props[i].name}'.`)
     }
     return objectOf(c, node, scope, expected, props)
+}
+
+/** The dictionary an object literal is for: the expected type, or its only dictionary member when it has no object members. */
+function expectedDict(expected: Type | null): MapType | null {
+    if (expected === null) return null
+    if (expected.kind === "map" && expected.dict) return expected
+    if (expected.kind !== "union") return null
+    let found: MapType | null = null
+    for (const m of expected.members) {
+        if (m.kind === "struct" || m.kind === "interface") return null
+        if (m.kind === "map" && m.dict) {
+            if (found !== null) return null
+            found = m
+        }
+    }
+    return found
 }
 
 /** The object of an object literal with these properties, of the expected type or of their shape. */
@@ -1893,6 +1984,7 @@ export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
 export function member(c: Checker, value: Expr, nameNode_: Node, name: string): Operand {
     const type = value.type
     if (type.kind === "unknown") return c.fail(nameNode_, unknownObject)
+    if (type.kind === "map" && type.dict) return typed(dictGet(c, value, type, new StringLit(types.string, name)))
     if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
     if (name === "raw" && type.kind === "array" && type.template) return typed(templateRawOf(c, value))
     if (name === "length" && type.kind === "struct" && type.tuple) return new UntypedInt(bigOf(type.fields.length))
@@ -2078,6 +2170,18 @@ export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
         if (vt.kind === "struct" && vt.tuple) {
             const field = tupleField(c, vt, argumentExpression(node), scope)
             return field === null ? errorOperand : typed(new FieldGet(field.type, v, field.name))
+        }
+        if (vt.kind === "map" && vt.dict) {
+            const key = dictKey(c, argumentExpression(node), scope)
+            return key === null ? errorOperand : typed(dictGet(c, v, vt, key))
+        }
+        if (vt.kind === "struct" || vt.kind === "interface" || vt.kind === "union") {
+            const keyed = keyedMember(c, v, argumentExpression(node), scope)
+            if (keyed !== null) return keyed
+            return c.fail(
+                argumentExpression(node),
+                `Type '${typeToString(vt)}' is indexed by the name of a member, a string literal or a 'keyof' type.`,
+            )
         }
         const index = checkIndex(c, argumentExpression(node), scope)
         if (index === null) return errorOperand

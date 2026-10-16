@@ -15,7 +15,7 @@
 //   0 keySize, 8 valueSize, 16 entrySize, 24 hash, 32 eq, 40 entries,
 //   48 count (entries, with holes), 56 cap, 64 size (live entries),
 //   72 index, 80 indexCap, 88 keyData, 96 valueData, 104 entryData,
-//   112 keyKind.
+//   112 keyKind, 120 frozen.
 // `hash` and `eq` point to closures over the compiler's functions for the
 // key type, `(env, key) => u64` and `(env, a, b) => bool`. The key kind lets
 // the runtime hash and compare strings and 8-byte keys itself, without
@@ -40,7 +40,8 @@ const keyDataAt = 88
 const valueDataAt = 96
 const entryDataAt = 104
 const keyKindAt = 112
-const headerSize = 120
+const frozenAt = 120
+const headerSize = 128
 
 /** Keys hashed and compared by the compiler's closures. */
 const keyOther = 0
@@ -252,12 +253,14 @@ function mapFind(m: ptr, key: ptr, hash: ptr): ptr {
  */
 //ore:runtime ore_rt_map_put
 function mapPut(m: ptr, key: ptr, hash: u64, at: ptr, value: ptr): void {
+    if (field(m, frozenAt) !== 0) frozenWrite(key, unsafe.toInt(at) !== 0)
     if (unsafe.toInt(at) !== 0) unsafe.copy(at, value, field(m, valueSizeAt))
     else append(m, key, hash, value)
 }
 
 //ore:runtime ore_rt_map_set
 function mapSet(m: ptr, key: ptr, value: ptr): void {
+    if (field(m, frozenAt) !== 0) frozenWrite(key, unsafe.toInt(mapGet(m, key)) !== 0)
     const hash = hashOf(m, key)
     if (field(m, sizeAt) > 0) {
         const at = valueAt(m, unsafe.load<u64>(slotOf(m, findSlot(m, key, hash))))
@@ -302,6 +305,8 @@ function mapAddKeys(m: ptr, a: ptr): void {
 
 //ore:runtime ore_rt_map_delete
 function mapDelete(m: ptr, key: ptr): bool {
+    if (field(m, frozenAt) !== 0 && unsafe.toInt(mapGet(m, key)) !== 0)
+        process.panic(`Cannot delete property '${unsafe.load<string>(key)}' of #<Object>`)
     if (field(m, sizeAt) === 0) return false
     const s = unsafe.load<u64>(slotOf(m, findSlot(m, key, hashOf(m, key))))
     if (s === 0) return false
@@ -312,12 +317,33 @@ function mapDelete(m: ptr, key: ptr): bool {
 
 //ore:runtime ore_rt_map_clear
 function mapClear(m: ptr): void {
+    if (field(m, frozenAt) !== 0 && field(m, sizeAt) > 0) process.panic("Cannot clear a frozen object")
     unsafe.store<ptr>(unsafe.add(m, entriesAt), unsafe.fromInt(0))
     unsafe.store<ptr>(unsafe.add(m, indexAt), unsafe.fromInt(0))
     setField(m, countAt, 0)
     setField(m, capAt, 0)
     setField(m, sizeAt, 0)
     setField(m, indexCapAt, 0)
+}
+
+/**
+ * Freezes a dictionary (`Object.freeze`): from then on, setting or deleting
+ * an entry panics, with the TypeError that JavaScript throws in strict mode.
+ */
+export function mapFreeze(m: ptr): void {
+    setField(m, frozenAt, 1)
+}
+
+/** Whether a dictionary is frozen (`Object.isFrozen`). */
+export function mapFrozen(m: ptr): bool {
+    return field(m, frozenAt) !== 0
+}
+
+/** Panics on a write to the frozen dictionary entry `key`: of an existing entry, or a new one. */
+function frozenWrite(key: ptr, exists: bool): void {
+    const name = unsafe.load<string>(key)
+    if (exists) process.panic(`Cannot assign to read only property '${name}' of object '#<Object>'`)
+    process.panic(`Cannot add property ${name}, object is not extensible`)
 }
 
 /** The keys (or the values) of the live entries, as an array of their elements. */

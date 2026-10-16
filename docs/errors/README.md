@@ -111,7 +111,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2043](ORE2043.md) | Exponent … is too large. |
 | [ORE2044](ORE2044.md) | Shift count must not be negative. |
 | [ORE2045](ORE2045.md) | Shift count … is too large. |
-| [ORE2046](ORE2046.md) | Index signatures are not supported. Use a 'Map<K, V>'. |
+| [ORE2046](ORE2046.md) | An index signature is a type alone, '{ [key: string]: T }', not a member of a class, an interface or an object type with other members. |
 | [ORE2047](ORE2047.md) | Cannot find name '…'. Use '…'. |
 | [ORE2048](ORE2048.md) | Type '…' cannot be converted to or from JSON: the keys of a Map must be strings. |
 | [ORE2049](ORE2049.md) | Type '…' cannot be converted to or from JSON. |
@@ -124,7 +124,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2056](ORE2056.md) | '…' is not known yet here: give it a type annotation to use 'typeof …' before it. |
 | [ORE2057](ORE2057.md) | 'typeof …' needs a variable or a function with a known type. |
 | [ORE2058](ORE2058.md) | This type operator is not supported. |
-| [ORE2059](ORE2059.md) | The keys of a mapped type are string literal types, not '…'; for any string, use a Map. |
+| [ORE2059](ORE2059.md) | The keys of a mapped type are string literal types or 'string', not '…'. |
 | [ORE2060](ORE2060.md) | A key of a mapped type is a string literal type, not '…'. |
 | [ORE2061](ORE2061.md) | A mapped type needs the type of its fields: '{ [K in Keys]: T }'. |
 | [ORE2062](ORE2062.md) | 'infer' declares a type only in the 'extends' clause of a conditional type. |
@@ -133,6 +133,8 @@ The codes are grouped by the part of the language they concern:
 | [ORE2065](ORE2065.md) | An integer constant is not assignable to type 'bigint'. Write a bigint literal: '…n'. |
 | [ORE2066](ORE2066.md) | Type '…' exists only in computations on types: values cannot have 'never' in a tuple or an object type yet. |
 | [ORE2067](ORE2067.md) | Constant … is not assignable to type '…'. |
+| [ORE2068](ORE2068.md) | An index signature has one parameter and a type: '[key: string]: T'. |
+| [ORE2069](ORE2069.md) | The keys of a dictionary are strings, not '…'; for other keys, use a 'Map<K, V>'. |
 
 ## ORE3xxx: Expressions
 
@@ -144,7 +146,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3004](ORE3004.md) | 'super' can only call the constructor or a method of the base class: 'super(...)' or 'super.m(...)'. |
 | [ORE3005](ORE3005.md) | Type assertions are not supported in Ore. Use a conversion such as 'i32(x)'. |
 | [ORE3006](ORE3006.md) | 'await' is only allowed in async functions and in the top-level code of a module. |
-| [ORE3007](ORE3007.md) | 'delete' is not supported in Ore. |
+| [ORE3007](ORE3007.md) | 'delete' removes an entry of a dictionary, '{ [key: string]: T }', only. |
 | [ORE3008](ORE3008.md) | This expression is not supported yet. |
 | [ORE3009](ORE3009.md) | '…' is a class. Create an instance with 'new …(...)'. |
 | [ORE3010](ORE3010.md) | '…' is a generic function and cannot be used as a value. |
@@ -156,7 +158,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE3016](ORE3016.md) | '…' is not supported in Ore. Use '…'. |
 | [ORE3017](ORE3017.md) | '>>>' is not supported in Ore. Use '>>' on an unsigned type. |
 | [ORE3018](ORE3018.md) | The comma operator is not supported in Ore. |
-| [ORE3019](ORE3019.md) | 'in' is not supported in Ore. |
+| [ORE3019](ORE3019.md) | 'in' tests the keys of a dictionary, '{ [key: string]: T }', only, not of '…'. |
 | [ORE3020](ORE3020.md) | Operator '…' is not supported. |
 | [ORE3021](ORE3021.md) | Operator '…' requires integer operands, got '…' and '…'. |
 | [ORE3022](ORE3022.md) | Only strings can be concatenated with '+'. Use a template literal: `${a}${b}`. |
@@ -220,6 +222,14 @@ The codes are grouped by the part of the language they concern:
 | [ORE3080](ORE3080.md) | An expression of type 'void' cannot be awaited. |
 | [ORE3081](ORE3081.md) | A union of promises and other values cannot be awaited yet. |
 | [ORE3082](ORE3082.md) | Static members cannot reference class type parameters. |
+| [ORE3083](ORE3083.md) | The key of a dictionary is a string, not '…'. |
+| [ORE3084](ORE3084.md) | Index signature in type '…' only permits reading. |
+| [ORE3085](ORE3085.md) | The operand of a 'delete' operator cannot be a read-only property. |
+| [ORE3086](ORE3086.md) | Only a dictionary of '…' or an object can be spread into '…', got '…'. |
+| [ORE3087](ORE3087.md) | A literal of '…' has only properties and spreads. |
+| [ORE3088](ORE3088.md) | Type '…' is indexed by the name of a member, a string literal or a 'keyof' type. |
+| [ORE3089](ORE3089.md) | Only a member named by a string literal can be assigned to: 'object["name"] = value'. |
+| [ORE3090](ORE3090.md) | An entry of a dictionary is assigned with '=' or '??=': it is '…' when read. |
 
 ## ORE4xxx: Calls and built-in functions
 
@@ -309,6 +319,11 @@ The codes are grouped by the part of the language they concern:
 | [ORE4082](ORE4082.md) | 'Array.from' takes an array, a string, a set, a map or '{ length: n }', got '…'. |
 | [ORE4083](ORE4083.md) | 'Array.from' takes an object only as '{ length: n }'. |
 | [ORE4084](ORE4084.md) | 'Array.from({ length })' needs a function to make the elements: '(_, i) => ...'. |
+| [ORE4085](ORE4085.md) | A dictionary has no methods: '…' is an entry, of type '…'. |
+| [ORE4086](ORE4086.md) | '…' takes a dictionary, an object or a class instance, got '…'. |
+| [ORE4087](ORE4087.md) | '…' cannot copy '…' into '…': give it …. |
+| [ORE4088](ORE4088.md) | '…' cannot copy the field '…' into '…': it has no writable field '…'. |
+| [ORE4089](ORE4089.md) | A dictionary is not iterable: use 'new Map(Object.entries(d))'. |
 
 ## ORE5xxx: Classes and interfaces
 
@@ -499,3 +514,4 @@ The codes are grouped by the part of the language they concern:
 | [ORE7042](ORE7042.md) | A rest element must be last in a destructuring pattern. |
 | [ORE7043](ORE7043.md) | A rest element cannot have a default value. |
 | [ORE7044](ORE7044.md) | The rest of an object pattern must be a name, not a pattern. |
+| [ORE7045](ORE7045.md) | A dictionary is not iterable: loop over 'Object.keys(d)' or 'Object.entries(d)'. |

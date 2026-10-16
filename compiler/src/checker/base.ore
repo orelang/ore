@@ -35,6 +35,7 @@ import {
     LiteralType,
     NumberLiteralType,
     MapType,
+    dictOf,
     SetType,
     StructType,
     UnionType,
@@ -105,6 +106,7 @@ import {
 } from "./helpers"
 import { type Operand, errorOperand, Typed } from "./operand"
 import { type Generic, type NamespaceSymbol, type TypeSymbol, type ValueSymbol, Scope } from "./symbols"
+import { dictOfLiteral } from "./dicts"
 import { templateAsRaw } from "./templates"
 
 /** Two operands brought to a common type, or nulls when that failed: `[ir.Expr | undefined, ir.Expr | undefined]`. */
@@ -591,10 +593,37 @@ export class Checker {
     resolveTypeLiteral(node: Node, scope: Scope): Type | null {
         // An object type with methods is a structural interface, as `interface` declares one.
         if (members(node).some((m) => m.kind === "MethodSignature")) return objectInterface(this, node, scope)
+        const list = members(node)
+        if (list.length === 1 && list[0].kind === "IndexSignature") return this.indexSignatureType(list[0], scope)
         const shape = this.shape(this.literalFields(node, scope))
         // The first declaration of a shape is where its fields are defined.
         if (!this.memberDecls.has(shape)) this.memberDecls.set(shape, this.memberNodes(node))
         return shape
+    }
+
+    /**
+     * `{ [key: string]: V }`, an object type of only an index signature: a
+     * dictionary of string keys.
+     */
+    indexSignatureType(node: Node, scope: Scope): Type | null {
+        const params = parameters(node)
+        const annotation = typeNode(node)
+        const keyNode = params.length === 1 ? typeNode(params[0]) : null
+        if (keyNode === null || annotation === null) {
+            this.error(node, "An index signature has one parameter and a type: '[key: string]: T'.")
+            return null
+        }
+        const key = this.resolveType(keyNode, scope)
+        const value = this.resolveValueType(annotation, scope)
+        if (key === null || value === null) return null
+        if (key.kind !== "string") {
+            this.error(
+                keyNode,
+                `The keys of a dictionary are strings, not '${typeToString(key)}'; for other keys, use a 'Map<K, V>'.`,
+            )
+            return null
+        }
+        return dictOf(value, hasModifier(node, "ReadonlyKeyword"))
     }
 
     /** The members of an object type by name, for go to definition. */
@@ -861,6 +890,21 @@ export class Checker {
                 }
                 // An instance of a subclass is an instance of its base classes, as it is.
                 if (from.kind === "struct" && target.kind === "struct" && isSubclass(from, target)) return expr
+                // An object literal is a dictionary of its properties, as TypeScript's object literal types fit index signatures.
+                if (expr.k === "object" && target.kind === "map" && target.dict && from.kind === "struct") {
+                    const literal = dictOfLiteral(this, expr, target, node)
+                    if (literal !== null) return literal
+                }
+                // A dictionary is a readonly one of the same values, as it is.
+                if (
+                    from.kind === "map" &&
+                    from.dict &&
+                    target.kind === "map" &&
+                    target.dict &&
+                    target.readonly &&
+                    sameType(from.value, target.value)
+                )
+                    return new Recast(target, expr)
                 const targetMembers = membersOf(target)
                 // A string literal expression has the literal type its context asks for.
                 if (expr.k === "string") {

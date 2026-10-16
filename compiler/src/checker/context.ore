@@ -9,7 +9,7 @@ import {
     type MethodCall,
     type Module,
 } from "../ir/nodes"
-import { type InterfaceType, type StructType, type Type } from "../ir/types"
+import { type InterfaceType, type MapType, type StructType, type Type } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { type Diagnostic } from "../syntax/diagnostic"
 import { type Source } from "../syntax/source"
@@ -266,12 +266,22 @@ export class AccessorTarget {
     ) {}
 }
 
-/** Where an assignment stores: a place, or the setter of an accessor property. */
+/** An entry of a dictionary assigned to: `d[key] = value`, `d.name = value`. */
+export class DictTarget {
+    constructor(
+        readonly dict: Expr,
+        readonly type: MapType,
+        readonly key: Expr,
+    ) {}
+}
+
+/** Where an assignment stores: a place, the setter of an accessor property, or an entry of a dictionary. */
 export class AssignTarget {
     constructor(
         public type: Type,
         readonly lvalue: LValue | null = null,
         readonly accessor: AccessorTarget | null = null,
+        readonly entry: DictTarget | null = null,
     ) {}
 }
 

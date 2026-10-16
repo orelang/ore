@@ -1,0 +1,537 @@
+// Dictionaries, `{ [key: string]: V }` and `Record<string, V>`: maps of
+// string keys (`MapType` with `dict`) used with the syntax of objects. A
+// read, `d.name` or `d[key]`, is the value or null; `d[key] = value` sets
+// an entry, `delete d[key]` removes one and `key in d` tests one. Also the
+// namespace `Object` (`Object.keys`, `assign`, `freeze`...), for
+// dictionaries and objects, and objects indexed by the names of their
+// fields: `p["x"]`, `p[k]` with `k: keyof P`.
+
+import {
+    type Expr,
+    ArrayLit,
+    Assign,
+    Bind,
+    BindLocal,
+    BoolLit,
+    Call,
+    Coalesce,
+    Compare,
+    Conditional,
+    FieldGet,
+    FieldInit,
+    FieldLValue,
+    Func,
+    IntLit,
+    IsNull,
+    LocalRef,
+    Logical,
+    MapOp,
+    Not,
+    ObjectLit,
+    Push,
+    Recast,
+    Seq,
+    StringLit,
+} from "../ir/nodes"
+import {
+    type MapType,
+    type StructType,
+    type Type,
+    type Field,
+    arrayOf,
+    dictOf,
+    findField,
+    isStringLike,
+    membersOf,
+    sameType,
+    types,
+    typeToString,
+} from "../ir/types"
+import { Node } from "../syntax/ast"
+import {
+    args as argsOf,
+    expression,
+    initializer,
+    isIdentifier,
+    nameNode,
+    properties,
+    stringText,
+} from "../syntax/nodes"
+import { type Checker } from "./base"
+import { DictTarget } from "./context"
+import { instantiate } from "./declarations"
+import { checkExpr, member } from "./expressions"
+import { typed } from "./helpers"
+import { type Operand, errorOperand } from "./operand"
+import { GenericFuncSymbol, type Scope } from "./symbols"
+
+/** The module of the functions of `Object` written in Ore. */
+const objectModule = "ore:runtime/object"
+
+/** Whether a type is a dictionary, `{ [key: string]: V }`. */
+export function isDict(type: Type): bool {
+    return type.kind === "map" && type.dict
+}
+
+/** The dictionary that a type is, or null. */
+export function dictType(type: Type): MapType | null {
+    return type.kind === "map" && type.dict ? type : null
+}
+
+/** The value of an entry, or null when there is none: `d.name`, `d[key]`. */
+export function dictGet(c: Checker, dict: Expr, type: MapType, key: Expr): Expr {
+    return new MapOp("get", c.unionOf([type.value, types.null]), type, dict, key)
+}
+
+/** The key of `d[key]`: a string. */
+export function dictKey(c: Checker, node: Node, scope: Scope): Expr | null {
+    const key = checkExpr(c, node, scope, types.string)
+    if (key.k === "error") return null
+    const expr = key.k === "typed" ? key.expr : null
+    if (expr === null || !membersOf(expr.type).every(isStringLike)) {
+        const shown = expr === null ? c.defaultType(key) : expr.type
+        c.error(node, `The key of a dictionary is a string, not '${typeToString(shown)}'.`)
+        return null
+    }
+    return c.coerce(key, types.string, node)
+}
+
+/** The entry `d[key]` or `d.name` as the target of an assignment; null with an error for a readonly dictionary. */
+export function dictTarget(c: Checker, node: Node, dict: Expr, type: MapType, key: Expr): DictTarget | null {
+    if (type.readonly) {
+        c.error(node, `Index signature in type '${typeToString(type)}' only permits reading.`)
+        return null
+    }
+    return new DictTarget(dict, type, key)
+}
+
+/** `d[key] = value`: sets the entry; the value of the assignment is `value`. */
+export function dictAssign(c: Checker, entry: DictTarget, value: Expr): Expr {
+    const type = entry.type.value
+    const local = c.newLocal("value", type, false)
+    const ref: Expr = new LocalRef(type, local)
+    const set: Expr = new MapOp("set", entry.type, entry.type, entry.dict, entry.key, ref)
+    return new Bind(type, [new BindLocal(local, value)], new Seq(type, [set, ref]))
+}
+
+/**
+ * `d[key] ??= value`: the value of the entry, or `value` set as its value
+ * when there is none; the dictionary and the key are evaluated once.
+ */
+export function dictCoalesceAssign(c: Checker, entry: DictTarget, value: Operand, node: Node): Expr {
+    const type = entry.type.value
+    const dict = c.newLocal("dict", entry.type, false)
+    const key = c.newLocal("key", types.string, false)
+    const dictRef: Expr = new LocalRef(entry.type, dict)
+    const keyRef: Expr = new LocalRef(types.string, key)
+    const read = dictGet(c, dictRef, entry.type, keyRef)
+    const set = dictAssign(c, new DictTarget(dictRef, entry.type, keyRef), c.coerce(value, type, node))
+    return new Bind(
+        type,
+        [new BindLocal(dict, entry.dict), new BindLocal(key, entry.key)],
+        new Coalesce(type, read, set),
+    )
+}
+
+/** `delete d[key]` and `delete d.name`: removes the entry; true, as in JavaScript. */
+export function checkDelete(c: Checker, node: Node, scope: Scope): Operand {
+    let target = expression(node)
+    while (target.kind === "ParenthesizedExpression") target = expression(target)
+    const k = target.kind
+    if (k !== "ElementAccessExpression" && k !== "PropertyAccessExpression")
+        return c.fail(node, "'delete' removes an entry of a dictionary, '{ [key: string]: T }', only.")
+    const object = checkExpr(c, expression(target), scope)
+    if (object.k === "error") return object
+    const value = c.toDefault(object, expression(target))
+    const type = dictType(value.type)
+    if (type === null) return c.fail(node, "'delete' removes an entry of a dictionary, '{ [key: string]: T }', only.")
+    let key: Expr | null = null
+    if (k === "PropertyAccessExpression") key = new StringLit(types.string, nameNode(target).text)
+    else key = dictKey(c, target.child("argumentExpression")!, scope)
+    if (key === null) return errorOperand
+    if (type.readonly) return c.fail(target, "The operand of a 'delete' operator cannot be a read-only property.")
+    const removed: Expr = new MapOp("delete", types.bool, type, value, key)
+    return typed(new Seq(types.bool, [removed, new BoolLit(types.bool, true)]))
+}
+
+/** `key in d`: whether the dictionary has an entry for the key. */
+export function checkIn(c: Checker, left: Node, right: Node, scope: Scope): Operand {
+    const key = dictKey(c, left, scope)
+    const object = checkExpr(c, right, scope)
+    if (key === null || object.k === "error") return errorOperand
+    const value = c.toDefault(object, right)
+    const type = dictType(value.type)
+    if (type === null)
+        return c.fail(
+            right,
+            `'in' tests the keys of a dictionary, '{ [key: string]: T }', only, not of '${typeToString(value.type)}'.`,
+        )
+    return typed(new MapOp("has", types.bool, type, value, key))
+}
+
+/**
+ * An object literal of a dictionary type: an entry for each property, in
+ * order, and the entries of each spread dictionary or the fields of each
+ * spread object. A computed name `[key]` is any string.
+ */
+export function dictLiteral(c: Checker, node: Node, scope: Scope, type: MapType): Operand {
+    const map = c.newLocal("dict", type, false)
+    const ref: Expr = new LocalRef(type, map)
+    const exprs: Expr[] = []
+    const value = type.value
+    for (const prop of properties(node)) {
+        const k = prop.kind
+        if (k === "SpreadAssignment") {
+            const inner = expression(prop)
+            const spread = checkExpr(c, inner, scope)
+            if (spread.k === "error") return errorOperand
+            const source = c.toDefault(spread, inner)
+            const st = source.type
+            const from = dictType(st)
+            if (from !== null && sameType(from.value, value)) {
+                const assign = objectFunc(c, "objectAssign", [value], inner)
+                if (assign === null) return errorOperand
+                exprs.push(new Call(types.void, assign, [ref, readable(source, from)]))
+                continue
+            }
+            if (st.kind === "struct" && !st.tuple) {
+                const object = c.newLocal("spread", st, false)
+                const objectRef: Expr = new LocalRef(st, object)
+                const sets: Expr[] = []
+                for (const f of dataFields(st)) {
+                    const field = c.coerce(typed(new FieldGet(f.type, objectRef, f.name)), value, inner)
+                    sets.push(new MapOp("set", type, type, ref, new StringLit(types.string, f.name), field))
+                }
+                sets.push(objectRef)
+                exprs.push(new Bind(st, [new BindLocal(object, source)], new Seq(st, sets)))
+                continue
+            }
+            return c.fail(
+                inner,
+                `Only a dictionary of '${typeToString(value)}' or an object can be spread into '${typeToString(type)}', got '${typeToString(st)}'.`,
+            )
+        }
+        if (k !== "PropertyAssignment" && k !== "ShorthandPropertyAssignment")
+            return c.fail(prop, `A literal of '${typeToString(type)}' has only properties and spreads.`)
+        const name = nameNode(prop)
+        let key: Expr | null = null
+        if (name.kind === "ComputedPropertyName") key = dictKey(c, expression(name), scope)
+        else if (isIdentifier(name)) key = new StringLit(types.string, name.text)
+        else if (name.kind === "StringLiteral") key = new StringLit(types.string, stringText(name))
+        else if (name.kind === "NumericLiteral") key = new StringLit(types.string, c.text(name))
+        else
+            return c.memberName(name) === null
+                ? errorOperand
+                : c.fail(name, "Computed property names are not supported.")
+        if (key === null) return errorOperand
+        const valueNode = k === "ShorthandPropertyAssignment" ? name : initializer(prop)!
+        const entry = checkExpr(c, valueNode, scope, value)
+        if (entry.k === "error") return errorOperand
+        exprs.push(new MapOp("set", type, type, ref, key, c.coerce(entry, value, valueNode)))
+    }
+    exprs.push(ref)
+    return typed(new Bind(type, [new BindLocal(map, new MapOp("new", type, type))], new Seq(type, exprs)))
+}
+
+/** A dictionary as the mutable one of the same values, for the runtime functions that read it. */
+function readable(dict: Expr, type: MapType): Expr {
+    return type.readonly ? new Recast(dictOf(type.value, false), dict) : dict
+}
+
+/** The fields of an object that `Object.keys` lists: its fields, but the hidden ones of accessors. */
+function dataFields(type: StructType): Field[] {
+    const fields: Field[] = []
+    for (const f of type.fields) {
+        const ft = f.type
+        if (f.private && ft.kind === "func" && (f.name.startsWith("get ") || f.name.startsWith("set "))) continue
+        fields.push(f)
+    }
+    return fields
+}
+
+/** An instance of a generic function of runtime/core/object.ore that is not exported. */
+function objectFunc(c: Checker, name: string, typeArgs: Type[], node: Node): Func | null {
+    for (const [source, info] of c.modules) {
+        if (source.path !== objectModule) continue
+        const symbol = info.scope.ownValue(name)
+        if (!(symbol instanceof GenericFuncSymbol)) process.panic(`Object: no function ${name}`)
+        const found = instantiate(c, symbol.generic, typeArgs, node)
+        if (found instanceof Func) return found
+    }
+    return null
+}
+
+/** Whether an optional field of an object holds a value: null when it always does. */
+function presentTest(object: Expr, f: Field): Expr | null {
+    if (!f.optional || f.type.kind !== "union") return null
+    return new Not(types.bool, new IsNull(types.bool, new FieldGet(f.type, object, f.name)))
+}
+
+/**
+ * An array of an item per field of an object, in the order of its fields;
+ * an optional field that is null is left out, as JavaScript leaves out a
+ * property that is not there.
+ */
+function perField(c: Checker, object: Expr, type: StructType, elem: Type, item: (o: Expr, f: Field) => Expr): Expr {
+    const o = c.newLocal("object", type, false)
+    const oRef: Expr = new LocalRef(type, o)
+    const always: Expr[] = []
+    const optional: Field[] = []
+    for (const f of dataFields(type)) {
+        if (presentTest(oRef, f) === null && optional.length === 0) always.push(item(oRef, f))
+        else optional.push(f)
+    }
+    const arrayType = arrayOf(elem)
+    const array = c.newLocal("items", arrayType, false)
+    const arrayRef: Expr = new LocalRef(arrayType, array)
+    const exprs: Expr[] = []
+    for (const f of optional) {
+        const push: Expr = new Push(types.i64, arrayRef, [item(oRef, f)])
+        const pushed: Expr = new Compare(types.bool, ">", push, new IntLit(types.i64, 0))
+        const test = presentTest(oRef, f)
+        exprs.push(test === null ? pushed : new Logical(types.bool, "&&", test, pushed))
+    }
+    exprs.push(arrayRef)
+    return new Bind(
+        arrayType,
+        [new BindLocal(o, object), new BindLocal(array, new ArrayLit(arrayType, always))],
+        new Seq(arrayType, exprs),
+    )
+}
+
+/** The type of the values of an object's fields: their union. */
+function valuesType(c: Checker, type: StructType): Type {
+    const found: Type[] = []
+    for (const f of dataFields(type)) found.push(f.type)
+    return found.length === 0 ? types.never : c.unionOf(found)
+}
+
+/** Whether `Object.keys` and the others take a value of a type: a dictionary or an object that is not a tuple. */
+function objectOf(type: Type): StructType | null {
+    return type.kind === "struct" && !type.tuple ? type : null
+}
+
+/** The functions of `Object`, checked here: `keys`, `values`, `entries`, `hasOwn`, `assign`, `freeze`, `isFrozen`. */
+export function objectCall(c: Checker, name: string, node: Node, scope: Scope): Operand {
+    const args = argsOf(node)
+    const short = name.slice("Object.".length)
+    const count = short === "assign" ? -1 : short === "hasOwn" ? 2 : 1
+    if (count >= 0 && args.length !== count)
+        return c.fail(node, `'${name}' expects ${count} argument(s), got ${args.length}.`)
+    if (count < 0 && args.length < 1)
+        return c.fail(node, `'${name}' expects at least 1 argument(s), got ${args.length}.`)
+    const first = checkExpr(c, args[0], scope)
+    if (first.k === "error") return first
+    const value = c.toDefault(first, args[0])
+    const type = value.type
+    const dict = dictType(type)
+    const struct = objectOf(type)
+    if (short === "isFrozen") {
+        if (dict !== null) {
+            const frozen = objectFunc(c, "objectIsFrozen", [dict.value], node)
+            if (frozen === null) return errorOperand
+            return typed(new Call(types.bool, frozen, [readonlyOf(value, dict)]))
+        }
+        // An object is frozen when its fields are all readonly; a primitive always is, as in JavaScript.
+        let frozen = !(type.kind === "array" || type.kind === "map" || type.kind === "set")
+        if (struct !== null) frozen = struct.fields.every((f) => f.readonly)
+        return typed(new Seq(types.bool, [value, new BoolLit(types.bool, frozen)]))
+    }
+    if (dict === null && struct === null)
+        return c.fail(
+            args[0],
+            `'${name}' takes a dictionary, an object or a class instance, got '${typeToString(type)}'.`,
+        )
+    switch (short) {
+        case "keys": {
+            const keys = arrayOf(types.string)
+            if (dict !== null) return typed(new MapOp("keys", keys, dict, value))
+            return typed(perField(c, value, struct!, types.string, (o, f) => new StringLit(types.string, f.name)))
+        }
+        case "values": {
+            if (dict !== null) return typed(new MapOp("values", arrayOf(dict.value), dict, value))
+            const elem = valuesType(c, struct!)
+            return typed(
+                perField(c, value, struct!, elem, (o, f) =>
+                    c.coerce(typed(new FieldGet(f.type, o, f.name)), elem, args[0]),
+                ),
+            )
+        }
+        case "entries": {
+            if (dict !== null)
+                return typed(new MapOp("entries", arrayOf(c.tupleOf([types.string, dict.value])), dict, value))
+            const elem = valuesType(c, struct!)
+            const pair = c.tupleOf([types.string, elem])
+            return typed(
+                perField(
+                    c,
+                    value,
+                    struct!,
+                    pair,
+                    (o, f) =>
+                        new ObjectLit(pair, [
+                            new FieldInit("0", new StringLit(types.string, f.name)),
+                            new FieldInit("1", c.coerce(typed(new FieldGet(f.type, o, f.name)), elem, args[0])),
+                        ]),
+                ),
+            )
+        }
+        case "hasOwn": {
+            const key = dictKey(c, args[1], scope)
+            if (key === null) return errorOperand
+            if (dict !== null) return typed(new MapOp("has", types.bool, dict, value, key))
+            return typed(hasField(c, value, struct!, key))
+        }
+        case "freeze": {
+            if (dict === null) return typed(value)
+            const freeze = objectFunc(c, "objectFreeze", [dict.value], node)
+            if (freeze === null) return errorOperand
+            return typed(new Call(dictOf(dict.value, true), freeze, [readable(value, dict)]))
+        }
+        default:
+            return assignCall(c, name, args, value, scope)
+    }
+}
+
+/** A dictionary as the readonly one of the same values. */
+function readonlyOf(dict: Expr, type: MapType): Expr {
+    return type.readonly ? dict : new Recast(dictOf(type.value, true), dict)
+}
+
+/** `Object.hasOwn(object, key)`: whether the key names a field, which holds a value when it is optional. */
+function hasField(c: Checker, object: Expr, type: StructType, key: Expr): Expr {
+    const o = c.newLocal("object", type, false)
+    const k = c.newLocal("key", types.string, false)
+    const oRef: Expr = new LocalRef(type, o)
+    const kRef: Expr = new LocalRef(types.string, k)
+    let result: Expr = new BoolLit(types.bool, false)
+    const fields = dataFields(type)
+    for (let i = fields.length - 1; i >= 0; i--) {
+        const f = fields[i]
+        let found: Expr = new Compare(types.bool, "===", kRef, new StringLit(types.string, f.name))
+        const test = presentTest(oRef, f)
+        if (test !== null) found = new Logical(types.bool, "&&", found, test)
+        result = new Logical(types.bool, "||", found, result)
+    }
+    return new Bind(types.bool, [new BindLocal(o, object), new BindLocal(k, key)], result)
+}
+
+/**
+ * `Object.assign(target, ...sources)`: the entries of dictionaries, or the
+ * fields of objects, set in the target in order; the value is the target. A
+ * dictionary takes dictionaries of its values and objects whose fields
+ * convert to them; an object takes objects whose fields it has, writable.
+ */
+function assignCall(c: Checker, name: string, args: Node[], target: Expr, scope: Scope): Operand {
+    const type = target.type
+    const t = c.newLocal("target", type, false)
+    const tRef: Expr = new LocalRef(type, t)
+    const exprs: Expr[] = []
+    const dict = dictType(type)
+    if (dict !== null && dict.readonly)
+        return c.fail(args[0], `Index signature in type '${typeToString(type)}' only permits reading.`)
+    for (let i = 1; i < args.length; i++) {
+        const operand = checkExpr(c, args[i], scope, dict !== null ? type : null)
+        if (operand.k === "error") return operand
+        const source = c.toDefault(operand, args[i])
+        const st = source.type
+        const from = dictType(st)
+        if (dict !== null && from !== null && sameType(from.value, dict.value)) {
+            const assign = objectFunc(c, "objectAssign", [dict.value], args[i])
+            if (assign === null) return errorOperand
+            exprs.push(new Call(types.void, assign, [tRef, readable(source, from)]))
+            continue
+        }
+        const object = objectOf(st)
+        if (object === null)
+            return c.fail(
+                args[i],
+                `'${name}' cannot copy '${typeToString(st)}' into '${typeToString(type)}': give it ${dict !== null ? "dictionaries of the same values or objects" : "objects"}.`,
+            )
+        const s = c.newLocal("source", st, false)
+        const sRef: Expr = new LocalRef(st, s)
+        const sets: Expr[] = []
+        for (const f of dataFields(object)) {
+            const read: Expr = new FieldGet(f.type, sRef, f.name)
+            if (dict !== null) {
+                const entry = c.coerce(typed(read), dict.value, args[i])
+                sets.push(new MapOp("set", dict, dict, tRef, new StringLit(types.string, f.name), entry))
+                continue
+            }
+            const into = objectOf(type)!
+            const field = findField(into, f.name)
+            if (field === null || field.readonly || field.private)
+                return c.fail(
+                    args[i],
+                    `'${name}' cannot copy the field '${f.name}' into '${typeToString(type)}': it has no writable field '${f.name}'.`,
+                )
+            sets.push(new Assign(field.type, new FieldLValue(tRef, f.name), c.coerce(typed(read), field.type, args[i])))
+        }
+        sets.push(sRef)
+        exprs.push(new Bind(st, [new BindLocal(s, source)], new Seq(st, sets)))
+    }
+    exprs.push(tRef)
+    return typed(new Bind(type, [new BindLocal(t, target)], new Seq(type, exprs)))
+}
+
+/**
+ * `object[key]` of an object, an interface or a class instance: by a string
+ * literal, the member it names; by a key of type `keyof T` (string literal
+ * types), the field it names, of the union of their types, chosen at run
+ * time. Null when the key is not of these: the caller reports it.
+ */
+export function keyedMember(c: Checker, object: Expr, indexNode: Node, scope: Scope): Operand | null {
+    if (indexNode.kind === "StringLiteral" || indexNode.kind === "NoSubstitutionTemplateLiteral")
+        return member(c, object, indexNode, stringText(indexNode))
+    const type = object.type
+    if (type.kind !== "struct" && type.kind !== "interface") return null
+    const index = checkExpr(c, indexNode, scope)
+    if (index.k !== "typed") return null
+    const key = index.expr
+    const names: string[] = []
+    for (const m of membersOf(key.type)) {
+        if (m.kind !== "literal") return null
+        names.push(m.value)
+    }
+    if (names.length === 0) return null
+    const o = c.newLocal("object", type, false)
+    const k = c.newLocal("key", types.string, false)
+    const oRef: Expr = new LocalRef(type, o)
+    const kRef: Expr = new LocalRef(types.string, k)
+    const reads: Expr[] = []
+    const found: Type[] = []
+    for (const name of names) {
+        const read = member(c, oRef, indexNode, name)
+        if (read.k !== "typed") return errorOperand
+        reads.push(read.expr)
+        found.push(read.expr.type)
+    }
+    const result = c.unionOf(found)
+    let chosen = c.coerce(typed(reads[reads.length - 1]), result, indexNode)
+    for (let i = reads.length - 2; i >= 0; i--) {
+        const test: Expr = new Compare(types.bool, "===", kRef, new StringLit(types.string, names[i]))
+        chosen = new Conditional(result, test, c.coerce(typed(reads[i]), result, indexNode), chosen)
+    }
+    const keyString = c.coerce(typed(key), types.string, indexNode)
+    return typed(new Bind(result, [new BindLocal(o, object), new BindLocal(k, keyString)], chosen))
+}
+
+/**
+ * An object literal converted to a dictionary: its properties, in order, as
+ * entries of the values converted to the dictionary's; as for `f({ a: 1 })`
+ * where `f` takes a dictionary and the literal was checked before the type
+ * of the parameter was known.
+ */
+export function dictOfLiteral(c: Checker, literal: ObjectLit, target: MapType, node: Node): Expr | null {
+    const type = dictOf(target.value, false)
+    const map = c.newLocal("dict", type, false)
+    const ref: Expr = new LocalRef(type, map)
+    const exprs: Expr[] = []
+    for (const f of literal.fields) {
+        const value = c.coerce(typed(f.value), type.value, node)
+        exprs.push(new MapOp("set", type, type, ref, new StringLit(types.string, f.name), value))
+    }
+    exprs.push(ref)
+    const dict: Expr = new Bind(type, [new BindLocal(map, new MapOp("new", type, type))], new Seq(type, exprs))
+    return target.readonly ? new Recast(target, dict) : dict
+}
