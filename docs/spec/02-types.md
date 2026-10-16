@@ -209,10 +209,12 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `process.isatty(fd)` | whether a file descriptor (1 stdout, 2 stderr) is a terminal |
 | `process.run(program, args?)`, `process.output(program, args?)`, `process.spawn(program, args?)` | other programs (below); `spawn` starts one without waiting: a `process.Child` |
 | `process.command.run(program, args?, options?)`, `process.command.output(...)`, `process.command.spawn(...)` | the same with a `process.CommandOptions`: `cwd`, `env`, `clearEnv`, `stdin` |
-| `Math.PI`, `Math.E`, `Math.sqrt(x)`, `Math.pow`, `Math.floor`, `Math.round`, … | as in JavaScript, on `f64`; `Math.round` rounds halves up |
-| `Math.abs(x)`, `Math.min(...values)`, `Math.max(...values)` | for any numeric type, keeping it; `min` and `max` take any number of values, arrays and tuples spread in, and with none (no arguments or only empty arrays) give an infinity, or the extreme of the integer type expected (`const n: i32 = Math.max()`) |
+| `Math.E`, `Math.LN10`, `Math.LN2`, `Math.LOG10E`, `Math.LOG2E`, `Math.PI`, `Math.SQRT1_2`, `Math.SQRT2` | `f64` constants, as in JavaScript |
+| `Math.sqrt`, `cbrt`, `pow`, `exp`, `expm1`, `log`, `log1p`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `floor`, `ceil`, `round`, `trunc`, `sign`, `fround`, `f16round` | as in JavaScript, on `f64`: `round` rounds halves up and gives -0 from -0.5 to -0; `pow` (and `**`) gives NaN for a NaN exponent and for ±1 to an infinity; `fround` and `f16round` round to the nearest `f32` and 16-bit float. The transcendental functions come from the C library and may differ from V8's in the last bit |
+| `Math.hypot(...values)`, `Math.clz32(x)`, `Math.imul(a, b)` | the length of a vector of any number of values (as V8 computes it); the leading zero bits and the wrapping product of 32-bit integers (each value modulo 2^32), on `f64` as in JavaScript |
+| `Math.abs(x)`, `Math.min(...values)`, `Math.max(...values)` | for any numeric type, keeping it; `min` and `max` take any number of values, arrays and tuples spread in, and with none (no arguments or only empty arrays) give an infinity, or the extreme of the integer type expected (`const n: i32 = Math.max()`); -0 is below 0 |
 | `Math.random()` | a pseudo-random `f64` in [0, 1) |
-| `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN` |
+| `Number.parseInt(s, radix?)`, `Number.parseFloat(s)` | like JavaScript, but `null` instead of `NaN`; `parseInt` gives an `int`, and `null` for a number beyond its range |
 | `Number.NaN`, `Number.POSITIVE_INFINITY`, `Number.NEGATIVE_INFINITY`, `Number.MAX_VALUE`, `Number.MIN_VALUE`, `Number.EPSILON`, `Number.MAX_SAFE_INTEGER`, `Number.MIN_SAFE_INTEGER` | `f64` constants, as in JavaScript (no global `NaN` and `Infinity`) |
 | `Number.isNaN(x)`, `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)` | predicates on an `f64`, as in JavaScript |
 | `BigInt(x)`, `BigInt.parse(s, radix?)`, `BigInt.asIntN(bits, b)`, `BigInt.asUintN(bits, b)` | bigints from numbers and text, and modulo a power of two (see [BigInt](#bigint)) |
@@ -232,12 +234,21 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `JSON.stringify(value, null?, space?)` | the JSON text of a value, indented by `space` spaces per level; the replacer must be null |
 | `JSON.parse<T>(text)` | a `T` read from JSON text, or an `Error` |
 
-Numbers have `toString()` and `toFixed(digits)`; `bool` has `toString()`.
+Numbers of every numeric type have the methods of JavaScript's
+`Number.prototype`: `toString(radix?)` (2 to 36, fractions of floats as
+V8 writes them), `toFixed(digits?)`, `toPrecision(precision?)`,
+`toExponential(digits?)`, `toLocaleString()` (en-US: digits grouped by
+commas, at most three decimals; no locale or options yet) and `valueOf()`.
+Integers keep all their digits in `toString` and `toLocaleString`; the
+others convert them to `f64`. An argument out of range panics with
+JavaScript's `RangeError` message. A method of an integer literal needs
+parentheses or a second dot, as in JavaScript: `(255).toString(16)`,
+`255..toString(16)`. `bool` has `toString()`.
 
-`String`, `fs`, `process`, `Number` and `BigInt` are partly written in Ore
-(`runtime/core/string.ore`, `runtime/core/fs.ore`,
-`runtime/core/process.ore`, `runtime/core/number.ore` and
-`runtime/core/bigint.ore`): the exports of these modules are members of
+`String`, `fs`, `process`, `Number`, `Math` and `BigInt` are partly written
+in Ore (`runtime/core/string.ore`, `runtime/core/fs.ore`,
+`runtime/core/process.ore`, `runtime/core/number.ore`,
+`runtime/core/math.ore` and `runtime/core/bigint.ore`): the exports of these modules are members of
 the namespaces, classes and types included, so `fs.FileInfo`,
 `process.Child` and `process.CommandOptions` are types.
 

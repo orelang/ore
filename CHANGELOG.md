@@ -5,6 +5,21 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- Numbers have all of JavaScript's `Number.prototype`, on every numeric
+  type: `toString(radix)` (fractions of floats in other radixes as V8
+  writes them), `toFixed()` without digits, `toPrecision`, `toExponential`,
+  `toLocaleString()` (en-US for now) and `valueOf()`; integers keep all
+  their digits. Arguments out of range panic with JavaScript's messages.
+- `Math` has every member of JavaScript's: the constants `LN10`, `LN2`,
+  `LOG10E`, `LOG2E`, `SQRT1_2` and `SQRT2`, and `sinh`, `cosh`, `tanh`,
+  `asinh`, `acosh`, `atanh`, `expm1`, `log1p`, `clz32`, `imul`, `fround`,
+  `f16round`; `hypot` takes any number of values. `Math.round(-0.5)` is -0,
+  `Math.min(0, -0)` is -0, and `Math.pow` and `**` give NaN for a NaN
+  exponent and for ±1 to an infinity, as in JavaScript; `Math.cbrt` no
+  longer gives -Infinity for the largest floats.
+- `Number.parseInt` gives `null` for a number too large for an `int`
+  instead of a wrapped one.
+
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with
