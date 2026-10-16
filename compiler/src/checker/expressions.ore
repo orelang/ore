@@ -69,9 +69,11 @@ import {
     type Type,
     type UnionType,
     Field,
+    OrderPart,
     FuncType,
     arrayOf,
     dictMember,
+    displayFields,
     findField,
     findMethod,
     findOverloads,
@@ -82,6 +84,7 @@ import {
     membersOf,
     readonlyTuple,
     sameType,
+    spreadRule,
     types,
     typeToString,
 } from "../ir/types"
@@ -1670,9 +1673,20 @@ class Prop {
  * The properties of an object literal with `...object` spreads: each value is
  * checked and held in order (with the expected type's field type as its
  * context), and a spread gives the public fields of a class or object type,
- * or the fields of an interface; a later property replaces an earlier one.
+ * in the order it shows them, or the fields of an interface; a later
+ * property replaces the value of an earlier one, where that one was, as in
+ * JavaScript. `parts` gets the parts of the literal for its order, and
+ * `sources` the objects of object types spread (see `SpreadRule`).
  */
-function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null, locals: BindLocal[]): Prop[] | null {
+function spreadProps(
+    c: Checker,
+    node: Node,
+    scope: Scope,
+    expected: Type | null,
+    locals: BindLocal[],
+    parts: OrderPart[],
+    sources: Expr[],
+): Prop[] | null {
     const hold = (value: Expr): Expr => {
         const local = c.newLocal("prop", value.type, false)
         locals.push(new BindLocal(local, value))
@@ -1681,12 +1695,10 @@ function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null
     const context = expected !== null && (expected.kind === "struct" || expected.kind === "interface") ? expected : null
     const props: Prop[] = []
     const put = (prop: Prop) => {
-        // Moved to the end: the fields of the object come in the order of their last property.
-        let at = -1
-        for (let i = 0; i < props.length; i++) if (at === -1 && props[i].name === prop.name) at = i
-        if (at !== -1) {
-            for (let i = at; i + 1 < props.length; i++) props[i] = props[i + 1]
-            props.pop()
+        for (let i = 0; i < props.length; i++) {
+            if (props[i].name !== prop.name) continue
+            props[i] = prop
+            return
         }
         props.push(prop)
     }
@@ -1699,16 +1711,28 @@ function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null
             const type = object.type
             if (type.kind === "struct" && !type.tuple) {
                 const held = hold(object)
-                for (const f of type.fields)
-                    if (!f.private) put(new Prop(f.name, prop, inner, typed(new FieldGet(f.type, held, f.name))))
+                const names: string[] = []
+                for (const f of displayFields(type)) {
+                    if (f.private) continue
+                    put(new Prop(f.name, prop, inner, typed(new FieldGet(f.type, held, f.name))))
+                    names.push(f.name)
+                }
+                if (!type.nominal) {
+                    parts.push(new OrderPart(names, type))
+                    sources.push(held)
+                } else parts.push(new OrderPart(names, null))
                 continue
             }
             if (type.kind === "interface") {
                 const held = hold(object)
+                const names: string[] = []
                 for (let i = 0; i < type.members.length; i++) {
                     const m = type.members[i]
-                    if (m.k === "field") put(new Prop(m.name, prop, inner, typed(new IfaceField(m.type, held, i))))
+                    if (m.k !== "field") continue
+                    put(new Prop(m.name, prop, inner, typed(new IfaceField(m.type, held, i))))
+                    names.push(m.name)
                 }
+                parts.push(new OrderPart(names, null))
                 continue
             }
             c.error(inner, `Only an object can be spread into an object literal, got '${typeToString(type)}'.`)
@@ -1738,6 +1762,7 @@ function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null
                 return null
             }
         put(new Prop(name, at, valueNode, typed(hold(expr))))
+        parts.push(new OrderPart([name], null))
     }
     return props
 }
@@ -1783,6 +1808,8 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
                 return false
             }
         }
+        // Where the property was first added, as JavaScript keeps it.
+        let first = names.length
         for (let i = names.length - 1; i >= 0; i--) {
             if (!clashes(i)) continue
             removeAt(names, i)
@@ -1791,13 +1818,14 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
             removeAt(values, i)
             removeAt(fields, i)
             removeAt(spread, i)
+            first = i
         }
-        names.push(name)
-        properties_.push(property)
-        nodes.push(at)
-        values.push(value)
-        fields.push(new Field(name, type, false, name !== property))
-        spread.push(fromSpread)
+        insertAt(names, first, name)
+        insertAt(properties_, first, property)
+        insertAt(nodes, first, at)
+        insertAt(values, first, value)
+        insertAt(fields, first, new Field(name, type, false, name !== property))
+        insertAt(spread, first, fromSpread)
         return true
     }
     for (const prop of properties(node)) {
@@ -1809,7 +1837,7 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
             const object = hold(c.toDefault(operand_, inner))
             const type = object.type
             if (type.kind === "struct" && !type.tuple) {
-                for (const f of type.fields)
+                for (const f of displayFields(type))
                     if (!f.private && !put(f.name, f.name, prop, new FieldGet(f.type, object, f.name), f.type, true))
                         return errorOperand
             } else if (type.kind === "interface") {
@@ -1890,7 +1918,7 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
         assigns.push(new Assign(field.type, new FieldLValue(selfRef, names[i]), value))
     }
     assigns.push(selfRef)
-    locals.push(new BindLocal(self, new Alloc(struct)))
+    locals.push(new BindLocal(self, new Alloc(struct, names)))
     return typed(new Bind(struct, locals, new Seq(struct, assigns)))
 }
 
@@ -1923,6 +1951,12 @@ function accessorType(c: Checker, node: Node, name: string, scope: Scope): FuncT
 function removeAt<T>(xs: T[], index: int) {
     for (let i = index; i + 1 < xs.length; i++) xs[i] = xs[i + 1]
     xs.pop()
+}
+
+function insertAt<T>(xs: T[], index: int, x: T) {
+    xs.push(x)
+    for (let i = xs.length - 1; i > index; i--) xs[i] = xs[i - 1]
+    xs[index] = x
 }
 
 /** The type the expected struct or interface gives a member, or null. */
@@ -2021,10 +2055,14 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
     if (properties(node).some(withMethods)) return objectWithMethods(c, node, scope, expected)
     if (properties(node).some((p) => p.kind === "SpreadAssignment")) {
         const locals: BindLocal[] = []
-        const props = spreadProps(c, node, scope, expected, locals)
+        const parts: OrderPart[] = []
+        const sources: Expr[] = []
+        const props = spreadProps(c, node, scope, expected, locals, parts, sources)
         if (props === null) return errorOperand
         const literal = objectOf(c, node, scope, expected, props)
-        if (literal.k !== "typed" || locals.length === 0) return literal
+        if (literal.k !== "typed") return literal
+        orderBySpreads(literal.expr, parts, sources)
+        if (locals.length === 0) return literal
         return typed(new Bind(literal.expr.type, locals, literal.expr))
     }
     const props: Prop[] = []
@@ -2043,6 +2081,18 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         if (first !== i) return c.fail(props[i].node, `Duplicate property '${props[i].name}'.`)
     }
     return objectOf(c, node, scope, expected, props)
+}
+
+/**
+ * Orders the fields of an object literal with spreads of object types by the
+ * orders of the values spread, when it runs (see `SpreadRule`).
+ */
+export function orderBySpreads(literal: Expr, parts: OrderPart[], sources: Expr[]) {
+    if (literal.k !== "object" || sources.length === 0) return
+    const type = literal.type
+    if (type.nominal || type.tuple) return
+    literal.rule = spreadRule(type, parts)
+    literal.sources = sources
 }
 
 /** The dictionary an object literal is for: the expected type, or its only dictionary member when it has no object members. */
@@ -2129,8 +2179,8 @@ function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, p
             }
             fields.push(new FieldInit(p.name, c.coerce(valueOf(p, field.type), field.type, p.value)))
         }
-        // Optional fields left out are null.
-        for (const f of expected.fields) {
+        // Optional fields left out are null, after the others in the order the type shows them.
+        for (const f of displayFields(expected)) {
             const ft = f.type
             if (f.optional && ft.kind === "union" && !props.some((p) => p.name === f.name))
                 fields.push(new FieldInit(f.name, new NullLit(ft)))

@@ -1,0 +1,119 @@
+// An object type made in more than one order: each object shows its
+// properties in the order it was made in, as JavaScript shows them in the
+// order they were added.
+type P = { x: number; y: string }
+
+const a: P = { x: 1, y: "a" }
+const b: P = { y: "b", x: 2 }
+console.log(a, b)
+console.log(JSON.stringify(a), JSON.stringify(b))
+console.log(JSON.stringify(b, null, 2))
+console.log(Object.keys(a), Object.keys(b))
+console.log(Object.values(b), Object.entries(b))
+console.table(b)
+
+// Without a type: the same shape, each in its own order.
+const c = { y: "c", x: 3.5 }
+const d = { x: 4.5, y: "d" }
+const all: P[] = [a, b, c, d]
+console.log(all)
+for (const p of all) console.log(Object.keys(p).join(" "))
+
+// A function returns objects made elsewhere: their orders go with them.
+function pick(i: int): P {
+    return all[i]
+}
+console.log(pick(0), pick(1))
+
+// A spread copies in the order of the object spread, then adds the rest in
+// order; a property written again keeps its place.
+function copy(p: P): P {
+    return { ...p }
+}
+console.log(copy(a), copy(b))
+type PZ = { x: number; y: string; z: boolean }
+function more(p: P): PZ {
+    return { ...p, z: true }
+}
+console.log(more(a), more(b))
+type ZP = { z: number; x: number; y: string }
+function first(p: P): ZP {
+    return { z: 0, ...p }
+}
+console.log(first(a), first(b))
+function again(p: P): P {
+    return { ...p, x: 9 }
+}
+console.log(again(a), again(b))
+console.log(structuredClone(b), JSON.parse<P>(JSON.stringify(b)))
+
+// The rest of a destructuring keeps the order of the object.
+type Q = { k: number; m: number; n: number }
+const q1: Q = { k: 1, m: 2, n: 3 }
+const q2: Q = { n: 3, m: 2, k: 1 }
+function rest(q: Q): { k: number; n: number } {
+    const { m, ...others } = q
+    return others
+}
+console.log(rest(q1), rest(q2))
+
+// Members of a union and instances of a generic type.
+type Shape = { kind: "circle"; r: number } | { kind: "square"; side: number }
+const shapes: Shape[] = [
+    { kind: "circle", r: 1 },
+    { r: 2, kind: "circle" },
+    { side: 3, kind: "square" },
+]
+console.log(shapes)
+type Box<T> = { value: T; label: string }
+const b1: Box<number> = { label: "one", value: 1 }
+const b2: Box<number> = { value: 2, label: "two" }
+const b3: Box<string> = { label: "three", value: "3" }
+console.log(b1, b2, b3, JSON.stringify([b1, b2]), JSON.stringify(b3))
+
+// Optional properties left out are not there; the others keep their order.
+type O = { a?: number; b: number }
+const o1: O = { b: 1 }
+const o2: O = { b: 2, a: 3 }
+const o3: O = { a: 4, b: 5 }
+console.log(o1, o2, o3, Object.keys(o2), JSON.stringify(o2))
+
+// Iterator results, which the runtime makes as { value, done }, and objects of their shape in the other order.
+function* count(): Generator<number, number> {
+    yield 1
+    return 2
+}
+const it = count()
+type Step = { done: boolean; value: number }
+const step: Step = { done: false, value: 0 }
+console.log(it.next(), step, it.next())
+
+// Read by JSON.parse, as the text orders the properties.
+console.log(JSON.parse<P>('{"x":1,"y":"j"}'), JSON.parse<P>('{"y":"k","x":2}'))
+console.log(JSON.parse<P | null>('{"y":"l","x":3}'), JSON.parse<P[]>('[{"x":4,"y":"m"},{"y":"n","x":5}]'))
+
+// Objects with accessors, of one shape in two orders.
+const g1 = {
+    get twice(): number {
+        return 2
+    },
+    n: 1,
+}
+const g2 = {
+    n: 2,
+    get twice(): number {
+        return 4
+    },
+}
+console.log(g1, g2)
+
+// Into dictionaries, in the order of each object.
+type N = { u: number; v: number }
+const n1: N = { u: 1, v: 2 }
+const n2: N = { v: 3, u: 4 }
+function entries(n: N): Record<string, number> {
+    return { ...n }
+}
+const assigned: Record<string, number> = {}
+Object.assign(assigned, n2)
+console.log(entries(n1), entries(n2), assigned)

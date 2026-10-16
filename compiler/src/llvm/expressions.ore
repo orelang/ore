@@ -11,16 +11,24 @@ import {
     type IfaceFieldLValue,
     type IncDec,
     type Logical,
+    type ObjectLit,
     type Optional,
     type UnionField,
     type UnionFieldLValue,
 } from "../ir/nodes"
 import {
+    fieldOrders,
     findField,
     isNumberLiterals,
     isStringLike,
     isSubclass,
     membersOf,
+    orderIndex,
+    ordered,
+    ruleChoice,
+    ruleChoices,
+    ruleOrder,
+    ruleSources,
     sameType,
     typeofName,
     typeToString,
@@ -218,6 +226,7 @@ export function expr(g: Emitter, e: Expr): V {
                 if (field === null) process.panic(`no field ${f.name}`)
                 g.store(expr(g, f.value), g.field(object, s, g.fieldIndex(e.type, f.name)), field.type)
             }
+            if (ordered(e.type)) g.setOrder({ ty: "ptr", v: object }, e.type, literalOrder(g, e))
             return { ty: "ptr", v: object }
         }
         case "field": {
@@ -234,6 +243,7 @@ export function expr(g: Emitter, e: Expr): V {
             if (g.isValue(e.type)) return { ty: g.lt(e.type), v: "zeroinitializer" }
             const object: V = g.at ? { ty: "ptr", v: "%mem" } : g.alloc(g.structType(e.type))
             g.setTable(object, e.type)
+            if (ordered(e.type)) g.setOrder(object, e.type, g.i64(e.order))
             return object
         }
         case "to-iface": {
@@ -390,6 +400,38 @@ export function fieldPtr(g: Emitter, object: string, s: StructType, name: string
 }
 
 /** A pointer to a constant array of `ty` elements. */
+/**
+ * The index of the order of the value of an object literal: its own, or with
+ * spreads, the one for the orders of the objects spread (see `SpreadRule`),
+ * from a table by their orders.
+ */
+function literalOrder(g: Emitter, e: ObjectLit): V {
+    const rule = e.rule
+    const n = rule !== null ? ruleChoices(rule) : 1
+    if (rule === null || n > 4096) return g.i64(e.order)
+    const indices: string[] = []
+    let same = true
+    for (let code = 0; code < n; code++) {
+        indices.push(`${orderIndex(e.type, ruleOrder(rule, ruleChoice(rule, code)))}`)
+        if (indices[code] !== indices[0]) same = false
+    }
+    if (same) return { ty: "i64", v: indices[0] }
+    // The number of the choice: the orders of the sources as digits, the first source's the lowest.
+    const sources = ruleSources(rule)
+    let code: V = g.i64(0)
+    let stride = 1
+    for (let i = 0; i < sources.length; i++) {
+        const count = fieldOrders(sources[i]).length
+        if (count === 1) continue
+        const digit = g.orderOf(expr(g, e.sources[i]), sources[i])
+        const scaled = g.b.value("i64", `mul i64 ${digit.v}, ${stride}`)
+        code = g.b.value("i64", `add i64 ${code.v}, ${scaled.v}`)
+        stride *= count
+    }
+    const at = g.b.value("ptr", `getelementptr i64, ptr ${constArray(g, "i64", indices)}, i64 ${code.v}`)
+    return g.b.value("i64", `load i64, ptr ${at.v}`)
+}
+
 export function constArray(g: Emitter, ty: string, values: string[]): string {
     const items: string[] = []
     for (const v of values) items.push(`${ty} ${v}`)

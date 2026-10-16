@@ -460,9 +460,12 @@ class Dumper {
                 this.exprHead(e, depth, role, `field ${e.name}`)
                 this.expr(e.object, d, "object")
                 return
-            case "alloc":
-                this.exprHead(e, depth, role, "alloc")
+            case "alloc": {
+                const names = e.names
+                const order = names !== null ? ` order=[${names.map((n) => quote(n)).join(",")}]` : ""
+                this.exprHead(e, depth, role, `alloc${order}`)
                 return
+            }
             case "method-call":
                 this.exprHead(e, depth, role, `method-call ${this.ref(e.func)}${e.virtual ? " virtual" : ""}`)
                 this.expr(e.receiver, d, "receiver")

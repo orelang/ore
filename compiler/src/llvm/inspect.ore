@@ -14,6 +14,7 @@ import {
     types,
     unionRepr,
     displayFields,
+    ordered,
 } from "../ir/types"
 import { counted, dateClass, errorClass, hookedClass } from "./json"
 import { ARRAY, MAP, STR } from "./context"
@@ -431,12 +432,31 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
     const open = t.tuple ? "[" : isClass ? `${name} {` : "{"
     const close = t.tuple ? "]" : "}"
     const short = t.tuple ? "[Array]" : isClass ? `[${name}]` : "[Object]"
+    if (!ordered(t)) return inspectFields(g, t, v, s, depth, displayFields(t), open, close, short)
+    // By the order of the object, of a type made in several.
+    g.inOrder(v, t, (shown) => {
+        g.b.terminate(`ret ${STR} ${inspectFields(g, t, v, s, depth, shown, open, close, short).v}`)
+    })
+    return g.str("")
+}
+
+/** The fields of an object in the order `shown`, between `open` and `close`; `short` when it is too deep. */
+function inspectFields(
+    g: Emitter,
+    t: StructType,
+    v: V,
+    s: V,
+    depth: V,
+    shown: Field[],
+    open: string,
+    close: string,
+    short: string,
+): V {
     // Optional fields that are null are left out, as JavaScript leaves out undefined properties.
     const count = g.b.alloca("i64")
     g.b.emit(`store i64 0, ptr ${count}`)
     const values: V[] = []
     const present: (V | null)[] = []
-    const shown = displayFields(t)
     for (const f of shown) {
         const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
         values.push(x)
@@ -630,12 +650,14 @@ export function table(g: Emitter, v: V, t: Type, only: V | null) {
             tableItem(g, tb, g.load(place.v, elem), elem)
         })
     } else if (t.kind === "struct") {
-        const shown = displayFields(t)
-        for (let i = 0; i < shown.length; i++) {
-            const f = shown[i]
-            g.rt("ore_rt_table_row", [tb, g.str(t.tuple ? `${i}` : f.name)])
-            tableItem(g, tb, g.load(fieldPtr(g, v.v, t, f.name), f.type), f.type)
-        }
+        const struct: StructType = t
+        g.inOrder(v, struct, (shown) => {
+            for (let i = 0; i < shown.length; i++) {
+                const f = shown[i]
+                g.rt("ore_rt_table_row", [tb, g.str(struct.tuple ? `${i}` : f.name)])
+                tableItem(g, tb, g.load(fieldPtr(g, v.v, struct, f.name), f.type), f.type)
+            }
+        })
     }
     if (only !== null) g.rt("ore_rt_table_only", [tb, only])
     printTable(g, tb)
@@ -672,27 +694,29 @@ function entriesTable(g: Emitter, tb: V, v: V, keyType: Type, valueType: Type | 
 /** The cells of a row of console.table for an entry: its properties or elements, or a primitive's value. */
 function tableItem(g: Emitter, tb: V, v: V, t: Type) {
     if (t.kind === "struct") {
-        const shown = displayFields(t)
-        for (let i = 0; i < shown.length; i++) {
-            const f = shown[i]
-            const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
-            const ft = f.type
-            // An optional property that is null is not there, as an undefined one in JavaScript.
-            let absent: V | null = null
-            if (f.optional && ft.kind === "union") {
-                for (let m = 0; m < ft.members.length; m++)
-                    if (ft.members[m].kind === "null") absent = slotTest(g, ft, x, m)
+        const struct: StructType = t
+        g.inOrder(v, struct, (shown) => {
+            for (let i = 0; i < shown.length; i++) {
+                const f = shown[i]
+                const x = g.load(fieldPtr(g, v.v, struct, f.name), f.type)
+                const ft = f.type
+                // An optional property that is null is not there, as an undefined one in JavaScript.
+                let absent: V | null = null
+                if (f.optional && ft.kind === "union") {
+                    for (let m = 0; m < ft.members.length; m++)
+                        if (ft.members[m].kind === "null") absent = slotTest(g, ft, x, m)
+                }
+                const skip = g.b.label("absent")
+                if (absent !== null) {
+                    const yes = g.b.label("present")
+                    g.b.condBr(absent, skip, yes)
+                    g.b.start(yes)
+                }
+                g.rt("ore_rt_table_cell", [tb, g.str(struct.tuple ? `${i}` : f.name), cell(g, x, ft)])
+                g.b.br(skip)
+                g.b.start(skip)
             }
-            const skip = g.b.label("absent")
-            if (absent !== null) {
-                const yes = g.b.label("present")
-                g.b.condBr(absent, skip, yes)
-                g.b.start(yes)
-            }
-            g.rt("ore_rt_table_cell", [tb, g.str(t.tuple ? `${i}` : f.name), cell(g, x, ft)])
-            g.b.br(skip)
-            g.b.start(skip)
-        }
+        })
         return
     }
     if (t.kind === "array") {

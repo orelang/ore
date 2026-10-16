@@ -5,7 +5,7 @@
 
 import { elementData, entryData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
-import { type StructType, type Type, type UnionType, types, unionRepr } from "../ir/types"
+import { ordered, type StructType, type Type, type UnionType, types, unionRepr } from "../ir/types"
 import { helper } from "./calls"
 import { keyFunctions, keyKind } from "./collections"
 import { ARRAY, MAP } from "./context"
@@ -214,6 +214,8 @@ function cloneStruct(g: Emitter, t: StructType, v: V, s: V, exact: bool): V {
     }
     const o = g.alloc(g.structType(t))
     g.setTable(o, t)
+    // The copy shows its fields in the order of the original.
+    if (ordered(t)) g.setOrder(o, t, g.orderOf(v, t))
     remember(g, v, o)
     for (const f of t.fields) {
         const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)

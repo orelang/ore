@@ -51,7 +51,9 @@ import {
     type Type,
     Field,
     FuncType as FuncTypeClass,
+    OrderPart,
     arrayOf,
+    displayFields,
     findMethod,
     isNumeric,
     isStringLike,
@@ -125,6 +127,7 @@ import {
     matchCaptures,
     member,
     narrowTo,
+    orderBySpreads,
     settle,
     storeKeyed,
     writeAccessor,
@@ -837,15 +840,23 @@ function badRest(c: Checker, at: Node, last: bool, init: Node | null, target: No
 
 /**
  * `...rest` in an object pattern: a new object of the public fields of a
- * class or object type, or the fields of an interface, but those `taken`.
+ * class or object type, or the fields of an interface, but those `taken`;
+ * of an object type, in the order of the value, as a spread.
  */
 function restOf(c: Checker, whole: Expr, taken: string[], at: Node): Expr | null {
     const type = whole.type
     const fields: FieldInit[] = []
     if (type.kind === "struct" && !type.tuple) {
-        for (const f of type.fields)
+        for (const f of displayFields(type))
             if (!f.private && !taken.includes(f.name))
                 fields.push(new FieldInit(f.name, new FieldGet(f.type, whole, f.name)))
+        if (!type.nominal) {
+            const shape = c.shape(fields.map((f) => new Field(f.name, f.value.type, false)))
+            const rest = new ObjectLit(shape, fields)
+            const names = fields.map((f) => f.name)
+            orderBySpreads(rest, [new OrderPart(names, type)], [whole])
+            return rest
+        }
     } else if (type.kind === "interface") {
         for (let i = 0; i < type.members.length; i++) {
             const m = type.members[i]

@@ -13,6 +13,7 @@ import {
     Bind,
     BindLocal,
     BoolLit,
+    BuiltinCall,
     Call,
     Coalesce,
     Compare,
@@ -39,6 +40,7 @@ import {
     type Type,
     type Field,
     arrayOf,
+    dataFields,
     dictLike,
     dictMember,
     dictOf,
@@ -297,14 +299,14 @@ export function dictLiteral(c: Checker, node: Node, scope: Scope, type: MapType)
                 const object = c.newLocal("spread", st, false)
                 const objectRef: Expr = new LocalRef(st, object)
                 const sets: Expr[] = []
-                for (const f of dataFields(st)) {
+                for (const f of objectFields(st)) {
                     const key: Expr = new StringLit(types.string, f.name)
                     const field = entryValue(typed(new FieldGet(f.type, objectRef, f.name)), key, inner)
                     if (!f.optional) given.add(f.name)
                     sets.push(new MapOp("set", type, type, ref, key, field))
                 }
-                sets.push(objectRef)
-                exprs.push(new Bind(st, [new BindLocal(object, source)], new Seq(st, sets)))
+                const set = new Seq(st, [inOrder(objectRef, st, sets), objectRef])
+                exprs.push(new Bind(st, [new BindLocal(object, source)], set))
                 continue
             }
             return c.fail(
@@ -349,15 +351,20 @@ function readable(dict: Expr, type: MapType): Expr {
 }
 
 /** The fields of an object that `Object.keys` lists: its fields, but the hidden ones of accessors. */
-function dataFields(type: StructType): Field[] {
-    const fields: Field[] = []
-    // In the order the object shows its fields, as Object.keys follows the order properties were added.
-    for (const f of displayFields(type)) {
-        const ft = f.type
-        if (f.private && ft.kind === "func" && (f.name.startsWith("get ") || f.name.startsWith("set "))) continue
-        fields.push(f)
-    }
-    return fields
+function objectFields(type: StructType): Field[] {
+    return dataFields(displayFields(type))
+}
+
+/**
+ * Runs `items`, one for each of `objectFields(type)`, in the order the value
+ * of `object`, a local, shows its fields, as `Object.keys` follows the order
+ * properties were added: a value of an object type made in several orders
+ * keeps its own (see `StructType.orders`).
+ */
+function inOrder(object: Expr, type: StructType, items: Expr[]): Expr {
+    const args: Expr[] = [object]
+    for (const item of items) args.push(item)
+    return new BuiltinCall(types.void, "Object.inOrder", args)
 }
 
 /** An instance of a generic function of runtime/core/object.ore that is not exported. */
@@ -386,34 +393,27 @@ function presentTest(object: Expr, f: Field): Expr | null {
 function perField(c: Checker, object: Expr, type: StructType, elem: Type, item: (o: Expr, f: Field) => Expr): Expr {
     const o = c.newLocal("object", type, false)
     const oRef: Expr = new LocalRef(type, o)
-    const always: Expr[] = []
-    const optional: Field[] = []
-    for (const f of dataFields(type)) {
-        if (presentTest(oRef, f) === null && optional.length === 0) always.push(item(oRef, f))
-        else optional.push(f)
-    }
     const arrayType = arrayOf(elem)
     const array = c.newLocal("items", arrayType, false)
     const arrayRef: Expr = new LocalRef(arrayType, array)
-    const exprs: Expr[] = []
-    for (const f of optional) {
+    const items: Expr[] = []
+    for (const f of objectFields(type)) {
         const push: Expr = new Push(types.i64, arrayRef, [item(oRef, f)])
-        const pushed: Expr = new Compare(types.bool, ">", push, new IntLit(types.i64, 0))
         const test = presentTest(oRef, f)
-        exprs.push(test === null ? pushed : new Logical(types.bool, "&&", test, pushed))
+        const pushed: Expr = new Compare(types.bool, ">", push, new IntLit(types.i64, 0))
+        items.push(test === null ? push : new Logical(types.bool, "&&", test, pushed))
     }
-    exprs.push(arrayRef)
     return new Bind(
         arrayType,
-        [new BindLocal(o, object), new BindLocal(array, new ArrayLit(arrayType, always))],
-        new Seq(arrayType, exprs),
+        [new BindLocal(o, object), new BindLocal(array, new ArrayLit(arrayType, []))],
+        new Seq(arrayType, [inOrder(oRef, type, items), arrayRef]),
     )
 }
 
 /** The type of the values of an object's fields: their union. */
 function valuesType(c: Checker, type: StructType): Type {
     const found: Type[] = []
-    for (const f of dataFields(type)) found.push(f.type)
+    for (const f of objectFields(type)) found.push(f.type)
     return found.length === 0 ? types.never : c.unionOf(found)
 }
 
@@ -518,7 +518,7 @@ function hasField(c: Checker, object: Expr, type: StructType, key: Expr): Expr {
     const oRef: Expr = new LocalRef(type, o)
     const kRef: Expr = new LocalRef(types.string, k)
     let result: Expr = new BoolLit(types.bool, false)
-    const fields = dataFields(type)
+    const fields = objectFields(type)
     for (let i = fields.length - 1; i >= 0; i--) {
         const f = fields[i]
         let found: Expr = new Compare(types.bool, "===", kRef, new StringLit(types.string, f.name))
@@ -564,7 +564,7 @@ function assignCall(c: Checker, name: string, args: Node[], target: Expr, scope:
         const s = c.newLocal("source", st, false)
         const sRef: Expr = new LocalRef(st, s)
         const sets: Expr[] = []
-        for (const f of dataFields(object)) {
+        for (const f of objectFields(object)) {
             const read: Expr = new FieldGet(f.type, sRef, f.name)
             if (dict !== null) {
                 const entry = c.coerce(typed(read), dict.value, args[i])
@@ -580,8 +580,7 @@ function assignCall(c: Checker, name: string, args: Node[], target: Expr, scope:
                 )
             sets.push(new Assign(field.type, new FieldLValue(tRef, f.name), c.coerce(typed(read), field.type, args[i])))
         }
-        sets.push(sRef)
-        exprs.push(new Bind(st, [new BindLocal(s, source)], new Seq(st, sets)))
+        exprs.push(new Bind(st, [new BindLocal(s, source)], new Seq(st, [inOrder(sRef, object, sets), sRef])))
     }
     exprs.push(tRef)
     return typed(new Bind(type, [new BindLocal(t, target)], new Seq(type, exprs)))

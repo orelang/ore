@@ -36,6 +36,7 @@ import {
     InterfaceType as InterfaceTypeClass,
     Method,
     StructType as StructTypeClass,
+    displayFields,
     findField,
     findMethod,
     findOverloads,
@@ -1533,7 +1534,8 @@ export function intersection(c: Checker, node: Node, scope: Scope): Type | null 
     let anyInterface = false
     for (const part of parts) {
         if (part.kind === "struct") {
-            for (const f of part.fields) if (!add(f.name, f.type, f.readonly, false, f.optional, node)) return null
+            for (const f of displayFields(part))
+                if (!add(f.name, f.type, f.readonly, false, f.optional, node)) return null
         } else if (part.kind === "interface") {
             anyInterface = true
             // Type aliases are resolved before interfaces are filled: this one is needed now.

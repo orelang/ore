@@ -491,8 +491,18 @@ class FuncAnalysis {
                 // Objects stored in a new object share its fate.
                 const id = this.id(e)
                 for (const f of e.fields) this.expr(f.value, id)
+                // The objects spread are read for their orders.
+                for (const s of e.sources) this.expr(s, safe)
                 return
             }
+            case "builtin":
+                if (e.name === "Object.inOrder") {
+                    // The object is read for its order; the items are evaluated for their effects.
+                    for (const a of e.args) this.expr(a, safe)
+                    return
+                }
+                for (const child of children(e)) this.expr(child, escapes)
+                return
             case "closure": {
                 const captures = e.func.captures
                 if (captures !== null && captures.length > 0) this.closures.push(e)
@@ -621,6 +631,7 @@ export function children(e: Expr): Expr[] {
             return out
         case "object":
             for (const f of e.fields) out.push(f.value)
+            for (const s of e.sources) out.push(s)
             return out
         case "field":
             out.push(e.object)

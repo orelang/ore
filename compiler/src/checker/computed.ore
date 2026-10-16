@@ -11,6 +11,7 @@ import {
     type Type,
     arrayOf,
     dictOf,
+    displayFields,
     isStringLike,
     membersOf,
     readonlyArrayOf,
@@ -724,7 +725,7 @@ function homomorphicSource(c: Checker, keysNode: Node, valueNode: Node | null, p
     }
     if (sourceNode === null) return []
     const source = c.resolveType(sourceNode, scope)
-    return source !== null && source.kind === "struct" ? source.fields : []
+    return source !== null && source.kind === "struct" ? displayFields(source) : []
 }
 
 /**
@@ -781,6 +782,8 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
     const readonlyToken = node.child("readonlyToken")
     const questionToken = node.child("questionToken")
     const fields: Field[] = []
+    // The key of each field, before `as` renames it.
+    const keyNames: string[] = []
     for (const key of membersOf(keys).filter((t) => t.kind !== "never")) {
         if (key.kind !== "literal") {
             c.error(
@@ -821,8 +824,13 @@ export function mappedType(c: Checker, node: Node, scope: Scope): Type | null {
         const field = new Field(name, type, isReadonly)
         field.optional = optional
         fields.push(field)
+        keyNames.push(key.value)
     }
-    return c.shape(fields)
+    // In the order of the source's fields, as TypeScript keeps it, and JavaScript shows the values made so.
+    const ordered: Field[] = []
+    for (const f of source) for (let i = 0; i < fields.length; i++) if (keyNames[i] === f.name) ordered.push(fields[i])
+    for (let i = 0; i < fields.length; i++) if (!source.some((f) => f.name === keyNames[i])) ordered.push(fields[i])
+    return c.shape(ordered)
 }
 
 /** The text of a part of a template literal type, without its `` ` ``, `${` and `}`. */

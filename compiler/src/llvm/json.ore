@@ -3,13 +3,15 @@
 import { elementData, entryData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
 import {
-    displayFields,
+    fieldOrders,
     intRange,
     jsonProblem,
+    ordered,
     sameType,
     typeToString,
     types,
     unionRepr,
+    type Field,
     type StructType,
     type Type,
     type UnionType,
@@ -32,7 +34,7 @@ import {
     UNKNOWN,
 } from "./context"
 import { Emitter } from "./base"
-import { choose, equals, expr, fieldPtr, inject, payload, recast, slotTest, unionOf } from "./expressions"
+import { choose, constArray, equals, expr, fieldPtr, inject, payload, recast, slotTest, unionOf } from "./expressions"
 import { globalName, sizeOf, type V } from "./ll"
 import { box, encodeHeld, replacingJson, unknownIsNull } from "./unknown"
 
@@ -408,46 +410,48 @@ export function encodeJson(g: Emitter, type: Type, b: V, v: V) {
             putc(g, b, "}")
             g.b.terminate("ret void")
             g.b.start(plain)
-            const shown = displayFields(type)
-            if (type.fields.some((f) => f.optional)) {
-                // Optional fields that are null are left out, as JavaScript leaves out undefined.
-                const written = g.b.alloca("i64")
-                g.b.emit(`store i64 0, ptr ${written}`)
-                for (const f of shown) {
-                    const x = g.load(fieldPtr(g, v.v, type, f.name), f.type)
-                    const ft = f.type
-                    const skip = g.b.label("absent")
-                    if (f.optional && ft.kind === "union") {
-                        let at = -1
-                        for (let i = 0; i < ft.members.length; i++) if (ft.members[i].kind === "null") at = i
-                        const present = g.b.label("present")
-                        g.b.condBr(slotTest(g, ft, x, at), skip, present)
-                        g.b.start(present)
+            // In the order of the object, of a type that may be made in several.
+            g.inOrder(v, type, (shown) => {
+                if (struct.fields.some((f) => f.optional)) {
+                    // Optional fields that are null are left out, as JavaScript leaves out undefined.
+                    const written = g.b.alloca("i64")
+                    g.b.emit(`store i64 0, ptr ${written}`)
+                    for (const f of shown) {
+                        const x = g.load(fieldPtr(g, v.v, struct, f.name), f.type)
+                        const ft = f.type
+                        const skip = g.b.label("absent")
+                        if (f.optional && ft.kind === "union") {
+                            let at = -1
+                            for (let i = 0; i < ft.members.length; i++) if (ft.members[i].kind === "null") at = i
+                            const present = g.b.label("present")
+                            g.b.condBr(slotTest(g, ft, x, at), skip, present)
+                            g.b.start(present)
+                        }
+                        const count = g.b.value("i64", `load i64, ptr ${written}`)
+                        commaAfterFirst(g, b, count)
+                        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${count.v}, 1`).v}, ptr ${written}`)
+                        newline(deeper)
+                        put(g, b, `${JSON.stringify(f.name)}:`)
+                        spaceIfIndented()
+                        encode(f.type, x)
+                        g.b.br(skip)
+                        g.b.start(skip)
                     }
-                    const count = g.b.value("i64", `load i64, ptr ${written}`)
-                    commaAfterFirst(g, b, count)
-                    g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${count.v}, 1`).v}, ptr ${written}`)
+                    ifNonZero(g, g.b.value("i64", `load i64, ptr ${written}`), () => newline(depth))
+                    putc(g, b, "}")
+                    return
+                }
+                for (let i = 0; i < shown.length; i++) {
+                    const f = shown[i]
+                    if (i > 0) putc(g, b, ",")
                     newline(deeper)
                     put(g, b, `${JSON.stringify(f.name)}:`)
                     spaceIfIndented()
-                    encode(f.type, x)
-                    g.b.br(skip)
-                    g.b.start(skip)
+                    encode(f.type, g.load(fieldPtr(g, v.v, struct, f.name), f.type))
                 }
-                ifNonZero(g, g.b.value("i64", `load i64, ptr ${written}`), () => newline(depth))
+                if (struct.fields.length > 0) newline(depth)
                 putc(g, b, "}")
-                return
-            }
-            for (let i = 0; i < shown.length; i++) {
-                const f = shown[i]
-                if (i > 0) putc(g, b, ",")
-                newline(deeper)
-                put(g, b, `${JSON.stringify(f.name)}:`)
-                spaceIfIndented()
-                encode(f.type, g.load(fieldPtr(g, v.v, type, f.name), f.type))
-            }
-            if (type.fields.length > 0) newline(depth)
-            putc(g, b, "}")
+            })
             return
         }
         default:
@@ -640,22 +644,25 @@ function encodeReplaced(g: Emitter, type: Type, b: V, v: V) {
                 return
             }
             putc(g, b, "{")
-            for (const f of displayFields(type)) {
-                const x = g.load(fieldPtr(g, v.v, type, f.name), f.type)
-                const ft = f.type
-                // An optional field that is null is no property, as JavaScript's undefined one: the replacer does not see it.
-                const end = g.b.label("absent")
-                if (f.optional && ft.kind === "union") {
-                    let at = -1
-                    for (let i = 0; i < ft.members.length; i++) if (ft.members[i].kind === "null") at = i
-                    const present = g.b.label("present")
-                    g.b.condBr(slotTest(g, ft, x, at), end, present)
-                    g.b.start(present)
+            const struct: StructType = type
+            g.inOrder(v, struct, (shown) => {
+                for (const f of shown) {
+                    const x = g.load(fieldPtr(g, v.v, struct, f.name), f.type)
+                    const ft = f.type
+                    // An optional field that is null is no property, as JavaScript's undefined one: the replacer does not see it.
+                    const end = g.b.label("absent")
+                    if (f.optional && ft.kind === "union") {
+                        let at = -1
+                        for (let i = 0; i < ft.members.length; i++) if (ft.members[i].kind === "null") at = i
+                        const present = g.b.label("present")
+                        g.b.condBr(slotTest(g, ft, x, at), end, present)
+                        g.b.start(present)
+                    }
+                    property(g.str(f.name), ft, x)
+                    g.b.br(end)
+                    g.b.start(end)
                 }
-                property(g.str(f.name), ft, x)
-                g.b.br(end)
-                g.b.start(end)
-            }
+            })
             closeObject()
             return
         }
@@ -1085,12 +1092,101 @@ export function decodeJson(g: Emitter, type: Type) {
                 g.store(x, target, f.type)
                 g.b.start(next)
             }
+            if (ordered(type)) {
+                // The order of the keys in the text, which the fields were looked up by.
+                const struct: StructType = type
+                const order = new TextOrder(g, struct)
+                const seen: string[] = []
+                for (const _ of struct.fields) {
+                    const flag = g.b.alloca("i1")
+                    g.b.emit(`store i1 false, ptr ${flag}`)
+                    seen.push(flag)
+                }
+                const len = g.b.value("i64", `load i64, ptr ${g.field("%v", JSON_VALUE, 4)}`)
+                const names = g.b.value("ptr", `load ptr, ptr ${g.field("%v", JSON_VALUE, 6)}`)
+                counted(g, len, (i) => {
+                    const at = g.b.value("ptr", `getelementptr ${STR}, ptr ${names.v}, i64 ${i.v}`)
+                    const key = g.b.value(STR, `load ${STR}, ptr ${at.v}`)
+                    for (let k = 0; k < struct.fields.length; k++) {
+                        const f = struct.fields[k]
+                        const here = g.b.label("okey")
+                        const other = g.b.label("onext")
+                        g.b.condBr(g.rtBool("ore_rt_str_eq", [key, g.str(f.name)]), here, other)
+                        g.b.start(here)
+                        order.seen(f, seen[k])
+                        g.b.emit(`store i1 true, ptr ${seen[k]}`)
+                        g.b.br(other)
+                        g.b.start(other)
+                    }
+                })
+                order.set(o)
+            }
             d.ret(o)
             return
         }
         default:
             g.rt("ore_rt_json_expected", [c, g.cstr("a value"), v])
             d.fail()
+    }
+}
+
+/**
+ * The order of an object that JSON.parse makes, of a type made in several:
+ * as JavaScript adds the properties in the order of the text, the first of
+ * the type's orders that starts with the fields in the order the text gives
+ * them, or the first order when none does. `mask` has a bit for each order
+ * that still can be, `rank` the number of fields seen.
+ */
+class TextOrder {
+    rank: string
+    mask: string
+
+    constructor(
+        readonly g: Emitter,
+        readonly type: StructType,
+    ) {
+        this.rank = g.b.alloca("i64")
+        g.b.emit(`store i64 0, ptr ${this.rank}`)
+        this.mask = g.b.alloca("i64")
+        g.b.emit(`store i64 -1, ptr ${this.mask}`)
+    }
+
+    /** The field `f` comes next in the text, unless its `flag` says it came before. */
+    seen(f: Field, flag: string) {
+        const g = this.g
+        const first = g.b.label("ofirst")
+        const after = g.b.label("oseen")
+        g.b.condBr(g.b.value("i1", `load i1, ptr ${flag}`), after, first)
+        g.b.start(first)
+        // The orders with the field at each place.
+        const orders = fieldOrders(this.type)
+        const masks: string[] = []
+        for (let j = 0; j < this.type.fields.length; j++) {
+            let m = 0
+            for (let k = 0; k < orders.length; k++) if (orders[k][j].name === f.name) m = m | (1 << k)
+            masks.push(`${m}`)
+        }
+        const rank = g.b.value("i64", `load i64, ptr ${this.rank}`)
+        const at = g.b.value("ptr", `getelementptr i64, ptr ${constArray(g, "i64", masks)}, i64 ${rank.v}`)
+        const left = g.b.value("i64", `load i64, ptr ${this.mask}`)
+        const mask = g.b.value("i64", `and i64 ${left.v}, ${g.b.value("i64", `load i64, ptr ${at.v}`).v}`)
+        g.b.emit(`store i64 ${mask.v}, ptr ${this.mask}`)
+        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${rank.v}, 1`).v}, ptr ${this.rank}`)
+        g.b.br(after)
+        g.b.start(after)
+    }
+
+    /** Sets the order of the object `o`: the first that can be, else the first. */
+    set(o: V) {
+        const g = this.g
+        const mask = g.b.value("i64", `load i64, ptr ${this.mask}`)
+        let index: V = g.i64(0)
+        for (let k = fieldOrders(this.type).length - 1; k >= 0; k--) {
+            const bit = g.b.value("i64", `and i64 ${mask.v}, ${1 << k}`)
+            const can = g.b.value("i1", `icmp ne i64 ${bit.v}, 0`)
+            index = g.b.value("i64", `select i1 ${can.v}, i64 ${k}, i64 ${index.v}`)
+        }
+        g.setOrder(o, this.type, index)
     }
 }
 
@@ -1266,6 +1362,7 @@ export function readJson(g: Emitter, type: Type) {
             r.check(g.rtBool("ore_rt_json_read_open", [p, g.i64(0x7b)]))
             const o = g.alloc(g.structType(type))
             g.setTable(o, type)
+            const order = ordered(type) ? new TextOrder(g, type) : null
             const seen: string[] = []
             for (const _ of type.fields) {
                 const flag = g.b.alloca("i1")
@@ -1286,6 +1383,7 @@ export function readJson(g: Emitter, type: Type) {
                 g.b.condBr(g.rtBool("ore_rt_json_key_is", [p, g.cstr(f.name), g.i64(f.name.length)]), here, other)
                 g.b.start(here)
                 g.store(r.read(f.type), fieldPtr(g, o.v, type, f.name), f.type)
+                if (order !== null) order.seen(f, seen[i])
                 g.b.emit(`store i1 true, ptr ${seen[i]}`)
                 g.b.br(sep)
                 g.b.start(other)
@@ -1294,6 +1392,7 @@ export function readJson(g: Emitter, type: Type) {
             g.b.start(sep)
             r.next(0x7d, loop, end)
             g.b.start(end)
+            if (order !== null) order.set(o)
             // A field left out is null if it can be, as in decoding.
             for (let i = 0; i < type.fields.length; i++) {
                 const f = type.fields[i]

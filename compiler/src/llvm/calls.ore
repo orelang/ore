@@ -2,7 +2,16 @@
 // inline assembly).
 
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
-import { intRange, isNumberLiterals, type FuncType, type Type, type UnionType } from "../ir/types"
+import {
+    dataFields,
+    displayFields,
+    intRange,
+    isNumberLiterals,
+    type FuncType,
+    type StructType,
+    type Type,
+    type UnionType,
+} from "../ir/types"
 import { arrayBuiltin } from "./collections"
 import { structuredClone } from "./clone"
 import { counted, json } from "./json"
@@ -396,6 +405,25 @@ function constantArg(e: BuiltinCall, i: int): int {
     return a.k === "int" ? a.value : 0
 }
 
+/**
+ * `Object.inOrder(object, items...)` of checker/dicts.ore: the items, one for
+ * each field of the object's type that `Object.keys` lists, in the order the
+ * object shows its fields.
+ */
+function inOrder(g: Emitter, e: BuiltinCall): V {
+    const object = expr(g, e.args[0])
+    const type = e.args[0].type
+    if (type.kind !== "struct") return voidValue
+    const t: StructType = type
+    const listed = dataFields(displayFields(t))
+    g.inOrder(object, t, (shown) => {
+        for (const f of dataFields(shown)) {
+            for (let i = 0; i < listed.length; i++) if (listed[i].name === f.name) expr(g, e.args[i + 1])
+        }
+    })
+    return voidValue
+}
+
 /** The parts of `console` that checker/console.ore lowers its calls to, and the printing of lines. */
 function consoleBuiltin(g: Emitter, e: BuiltinCall): V {
     switch (e.name) {
@@ -449,6 +477,7 @@ function consoleBuiltin(g: Emitter, e: BuiltinCall): V {
 export function builtin(g: Emitter, e: BuiltinCall): V {
     const name = e.name
     if (name.startsWith("console.")) return consoleBuiltin(g, e)
+    if (name === "Object.inOrder") return inOrder(g, e)
     if (name === "JSON.stringify" || name === "JSON.parse") return json(g, e)
     if (name === "structuredClone") return structuredClone(g, e)
     if (name === "Array.new" || name === "Array.fromLength") return arrayBuiltin(g, e)

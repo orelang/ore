@@ -248,6 +248,7 @@ function eachChild(e: Expr, expr: (x: Expr) => void, lvalue: (t: LValue) => void
             return
         case "object":
             for (const f of e.fields) expr(f.value)
+            for (const s of e.sources) expr(s)
             return
         case "field":
             expr(e.object)
@@ -607,6 +608,7 @@ class Inliner {
                 return
             case "object":
                 for (const f of e.fields) f.value = this.sub(f.value, depth)
+                this.subs(e.sources, depth)
                 return
             case "field":
                 e.object = this.sub(e.object, depth)
@@ -903,12 +905,15 @@ class Inliner {
             case "object": {
                 const fields: FieldInit[] = []
                 for (const f of e.fields) fields.push(new FieldInit(f.name, this.clone(f.value, values)))
-                return new ObjectLit(e.type, fields)
+                const object = new ObjectLit(e.type, fields)
+                object.rule = e.rule
+                object.sources = this.clones(e.sources, values)
+                return object
             }
             case "field":
                 return new FieldGet(e.type, this.clone(e.object, values), e.name)
             case "alloc":
-                return new Alloc(e.type)
+                return new Alloc(e.type, e.names)
             case "method-call": {
                 const call = new MethodCall(e.type, e.func, this.clone(e.receiver, values), this.clones(e.args, values))
                 call.virtual = e.virtual

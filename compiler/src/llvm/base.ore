@@ -12,9 +12,12 @@
 import { barrierWords, gcdata } from "./gcdata"
 import { type Func, type Local, type Module } from "../ir/nodes"
 import {
+    fieldOrders,
     isSubclass,
     methodSlot,
+    ordered,
     unionRepr,
+    type Field,
     type IntType,
     type StructType,
     type Type,
@@ -199,6 +202,8 @@ export class Emitter {
             // The pointer to the class table comes first.
             if (this.tables.has(s.id)) fields.push("ptr")
             for (const f of s.fields) fields.push(this.mt(f.type))
+            // The order of an object made in several comes last, so that the fields are where they are without.
+            if (ordered(s)) fields.push("i64")
             if (fields.length === 0) fields.push("i8")
             this.defs.set(name, `${name} = type { ${fields.join(", ")} }`)
         }
@@ -210,6 +215,48 @@ export class Emitter {
         let index = -1
         for (let i = 0; i < s.fields.length && index === -1; i++) if (s.fields[i].name === name) index = i
         return index + (this.tables.has(s.id) ? 1 : 0)
+    }
+
+    /** The index in the LLVM type of an object type made in several orders of the word with the order of a value. */
+    orderField(s: StructType): int {
+        return s.fields.length + (this.tables.has(s.id) ? 1 : 0)
+    }
+
+    /** The index in `fieldOrders` of the order of an object of a type made in several orders, as an i64. */
+    orderOf(object: V, s: StructType): V {
+        return this.b.value("i64", `load i64, ptr ${this.field(object.v, this.structType(s), this.orderField(s))}`)
+    }
+
+    /** Sets the order of a new object of a type made in several orders. */
+    setOrder(object: V, s: StructType, index: V) {
+        this.b.emit(`store i64 ${index.v}, ptr ${this.field(object.v, this.structType(s), this.orderField(s))}`)
+    }
+
+    /**
+     * Emits `body` with the fields of `object`, of type `s`, in the order it
+     * shows them: of a type made in several orders, once for each in a
+     * branch taken by the object's order, the first last; then continues.
+     */
+    inOrder(object: V, s: StructType, body: (shown: Field[]) => void) {
+        const orders = fieldOrders(s)
+        if (orders.length === 1) {
+            body(orders[0])
+            return
+        }
+        const index = this.orderOf(object, s)
+        const end = this.b.label("ordered")
+        for (let i = 1; i < orders.length; i++) {
+            const here = this.b.label("order")
+            const next = this.b.label("norder")
+            this.b.condBr(this.b.value("i1", `icmp eq i64 ${index.v}, ${i}`), here, next)
+            this.b.start(here)
+            body(orders[i])
+            this.b.br(end)
+            this.b.start(next)
+        }
+        body(orders[0])
+        this.b.br(end)
+        this.b.start(end)
     }
 
     /** Points a new instance of a class with a class table to it. */

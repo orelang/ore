@@ -1175,8 +1175,18 @@ class Reader {
                 const type = this.exprType(c)
                 return new FieldGet(type, this.expr(d, "object"), name)
             }
-            case "alloc":
-                return new Alloc(this.structType(this.exprType(c)))
+            case "alloc": {
+                let names: string[] | null = null
+                if (c.eat(" order=[")) {
+                    const list: string[] = []
+                    while (!c.eat("]") && c.err === null) {
+                        if (list.length > 0) c.expect(",")
+                        list.push(c.quoted())
+                    }
+                    names = list
+                }
+                return new Alloc(this.structType(this.exprType(c)), names)
+            }
             case "method-call": {
                 c.expect(" ")
                 const func = this.func(c.word(), c)

@@ -5,6 +5,7 @@
 // in this port" in compiler/README.md.
 
 import {
+    addOrder,
     type ArrayType,
     type BigIntType,
     type BoolType,
@@ -17,6 +18,7 @@ import {
     type MapType,
     type NullType,
     type SetType,
+    type SpreadRule,
     type StringType,
     type StructType,
     type Type,
@@ -674,13 +676,32 @@ export class FieldInit {
     ) {}
 }
 
-/** Allocates a struct and initializes its fields in source order. */
+/**
+ * Allocates a struct and initializes its fields in source order. An object
+ * type gets the order of the fields as one its values are made in (see
+ * `StructType.orders`), and the object its index.
+ */
 export class ObjectLit {
     readonly k: "object" = "object"
+    /** The index of the order of the fields in `fieldOrders` of the type. */
+    readonly order: int
     constructor(
         public type: StructType,
         public fields: FieldInit[],
-    ) {}
+    ) {
+        const names: string[] = []
+        for (const f of fields) names.push(f.name)
+        this.order = addOrder(type, names)
+    }
+
+    /**
+     * With spreads of objects of types made in several orders: how the
+     * literal orders its fields by their orders, which it reads from the
+     * values `sources` (locals), one per source of the rule, when it runs.
+     * The dump leaves it out.
+     */
+    public rule: SpreadRule | null = null
+    public sources: Expr[] = []
 }
 
 export class FieldGet {
@@ -692,10 +713,21 @@ export class FieldGet {
     ) {}
 }
 
-/** A new zeroed instance of a struct; used at the start of constructors. */
+/**
+ * A new zeroed instance of a struct; used at the start of constructors, and
+ * of object literals with methods, whose fields are assigned after: of an
+ * object type, in the order of the fields `names`, as `ObjectLit`.
+ */
 export class Alloc {
     readonly k: "alloc" = "alloc"
-    constructor(public type: StructType) {}
+    /** The index of the order of the fields in `fieldOrders` of the type. */
+    readonly order: int
+    constructor(
+        public type: StructType,
+        public names: string[] | null = null,
+    ) {
+        this.order = names !== null ? addOrder(type, names) : 0
+    }
 }
 
 /**

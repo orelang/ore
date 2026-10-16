@@ -180,12 +180,190 @@ export class StructType {
      * follows the order properties were added. Null when it is `fields`.
      */
     public order: Field[] | null = null
+
+    /**
+     * For an object type: the other orders of its fields that the program
+     * makes its values in, by declarations, literals and spreads (see
+     * `addOrder`). With any, each value keeps the index of its order in
+     * `fieldOrders` in a hidden word after its fields, which printing, JSON
+     * and `Object.keys` read; the fields are laid out as without.
+     */
+    public orders: Field[][] = []
+
+    /** The literals that spread values of this object type, whose orders follow its orders. */
+    public rules: SpreadRule[] = []
 }
 
 /** The fields of a struct in the order its values show them (see `StructType.order`). */
 export function displayFields(t: StructType): Field[] {
     const order = t.order
     return order !== null ? order : t.fields
+}
+
+/** The orders of the fields of an object type that its values show, by index: `displayFields` first, then `orders`. */
+export function fieldOrders(t: StructType): Field[][] {
+    const all: Field[][] = [displayFields(t)]
+    for (const o of t.orders) all.push(o)
+    return all
+}
+
+/** Whether values of an object type keep the index of their order: the program makes them in more than one. */
+export function ordered(t: StructType): bool {
+    return t.orders.length > 0
+}
+
+/** The most orders of the fields of an object type; a value made in another shows the first. */
+const maxOrders = 64
+
+/** The fields of an object type in the order of `names`, then those it leaves out in the order they are shown. */
+function fieldsNamed(t: StructType, names: string[]): Field[] {
+    const order: Field[] = []
+    const taken = new Set<string>()
+    for (const name of names) {
+        const f = findField(t, name)
+        if (f === null || taken.has(name)) continue
+        order.push(f)
+        taken.add(name)
+    }
+    for (const f of displayFields(t)) if (!taken.has(f.name)) order.push(f)
+    return order
+}
+
+/** The index in `fieldOrders` of the order of `fields`, or -1. */
+function findOrder(t: StructType, fields: Field[]): int {
+    const all = fieldOrders(t)
+    for (let i = 0; i < all.length; i++) {
+        const o = all[i]
+        let same = o.length === fields.length
+        for (let j = 0; j < o.length && same; j++) if (o[j].name !== fields[j].name) same = false
+        if (same) return i
+    }
+    return -1
+}
+
+/** The index in `fieldOrders` of the order of the fields `names` of an object type; 0 when it has none so. */
+export function orderIndex(t: StructType, names: string[]): int {
+    if (t.nominal || t.tuple) return 0
+    return Math.max(0, findOrder(t, fieldsNamed(t, names)))
+}
+
+/**
+ * Adds the order of the fields `names` of an object type (those left out
+ * after them), which the program makes a value of it in, and gives its index
+ * in `fieldOrders`. The literals that spread values of the type add the
+ * orders this one gives them.
+ */
+export function addOrder(t: StructType, names: string[]): int {
+    if (t.nominal || t.tuple) return 0
+    const order = fieldsNamed(t, names)
+    const found = findOrder(t, order)
+    if (found >= 0) return found
+    if (t.orders.length + 1 >= maxOrders) return 0
+    t.orders.push(order)
+    for (const rule of t.rules) applyRule(rule)
+    return t.orders.length
+}
+
+/**
+ * A part of an object literal, for the order of its fields: properties
+ * written, or a spread of a value of the object type `source`, which adds
+ * its fields `names` in the order of that value.
+ */
+export class OrderPart {
+    constructor(
+        readonly names: string[],
+        readonly source: StructType | null,
+    ) {}
+}
+
+/**
+ * How an object literal with spreads orders its fields, as JavaScript adds
+ * properties: those of each part in turn, each where it was first added; so
+ * the order depends on the orders of the values spread.
+ */
+export class SpreadRule {
+    constructor(
+        readonly target: StructType,
+        readonly parts: OrderPart[],
+    ) {}
+}
+
+/** The rule of an object literal of type `target` with these parts; its type gets the orders it can make. */
+export function spreadRule(target: StructType, parts: OrderPart[]): SpreadRule {
+    const rule = new SpreadRule(target, parts)
+    for (const s of ruleSources(rule)) s.rules.push(rule)
+    applyRule(rule)
+    return rule
+}
+
+/** The object types whose values a rule's literal spreads, in order. */
+export function ruleSources(rule: SpreadRule): StructType[] {
+    const sources: StructType[] = []
+    for (const p of rule.parts) {
+        const source = p.source
+        if (source !== null) sources.push(source)
+    }
+    return sources
+}
+
+/** The names of the fields of a rule's literal in order, when the value of its i-th source has order `choice[i]`. */
+export function ruleOrder(rule: SpreadRule, choice: int[]): string[] {
+    const names: string[] = []
+    const taken = new Set<string>()
+    let next = 0
+    for (const p of rule.parts) {
+        const source = p.source
+        let order: string[] = p.names
+        if (source !== null) {
+            const all = fieldOrders(source)
+            const k = choice[next++]
+            order = []
+            for (const f of all[k < all.length ? k : 0]) if (p.names.includes(f.name)) order.push(f.name)
+        }
+        for (const n of order) {
+            if (taken.has(n)) continue
+            names.push(n)
+            taken.add(n)
+        }
+    }
+    return names
+}
+
+/** The number of choices of the orders of a rule's sources: the product of their numbers of orders. */
+export function ruleChoices(rule: SpreadRule): int {
+    let n = 1
+    for (const s of ruleSources(rule)) n *= fieldOrders(s).length
+    return n
+}
+
+/** The choice numbered `code` of the orders of a rule's sources: its digits, the first source's the lowest. */
+export function ruleChoice(rule: SpreadRule, code: int): int[] {
+    const choice: int[] = []
+    let rest = code
+    for (const s of ruleSources(rule)) {
+        const n = fieldOrders(s).length
+        choice.push(rest % n)
+        rest = rest / n
+    }
+    return choice
+}
+
+/** Adds to a rule's type the orders its literal can make, one per choice of the orders of its sources. */
+function applyRule(rule: SpreadRule) {
+    const n = ruleChoices(rule)
+    for (let code = 0; code < n && code < maxOrders * maxOrders; code++)
+        addOrder(rule.target, ruleOrder(rule, ruleChoice(rule, code)))
+}
+
+/** The fields of an object type in an order that `Object.keys` lists: all but the hidden ones of accessors. */
+export function dataFields(order: Field[]): Field[] {
+    const fields: Field[] = []
+    for (const f of order) {
+        const ft = f.type
+        if (f.private && ft.kind === "func" && (f.name.startsWith("get ") || f.name.startsWith("set "))) continue
+        fields.push(f)
+    }
+    return fields
 }
 
 /** A field member of an interface: `{ k: "field", ... }` in TypeScript. */
