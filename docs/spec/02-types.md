@@ -407,18 +407,42 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   evaluation, and its errors (`Invalid regular expression: Unterminated
   group.`) are compile-time errors. `new RegExp(pattern, flags = "")`
   compiles a pattern at run time and panics on an invalid one.
-- The syntax and the matching are JavaScript's (ECMAScript with its Annex B,
-  without the `u` flag): characters and escapes (`\n`, `\x41`, `A`,
-  `\cJ`, `\0`, octal), `.`, classes `[a-z]`, `[^...]`, `\d \w \s \D \W \S`,
-  anchors `^ $`, `\b \B`, groups `( )`, `(?: )`, named groups
-  `(?<name> )`, alternation, quantifiers `* + ? {n} {n,} {n,m}` and their
-  lazy forms, backreferences `\1` and `\k<name>`, lookahead `(?= )` and
-  `(?! )`. Lookbehind and the flags `u`, `v` and `d` are errors for now.
-- Flags: `g` (global), `i` (ignore case), `m` (`^` and `$` at line breaks),
-  `s` (`.` matches line breaks too), `y` (sticky: a match only at
-  `lastIndex`). `re.flags` lists them in the order `gimsy`; `re.global`,
-  `ignoreCase`, `multiline`, `dotAll` and `sticky` tell each, `re.source` is
-  the pattern (with `/` escaped) and `re.toString()` is `/source/flags`.
+- The syntax and the matching are JavaScript's (ECMAScript with its Annex B
+  without the `u` and `v` flags): characters and escapes (`\n`, `\x41`,
+  `\u0041`, `\cJ`, `\0`, octal), `.`, classes `[a-z]`, `[^...]`,
+  `\d \w \s \D \W \S`, anchors `^ $`, `\b \B`, groups `( )`, `(?: )`,
+  named groups `(?<name> )`, alternation, quantifiers `* + ? {n} {n,} {n,m}`
+  and their lazy forms, backreferences `\1` and `\k<name>`, lookahead
+  `(?= )` and `(?! )`, lookbehind `(?<= )` and `(?<! )`. A lookbehind
+  matches backwards from the position, as in JavaScript: its groups are
+  set (`/(?<=(\d+)(\d+))$/` on `"1053"` captures `"1"` and `"053"`), and
+  neither it nor, with `u`, a lookahead takes a quantifier.
+- Flags: `d` (indices), `g` (global), `i` (ignore case), `m` (`^` and `$`
+  at line breaks), `s` (`.` matches line breaks too), `u` (Unicode), `v`
+  (Unicode sets), `y` (sticky: a match only at `lastIndex`). `re.flags`
+  lists them in the order `dgimsuvy`; `re.hasIndices`, `global`,
+  `ignoreCase`, `multiline`, `dotAll`, `unicode`, `unicodeSets` and
+  `sticky` tell each, `re.source` is the pattern (with `/` escaped) and
+  `re.toString()` is `/source/flags`.
+- `u` has the syntax of JavaScript's `u` flag: `\u{1F600}`, `\p{...}` and
+  `\P{...}` (not in the property), and the strict escapes and quantifier
+  braces without Annex B (`/\a/u` is an error). Ignoring case compares
+  simple case foldings: also `ſ` with `s`, the Kelvin sign with `k`, the Ohm
+  sign with `Ω` and `ẞ` with `ß`. Matching is by code point with or without
+  it. The properties of `\p{...}`, from Unicode 17.0: the General_Category
+  values of letters and numbers (`L`, `LC`, `Lu`, `Ll`, `Lt`, `Lm`, `Lo`,
+  `N`, `Nd`, `Nl`, `No`, by their short or long names, alone or as
+  `gc=`/`General_Category=`), the scripts `Latin`, `Greek`, `Cyrillic` and
+  `Han` (`sc=`/`Script=`, also `Latn`, `Grek`, `Cyrl`, `Hani`), `Any` and
+  `ASCII`. Other properties JavaScript has (`Emoji`, `Script_Extensions`,
+  other categories and scripts) are errors: `The property 'Emoji' is not
+  supported`.
+- `v` is `u` with JavaScript's classes of the `v` flag: nested classes
+  (`[[a-z][0-9]]`), differences `[\p{L}--[a-z]]` and intersections
+  `[\w&&\d]`, and the characters that must be escaped in them
+  (`[(]` is an error). With `i`, each operand is closed under case before
+  the operators. String disjunctions `\q{...}` are not supported (an
+  error).
 - The matcher backtracks over the UTF-8 bytes a character (a code point) at
   a time: `.` and `[^a]` match a whole character, also one beyond U+FFFF
   (JavaScript matches half of its surrogate pair). Positions — `index`,
@@ -433,6 +457,12 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   number, `m.captures` the array of them, `m.index` and `m.input` as in
   JavaScript, and `m.groups` a `Map<string, string | null>` of the named
   groups (empty without names).
+- With the `d` flag, `m.indices` is a `([int, int] | null)[]`: the start
+  and end of the match and of each group (null for one that did not take
+  part), byte offsets as `index`; `m.groupIndices` is a
+  `Map<string, [int, int] | null>` of the named groups (JavaScript's
+  `m.indices.groups`). Without the flag both are empty, where JavaScript has
+  `undefined`.
 - String methods that take a regular expression:
   - `s.match(re)` is `re.exec(s)`; with `g` it is a `RegExpMatch` of every
     matched text (`at(i)`, `length`; `index` is -1), or `null`.

@@ -232,14 +232,16 @@ if (config instanceof Error) console.log(config.message)   // JSON: expected an 
 console.log(JSON.stringify({ name: "api", port: 80, tags: ["v1"] }))   // {"name":"api","port":80,"tags":["v1"]}
 ```
 
-**Regular expressions.** JavaScript's syntax and semantics, with an engine
-written in Ore; a bad literal is a compile-time error.
+**Regular expressions.** JavaScript's syntax and semantics, lookbehind and
+the flags `d`, `u` and `v` included, with an engine written in Ore; a bad
+literal is a compile-time error.
 
 ```ts
 const date = /(?<year>\d{4})-(?<month>\d{2})/
 const m = date.exec("released 2026-10")
 if (m !== null) console.log(m.groups.get("year"), m.index)   // 2026 9
 console.log("a-b_c".replace(/[-_]/g, " "), "x1y22z".split(/\d+/).join(","))   // a b c x,y,z
+console.log("$42 or 17".match(/(?<=\$)\d+/)!.at(0), /\p{Script=Greek}+/u.exec("Ωμέγα")!.at(0))   // 42 Ωμέγα
 ```
 
 **Green threads and channels.** Tasks run in parallel on all CPUs and talk

@@ -158,6 +158,11 @@ before 1.0, a minor version may change the language.
   instead of quadratic: a concatenation's buffer has room after its text, and
   the next append to the string that ends it writes in place, growing the
   buffer twice as large when it is full, like Go's `append`.
+- Regular expressions: lookbehind `(?<=...)` and `(?<!...)`, matched
+  backwards as in JavaScript; the `u` flag (`\u{...}`, `\p{...}` for the
+  letter and number categories and the Latin, Greek, Cyrillic and Han
+  scripts, the strict syntax, case folding), the `v` flag (nested classes,
+  `--` and `&&`) and the `d` flag (`m.indices`, `m.groupIndices`).
 
 ## 0.1.1
 
