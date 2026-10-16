@@ -34,19 +34,29 @@ export class MutexGuard {
 
 /** Waits for a group of tasks to finish, like Go's sync.WaitGroup. */
 export class WaitGroup {
-    private count = 0
+    /** The count, changed atomically: adding takes the mutex only when it drops to zero. */
+    private count: ptr = unsafe.allocBytes(8)
     private mutex = new Mutex()
-    /** Closed when the count drops to zero, then replaced. */
+    /** Closed when the count drops to zero, then replaced; under the mutex. */
     private zero = new Chan<bool>()
+
+    constructor() {
+        unsafe.store<i64>(this.count, 0)
+    }
 
     /** Adds `n` (possibly negative) to the number of tasks to wait for. */
     add(n: int): void {
-        using guard = this.mutex.acquire()
-        this.count += n
-        if (this.count < 0) process.panic("negative WaitGroup count")
-        if (this.count === 0) {
-            this.zero.close()
-            this.zero = new Chan<bool>()
+        const count = unsafe.atomicAdd<i64>(this.count, n) + n
+        if (count < 0) process.panic("negative WaitGroup count")
+        if (count === 0) {
+            // The count may have risen and dropped again meanwhile: whoever
+            // sees it zero under the mutex wakes the waiters, which took the
+            // channel under the mutex while it was not zero.
+            using guard = this.mutex.acquire()
+            if (unsafe.atomicLoad<i64>(this.count) === 0) {
+                this.zero.close()
+                this.zero = new Chan<bool>()
+            }
         }
     }
 
@@ -57,8 +67,9 @@ export class WaitGroup {
 
     /** Waits until every task added has finished. */
     wait(): void {
+        if (unsafe.atomicLoad<i64>(this.count) === 0) return
         this.mutex.lock()
-        if (this.count === 0) {
+        if (unsafe.atomicLoad<i64>(this.count) === 0) {
             this.mutex.unlock()
             return
         }
