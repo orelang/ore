@@ -141,7 +141,8 @@ serve)
         for file in "$home"/queue/*.job; do
             [ -e "$file" ] || continue
             name=$(basename "$file" .job)
-            mapfile -t args <"$file"
+            args=()
+            while IFS= read -r line; do args+=("$line"); done <"$file"
             rm -f "$file"
             case ${args[0]:-} in
             test | probe) ("$0" "${args[0]}" "$name" "${args[@]:1}" >/dev/null 2>&1; echo $? >"$home/done/$name.status") & ;;
