@@ -69,6 +69,11 @@ before 1.0, a minor version may change the language.
 - The condition of a `for` narrows its update clause too, as in TypeScript,
   unless the body assigns the variable: `for (let at = list; at !== null;
   at = at.next)` no longer reports that `at` may be null.
+- `typeof` of a top-level `const` works in annotations: after the
+  constant for any initializer (`let x: typeof name` with `const name =
+  "ore"`), and before it, as in function signatures, when the initializer
+  is made of literals, a template literal, `new C(...)` of a class that is
+  not generic, or the name of another such constant.
 - Stack overflow is a panic, `panic: stack overflow` with the Ore call stack
   (runs of the same frame counted on one line) and status 2, instead of a
   silent crash with status 138 or 139: a SIGSEGV/SIGBUS handler, on an
