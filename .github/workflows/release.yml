@@ -1,6 +1,7 @@
 # A release of `ore` on a tag vX.Y.Z, whose commit sets that version in
-# compiler/package.json. On Linux (amd64, arm64; built in Ubuntu 20.04, so
-# that it runs where glibc is 2.31 or newer) and macOS (arm64): the
+# compiler/package.json. On Linux (amd64, arm64; built in Ubuntu 20.04 and
+# Debian 11, whose glibc is 2.31, so that it runs where glibc is 2.31 or
+# newer; apt.llvm.org has no arm64 LLVM for Ubuntu 20.04) and macOS (arm64): the
 # compiler bootstraps from the previous release (from the seed, the last
 # commit with the compiler in TypeScript, for the first one), checks that it
 # reproduces itself, passes the test suite, and is packed with its LLVM and
@@ -27,7 +28,7 @@ jobs:
       matrix:
         include:
           - { runner: ubuntu-24.04, os: linux, arch: amd64, container: "ubuntu:20.04" }
-          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64, container: "ubuntu:20.04" }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64, container: "debian:11" }
           - { runner: macos-14, os: darwin, arch: arm64, container: "" }
     runs-on: ${{ matrix.runner }}
     # The oldest glibc the Linux build is made with is the oldest it runs
@@ -42,6 +43,8 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends wget gnupg lsb-release software-properties-common \
             ca-certificates git curl unzip patchelf xz-utils libc6-dev
+          # The checkout belongs to another user than the container's root.
+          git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v4
         with:
