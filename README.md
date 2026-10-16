@@ -11,11 +11,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/orelang/ore?label=release&color=c2410c"></a>
+  <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/orelang/ore?label=release&color=c2410c&style=for-the-badge"></a>
   <a href="https://github.com/orelang/ore/actions/workflows/release.yml"><img alt="Release build" src="https://github.com/orelang/ore/actions/workflows/release.yml/badge.svg"></a>
-  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-475569">
-  <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-c2410c">
-  <a href="#license"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-475569"></a>
+  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-475569?style=for-the-badge">
+  <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-c2410c?style=for-the-badge">
+  <a href="#license"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-475569?style=for-the-badge"></a>
 </p>
 
 ```sh
