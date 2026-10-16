@@ -22,9 +22,17 @@ function packageVersion(): string {
 
 export const version = packageVersion()
 
-export const usage = `Ore ${version}
+/** The heading of the help: the wordmark and what `ore` is, as install.sh shows them. */
+export const heading = `
+  {Ore}
 
-Usage:
+  Version      ${version}
+  Description  A natively compiled, Go-like language with TypeScript syntax
+  Usage        ore <command> [options]
+
+`
+
+export const usage = `Commands:
   ore run [file.ore] [args...]   Build and run a program
       -w, --watch                Run it again when its files change (before the file)
   ore build [file.ore]           Build a native binary
@@ -52,19 +60,29 @@ Without a file, the program is the 'main' of the nearest package.json.
   ore help                       Print this help
 `
 
-/** The usage with its headings in bold and the commands in the accent color, when the stream shows colors. */
+/**
+ * The heading and the usage: the wordmark's braces and the commands in the
+ * accent color, its name and the section headings in bold, the labels dim,
+ * when the stream shows colors.
+ */
 function styledUsage(style: Style): string {
-    if (!style.enabled) return usage
-    const lines: string[] = []
+    if (!style.enabled) return heading + usage
+    const head: string[] = []
+    for (const line of heading.split("\n")) {
+        if (line === "  {Ore}") head.push(`  ${style.accent("{")}${style.bold("Ore")}${style.accent("}")}`)
+        else if (line.length > 15) head.push(`  ${style.dim(line.slice(2, 13))}${line.slice(13)}`)
+        else head.push(line)
+    }
+    const body: string[] = []
     for (const line of usage.split("\n")) {
         if (line.startsWith("  ore ")) {
             const space = line.indexOf(" ", 6)
             const end = space < 0 ? line.length : space
-            lines.push(`  ${style.accent(line.slice(2, end))}${line.slice(end)}`)
-        } else if (line.startsWith("Ore ") || line.endsWith(":")) lines.push(style.bold(line))
-        else lines.push(line)
+            body.push(`  ${style.accent(line.slice(2, end))}${line.slice(end)}`)
+        } else if (line.endsWith(":")) body.push(style.bold(line))
+        else body.push(line)
     }
-    return lines.join("\n")
+    return head.join("\n") + body.join("\n")
 }
 
 /** Runs the command of the command line; returns the exit status. */
