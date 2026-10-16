@@ -1,0 +1,218 @@
+// The namespace `time`: clocks and durations. Its exports are members of
+// `time` (see `namespaceModule` in compiler/src/checker/builtins.ore).
+// Every time and duration is an `int` of nanoseconds, as in Go.
+//
+//   const start = time.now()
+//   work()
+//   console.log(time.format(time.now() - start))   // "1.5s"
+//   time.parse("2 days")! / time.second             // 172800
+//
+// `parse` and `format` port the npm package `ms` (2.1), with nanoseconds
+// in place of its milliseconds: `time.parse("1m")` is 60_000_000_000, not
+// 60000, and `time.format` takes nanoseconds. The texts are those of `ms`,
+// so a number without a unit is still milliseconds: `time.parse("100")` is
+// 100 ms.
+
+import { clock_gettime } from "ore:runtime/os"
+
+// ---------------------------------------------------------------------------
+// Clocks and durations
+
+/** Durations, in nanoseconds: `5 * time.second`, `elapsed / time.millisecond`. */
+export const nanosecond = 1
+export const microsecond = 1_000
+export const millisecond = 1_000_000
+export const second = 1_000_000_000
+export const minute = 60 * second
+export const hour = 60 * minute
+export const day = 24 * hour
+
+/** A year of `parse`: 365.25 days, as in `ms`. */
+const year = 31_557_600 * second
+const week = 7 * day
+
+const clockRealtime: i32 = 0
+
+function clockMonotonic(): i32 {
+    return target.os === "darwin" ? 6 : 1
+}
+
+function read(clock: i32): int {
+    const spec = unsafe.allocBytes(16)
+    clock_gettime(clock, spec)
+    return unsafe.load<i64>(spec) * second + unsafe.load<i64>(unsafe.add(spec, 8))
+}
+
+/**
+ * Nanoseconds on a monotonic clock, which only goes forward and does not
+ * follow changes to the wall clock: for measuring durations as the
+ * difference of two readings. Its zero is arbitrary (often the boot).
+ */
+export function now(): int {
+    return read(clockMonotonic())
+}
+
+/** Nanoseconds since the Unix epoch (1970-01-01 UTC), on the wall clock, which may jump. */
+export function unixNanos(): int {
+    return read(clockRealtime)
+}
+
+// ---------------------------------------------------------------------------
+// Durations as text, after the npm package `ms`
+
+/** Nanoseconds per unit of `parse`, by the lowercase unit; 0 for no unit. */
+function unitOf(unit: string): int {
+    switch (unit) {
+        case "years":
+        case "year":
+        case "yrs":
+        case "yr":
+        case "y":
+            return year
+        case "weeks":
+        case "week":
+        case "w":
+            return week
+        case "days":
+        case "day":
+        case "d":
+            return day
+        case "hours":
+        case "hour":
+        case "hrs":
+        case "hr":
+        case "h":
+            return hour
+        case "minutes":
+        case "minute":
+        case "mins":
+        case "min":
+        case "m":
+            return minute
+        case "seconds":
+        case "second":
+        case "secs":
+        case "sec":
+        case "s":
+            return second
+        case "":
+        case "milliseconds":
+        case "millisecond":
+        case "msecs":
+        case "msec":
+        case "ms":
+            return millisecond
+        case "microseconds":
+        case "microsecond":
+        case "usecs":
+        case "usec":
+        case "us":
+        case "µs":
+        case "μs":
+            return microsecond
+        case "nanoseconds":
+        case "nanosecond":
+        case "nsecs":
+        case "nsec":
+        case "ns":
+            return nanosecond
+    }
+    return 0
+}
+
+function byteAt(s: string, i: int): int {
+    return i64(unsafe.load<u8>(unsafe.add(unsafe.stringData(s), i)))
+}
+
+function isDigit(c: int): bool {
+    return c >= 0x30 && c <= 0x39
+}
+
+/**
+ * The nanoseconds of a duration written as `ms` writes them: a number with
+ * an optional `-` and fraction, optional spaces, then an optional unit
+ * (case-insensitive): `"2 days"`, `"1d"`, `"10h"`, `"2.5 hrs"`, `"-3 days"`,
+ * `".5ms"`. The units are years (365.25 days), weeks, days, hours, minutes,
+ * seconds and milliseconds in the long and short forms of `ms` (`y`, `yr`,
+ * `yrs`, `year`, `years`, `w`, `d`, `h`, `hr`, `m`, `min`, `s`, `sec`,
+ * `ms`, `msec`...), and beyond `ms` microseconds (`us`, `µs`, `usec`,
+ * `microsecond`...) and nanoseconds (`ns`, `nsec`, `nanosecond`...). A
+ * number without a unit is milliseconds, as in `ms`: `time.parse("100")` is
+ * 100_000_000. A fraction of a nanosecond is rounded.
+ *
+ * Null where `ms` returns undefined or throws: no number, an unknown unit,
+ * other characters, an empty text or one longer than 100 characters, and
+ * also a duration beyond the range of `int` (about 292 years).
+ */
+export function parse(text: string): int | null {
+    if (text.length === 0 || text.length > 100) return null
+    // -?\d*\.?\d+
+    let i = 0
+    const negative = byteAt(text, 0) === 0x2d
+    if (negative) i++
+    const intStart = i
+    while (i < text.length && isDigit(byteAt(text, i))) i++
+    const intEnd = i
+    let fracEnd = i
+    if (i < text.length && byteAt(text, i) === 0x2e) {
+        i++
+        while (i < text.length && isDigit(byteAt(text, i))) i++
+        fracEnd = i
+        if (fracEnd === intEnd + 1) return null
+    } else if (intEnd === intStart) {
+        return null
+    }
+    const numberEnd = i
+    while (i < text.length && byteAt(text, i) === 0x20) i++
+    const unit = unitOf(text.slice(i).toLowerCase())
+    if (unit === 0) return null
+    if (fracEnd === intEnd) {
+        // A whole number: exact, with a check for overflow.
+        let n = 0
+        for (let j = intStart; j < intEnd; j++) {
+            const digit = byteAt(text, j) - 0x30
+            if (n > (9223372036854775807 - digit) / 10) return null
+            n = n * 10 + digit
+        }
+        if (n > 9223372036854775807 / unit) return null
+        return negative ? -(n * unit) : n * unit
+    }
+    const n = Number.parseFloat(text.slice(intStart, numberEnd))
+    if (n === null) return null
+    const ns = Math.round(n * f64(unit))
+    if (ns >= 9223372036854775807.0) return null
+    return negative ? -i64(ns) : i64(ns)
+}
+
+/** How `format` writes a duration. */
+export type FormatOptions = {
+    /** Whole words, as "2 minutes", instead of "2m". */
+    long?: bool
+}
+
+/**
+ * A duration of `ns` nanoseconds as `ms` writes it, rounded to the largest
+ * unit it reaches, days at most: "1d", "10h", "2m", "5s", or with `long`
+ * "1 day", "10 hours", "2 minutes", "5 seconds" (plural from 1.5 units on).
+ * Under a second it is exact milliseconds, "500ms" or "1.5ms" (long
+ * "500 ms"); beyond `ms`, under a millisecond it is microseconds ("250µs")
+ * and under a microsecond nanoseconds ("80ns").
+ */
+export function format(ns: int, options: FormatOptions = {}): string {
+    const long = options.long ?? false
+    const abs = Math.abs(f64(ns))
+    if (abs >= f64(day)) return rounded(ns, abs, day, long ? "day" : "d", long)
+    if (abs >= f64(hour)) return rounded(ns, abs, hour, long ? "hour" : "h", long)
+    if (abs >= f64(minute)) return rounded(ns, abs, minute, long ? "minute" : "m", long)
+    if (abs >= f64(second)) return rounded(ns, abs, second, long ? "second" : "s", long)
+    const space = long ? " " : ""
+    if (abs >= f64(millisecond)) return `${f64(ns) / f64(millisecond)}${space}ms`
+    if (abs >= f64(microsecond)) return `${f64(ns) / f64(microsecond)}${space}µs`
+    return `${ns}${space}ns`
+}
+
+function rounded(ns: int, abs: f64, unit: int, name: string, long: bool): string {
+    const n = Math.round(f64(ns) / f64(unit))
+    if (!long) return `${n}${name}`
+    return `${n} ${name}${abs >= f64(unit) * 1.5 ? "s" : ""}`
+}

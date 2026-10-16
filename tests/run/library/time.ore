@@ -1,0 +1,107 @@
+// The namespace `time`: clocks, durations, and `parse` and `format` after
+// the npm package `ms`, in nanoseconds. The tables follow the tests of `ms`.
+
+// The durations.
+console.log(time.nanosecond, time.microsecond, time.millisecond, time.second)
+console.log(time.minute, time.hour, time.day)
+
+// The monotonic clock goes forward; the wall clock agrees with Date.now.
+const before = time.now()
+let spin = 0
+for (let i = 0; i < 1000; i++) spin += i
+const after = time.now()
+console.log(after >= before, spin)
+const wall = time.unixNanos() / time.millisecond
+console.log(wall - Date.now() <= 0 && Date.now() - wall < 1000, wall > 1_700_000_000_000)
+
+function show(text: string): void {
+    const ns = time.parse(text)
+    console.log(JSON.stringify(text), ns === null ? "null" : `${ns} ns = ${f64(ns) / f64(time.millisecond)} ms`)
+}
+
+// Short units.
+for (const s of [
+    "100",
+    "1m",
+    "1h",
+    "2d",
+    "3w",
+    "1s",
+    "100ms",
+    "1y",
+    "1.5h",
+    "1   s",
+    "1.5H",
+    ".5ms",
+    "-100ms",
+    "-1.5h",
+])
+    show(s)
+for (const s of ["-10.5h", "-.5h"]) show(s)
+
+// Long units.
+for (const s of [
+    "53 milliseconds",
+    "17 msecs",
+    "1 sec",
+    "1 min",
+    "1 hr",
+    "2 days",
+    "1 week",
+    "1 year",
+    "1.5 hours",
+    "-100 milliseconds",
+    "-1.5 hours",
+    "-.5 hr",
+])
+    show(s)
+
+// The README of `ms`.
+for (const s of ["2 days", "1d", "10h", "2.5 hrs", "2h", "1m", "5s", "1y", "100", "-3 days", "-1h", "-200"]) show(s)
+
+// Beyond `ms`: microseconds and nanoseconds.
+for (const s of ["3us", "7 µs", "2 usecs", "1 microsecond", "12ns", "40 nsecs", "1.5ns", "0.4ns", "2.5 µs"]) show(s)
+
+// What `ms` rejects, and what `int` cannot hold.
+for (const s of ["", "foo", "1.", ".", "-", "1 m s", " 1s", "1s ", "1\ts", "1x", "1e3", "+1s", "1,5s", "a".repeat(101)])
+    show(s)
+for (const s of ["292y", "293y", "9223372036854775807ns", "9223372036854775808ns", "-9223372036854775807ns"]) show(s)
+
+// Formatting, short and long.
+for (const ns of [
+    500 * time.millisecond,
+    time.second,
+    1200 * time.millisecond,
+    10 * time.second,
+    time.minute,
+    (1200 * time.minute) / 1000,
+    10 * time.minute,
+    time.hour,
+    10 * time.hour,
+    time.day,
+    10 * time.day,
+    234234234 * time.millisecond,
+]) {
+    console.log(
+        time.format(ns),
+        time.format(-ns),
+        "|",
+        time.format(ns, { long: true }),
+        "|",
+        time.format(-ns, { long: true }),
+    )
+}
+
+// Under a second: exact milliseconds as in `ms`, then microseconds and nanoseconds.
+for (const ns of [0, 1, 999, 1000, 1500, 999_999, 1_000_000, 1_500_000, 1_234_567, 999_999_999]) {
+    console.log(time.format(ns), "|", time.format(ns, { long: true }))
+}
+
+// Rounding: half up, toward +Infinity, and the plural from 1.5 units on.
+for (const ns of [1499 * time.millisecond, 1500 * time.millisecond, -1500 * time.millisecond, 90 * time.minute])
+    console.log(time.format(ns), "|", time.format(ns, { long: true }))
+
+// Round trips.
+const options: time.FormatOptions = { long: true }
+console.log(time.format(time.parse("10 hours")!), time.format(time.parse("10 hours")!, options))
+console.log(time.format(2 * time.minute, options), time.format(-3 * time.minute, options))

@@ -21,6 +21,19 @@ before 1.0, a minor version may change the language.
   `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf` and
   `isDisjointFrom`, with JavaScript's order of elements. `keys()`,
   `values()` and `entries()` still return arrays.
+- The built-in namespace `time`, in nanoseconds as `int` like Go:
+  `time.now()` (a monotonic clock), `time.unixNanos()` (the wall clock),
+  the durations `time.nanosecond` to `time.day`, and `time.parse` and
+  `time.format`, a port of the npm package `ms` in nanoseconds:
+  `time.parse("2.5 hrs")` is 9_000_000_000_000, `time.format(2 *
+  time.minute, { long: true })` is "2 minutes". Its texts are those of
+  `ms` (a bare number is milliseconds), plus `us`/`µs` and `ns`; what `ms`
+  rejects is `null`.
+- `randomUUIDv4()` and `randomUUIDv7()` in "ore:crypto" (RFC 9562), from
+  the system's secure random numbers (getentropy). A version 7 UUID starts
+  with the Unix time in milliseconds, then 12 bits of the time within it,
+  and the UUIDs of a process increase strictly, so they sort by creation.
+
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with

@@ -249,6 +249,41 @@ declare namespace Date {
 }
 
 /**
+ * Clocks and durations, in nanoseconds as `int`, as in Go. Written in Ore,
+ * in runtime/core/time.ore, whose exports are members of the namespace:
+ * these declarations document them.
+ */
+declare namespace time {
+    // The durations in nanoseconds, `int` constants of the module:
+    // `nanosecond`, `microsecond`, `millisecond`, `second`, `minute`,
+    // `hour` and `day`, as in `5 * time.second` or `elapsed / time.millisecond`.
+
+    /** Nanoseconds on a monotonic clock, for durations as the difference of two readings; its zero is arbitrary. */
+    function now(): int
+    /** Nanoseconds since the Unix epoch on the wall clock, which may jump. */
+    function unixNanos(): int
+
+    /**
+     * The nanoseconds of a duration written as the npm package `ms` reads it:
+     * "2 days", "1d", "10h", "2.5 hrs", "-3 days", ".5ms", plus the units
+     * "us"/"µs" and "ns". A number without a unit is milliseconds, as in `ms`.
+     * Null for a text `ms` rejects, or beyond the range of `int`.
+     */
+    function parse(text: string): int | null
+    /**
+     * A duration in nanoseconds as `ms` writes it: "1d", "10h", "2m", "5s",
+     * "500ms", and beyond `ms` "250µs" and "80ns"; with `long`, "2 minutes".
+     */
+    function format(ns: int, options?: FormatOptions): string
+
+    /** How `format` writes a duration. */
+    type FormatOptions = {
+        /** Whole words, as "2 minutes", instead of "2m". */
+        long?: bool
+    }
+}
+
+/**
  * Green threads: tasks run concurrently on one OS thread and switch when one
  * waits, on a channel or in `sleep`, or calls `yield`.
  */

@@ -246,7 +246,8 @@ console.log("$42 or 17".match(/(?<=\$)\d+/)!.at(0), /\p{Script=Greek}+/u.exec("Î
 
 **Green threads and channels.** Tasks run in parallel on all CPUs and talk
 through channels and `select`; waiting parks the task, not the OS thread.
-`ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP, `ore:crypto` SHA-256, `ore:path` paths.
+`ore:sync` adds `Mutex` and `WaitGroup`, `ore:net` TCP, `ore:crypto` SHA-256 and UUIDs, `ore:path` paths; `time` has
+clocks and durations in nanoseconds.
 
 ```ts
 const results = new Chan<int>()
