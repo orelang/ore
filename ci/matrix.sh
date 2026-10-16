@@ -8,6 +8,8 @@
 #   gc        ORE_GOGC=1: a collection whenever the heap grows by 1%
 #   gcstw     ORE_GCSTW=1 ORE_GOGC=10: stop-the-world marking, often
 #   stress    16 threads and ORE_GOGC=1: concurrent marking under load
+#   verify    16 threads, ORE_GOGC=5 and ORE_GCVERIFY=1: what is freed is
+#             filled with garbage, so a use of a freed object shows
 #
 #   ci/matrix.sh [mode...] [-- filter...]     (default: every mode, run/ async/)
 # ORE is the compiler, as for ci/test.sh. The status is 1 if a mode fails.
@@ -19,7 +21,7 @@ while [ $# -gt 0 ] && [ "$1" != "--" ]; do
     shift
 done
 [ "${1:-}" = "--" ] && shift
-[ -n "$modes" ] || modes="release threads gc gcstw stress"
+[ -n "$modes" ] || modes="release threads gc gcstw stress verify"
 [ $# -gt 0 ] || set -- run/ async/
 status=0
 for mode in $modes; do
@@ -29,6 +31,7 @@ for mode in $modes; do
         gc) vars="ORE_TEST_ENV=ORE_GOGC=1" ;;
         gcstw) vars="ORE_TEST_ENV=ORE_GCSTW=1,ORE_GOGC=10" ;;
         stress) vars="ORE_TEST_THREADS=16 ORE_TEST_ENV=ORE_GOGC=1" ;;
+        verify) vars="ORE_TEST_THREADS=16 ORE_TEST_ENV=ORE_GOGC=5,ORE_GCVERIFY=1" ;;
         *) echo "matrix: unknown mode $mode" >&2; exit 2 ;;
     esac
     echo "== $mode ($vars)"

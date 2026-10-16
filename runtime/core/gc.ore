@@ -200,6 +200,14 @@ let extraRootCount: int
 let extraRootCap: int
 /** 1 when ORE_GCTRACE is set: each collection prints a line to stderr. */
 let trace: int
+/**
+ * 1 when ORE_GCVERIFY is set: what a collection frees is filled with 0xA5
+ * bytes instead of being left as it was, so that a program that still uses
+ * an object the collector freed (a bug of the collector, a missed root or
+ * barrier) reads garbage at once rather than data that looks right; new
+ * objects are zeroed anyway, so a correct program runs the same.
+ */
+let verify: int
 /** 1 to mark alongside the program (the default), 0 with the world stopped throughout (ORE_GCSTW set). */
 let concurrentMarking: int
 /** ORE_GOGC: how much the heap grows between collections, in percent of the live heap (100 by default); -1 for `off`. */
@@ -368,6 +376,7 @@ export function registerThread(): void {
     // The first thread reads the settings; getenv's argument is a copy, so the thread must be registered.
     if (threadCount === 1) {
         trace = isNil(getenv("ORE_GCTRACE")) ? 0 : 1
+        verify = isNil(getenv("ORE_GCVERIFY")) ? 0 : 1
         concurrentMarking = isNil(getenv("ORE_GCSTW")) ? 1 : 0
         gcPercent = envNumber("ORE_GOGC", 100)
         memoryLimit = envNumber("ORE_MEMLIMIT", 0)
@@ -1569,9 +1578,11 @@ function sweep(): void {
         // Bits past `elems` are never set: count whole words.
         for (let w = 0; w < (elems + 63) / 64; w++) live += popcount(unsafe.load<u64>(unsafe.add(marks, w * 8)))
         if (live === 0) {
+            if (verify !== 0) unsafe.fill(pointerAt(span, spanStart), 0xa5, field(span, spanPages) * pageSize)
             releaseSpan(span)
             continue
         }
+        if (verify !== 0) poisonFreed(span, marks, elems)
         liveBytes += live * field(span, spanElemSize)
         const bits = pointerAt(span, spanAllocBits)
         // A freed object is no longer growable: its slot may hold anything next.
@@ -1596,6 +1607,16 @@ function sweep(): void {
     spanCount = kept
     unsafe.atomicStore<i64>(allocatedCell, 0)
     nextCollection = budget(liveBytes)
+}
+
+/** Fills the objects of a span that were allocated and are not marked, as ORE_GCVERIFY asks. */
+function poisonFreed(span: ptr, marks: ptr, elems: int): void {
+    const allocated = pointerAt(span, spanAllocBits)
+    const size = field(span, spanElemSize)
+    const start = pointerAt(span, spanStart)
+    for (let i = 0; i < elems; i++) {
+        if (bit(allocated, i) && !bit(marks, i)) unsafe.fill(unsafe.add(start, i * size), 0xa5, size)
+    }
 }
 
 /** Bytes of the heap's pages given back to the system and not used since. */
