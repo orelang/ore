@@ -105,6 +105,8 @@ exports, type assertions (Ore converts: `i32(x)`).
   parser (done; no IDNA or Punycode for domains outside ASCII).
 - `Blob` and `File` from MDN, after the W3C File API (done; `stream()`
   waits for streams).
+- `Headers` from MDN, after the Fetch Standard (done; the constructor
+  takes no `Map` or other iterable of pairs).
 - `globalThis`, as in JavaScript: the global names (`globalThis.console`,
   `globalThis.Math`, `globalThis.Promise`, `globalThis.time`, ...) as
   members of one value, with the type `typeof globalThis`; a module's own

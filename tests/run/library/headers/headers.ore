@@ -1,0 +1,39 @@
+// Headers, as JavaScript's: names without case, values joined with ", ",
+// leading and trailing whitespace of values left out.
+const h = new Headers({ "Content-Type": "text/html", "X-Count": " 1 " })
+console.log(h.get("content-type"), h.get("CONTENT-TYPE"), h.get("x-count"), h.get("missing"))
+console.log(h.has("Content-Type"), h.has("x-COUNT"), h.has("accept"))
+
+h.append("x-count", "\t2\r\n")
+h.append("X-Count", "")
+console.log(JSON.stringify(h.get("x-count")))
+h.set("X-COUNT", "3")
+console.log(h.get("x-count"), [...h])
+h.delete("CONTENT-type")
+console.log(h.has("content-type"), h.get("content-type"), [...h])
+h.set("Accept", "*/*")
+h.delete("never")
+console.log([...h])
+
+// set-cookie stays apart: getSetCookie gives each value, get joins them.
+const c = new Headers([
+    ["Set-Cookie", "a=1"],
+    ["set-cookie", "b=2; Path=/"],
+    ["Vary", "Accept"],
+    ["vary", "Origin"],
+])
+console.log(c.getSetCookie(), c.get("set-cookie"), c.get("vary"))
+console.log(new Headers().getSetCookie(), new Headers().get("x"), [...new Headers()])
+
+// A copy is its own.
+const copy = new Headers(c)
+copy.append("x", "1")
+console.log(c.has("x"), copy.has("x"), [...copy])
+
+// Names may hold the token symbols; values any byte but NUL and line breaks.
+const symbols = new Headers()
+symbols.append("!#$%&'*+-.^_`|~09AZaz", "a\u0001b é \"q\"")
+console.log(symbols.get("!#$%&'*+-.^_`|~09azaz"))
+
+// forEach gives the value, the lowercased name and the headers, sorted and combined.
+c.forEach((value, name, parent) => console.log(name, value, parent === c))

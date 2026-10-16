@@ -108,6 +108,20 @@ before 1.0, a minor version may change the language.
 - An object literal for a union is never of a class with private or
   protected fields, as in TypeScript: `{ a: 1 }` for `Secret | { [key:
   string]: int }` is the dictionary.
+- `Headers`, the global class of the Fetch Standard: from a record, an
+  array of pairs or another `Headers`; `append`, `delete`, `get` (values
+  joined with `, `, `null` when missing), `getSetCookie`, `has`, `set` and
+  `forEach`, names without case and checked, values trimmed (an invalid one
+  panics with JavaScript's `TypeError`); iterable, sorted by lowercased
+  name with each `set-cookie` apart; printed by `console.log` as Node does.
+- `Array.isArray(x)` as a condition narrows a union, as in TypeScript: to
+  its arrays when true, to its other members when false.
+- Private and protected members are accessible anywhere in the declaration
+  of their class, as in TypeScript: in static methods and `static` blocks,
+  and in function expressions inside methods.
+- An object literal for a union is never of a class with private or
+  protected fields, as in TypeScript: `{ a: 1 }` for `Secret | { [key:
+  string]: int }` is the dictionary.
 
 ## 0.5.0
 

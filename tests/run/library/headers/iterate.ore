@@ -1,0 +1,43 @@
+// Headers are iterable: the pairs sorted by lowercased name, the values of a
+// name combined but each set-cookie apart, as the Fetch Standard says.
+const h = new Headers([
+    ["Z", "1"],
+    ["_", "2"],
+    ["~", "3"],
+    ["Set-Cookie", "s=1"],
+    ["a", "4"],
+    ["!", "5"],
+    ["set-cookie", "s=2"],
+    ["A", "6"],
+])
+for (const [name, value] of h) console.log(name, value)
+console.log([...h.keys()], [...h.values()])
+console.log(Array.from(h.entries()), Array.from(h).length)
+const m = new Map(h)
+console.log(m.size, m.get("a"), m.get("set-cookie"))
+
+// The iterator protocol by hand; a done iterator stays done.
+const it = new Headers({ a: "1" }).keys()
+console.log(it.next(), it.next(), it.next())
+console.log(it.toString(), it[Symbol.iterator]().next())
+const own = h[Symbol.iterator]()
+console.log(own.next().value)
+
+// Live: each step sorts the headers again, so a name added before the
+// current one shifts the rest, and a removed one is not visited.
+const live = new Headers([
+    ["b", "1"],
+    ["a", "2"],
+])
+const seen: string[] = []
+for (const [k, v] of live) {
+    seen.push(`${k}=${v}`)
+    if (k === "a") live.append("c", "3")
+    if (k === "a") live.append("0", "3")
+}
+console.log(seen)
+const keys = live.keys()
+console.log(keys.next().value)
+live.delete("0")
+console.log(keys.next().value, keys.next().value, keys.next().done, keys.next().done)
+for (const k of new Headers().keys()) console.log("never", k)

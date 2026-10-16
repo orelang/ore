@@ -1,0 +1,312 @@
+// The global class `Headers`, as in JavaScript, after the Fetch Standard:
+// a list of HTTP header names and values. Names are compared without case,
+// checked to be tokens, and keep the case they were first given in; values
+// lose their leading and trailing HTTP whitespace and may not hold a NUL or
+// a line break. Invalid ones panic with JavaScript's `TypeError`. Iteration
+// sorts and combines the list as the standard does: lowercased names in
+// order, the values of a name joined with `, `, but each `set-cookie` apart.
+
+import { type Inspection, fits, key, paint, quote } from "ore:runtime/inspect"
+
+// ---------------------------------------------------------------------------
+// Names and values
+
+/** The symbols a header name may have besides ASCII letters and digits. */
+const tokenSymbols = "!#$%&'*+-.^_`|~"
+
+/** Whether a byte may be in a header name: RFC 9110's `tchar`. */
+function tokenByte(c: u8): bool {
+    if ((c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39)) return true
+    for (let i = 0; i < tokenSymbols.length; i++) if (tokenSymbols[i] === c) return true
+    return false
+}
+
+/** Whether `name` is a header name: a token, at least one byte. */
+function validName(name: string): bool {
+    if (name === "") return false
+    for (let i = 0; i < name.length; i++) if (!tokenByte(name[i])) return false
+    return true
+}
+
+/** Whether a byte is HTTP whitespace: tab, line feed, carriage return or space. */
+function httpWhitespace(c: u8): bool {
+    return c === 0x09 || c === 0x0a || c === 0x0d || c === 0x20
+}
+
+/** A value without its leading and trailing HTTP whitespace. */
+function normalize(value: string): string {
+    let start = 0
+    let end = value.length
+    while (start < end && httpWhitespace(value[start])) start++
+    while (end > start && httpWhitespace(value[end - 1])) end--
+    return value.slice(start, end)
+}
+
+/** Whether a normalized value is a header value: no NUL, line feed or carriage return. */
+function validValue(value: string): bool {
+    for (let i = 0; i < value.length; i++) {
+        const c = value[i]
+        if (c === 0x00 || c === 0x0a || c === 0x0d) return false
+    }
+    return true
+}
+
+/** Panics as JavaScript throws for an invalid name, in the method `method`. */
+function checkName(method: string, name: string): void {
+    if (!validName(name)) process.panic(`TypeError: Headers.${method}: "${name}" is an invalid header name.`)
+}
+
+/** Panics as JavaScript throws for an invalid normalized value, in the method `method`. */
+function checkValue(method: string, value: string): void {
+    if (!validValue(value)) process.panic(`TypeError: Headers.${method}: "${value}" is an invalid header value.`)
+}
+
+/** The values of the headers named `lowered` (lowercased) joined with `, `, or null when there is none. */
+function combined(list: [string, string][], lowered: string): string | null {
+    let out: string | null = null
+    for (const pair of list) {
+        if (pair[0].toLowerCase() !== lowered) continue
+        out = out === null ? pair[1] : `${out}, ${pair[1]}`
+    }
+    return out
+}
+
+/**
+ * The standard's "sort and combine": a pair for each lowercased name, in
+ * byte order, with the values of the name combined, but a pair for each
+ * `set-cookie` header, in order.
+ */
+function sortAndCombine(list: [string, string][]): [string, string][] {
+    const names: string[] = []
+    for (const pair of list) {
+        const name = pair[0].toLowerCase()
+        if (!names.includes(name)) names.push(name)
+    }
+    names.sort()
+    const out: [string, string][] = []
+    for (const name of names) {
+        if (name === "set-cookie") {
+            for (const pair of list) if (pair[0].toLowerCase() === name) out.push([name, pair[1]])
+        } else {
+            out.push([name, combined(list, name) ?? ""])
+        }
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// The classes
+
+/** The header list of a `Headers`, for console.log, outside the class: its static block sets it. */
+let headerList: (headers: Headers) => [string, string][] = (_) => []
+
+/**
+ * HTTP headers, as JavaScript's `Headers`: `new Headers({ "Content-Type":
+ * "text/html" })`, from an array of `[name, value]` pairs, or a copy of
+ * another. Names are compared without case; `get` joins the values of a
+ * name with `, `, and iteration gives lowercased names in order.
+ */
+export class Headers {
+    /** The headers in the order they were added, each name in the case it was first given, values normalized. */
+    private list: [string, string][] = []
+
+    static {
+        headerList = (headers) => headers.list
+    }
+
+    /** From a record of names and values, an array of `[name, value]` pairs, or a copy of another. */
+    constructor(init: Headers | [string, string][] | Record<string, string> | null = null) {
+        if (init === null) return
+        if (init instanceof Headers) {
+            this.list = init.list.map((pair): [string, string] => [pair[0], pair[1]])
+        } else if (Array.isArray(init)) {
+            for (const pair of init) this.append(pair[0], pair[1])
+        } else {
+            for (const pair of Object.entries(init)) this.append(pair[0], pair[1])
+        }
+    }
+
+    /**
+     * Whether the headers cannot change, as the standard's guard
+     * "immutable": a subclass for the headers of a response says so, and
+     * `append`, `delete` and `set` then panic.
+     */
+    protected immutable(): bool {
+        return false
+    }
+
+    /** Panics when the headers cannot change. */
+    private checkGuard(): void {
+        if (this.immutable()) process.panic("TypeError: immutable")
+    }
+
+    /** Adds a value to a name: `get` joins it to the others of the name. */
+    append(name: string, value: string): void {
+        const normalized = normalize(value)
+        checkName("append", name)
+        checkValue("append", normalized)
+        this.checkGuard()
+        // The name takes the case of the first header of the name.
+        const lowered = name.toLowerCase()
+        const first = this.list.find((pair) => pair[0].toLowerCase() === lowered)
+        this.list.push([first === null ? name : first[0], normalized])
+    }
+
+    /** Removes the headers of a name. */
+    delete(name: string): void {
+        checkName("delete", name)
+        this.checkGuard()
+        const lowered = name.toLowerCase()
+        this.list = this.list.filter((pair) => pair[0].toLowerCase() !== lowered)
+    }
+
+    /** The values of a name joined with `, `, or null when there is none. */
+    get(name: string): string | null {
+        checkName("get", name)
+        return combined(this.list, name.toLowerCase())
+    }
+
+    /** The values of the `Set-Cookie` headers, each apart, in order. */
+    getSetCookie(): string[] {
+        const out: string[] = []
+        for (const pair of this.list) if (pair[0].toLowerCase() === "set-cookie") out.push(pair[1])
+        return out
+    }
+
+    /** Whether there is a header of a name. */
+    has(name: string): bool {
+        checkName("has", name)
+        const lowered = name.toLowerCase()
+        return this.list.some((pair) => pair[0].toLowerCase() === lowered)
+    }
+
+    /** Sets the value of a name: the first header of the name takes it, and the others are removed; or adds one. */
+    set(name: string, value: string): void {
+        const normalized = normalize(value)
+        checkName("set", name)
+        checkValue("set", normalized)
+        this.checkGuard()
+        const lowered = name.toLowerCase()
+        let found = false
+        const out: [string, string][] = []
+        for (const pair of this.list) {
+            if (pair[0].toLowerCase() !== lowered) {
+                out.push(pair)
+            } else if (!found) {
+                found = true
+                out.push([name, normalized])
+            }
+        }
+        if (!found) out.push([name, normalized])
+        this.list = out
+    }
+
+    /** Calls `callback(value, name, headers)` for each pair of the iteration, in order. */
+    forEach(callback: (value: string, key: string, parent: Headers) => void): void {
+        // The pairs are sorted again at each step, as the iterators do.
+        for (let i = 0; ; i++) {
+            const pairs = sortAndCombine(this.list)
+            if (i >= pairs.length) break
+            callback(pairs[i][1], pairs[i][0], this)
+        }
+    }
+
+    /** An iterator of the lowercased names, in order. */
+    keys(): HeadersIterator<string> {
+        return new HeadersIterator<string>(
+            () => sortAndCombine(this.list),
+            (pair) => pair[0],
+        )
+    }
+
+    /** An iterator of the values, in the order of their names. */
+    values(): HeadersIterator<string> {
+        return new HeadersIterator<string>(
+            () => sortAndCombine(this.list),
+            (pair) => pair[1],
+        )
+    }
+
+    /** An iterator of the `[name, value]` pairs, names lowercased and in order. */
+    entries(): HeadersIterator<[string, string]> {
+        return new HeadersIterator<[string, string]>(
+            () => sortAndCombine(this.list),
+            (pair): [string, string] => [pair[0], pair[1]],
+        )
+    }
+
+    /** The `[name, value]` pairs, as `entries()`: what `for...of` and spread take. */
+    [Symbol.iterator](): HeadersIterator<[string, string]> {
+        return this.entries()
+    }
+}
+
+/**
+ * The iterator of `keys()`, `values()` and `entries()`: what `read` makes of
+ * each pair. It is live, as JavaScript's: it sorts and combines the headers
+ * again at every step, so it sees the changes made meanwhile; once done, it
+ * stays done.
+ */
+export class HeadersIterator<T> {
+    private index = 0
+    private done = false
+
+    constructor(
+        private readonly pairs: () => [string, string][],
+        private readonly read: (pair: [string, string]) => T,
+    ) {}
+
+    next(): IteratorResult<T, void> {
+        const list = this.pairs()
+        if (this.done || this.index >= list.length) {
+            this.done = true
+            return { value: null, done: true }
+        }
+        const value = this.read(list[this.index])
+        this.index++
+        return { value, done: false }
+    }
+
+    [Symbol.iterator](): IterableIterator<T> {
+        return this
+    }
+
+    /** `[object Headers Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Headers Iterator]"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// console.log
+
+/**
+ * Headers as Node prints them, `Headers { 'Content-Type': 'text/html' }`:
+ * a property for each name, in the order each name came first and in the
+ * case it was first given, with its values joined. Node formats them as an
+ * object of their own, at no depth (never `[Object]`), and indents its lines
+ * to where they are printed.
+ */
+//ore:runtime ore_rt_inspect_headers
+function inspectHeaders(s: Inspection, headers: Headers, depth: int): string {
+    const names: string[] = []
+    const lowered: string[] = []
+    const values: string[] = []
+    for (const pair of headerList(headers)) {
+        const at = lowered.indexOf(pair[0].toLowerCase())
+        if (at < 0) {
+            names.push(pair[0])
+            lowered.push(pair[0].toLowerCase())
+            values.push(pair[1])
+        } else {
+            values[at] = `${values[at]}, ${pair[1]}`
+        }
+    }
+    if (names.length === 0) return "Headers {}"
+    const output: string[] = []
+    for (let i = 0; i < names.length; i++) output.push(`${key(s, names[i])}: ${paint(s, quote(values[i]), 32, 39)}`)
+    // As Node's object at indentation 0: the entries, `{` and 10 columns before them.
+    if (fits(s, output, output.length + 11)) return `Headers { ${output.join(", ")} }`
+    const newline = `\n${" ".repeat(depth * 2)}`
+    return `Headers {${newline}  ${output.join(`,${newline}  `)}${newline}}`
+}

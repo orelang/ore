@@ -956,6 +956,50 @@ bytes with a media type.
   a blob (ORE4091, a class with methods).
 - `Blob` and `File` are classes of the runtime written in Ore
   (`runtime/core/blob.ore`), global names as in JavaScript.
+## Headers
+
+```ts
+const h = new Headers({ "Content-Type": "text/html" })
+h.append("Set-Cookie", "a=1")
+h.append("set-cookie", "b=2")
+console.log(h.get("content-type"), h.get("Set-Cookie"))  // text/html a=1, b=2
+console.log(h.getSetCookie(), [...h.keys()])              // [ 'a=1', 'b=2' ] [ 'content-type', 'set-cookie', 'set-cookie' ]
+```
+
+`Headers` is JavaScript's, after the Fetch Standard: a list of HTTP
+header names and values.
+
+- `new Headers(init?)` takes a record of names and values (`{ "Accept":
+  "*/*" }`, a `Record<string, string>`), an array of `[name, value]` pairs,
+  or another `Headers` to copy.
+- Names are compared without case and keep the case they were first given
+  in. A name must be a token of HTTP (ASCII letters, digits and
+  ``!#$%&'*+-.^_`|~``), and a value loses its leading and trailing tabs,
+  line breaks and spaces and may not then hold a NUL, a line feed or a
+  carriage return; otherwise the method panics with JavaScript's
+  `TypeError`, as `TypeError: Headers.append: "a b" is an invalid header
+  name.`
+- `append(name, value)` adds a value; `delete(name)` removes a name;
+  `get(name)` is its values joined with `, `, or `null` when there is none
+  (JavaScript's `null` too); `getSetCookie()` is the values of the
+  `Set-Cookie` headers, each apart; `has(name)`; `set(name, value)`
+  replaces the values of a name.
+- A `Headers` is iterable, of `[name, value]` tuples sorted by lowercased
+  name, the values of a name joined with `, ` but each `set-cookie` a pair
+  of its own, as the standard's "sort and combine": `for (const [name,
+  value] of headers)`, spread, `Array.from` and `new Map(headers)` take it.
+  `keys()`, `values()` and `entries()` return lazy iterators that sort the
+  headers again at each step, so they see the changes made meanwhile, and
+  `forEach((value, name, headers) => ...)` visits the same pairs.
+- `console.log` prints them as Node does, `Headers { 'Content-Type':
+  'text/html' }`: each name in the case it was first given, in the order it
+  came first, with its values joined.
+- Differences from JavaScript: the constructor does not take a `Map` or
+  another iterable of pairs; a value is any UTF-8 text without the bytes
+  above, where JavaScript throws for characters above U+00FF;
+  `JSON.stringify` writes the private fields, where JavaScript writes `{}`.
+- `Headers` is a class of the runtime written in Ore
+  (`runtime/core/headers.ore`), a global name as in JavaScript.
 
 ## Arrays
 

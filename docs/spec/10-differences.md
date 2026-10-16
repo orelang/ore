@@ -52,6 +52,8 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `new Blob([x])` of a number, an object, ... | converts it to a string | compile error: parts are strings, `u8[]` and blobs |
 | `blob.slice(0, null)` | `null` is 0: an empty blob | `null` is a missing end: the whole blob |
 | `blob.stream()`, `URL.createObjectURL(blob)`, `FileReader` | exist | do not exist |
+| an invalid header name or value given to `Headers` | throws a `TypeError` | panics with its message: `TypeError: Headers.append: "a b" is an invalid header name.` |
+| a header value with characters above U+00FF | throws a `TypeError` (not a `ByteString`) | kept, as UTF-8 |
 | `m[i]` past the end of a `RegExpMatch` | `undefined` | panics, as for arrays |
 | `s.localeCompare(t)` | the locale's collation | code point order |
 | `new Array(3)` | three holes | three zero values of the element type |
