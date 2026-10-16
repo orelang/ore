@@ -1,0 +1,25 @@
+// Promise.withResolvers: a pending promise and the function that resolves it,
+// from outside an executor. Promises never reject, so there is no `reject`.
+
+const { promise, resolve } = Promise.withResolvers<string>()
+promise.then((value) => console.log("then", value))
+console.log("pending")
+resolve("first")
+// Only the first resolution counts.
+resolve("second")
+console.log("resolved")
+console.log("awaited", await promise)
+
+// Resolving with a promise adopts it.
+const outer = Promise.withResolvers<int>()
+const inner = Promise.withResolvers<int>()
+outer.resolve(inner.promise)
+outer.promise.then((n) => console.log("adopted", n))
+inner.resolve(42)
+console.log("adopted later", await outer.promise)
+
+// A resolver passed around, resolved by another callback.
+const ready = Promise.withResolvers<void>()
+Promise.resolve(1).then(() => ready.resolve())
+await ready.promise
+console.log("ready")

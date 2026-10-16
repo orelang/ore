@@ -127,6 +127,16 @@ export class Promise<T> {
         return Promise.race(promises)
     }
 
+    /**
+     * A pending promise and the function that resolves it, for code that
+     * resolves it outside an executor. There is no `reject`: promises do not
+     * reject, a failure is a value.
+     */
+    static withResolvers<U = void>(): { promise: Promise<U>; resolve: (value: U | Promise<U>) => void } {
+        const promise = pending<U>()
+        return { promise, resolve: (value: U | Promise<U>) => promise.resolveWith(value) }
+    }
+
     /** The value of a fulfilled promise, for `await`. */
     valueOf(): T {
         return this.values[0]

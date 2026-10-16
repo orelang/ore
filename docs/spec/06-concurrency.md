@@ -76,8 +76,10 @@ console.log(counts) // [ 1, 3 ]
   `then(f)` returns a promise of what `f` returns (of its value, when `f`
   returns a promise), `finally(f)` one of the same value after `f` ran.
   The statics are `Promise.resolve(value?)`, `all`, `race` and `any` (the
-  same as `race`, since nothing rejects). There is no `reject` and no
-  `catch`.
+  same as `race`, since nothing rejects), and `Promise.withResolvers<T>()`,
+  which returns `{ promise, resolve }`: a pending promise and the function
+  that resolves it, for code that resolves it outside an executor. There
+  is no `reject` and no `catch`.
 - An `async` function, method or arrow function returns `Promise<T>`, which
   its return type must be (`Promise<void>` without an annotation); its
   `return` statements give a `T` or a promise of one. It runs at once until

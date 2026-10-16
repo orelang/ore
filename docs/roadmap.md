@@ -215,7 +215,8 @@ an LLVM coroutine. Left:
 - `Promise`'s internal members (`resolveWith`, `react`, `fulfill`,
   `values`) are public, as the runtime's functions use them; members
   private to a module would hide them.
-- `Promise.withResolvers`, `await` of a union of a promise and other values.
+- `await` of a union of a promise and other values (`Promise.withResolvers`
+  is done).
 - Generators and iterators on the same fibers.
 
 ## Later

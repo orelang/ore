@@ -5,6 +5,8 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `Promise.withResolvers<T>()`: `{ promise, resolve }`, a pending promise
+  and the function that resolves it (no `reject`: promises do not reject).
 - `fs.appendFile(path, data)`, Node's `appendFileSync`: appends to a file,
   created if missing. `process.platform` (`"darwin"`, `"linux"`) and
   `process.arch` (`"arm64"`, `"x64"`), Node's names for the target.
