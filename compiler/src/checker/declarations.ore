@@ -872,7 +872,7 @@ export function declareTypeAliases(c: Checker, decls: Node[], scope: Scope) {
     const edges: int[][] = []
     for (const d of plain) {
         const names: string[] = []
-        typeNames(typeNode(d)!, names)
+        typeNames(aliased(d), names)
         const out: int[] = []
         for (const n of names) {
             const at = index.get(n)
@@ -892,8 +892,8 @@ export function declareTypeAliases(c: Checker, decls: Node[], scope: Scope) {
         const literals: Node[] = []
         for (const i of component) {
             const d = plain[i]
-            const node = typeNode(d)!
-            if (node.kind !== "TypeLiteral") continue
+            const node = aliased(d)
+            if (!isObjectLiteral(node)) continue
             const name = nameNode(d).text
             const struct = new StructType(c.nextStructId++, name, false, [], [])
             if (!scope.declareType(name, new TypeSymbol(struct, d))) c.error(nameNode(d), `Duplicate type '${name}'.`)
@@ -908,7 +908,7 @@ export function declareTypeAliases(c: Checker, decls: Node[], scope: Scope) {
                 )
             continue
         }
-        for (const i of component) if (typeNode(plain[i])!.kind !== "TypeLiteral") declareTypeAlias(c, plain[i], scope)
+        for (const i of component) if (!isObjectLiteral(aliased(plain[i]))) declareTypeAlias(c, plain[i], scope)
         for (let k = 0; k < structs.length; k++) {
             const fields = c.literalFields(literals[k], scope)
             const written = fields.slice()
@@ -919,6 +919,16 @@ export function declareTypeAliases(c: Checker, decls: Node[], scope: Scope) {
             c.module.structs.push(structs[k])
         }
     }
+}
+
+/** The type an alias names; for an interface that is a dictionary, its declaration, of the members. */
+function aliased(decl: Node): Node {
+    return decl.kind === "InterfaceDeclaration" ? decl : typeNode(decl)!
+}
+
+/** Whether a type is an object type with fields, which a cycle of aliases makes a struct; not a dictionary. */
+function isObjectLiteral(node: Node): bool {
+    return node.kind === "TypeLiteral" && !members(node).some((m) => m.kind === "IndexSignature")
 }
 
 /** The names of the type references in a type, such as `B` in `{ b: B[] }`. */
@@ -979,11 +989,13 @@ export function declareTypeAlias(c: Checker, decl: Node, scope: Scope) {
         declareGeneric(c, decl, scope)
         return
     }
-    const type = c.resolveType(typeNode(decl)!, scope)
+    const type =
+        decl.kind === "InterfaceDeclaration" ? c.namedDictType(decl, scope) : c.resolveType(typeNode(decl)!, scope)
     if (type === null) return
-    // An anonymous object type or a union is displayed by the first alias that names it.
+    // An anonymous object type, a union or a dictionary with named entries is displayed by the first alias that names it.
     if (type.kind === "struct" && type.name === null) type.name = nameNode(decl).text
     if (type.kind === "union" && type.name === null) type.name = nameNode(decl).text
+    if (type.kind === "map" && type.members.length > 0 && type.name === null) type.name = nameNode(decl).text
     if (!scope.declareType(nameNode(decl).text, new TypeSymbol(type, decl)))
         c.error(nameNode(decl), `Duplicate type '${nameNode(decl).text}'.`)
 }

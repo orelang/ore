@@ -1,0 +1,59 @@
+// An index signature with other members: a dictionary whose properties are
+// named entries, always there unless optional, of their own types. The
+// output is node's for the same program.
+
+type Headers = { host: string; accept?: string; [name: string]: string }
+
+const headers: Headers = { host: "example.com", "x-id": "7" }
+console.log(headers)
+// A named entry is of its own type; another is the value or null.
+const host: string = headers.host
+console.log(host.length, headers["host"], headers.accept ?? "none", headers["x-id"], headers.other ?? "none")
+
+// Writing a named entry keeps it; others are added after, in order.
+headers.host = "example.org"
+headers.accept = "text/html"
+headers["x-trace"] = "on"
+console.log(headers, Object.keys(headers), JSON.stringify(headers))
+
+// An optional named entry can be deleted, and `??=` sets it again.
+delete headers.accept
+console.log("accept" in headers, headers.accept ?? "none")
+headers.accept ??= "*/*"
+console.log(headers.accept)
+
+// Compound assignments of a required entry.
+type Counts = { total: number; [name: string]: number }
+const counts: Counts = { total: 0 }
+for (const word of ["a", "b", "a"]) {
+    counts[word] = (counts[word] ?? 0) + 1
+    counts.total += 1
+}
+counts.total++
+console.log(counts, counts.total)
+
+// Named entries of narrower types than the values, read as their types.
+type Shape = { kind: "circle" | "square"; size: number; [key: string]: string | number }
+const shape: Shape = { kind: "circle", size: 2, color: "red" }
+const kind: "circle" | "square" = shape.kind
+const size: number = shape.size
+console.log(kind, size * 2, shape.color)
+shape.kind = "square"
+console.log(shape)
+
+// An interface of properties and an index signature is the same.
+interface Env {
+    home: string
+    [name: string]: string
+}
+const env: Env = { home: "/root", shell: "sh" }
+console.log(env.home, env.shell, Object.entries(env))
+
+// A dictionary with named entries is one with fewer, and a plain one.
+const plain: { [name: string]: string } = env
+const named: { home: string; [name: string]: string } = env
+console.log(plain.home, named.home)
+
+// Spreads give named entries too.
+const copy: Env = { ...env, user: "ada" }
+console.log(copy)

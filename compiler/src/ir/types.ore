@@ -308,6 +308,16 @@ export class MapType {
 
     /** A dictionary whose entries cannot be assigned or deleted: `{ readonly [key: string]: V }`. */
     public readonly = false
+
+    /**
+     * The named entries of a dictionary, `name` in `{ name: string; [key:
+     * string]: string }`, in the order written: entries that every value has
+     * (an optional one aside), of types assignable to the values'.
+     */
+    public members: Field[] = []
+
+    /** The type alias that names a dictionary with named entries, for messages. */
+    public name: string | null = null
 }
 
 /** `{ [key: string]: V }`, readonly with `isReadonly`. */
@@ -316,6 +326,20 @@ export function dictOf(value: Type, isReadonly: bool): MapType {
     t.dict = true
     t.readonly = isReadonly
     return t
+}
+
+/** A dictionary of the same values and named entries, readonly with `isReadonly`. */
+export function dictLike(type: MapType, isReadonly: bool): MapType {
+    const t = dictOf(type.value, isReadonly)
+    t.members = type.members
+    t.name = type.readonly === isReadonly ? type.name : null
+    return t
+}
+
+/** The named entry `name` of a dictionary, or null. */
+export function dictMember(type: MapType, name: string): Field | null {
+    for (const m of type.members) if (m.name === name) return m
+    return null
 }
 
 /** `Set<T>`: a reference to a hash set that keeps insertion order: a map without values. */
@@ -505,6 +529,18 @@ function sameInterface(a: InterfaceType, b: InterfaceType, given: Assumed | null
     return same
 }
 
+/** Whether two dictionaries have the same named entries, in the same order. */
+function sameMembers(a: Field[], b: Field[], assumed: Assumed | null): bool {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+        const m = a[i]
+        const n = b[i]
+        if (m.name !== n.name || m.readonly !== n.readonly || m.optional !== n.optional) return false
+        if (!sameIn(m.type, n.type, assumed)) return false
+    }
+    return true
+}
+
 function optionalOf(m: InterfaceMember): bool {
     return m.k === "field" && m.optional
 }
@@ -529,7 +565,8 @@ function sameIn(a: Type, b: Type, assumed: Assumed | null): bool {
             a.dict === b.dict &&
             a.readonly === b.readonly &&
             sameIn(a.key, b.key, assumed) &&
-            sameIn(a.value, b.value, assumed)
+            sameIn(a.value, b.value, assumed) &&
+            sameMembers(a.members, b.members, assumed)
         )
     if (a.kind === "set" && b.kind === "set") return sameIn(a.elem, b.elem, assumed)
     if (a.kind === "chan" && b.kind === "chan") return sameIn(a.elem, b.elem, assumed)
@@ -604,6 +641,17 @@ export function typeToString(t: Type): string {
         case "bool":
             return t.literal !== "" ? t.literal : "bool"
         case "map":
+            if (t.dict && t.name !== null) return t.name
+            if (t.dict && t.members.length > 0) {
+                const entries: string[] = []
+                for (const f of t.members) {
+                    const type =
+                        f.optional && f.type.kind === "union" ? withoutNullMembers(f.type) : typeToString(f.type)
+                    entries.push(`${f.readonly ? "readonly " : ""}${f.name}${f.optional ? "?" : ""}: ${type}`)
+                }
+                entries.push(`${t.readonly ? "readonly " : ""}[key: string]: ${typeToString(t.value)}`)
+                return `{ ${entries.join("; ")} }`
+            }
             if (t.dict) return `{ ${t.readonly ? "readonly " : ""}[key: string]: ${typeToString(t.value)} }`
             return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
         case "set":
@@ -654,7 +702,7 @@ export function typeKey(type: Type): string {
         case "number-literal":
             return `#n${type.value}`
         case "map":
-            if (type.dict) return `Dict${type.readonly ? "!" : ""}<${typeKey(type.value)}>`
+            if (type.dict) return `Dict${type.readonly ? "!" : ""}<${typeKey(type.value)}${membersKey(type.members)}>`
             return `Map<${typeKey(type.key)},${typeKey(type.value)}>`
         case "set":
             return `Set<${typeKey(type.elem)}>`
@@ -665,6 +713,13 @@ export function typeKey(type: Type): string {
         default:
             return typeToString(type)
     }
+}
+
+/** The named entries of a dictionary in the key of its type: `;name:string;count?:i64`. */
+export function membersKey(members: Field[]): string {
+    let key = ""
+    for (const f of members) key += `;${f.readonly ? "!" : ""}${f.name}${f.optional ? "?" : ""}:${typeKey(f.type)}`
+    return key
 }
 
 /** Whether values of a type are references that can be null without a tag. */

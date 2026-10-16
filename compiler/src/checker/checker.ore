@@ -26,6 +26,7 @@ import {
     declareClassMembers,
     declareInterface,
     extendsClass,
+    isDictInterface,
     fillInterface,
     finishClasses,
     resolveBase,
@@ -167,7 +168,9 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
     for (const module of modules) {
         c.prefix = module.prefix
         const aliases: Node[] = []
-        for (const stmt of c.statementsOf(module.source)) if (stmt.kind === "TypeAliasDeclaration") aliases.push(stmt)
+        // And interfaces that are dictionaries, `interface D { name: string; [key: string]: string }`.
+        for (const stmt of c.statementsOf(module.source))
+            if (stmt.kind === "TypeAliasDeclaration" || isDictInterface(stmt)) aliases.push(stmt)
         declareTypeAliases(c, aliases, module.scope)
     }
     c.prefix = ""

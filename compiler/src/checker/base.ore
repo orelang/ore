@@ -670,10 +670,11 @@ export class Checker {
     }
 
     resolveTypeLiteral(node: Node, scope: Scope): Type | null {
-        // An object type with methods is a structural interface, as `interface` declares one.
-        if (members(node).some((m) => m.kind === "MethodSignature")) return objectInterface(this, node, scope)
         const list = members(node)
         if (list.length === 1 && list[0].kind === "IndexSignature") return this.indexSignatureType(list[0], scope)
+        if (list.some((m) => m.kind === "IndexSignature")) return this.namedDictType(node, scope)
+        // An object type with methods is a structural interface, as `interface` declares one.
+        if (list.some((m) => m.kind === "MethodSignature")) return objectInterface(this, node, scope)
         const shape = this.shape(this.literalFields(node, scope))
         // The first declaration of a shape is where its fields are defined.
         if (!this.memberDecls.has(shape)) this.memberDecls.set(shape, this.memberNodes(node))
@@ -684,7 +685,7 @@ export class Checker {
      * `{ [key: string]: V }`, an object type of only an index signature: a
      * dictionary of string keys.
      */
-    indexSignatureType(node: Node, scope: Scope): Type | null {
+    indexSignatureType(node: Node, scope: Scope): MapType | null {
         const params = parameters(node)
         const annotation = typeNode(node)
         const keyNode = params.length === 1 ? typeNode(params[0]) : null
@@ -703,6 +704,47 @@ export class Checker {
             return null
         }
         return dictOf(value, hasModifier(node, "ReadonlyKeyword"))
+    }
+
+    /**
+     * `{ name: string; [key: string]: V }`, an object type of an index
+     * signature and properties: a dictionary whose properties are named
+     * entries, of types assignable to V, that its values always have (unless
+     * optional). An interface of these members is the same (`node` is then
+     * the declaration).
+     */
+    namedDictType(node: Node, scope: Scope): MapType | null {
+        let index: Node | null = null
+        for (const m of members(node)) {
+            if (m.kind === "IndexSignature") {
+                if (index !== null) {
+                    this.error(m, "A dictionary has one index signature, '[key: string]: T'.")
+                    return null
+                }
+                index = m
+            } else if (m.kind !== "PropertySignature") {
+                this.error(
+                    m,
+                    "The other members of an object type with an index signature are properties, its named entries: '{ name: string; [key: string]: string }'.",
+                )
+                return null
+            }
+        }
+        const dict = this.indexSignatureType(index!, scope)
+        if (dict === null) return null
+        const fields = this.literalFields(node, scope, true)
+        for (const f of fields) {
+            const type = f.optional ? this.withoutNull(f.type) : f.type
+            if (entryFits(type, dict.value, f.optional)) continue
+            const decl = this.memberNodes(node).get(f.name)
+            this.error(
+                decl !== null ? nameNode(decl) : node,
+                `Property '${f.name}' of type '${typeToString(type)}' is not assignable to 'string' index type '${typeToString(dict.value)}'.`,
+            )
+            return null
+        }
+        dict.members = fields
+        return dict
     }
 
     /** The members of an object type by name, for go to definition. */
@@ -750,10 +792,11 @@ export class Checker {
         return new Field(name, type, getter && !hasSetter)
     }
 
-    /** The fields of an object type `{ ... }`, in the order written. */
-    literalFields(node: Node, scope: Scope): Field[] {
+    /** The fields of an object type `{ ... }`, in the order written; with `dict`, its named entries beside its index signature. */
+    literalFields(node: Node, scope: Scope, dict: bool = false): Field[] {
         const fields: Field[] = []
         for (const member of members(node)) {
+            if (dict && member.kind === "IndexSignature") continue
             if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
                 const field = this.accessorSignature(member, members(node), scope)
                 if (field !== null) fields.push(field)
@@ -1075,14 +1118,15 @@ export class Checker {
                     const literal = dictOfLiteral(this, expr, target, node)
                     if (literal !== null) return literal
                 }
-                // A dictionary is a readonly one of the same values, as it is.
+                // A dictionary is a readonly one of the same values, and one of fewer named entries, as it is.
                 if (
                     from.kind === "map" &&
                     from.dict &&
                     target.kind === "map" &&
                     target.dict &&
-                    target.readonly &&
-                    sameType(from.value, target.value)
+                    (target.readonly || !from.readonly) &&
+                    sameType(from.value, target.value) &&
+                    hasEntries(this, from, target)
                 )
                     return new Recast(target, expr)
                 // A tuple converts to a tuple type with optional elements, `[int, string]` to `[int, string?]`, as a copy.
@@ -1525,6 +1569,32 @@ function numberLit(type: NumberLiteralType, value: f64): Expr {
  * `memberOf` says, except that a numeric literal fits only itself and
  * `number`: its values are held as an `f64`.
  */
+/**
+ * Whether a named entry of a type fits a dictionary of values of type
+ * `value`, which it is read from: the same type, `unknown`, members of a
+ * union, or, when required, string literals of values that hold `string`.
+ * A read checks the entry's value at run time.
+ */
+export function entryFits(type: Type, value: Type, optional: bool): bool {
+    if (sameType(type, value) || value.kind === "unknown") return true
+    const values = membersOf(value)
+    if (membersOf(type).every((t) => values.some((m) => sameType(t, m)))) return true
+    return !optional && values.some((m) => m.kind === "string") && membersOf(type).every((t) => t.kind === "literal")
+}
+
+/** Whether a dictionary has the named entries of another: the same, required where the other's are. */
+function hasEntries(c: Checker, from: MapType, target: MapType): bool {
+    for (const t of target.members) {
+        let found = false
+        for (const f of from.members) {
+            if (f.name !== t.name || (f.optional && !t.optional)) continue
+            found = sameType(t.optional ? c.unionOf([f.type, types.null]) : f.type, t.type)
+        }
+        if (!found) return false
+    }
+    return true
+}
+
 function holds(from: Type, m: Type): bool {
     if (from.kind === "number-literal") return sameType(from, m) || (m.kind === "float" && m.bits === 64)
     return memberOf(from, m)

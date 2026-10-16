@@ -39,6 +39,8 @@ import {
     type Type,
     type Field,
     arrayOf,
+    dictLike,
+    dictMember,
     dictOf,
     findField,
     isStringLike,
@@ -84,6 +86,29 @@ export function dictGet(c: Checker, dict: Expr, type: MapType, key: Expr): Expr 
     return new MapOp("get", c.unionOf([type.value, types.null]), type, dict, key)
 }
 
+/**
+ * A named entry of a dictionary, `d.name` of `{ name: string; [key:
+ * string]: string }`: its value, of the entry's type. The value is checked
+ * at run time, as the dictionary may have lost the entry or changed it
+ * through a key that was not known when compiled; a required entry that is
+ * missing panics.
+ */
+export function entryGet(c: Checker, dict: Expr, type: MapType, entry: Field): Expr {
+    const read = dictGet(c, dict, type, new StringLit(types.string, entry.name))
+    const wanted = entry.type
+    if (sameType(read.type, wanted)) return read
+    // A string, once not null, narrows to string literals.
+    if (read.type.kind !== "unknown" && membersOf(wanted).every((t) => t.kind === "literal"))
+        return new Recast(wanted, new Recast(types.string, read))
+    return new Recast(wanted, read)
+}
+
+/** The named entry that a key names, a string literal: null for any other key. */
+export function entryNamed(type: MapType, key: Expr): Field | null {
+    const literal = key.k === "recast" ? key.value : key
+    return literal.k === "string" ? dictMember(type, literal.value) : null
+}
+
 /** The key of `d[key]`: a string. */
 export function dictKey(c: Checker, node: Node, scope: Scope): Expr | null {
     const key = checkExpr(c, node, scope, types.string)
@@ -99,19 +124,32 @@ export function dictKey(c: Checker, node: Node, scope: Scope): Expr | null {
 
 /** The entry `d[key]` or `d.name` as the target of an assignment; null with an error for a readonly dictionary. */
 export function dictTarget(c: Checker, node: Node, dict: Expr, type: MapType, key: Expr): DictTarget | null {
+    const member = entryNamed(type, key)
+    if (member !== null && member.readonly) {
+        c.error(node, `Cannot assign to '${member.name}' because it is a read-only property.`)
+        return null
+    }
     if (type.readonly) {
         c.error(node, `Index signature in type '${typeToString(type)}' only permits reading.`)
         return null
     }
-    return new DictTarget(dict, type, key)
+    return new DictTarget(dict, type, key, member)
 }
 
-/** `d[key] = value`: sets the entry; the value of the assignment is `value`. */
-export function dictAssign(c: Checker, entry: DictTarget, value: Expr): Expr {
-    const type = entry.type.value
+/** The type of the values that an entry assigned to takes: of its named entry, or of the dictionary. */
+export function entryType(c: Checker, entry: DictTarget): Type {
+    const member = entry.member
+    if (member === null) return entry.type.value
+    return member.optional ? c.withoutNull(member.type) : member.type
+}
+
+/** `d[key] = value`: sets the entry; the value of the assignment is `value`, of the entry's type. */
+export function dictAssign(c: Checker, entry: DictTarget, value: Expr, node: Node): Expr {
+    const type = value.type
     const local = c.newLocal("value", type, false)
     const ref: Expr = new LocalRef(type, local)
-    const set: Expr = new MapOp("set", entry.type, entry.type, entry.dict, entry.key, ref)
+    const stored = c.coerce(typed(ref), entry.type.value, node)
+    const set: Expr = new MapOp("set", entry.type, entry.type, entry.dict, entry.key, stored)
     return new Bind(type, [new BindLocal(local, value)], new Seq(type, [set, ref]))
 }
 
@@ -120,17 +158,55 @@ export function dictAssign(c: Checker, entry: DictTarget, value: Expr): Expr {
  * when there is none; the dictionary and the key are evaluated once.
  */
 export function dictCoalesceAssign(c: Checker, entry: DictTarget, value: Operand, node: Node): Expr {
-    const type = entry.type.value
+    const type = entryType(c, entry)
     const dict = c.newLocal("dict", entry.type, false)
     const key = c.newLocal("key", types.string, false)
     const dictRef: Expr = new LocalRef(entry.type, dict)
     const keyRef: Expr = new LocalRef(types.string, key)
-    const read = dictGet(c, dictRef, entry.type, keyRef)
-    const set = dictAssign(c, new DictTarget(dictRef, entry.type, keyRef), c.coerce(value, type, node))
+    const member = entry.member
+    const read = member !== null ? entryGet(c, dictRef, entry.type, member) : dictGet(c, dictRef, entry.type, keyRef)
+    const set = dictAssign(c, new DictTarget(dictRef, entry.type, keyRef, member), c.coerce(value, type, node), node)
     return new Bind(
         type,
         [new BindLocal(dict, entry.dict), new BindLocal(key, entry.key)],
         new Coalesce(type, read, set),
+    )
+}
+
+/**
+ * `d.name op= value` and `d.name++` of a required named entry: its value
+ * read, changed by `next` and set, the dictionary evaluated once. The value
+ * is the new one, or the old one with `yieldOld`.
+ */
+export function entryUpdate(
+    c: Checker,
+    entry: DictTarget,
+    node: Node,
+    next: (old: Expr) => Expr | null,
+    yieldOld: bool,
+): Operand {
+    const member = entry.member!
+    const type = member.type
+    const dict = c.newLocal("dict", entry.type, false)
+    const dictRef: Expr = new LocalRef(entry.type, dict)
+    const old = c.newLocal("old", type, false)
+    const oldRef: Expr = new LocalRef(type, old)
+    const changed = next(oldRef)
+    if (changed === null) return errorOperand
+    const value = c.newLocal("value", type, false)
+    const valueRef: Expr = new LocalRef(type, value)
+    const stored = c.coerce(typed(valueRef), entry.type.value, node)
+    const set: Expr = new MapOp("set", entry.type, entry.type, dictRef, entry.key, stored)
+    return typed(
+        new Bind(
+            type,
+            [
+                new BindLocal(dict, entry.dict),
+                new BindLocal(old, entryGet(c, dictRef, entry.type, member)),
+                new BindLocal(value, changed),
+            ],
+            new Seq(type, [set, yieldOld ? oldRef : valueRef]),
+        ),
     )
 }
 
@@ -150,7 +226,15 @@ export function checkDelete(c: Checker, node: Node, scope: Scope): Operand {
     if (k === "PropertyAccessExpression") key = new StringLit(types.string, nameNode(target).text)
     else key = dictKey(c, target.child("argumentExpression")!, scope)
     if (key === null) return errorOperand
-    if (type.readonly) return c.fail(target, "The operand of a 'delete' operator cannot be a read-only property.")
+    const member = entryNamed(type, key)
+    if (type.readonly || (member !== null && member.readonly))
+        return c.fail(target, "The operand of a 'delete' operator cannot be a read-only property.")
+    // A required named entry stays, as the type says it is there.
+    if (member !== null && !member.optional)
+        return c.fail(
+            target,
+            `The operand of a 'delete' operator must be optional: '${member.name}' is a required entry of '${typeToString(type)}'.`,
+        )
     const removed: Expr = new MapOp("delete", types.bool, type, value, key)
     return typed(new Seq(types.bool, [removed, new BoolLit(types.bool, true)]))
 }
@@ -180,6 +264,15 @@ export function dictLiteral(c: Checker, node: Node, scope: Scope, type: MapType)
     const ref: Expr = new LocalRef(type, map)
     const exprs: Expr[] = []
     const value = type.value
+    // The named entries that the literal gives, which it must give unless optional.
+    const given = new Set<string>()
+    // A value for an entry: of its named entry's type, if any, then of the dictionary's values.
+    const entryValue = (operand: Operand, key: Expr, at: Node): Expr => {
+        const member = entryNamed(type, key)
+        if (member === null) return c.coerce(operand, value, at)
+        const own = c.coerce(operand, member.optional ? c.withoutNull(member.type) : member.type, at)
+        return c.coerce(typed(own), value, at)
+    }
     for (const prop of properties(node)) {
         const k = prop.kind
         if (k === "SpreadAssignment") {
@@ -192,7 +285,12 @@ export function dictLiteral(c: Checker, node: Node, scope: Scope, type: MapType)
             if (from !== null && sameType(from.value, value)) {
                 const assign = objectFunc(c, "objectAssign", [value], inner)
                 if (assign === null) return errorOperand
-                exprs.push(new Call(types.void, assign, [ref, readable(source, from)]))
+                // Its required named entries of the same types are given.
+                for (const m of from.members) {
+                    const member = dictMember(type, m.name)
+                    if (member !== null && !m.optional && sameType(m.type, member.type)) given.add(m.name)
+                }
+                exprs.push(new Call(types.void, assign, [readable(ref, type), readable(source, from)]))
                 continue
             }
             if (st.kind === "struct" && !st.tuple) {
@@ -200,8 +298,10 @@ export function dictLiteral(c: Checker, node: Node, scope: Scope, type: MapType)
                 const objectRef: Expr = new LocalRef(st, object)
                 const sets: Expr[] = []
                 for (const f of dataFields(st)) {
-                    const field = c.coerce(typed(new FieldGet(f.type, objectRef, f.name)), value, inner)
-                    sets.push(new MapOp("set", type, type, ref, new StringLit(types.string, f.name), field))
+                    const key: Expr = new StringLit(types.string, f.name)
+                    const field = entryValue(typed(new FieldGet(f.type, objectRef, f.name)), key, inner)
+                    if (!f.optional) given.add(f.name)
+                    sets.push(new MapOp("set", type, type, ref, key, field))
                 }
                 sets.push(objectRef)
                 exprs.push(new Bind(st, [new BindLocal(object, source)], new Seq(st, sets)))
@@ -226,17 +326,26 @@ export function dictLiteral(c: Checker, node: Node, scope: Scope, type: MapType)
                 : c.fail(name, "Computed property names are not supported.")
         if (key === null) return errorOperand
         const valueNode = k === "ShorthandPropertyAssignment" ? name : initializer(prop)!
-        const entry = checkExpr(c, valueNode, scope, value)
+        const member = entryNamed(type, key)
+        const expected = member === null ? value : member.optional ? c.withoutNull(member.type) : member.type
+        const entry = checkExpr(c, valueNode, scope, expected)
         if (entry.k === "error") return errorOperand
-        exprs.push(new MapOp("set", type, type, ref, key, c.coerce(entry, value, valueNode)))
+        if (member !== null) given.add(member.name)
+        exprs.push(new MapOp("set", type, type, ref, key, entryValue(entry, key, valueNode)))
     }
+    for (const m of type.members)
+        if (!m.optional && !given.has(m.name))
+            return c.fail(
+                node,
+                `Property '${m.name}' is missing in this literal but required in type '${typeToString(type)}'.`,
+            )
     exprs.push(ref)
     return typed(new Bind(type, [new BindLocal(map, new MapOp("new", type, type))], new Seq(type, exprs)))
 }
 
 /** A dictionary as the mutable one of the same values, for the runtime functions that read it. */
 function readable(dict: Expr, type: MapType): Expr {
-    return type.readonly ? new Recast(dictOf(type.value, false), dict) : dict
+    return type.readonly || type.members.length > 0 ? new Recast(dictOf(type.value, false), dict) : dict
 }
 
 /** The fields of an object that `Object.keys` lists: its fields, but the hidden ones of accessors. */
@@ -388,7 +497,9 @@ export function objectCall(c: Checker, name: string, node: Node, scope: Scope): 
             if (dict === null) return typed(value)
             const freeze = objectFunc(c, "objectFreeze", [dict.value], node)
             if (freeze === null) return errorOperand
-            return typed(new Call(dictOf(dict.value, true), freeze, [readable(value, dict)]))
+            return typed(
+                new Recast(dictLike(dict, true), new Call(dictOf(dict.value, true), freeze, [readable(value, dict)])),
+            )
         }
         default:
             return assignCall(c, name, args, value, scope)
@@ -397,7 +508,7 @@ export function objectCall(c: Checker, name: string, node: Node, scope: Scope): 
 
 /** A dictionary as the readonly one of the same values. */
 function readonlyOf(dict: Expr, type: MapType): Expr {
-    return type.readonly ? dict : new Recast(dictOf(type.value, true), dict)
+    return type.readonly && type.members.length === 0 ? dict : new Recast(dictOf(type.value, true), dict)
 }
 
 /** `Object.hasOwn(object, key)`: whether the key names a field, which holds a value when it is optional. */
@@ -441,7 +552,7 @@ function assignCall(c: Checker, name: string, args: Node[], target: Expr, scope:
         if (dict !== null && from !== null && sameType(from.value, dict.value)) {
             const assign = objectFunc(c, "objectAssign", [dict.value], args[i])
             if (assign === null) return errorOperand
-            exprs.push(new Call(types.void, assign, [tRef, readable(source, from)]))
+            exprs.push(new Call(types.void, assign, [readable(tRef, dict), readable(source, from)]))
             continue
         }
         const object = objectOf(st)
@@ -530,10 +641,21 @@ export function dictOfLiteral(c: Checker, literal: ObjectLit, target: MapType, n
     const ref: Expr = new LocalRef(type, map)
     const exprs: Expr[] = []
     for (const f of literal.fields) {
-        const value = c.coerce(typed(f.value), type.value, node)
-        exprs.push(new MapOp("set", type, type, ref, new StringLit(types.string, f.name), value))
+        // A named entry of the target takes a value of its own type.
+        const member = dictMember(target, f.name)
+        let value = typed(f.value)
+        if (member !== null)
+            value = typed(c.coerce(value, member.optional ? c.withoutNull(member.type) : member.type, node))
+        exprs.push(
+            new MapOp("set", type, type, ref, new StringLit(types.string, f.name), c.coerce(value, type.value, node)),
+        )
+    }
+    for (const m of target.members) {
+        if (m.optional || literal.fields.some((f) => f.name === m.name)) continue
+        c.error(node, `Property '${m.name}' is missing in this literal but required in type '${typeToString(target)}'.`)
+        return null
     }
     exprs.push(ref)
     const dict: Expr = new Bind(type, [new BindLocal(map, new MapOp("new", type, type))], new Seq(type, exprs))
-    return target.readonly ? new Recast(target, dict) : dict
+    return target.readonly || target.members.length > 0 ? new Recast(target, dict) : dict
 }

@@ -71,6 +71,7 @@ import {
     Field,
     FuncType,
     arrayOf,
+    dictMember,
     findField,
     findMethod,
     isNumberLiterals,
@@ -142,6 +143,10 @@ import {
     dictKey,
     dictLiteral,
     dictTarget,
+    entryGet,
+    entryNamed,
+    entryType,
+    entryUpdate,
     keyedMember,
 } from "./dicts"
 import { checkFunctionBody, inContext, makeFunc } from "./declarations"
@@ -607,6 +612,17 @@ function checkLogicalAssign(c: Checker, node: Node, op: string, scope: Scope): O
     if (target === null) return errorOperand
     const entry = target.entry
     if (entry !== null) {
+        // `||=` and `&&=` of a required named entry, which is there to read.
+        if (op !== "??") {
+            if (target.type.kind !== "bool")
+                return c.fail(left(node), `Operator '${op}=' needs a boolean, got '${typeToString(target.type)}'.`)
+            const condition = checkCondition(c, right(node), scope)
+            const logical: "&&" | "||" = op === "||" ? "||" : "&&"
+            return entryUpdate(c, entry, node, (old) => new Logical(types.bool, logical, old, condition), false)
+        }
+        const member = entry.member
+        if (member !== null && !member.optional && !canBeNull(member.type))
+            return c.fail(left(node), `Type '${typeToString(member.type)}' cannot be null; '??=' is not needed.`)
         const value = checkExpr(c, right(node), scope, target.type)
         if (value.k === "error") return value
         return typed(dictCoalesceAssign(c, entry, value, right(node)))
@@ -847,7 +863,19 @@ function store(
     const entry = target.entry
     if (entry !== null) {
         if (value.k === "error") return value
-        return typed(dictAssign(c, entry, c.coerce(value, target.type, valueNode)))
+        if (op === null) return typed(dictAssign(c, entry, c.coerce(value, target.type, valueNode), valueNode))
+        // A required named entry, read and changed.
+        const compoundOp = op
+        return entryUpdate(
+            c,
+            entry,
+            node,
+            (old) => {
+                const combined = arith(c, compoundOp, typed(old), value, node)
+                return combined.k === "typed" ? c.coerce(combined, target.type, node) : null
+            },
+            false,
+        )
     }
     if (target.accessor !== null) {
         if (value.k === "error") return value
@@ -1024,11 +1052,19 @@ function incDec(
     op: "++" | "--",
     prefix: bool,
 ): Operand {
-    if (target.accessor !== null) {
+    if (target.entry !== null || target.accessor !== null) {
         let one: Expr
         if (type.kind === "int") one = new IntLit(type, 1)
         else if (type.kind === "float") one = new FloatLit(type, 1.0)
         else one = new BigIntLit(type, "1")
+        if (target.entry !== null)
+            return entryUpdate(
+                c,
+                target.entry,
+                node,
+                (old) => new Arith(type, op === "++" ? "+" : "-", old, one),
+                !prefix,
+            )
         return writeAccessor(
             c,
             target,
@@ -1163,7 +1199,9 @@ export function assignTarget(c: Checker, node: Node, scope: Scope, entries: bool
  * `??=` (with `entries`) assign to one, as it may be missing when read.
  */
 function entryTarget(c: Checker, node: Node, dict: Expr, type: MapType, key: Expr, entries: bool): AssignTarget | null {
-    if (!entries) {
+    // A required named entry is always there: any assignment changes it.
+    const member = entryNamed(type, key)
+    if (!entries && (member === null || member.optional)) {
         c.error(
             node,
             `An entry of a dictionary is assigned with '=' or '??=': it is '${typeToString(c.unionOf([type.value, types.null]))}' when read.`,
@@ -1172,8 +1210,9 @@ function entryTarget(c: Checker, node: Node, dict: Expr, type: MapType, key: Exp
     }
     const entry = dictTarget(c, node, dict, type, key)
     if (entry === null) return null
-    c.info.types.set(node, type.value)
-    return new AssignTargetClass(type.value, null, null, entry)
+    const written = entryType(c, entry)
+    c.info.types.set(node, written)
+    return new AssignTargetClass(written, null, null, entry)
 }
 
 /** The member `name` of an object as the target of an assignment: `object.name`, `object["name"]`. */
@@ -2313,7 +2352,11 @@ export function checkProperty(c: Checker, node: Node, scope: Scope): Operand {
 export function member(c: Checker, value: Expr, nameNode_: Node, name: string): Operand {
     const type = value.type
     if (type.kind === "unknown") return c.fail(nameNode_, unknownObject)
-    if (type.kind === "map" && type.dict) return typed(dictGet(c, value, type, new StringLit(types.string, name)))
+    if (type.kind === "map" && type.dict) {
+        const entry = dictMember(type, name)
+        if (entry !== null) return typed(entryGet(c, value, type, entry))
+        return typed(dictGet(c, value, type, new StringLit(types.string, name)))
+    }
     if (name === "length" && (type.kind === "string" || type.kind === "array")) return typed(new Len(types.i64, value))
     if (name === "raw" && type.kind === "array" && type.template) return typed(templateRawOf(c, value))
     if (name === "length" && type.kind === "struct" && type.tuple) return new UntypedInt(bigOf(type.fields.length))
@@ -2512,7 +2555,9 @@ export function checkElement(c: Checker, node: Node, scope: Scope): Operand {
         }
         if (vt.kind === "map" && vt.dict) {
             const key = dictKey(c, argumentExpression(node), scope)
-            return key === null ? errorOperand : typed(dictGet(c, v, vt, key))
+            if (key === null) return errorOperand
+            const entry = entryNamed(vt, key)
+            return typed(entry !== null ? entryGet(c, v, vt, entry) : dictGet(c, v, vt, key))
         }
         if (vt.kind === "struct" || vt.kind === "interface" || vt.kind === "union") {
             const keyed = keyedMember(c, v, argumentExpression(node), scope)

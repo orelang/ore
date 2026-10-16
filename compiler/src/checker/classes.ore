@@ -1430,7 +1430,22 @@ function collapseSpaces(text: string): string {
     return out
 }
 
+/**
+ * Whether an interface is a dictionary, of an index signature and
+ * properties: declared as a type alias of its members is (see
+ * `declareTypeAliases`), not as an interface.
+ */
+export function isDictInterface(decl: Node): bool {
+    return (
+        decl.kind === "InterfaceDeclaration" &&
+        typeParameters(decl).length === 0 &&
+        heritageClauses(decl).length === 0 &&
+        members(decl).some((m) => m.kind === "IndexSignature")
+    )
+}
+
 export function declareInterface(c: Checker, decl: Node, scope: Scope) {
+    if (isDictInterface(decl)) return
     const name = nameNode(decl).text
     if (typeParameters(decl).length > 0) {
         declareGeneric(c, decl, scope)

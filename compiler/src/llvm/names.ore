@@ -137,7 +137,12 @@ export class StableNames {
             case "number-literal":
                 return `n${type.value}`
             case "map":
-                if (type.dict) return `Dict<${this.key(type.value)}>`
+                if (type.dict) {
+                    // The named entries too, which JSON.parse checks.
+                    let members = ""
+                    for (const f of type.members) members += `;${f.name}${f.optional ? "?" : ""}:${this.key(f.type)}`
+                    return `Dict<${this.key(type.value)}${members}>`
+                }
                 return `Map<${this.key(type.key)},${this.key(type.value)}>`
             case "set":
                 return `Set<${this.key(type.elem)}>`

@@ -1,0 +1,31 @@
+// The named entries of a dictionary: of types its values take, there in
+// every literal unless optional, kept by `delete`.
+
+type Env = { home: string; readonly id: string; tmp?: string; [name: string]: string }
+
+const env: Env = { home: "/root", id: "1" }
+const missing: Env = { id: "2" } // error: Property 'home' is missing in this literal but required in type 'Env'.
+const wrong: Env = { home: 1, id: "3" } // error: An integer constant is not assignable to type 'string'.
+delete env.home // error: The operand of a 'delete' operator must be optional: 'home' is a required entry of 'Env'.
+delete env["home"] // error: The operand of a 'delete' operator must be optional
+delete env.id // error: The operand of a 'delete' operator cannot be a read-only property.
+delete env.tmp
+env.id = "4" // error: Cannot assign to 'id' because it is a read-only property.
+env.home ??= "/" // error: Type 'string' cannot be null; '??=' is not needed.
+env.tmp += "x" // error: An entry of a dictionary is assigned with '=' or '??=': it is 'null | string' when read.
+const tmp: string = env.tmp // error: Type 'null | string' is not assignable to type 'string'
+const plain: { [name: string]: string } = { a: "b" }
+const named: Env = plain // error: is not assignable to type 'Env'
+
+type Count = { total: int; [name: string]: string } // error: Property 'total' of type 'i64' is not assignable to 'string' index type 'string'.
+type Both = { [a: string]: string; [b: string]: string } // error: A dictionary has one index signature, '[key: string]: T'.
+type Method = { m(): void; [name: string]: string } // error: The other members of an object type with an index signature are properties
+type Flag = { on?: true; [name: string]: bool } // error: Property 'on' of type 'true' is not assignable to 'string' index type 'bool'.
+
+interface Base {
+    a: string
+}
+interface Extended extends Base {
+    [name: string]: string // error: An index signature makes a dictionary, '{ name: string; [key: string]: T }': it is not a member of a class, of a generic interface or of an interface that extends another.
+}
+console.log(missing, wrong, tmp, named)

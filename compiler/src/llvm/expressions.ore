@@ -20,6 +20,7 @@ import {
     isNumberLiterals,
     isStringLike,
     isSubclass,
+    membersOf,
     sameType,
     typeofName,
     typeToString,
@@ -1162,6 +1163,16 @@ export function recast(g: Emitter, v: V, from: Type, to: Type): V {
     if (from.kind === "union" && unionRepr(from).k === "strings" && to.kind === "string") return v
     // And unions of numeric literals to `number`.
     if (isNumberLiterals(from) && to.kind === "float" && to.bits === 64) return v
+    // A string narrows to string literal types by comparing it with them, as a named entry of a dictionary is read.
+    if (from.kind === "string" && to.kind !== "string" && membersOf(to).every((m) => m.kind === "literal")) {
+        let any: V = { ty: "i1", v: "false" }
+        for (const m of membersOf(to)) {
+            const eq = g.rtBool("ore_rt_str_eq", [v, g.str(m.kind === "literal" ? m.value : "")])
+            any = g.b.value("i1", `or i1 ${any.v}, ${eq.v}`)
+        }
+        check(g, any, `value is not of type ${typeToString(to)}`)
+        return v
+    }
     if (from.kind !== "union") {
         if (to.kind !== "union") return v
         return inject(g, to, memberIndex(to, from), v)

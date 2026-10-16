@@ -5,6 +5,7 @@ import { type BuiltinCall } from "../ir/nodes"
 import {
     displayFields,
     intRange,
+    sameType,
     typeToString,
     types,
     unionRepr,
@@ -727,6 +728,31 @@ export function decodeJson(g: Emitter, type: Type) {
                 g.store(x, xp, valueType)
                 g.rt("ore_rt_map_set", [m, { ty: "ptr", v: kp }, { ty: "ptr", v: xp }])
             })
+            // The named entries of a dictionary: there unless optional, and of their own types.
+            for (const f of type.members) {
+                const name = g.cstr(f.name)
+                const found = g.rt("ore_rt_json_field", [v, name, g.i64(f.name.length)])
+                const present = g.b.label("present")
+                const next = g.b.label("nextentry")
+                if (f.optional) g.b.condBr(g.b.value("i1", `icmp ne ptr ${found.v}, null`), present, next)
+                else {
+                    const missing = g.b.label("missing")
+                    g.b.condBr(g.b.value("i1", `icmp ne ptr ${found.v}, null`), present, missing)
+                    g.b.start(missing)
+                    g.rt("ore_rt_json_missing", [c, name])
+                    d.fail()
+                }
+                g.b.start(present)
+                if (!sameType(f.type, valueType)) {
+                    const fl = g.lt(f.type)
+                    g.b.value(fl, `call ${fl} ${jsonDecoder(g, f.type)}(ptr ${found.v}, ptr %c)`)
+                    d.failedHere(() => {
+                        g.rt("ore_rt_json_at_field", [c, name])
+                    })
+                }
+                g.b.br(next)
+                g.b.start(next)
+            }
             d.ret(m)
             return
         }

@@ -30,6 +30,10 @@ before 1.0, a minor version may change the language.
   type annotation takes its type from its body, as in TypeScript:
   `function* g() { yield 1; yield "a" }` returns a
   `Generator<i64 | string, void, null>`.
+- An index signature with other members, `type D = { name: string; [key:
+  string]: string }` and the same interface, is a dictionary whose other
+  members are named entries: always there unless optional, read and written
+  as their own types, checked by `delete`, literals and `JSON.parse`.
 
 ## 0.5.0
 
