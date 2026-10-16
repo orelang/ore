@@ -1,0 +1,38 @@
+// Generic object types that refer to themselves, directly or through another alias.
+type List<T> = { v: T; next: List<T> | null }
+type Tree<T> = { v: T; kids: Tree<T>[] }
+type Dept<T> = { name: T; head: Person<T> | null }
+type Person<T> = { name: T; dept: Dept<T> }
+
+function length<T>(l: List<T> | null): int {
+    let n = 0
+    let at = l
+    while (at !== null) {
+        n++
+        at = at.next
+    }
+    return n
+}
+
+function count<T>(t: Tree<T>): int {
+    let n = 1
+    for (const k of t.kids) n += count(k)
+    return n
+}
+
+const l: List<int> = { v: 1, next: { v: 2, next: null } }
+console.log(l.v, l.next?.v, length(l))
+const s: List<string> = { v: "a", next: null }
+console.log(s.v, length(s))
+const t: Tree<string> = {
+    v: "root",
+    kids: [
+        { v: "a", kids: [] },
+        { v: "b", kids: [{ v: "c", kids: [] }] },
+    ],
+}
+console.log(t.kids[1].kids[0].v, count(t), JSON.stringify(t))
+const d: Dept<string> = { name: "r&d", head: null }
+const p: Person<string> = { name: "ann", dept: d }
+d.head = p
+console.log(d.head?.name, p.dept.name)

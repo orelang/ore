@@ -1213,10 +1213,32 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
         // `type Uppercase<S extends string> = intrinsic`: computed by the checker.
         const outer = c.typeSite
         if (outer === null) c.typeSite = node
+        const literal = typeNode(decl)!
+        if (literal.kind === "TypeLiteral" && refersTo(generic, decl, generic.scope, [])) {
+            // `type List<T> = { v: T; next: List<T> | null }`: a struct of its own, registered before
+            // its fields are resolved, so that the fields find it, as a recursive alias without parameters.
+            const struct = new StructType(c.nextStructId++, label, false, [], [])
+            generic.instances.set(key, struct)
+            c.instanceOf.set(struct, new InstanceInfo(generic, args))
+            const fields = c.literalFields(literal, scope)
+            fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+            struct.fields = fields
+            c.memberDecls.set(struct, c.memberNodes(literal))
+            c.module.structs.push(struct)
+            c.typeSite = outer
+            return struct
+        }
+        if (generic.resolving.includes(key)) {
+            c.typeSite = outer
+            c.error(node, "A recursive type alias needs an object type in its cycle: '{ next: T | null }'.")
+            return null
+        }
+        generic.resolving.push(key)
         const type =
             c.text(typeNode(decl)!) === "intrinsic"
                 ? intrinsicType(c, generic.name, args, node)
                 : c.resolveType(typeNode(decl)!, scope)
+        generic.resolving.pop()
         c.typeSite = outer
         if (type !== null && type.kind === "struct" && type.name === null) type.name = label
         if (type !== null) generic.instances.set(key, type)
@@ -1259,6 +1281,28 @@ export function instantiate(c: Checker, generic: Generic, given: Type[], node: N
         }),
     )
     return type
+}
+
+/**
+ * Whether a type names a generic type alias, directly or through the generic
+ * type aliases it names (`seen`, the ones followed already).
+ */
+function refersTo(generic: Generic, decl: Node, scope: Scope, seen: Generic[]): bool {
+    const names: string[] = []
+    typeNames(typeNode(decl)!, names)
+    const params = typeParameters(decl).map((p) => nameNode(p).text)
+    for (const n of names) {
+        if (params.includes(n)) continue
+        const symbol = scope.lookupType(n)
+        if (symbol === null) continue
+        const other = symbol.generic
+        if (other === null || other.decl.kind !== "TypeAliasDeclaration") continue
+        if (other === generic) return true
+        if (seen.includes(other)) continue
+        seen.push(other)
+        if (refersTo(generic, other.decl, other.scope, seen)) return true
+    }
+    return false
 }
 
 /**
