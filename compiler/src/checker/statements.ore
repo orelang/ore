@@ -432,6 +432,9 @@ export function checkStmtInner(c: Checker, stmt: Node, scope: Scope, out: Stmt[]
                 isTrue(cond.expr) ? null : cond.expr,
             ),
         )
+        // A loop left only through its condition ends with the condition false: after
+        // `while (!r.done) r = next()`, r is done.
+        if (!breaks(statement(stmt), false)) addFacts(c, cond.whenFalse)
     } else if (k === "DoStatement") {
         invalidateAssigned(c, stmt, scope)
         const loop = checkLoopBody(c, statement(stmt), scope)
@@ -1386,6 +1389,27 @@ export class LoopBody {
         readonly context: LoopContext,
         readonly body: Stmt,
     ) {}
+}
+
+/**
+ * Whether a loop body has a `break` that may leave the loop: an unlabeled one
+ * outside nested loops and switches, or any labeled one.
+ */
+function breaks(node: Node, nested: bool): bool {
+    const k = node.kind
+    if (k === "BreakStatement") return label(node) !== null || !nested
+    if (k === "FunctionDeclaration" || k === "FunctionExpression" || k === "ArrowFunction" || k === "ClassDeclaration")
+        return false
+    const inner =
+        nested ||
+        k === "WhileStatement" ||
+        k === "DoStatement" ||
+        k === "ForStatement" ||
+        k === "ForOfStatement" ||
+        k === "ForInStatement" ||
+        k === "SwitchStatement"
+    for (const child of node.children) if (breaks(child, inner)) return true
+    return false
 }
 
 export function checkLoopBody(c: Checker, stmt: Node, scope: Scope): LoopBody {

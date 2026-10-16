@@ -213,6 +213,10 @@ on that slot reads the class table.
   type without an initializer starts as `null`. There is no `undefined`.
 - A string literal type such as `"circle"` has strings as values. A string
   literal expression takes the literal type its context asks for.
+  So do `true` and `false`. An object literal for a union of object types
+  is the member whose literal-typed fields match its string and boolean
+  constants: `{ done: false, value: 1 }` for
+  `{ done: false; value: T } | { done: true; value: R }`.
 - A value converts implicitly to a union containing its type. A class or
   object converts to a union member that is an interface it implements, if
   exactly one does.
@@ -251,7 +255,10 @@ union of what `a` and `b` narrow it to: `x.kind === "a" || x.kind === "b"`),
 and `switch` clauses on a literal (clauses reached by falling through code
 are not narrowed). An assignment narrows to the assigned value's type until
 the next assignment; a `?:` keeps the union of its branches' types
-(`u = t !== null ? t : "none"` makes `u` a string).
+(`u = t !== null ? t : "none"` makes `u` a string). A `while` loop
+without a `break` that leaves it ends with its condition false: after
+`while (!r.done) r = it.next()`, `r` is narrowed to the member whose
+`done` is `true`.
 
 Narrowing follows the flow of the code: after an `if`, a reference is
 narrowed to the union of its types at the ends of the branches that do not

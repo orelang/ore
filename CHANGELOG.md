@@ -51,7 +51,11 @@ before 1.0, a minor version may change the language.
   their union. A field of such a type discriminates a union of objects, as
   in the Result pattern `{ ok: true; value: T } | { ok: false; error: E }`:
   `if (r.ok)`, `if (!r.ok)`, `r.ok === false` and `switch (r.ok)` narrow
-  `r`.
+  `r`. An object literal for such a union picks its member by its `true`
+  or `false` constant, and a `while` loop without a `break` narrows by its
+  condition after it: after `while (!r.done) r = it.next()`, `r` is done.
+- A class can implement an instance of a generic interface
+  (`implements It<int>`).
 - Generators and the iteration protocol, as in TypeScript: generator
   functions, methods and function expressions (`function*`, `*m()`,
   `*[Symbol.iterator]()`) return a `Generator<T, TReturn = void, TNext =

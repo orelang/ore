@@ -69,7 +69,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2001](ORE2001.md) | 'any' is not supported in Ore. |
 | [ORE2002](ORE2002.md) | 'unknown' is not supported yet. |
 | [ORE2003](ORE2003.md) | 'undefined' is not supported in Ore. Use 'null'. |
-| [ORE2004](ORE2004.md) | Only string and number literal types are supported yet. |
+| [ORE2004](ORE2004.md) | Only string, number and boolean literal types are supported yet. |
 | [ORE2005](ORE2005.md) | A union cannot contain '…'. |
 | [ORE2006](ORE2006.md) | 'Map' expects exactly 2 type arguments. |
 | [ORE2007](ORE2007.md) | 'Set' expects exactly 1 type argument. |
