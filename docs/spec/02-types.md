@@ -53,6 +53,23 @@ those numbers. They are subtypes of `number`:
   unions of string literals, and a `switch` with a case for each number is
   exhaustive.
 
+## Boolean literal types
+
+`true` and `false` are also types, each with one value, as in TypeScript.
+They are subtypes of `bool`:
+
+- Representation: a value of `true` or `false` is a `bool`.
+- `true | false` is `bool`, and `bool` absorbs `true` and `false` in a
+  union.
+- The constants `true` and `false` take the literal type their context asks
+  for (`const t: true = true`); `const f: true = false` is an error, and so
+  is assigning a `bool` that is not a constant: `const t: true = flag`.
+- A value of `true` or `false` widens to `bool`, and compares with any
+  boolean.
+- Their main use is the discriminant of a union of object types, such as
+  `{ done: false; value: T } | { done: true; value: R }` (see
+  [narrowing](03-objects.md#narrowing)).
+
 ## Conversions
 
 There are no implicit conversions between distinct numeric types. Conversions

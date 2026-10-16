@@ -22,6 +22,14 @@ before 1.0, a minor version may change the language.
   `[...map.keys()]`, or passes it to `Array.from`. Async generators are
   not supported ([ORE5013](docs/errors/ORE5013.md)), and there is no
   `throw()` (Ore has no exceptions).
+- Boolean literal types: `true` and `false` are types, held as `bool`, and
+  `true | false` is `bool`. A union of object types with a boolean
+  discriminant, such as `{ done: false; value: T } | { done: true; value: R }`,
+  works as in TypeScript: an object literal picks its member by the
+  `done` constant, and `r.done`, `!r.done`, `r.done === false` narrow it.
+  A `while` loop without a `break` narrows by its condition after it, and a
+  class can implement an instance of a generic interface
+  (`implements It<int>`).
 - Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
   0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
   0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its

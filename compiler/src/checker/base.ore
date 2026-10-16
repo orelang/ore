@@ -7,6 +7,7 @@ import {
     type Expr,
     type Stmt,
     Bind,
+    BoolLit,
     BindLocal,
     Block,
     CallValue,
@@ -325,9 +326,11 @@ export class Checker {
             if (lit.kind === "NullKeyword") return types.null
             if (lit.kind === "StringLiteral") return this.literal(stringText(lit))
             if (lit.kind === "NumericLiteral") return this.numberLiteral(lit.text)
+            if (lit.kind === "TrueKeyword") return types.boolTrue
+            if (lit.kind === "FalseKeyword") return types.boolFalse
             const operand = lit.kind === "PrefixUnaryExpression" ? lit.child("operand") : null
             if (operand !== null && operand.kind === "NumericLiteral") return this.numberLiteral(`-${operand.text}`)
-            this.error(node, "Only string and number literal types are supported yet.")
+            this.error(node, "Only string, number and boolean literal types are supported yet.")
             return null
         }
         if (node.kind === "UnionType") {
@@ -707,6 +710,11 @@ export class Checker {
         // `number` includes every numeric literal type.
         if (members_.some((m) => m.kind === "float" && m.bits === 64))
             members_ = members_.filter((m) => m.kind !== "number-literal")
+        // `bool` includes `true` and `false`, and `true | false` is `bool`.
+        if (members_.includes(types.boolTrue) && members_.includes(types.boolFalse) && !members_.includes(types.bool))
+            members_.push(types.bool)
+        if (members_.includes(types.bool))
+            members_ = members_.filter((m) => m !== types.boolTrue && m !== types.boolFalse)
         // A class includes its subclasses: `A | B` is `A` when `B extends A`.
         if (members_.filter((m) => m.kind === "struct").length > 1) {
             for (const m of members_) {
@@ -873,6 +881,26 @@ export class Checker {
                             return target.kind === "union" ? new Recast(target, retyped) : retyped
                         }
                     }
+                }
+                // So does a boolean constant, `true` or `false`.
+                if (expr.k === "bool") {
+                    const wanted = expr.value ? types.boolTrue : types.boolFalse
+                    for (const m of targetMembers) {
+                        if (m === wanted) {
+                            const retyped: Expr = new BoolLit(wanted, expr.value)
+                            return target.kind === "union" ? new Recast(target, retyped) : retyped
+                        }
+                    }
+                    // A target with `true` or `false` but not `bool` tells which constant it wants.
+                    if (targetMembers.includes(types.boolTrue) !== targetMembers.includes(types.boolFalse)) {
+                        this.error(node, `Type '${wanted.value}' is not assignable to type '${typeToString(target)}'.`)
+                        return poison(target)
+                    }
+                }
+                // `true` and `false` widen to `bool`, held the same way.
+                if (from.kind === "bool" && from !== types.bool && targetMembers.includes(types.bool)) {
+                    const widened: Expr = new Recast(types.bool, expr)
+                    return target === types.bool ? widened : this.coerce(new Typed(widened), target, node)
                 }
                 // String literal types widen to `string`, and numeric literal types to `number`.
                 if (target.kind === "string" && membersOf(from).every(isStringLike)) return new Recast(target, expr)

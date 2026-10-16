@@ -27,8 +27,14 @@ export class FloatType {
     ) {}
 }
 
+/**
+ * `bool`, or the boolean literal type `true` or `false` when `value` is
+ * "true" or "false" ("" for `bool`). All are held as an `i1`; each is a
+ * singleton of `types`, compared by identity.
+ */
 export class BoolType {
     readonly kind: "bool" = "bool"
+    constructor(readonly value: string) {}
 }
 
 export class StringType {
@@ -383,7 +389,10 @@ export const types = {
     u64: new IntType("u64", 64, false),
     f32: new FloatType("f32", 32),
     f64: new FloatType("f64", 64),
-    bool: new BoolType(),
+    bool: new BoolType(""),
+    /** The boolean literal types `true` and `false`. */
+    boolTrue: new BoolType("true"),
+    boolFalse: new BoolType("false"),
     string: new StringType(),
     bigint: new BigIntType(),
     void: new VoidType(),
@@ -516,6 +525,8 @@ export function typeToString(t: Type): string {
             return JSON.stringify(t.value)
         case "number-literal":
             return t.value
+        case "bool":
+            return t.value === "" ? "bool" : t.value
         case "map":
             return `Map<${typeToString(t.key)}, ${typeToString(t.value)}>`
         case "set":
