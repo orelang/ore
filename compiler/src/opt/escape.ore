@@ -458,6 +458,11 @@ class FuncAnalysis {
                 for (const a of e.args) this.expr(a, escapes)
                 return
             case "array-method":
+                // The values that unshift and splice add are stored in the array, and those they take out come back.
+                if (e.method === "shift" || e.method === "unshift" || e.method === "splice") {
+                    for (const child of children(e)) this.expr(child, escapes)
+                    return
+                }
                 // The runtime keeps neither the callbacks nor the values searched for; the initial value of reduce is returned.
                 this.expr(e.array, safe)
                 for (let i = 0; i < e.args.length; i++)

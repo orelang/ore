@@ -91,7 +91,8 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
     const callback = e.args.length > 0 ? e.args[0] : null
     const ft = funcTypeOf(callback !== null ? callback.type : null)
     let f: V | null = null
-    if (callback !== null && e.method !== "includes" && e.method !== "indexOf" && e.method !== "join")
+    const m = e.method
+    if (callback !== null && m !== "includes" && m !== "indexOf" && m !== "join" && m !== "unshift" && m !== "splice")
         f = expr(g, callback)
     const fn = f
     const call = (args: V[]): V => callClosure(g, fn ?? voidValue, ft, args)
@@ -210,6 +211,17 @@ export function arrayMethod(g: Emitter, e: ArrayMethod): V {
         case "reverse":
             g.rt("ore_rt_array_reverse", [array, { ty: "i64", v: sizeOf(elem) }])
             return array
+        case "shift":
+            return g.load(g.rt("ore_rt_array_shift", [array, { ty: "i64", v: sizeOf(elem) }]).v, T)
+        case "unshift":
+            return g.rt("ore_rt_array_unshift", [array, { ty: "i64", v: sizeOf(elem) }, expr(g, e.args[0])])
+        case "splice": {
+            // The arguments are evaluated in order, before any change to the array.
+            const start = g.intToI64(expr(g, e.args[0]), e.args[0].type)
+            const count = g.intToI64(expr(g, e.args[1]), e.args[1].type)
+            const items = expr(g, e.args[2])
+            return g.rt("ore_rt_array_splice", [array, { ty: "i64", v: sizeOf(elem) }, start, count, items])
+        }
         default: {
             if (fn === null) {
                 g.rt("ore_rt_array_sort", [

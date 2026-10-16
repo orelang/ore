@@ -69,6 +69,72 @@ function arrayPop(a: ptr, size: int): ptr {
     return unsafe.add(data(a), size * (len - 1))
 }
 
+/**
+ * Removes the first element and returns its address: the elements are
+ * rotated one place down, so that the first ends up just past the new length.
+ */
+//ore:runtime ore_rt_array_shift
+function arrayShift(a: ptr, size: int): ptr {
+    const len = length(a)
+    if (len === 0) process.panic("shift from an empty array")
+    const d = data(a)
+    for (let i = 0; i < len - 1; i++) swap(unsafe.add(d, i * size), unsafe.add(d, (i + 1) * size), size)
+    unsafe.store<int>(unsafe.add(a, lenOffset), len - 1)
+    return unsafe.add(d, size * (len - 1))
+}
+
+/** Makes room for `n` more elements, growing the buffer as push does. */
+function reserve(a: ptr, size: int, n: int): void {
+    const len = length(a)
+    const cap = unsafe.load<int>(unsafe.add(a, capOffset))
+    if (len + n <= cap) return
+    let grown = cap < 4 ? 4 : cap * 2
+    if (grown < len + n) grown = len + n
+    const buffer = unsafe.alloc(size * grown)
+    if (len > 0) unsafe.copy(buffer, data(a), size * len)
+    unsafe.store<ptr>(a, buffer)
+    unsafe.store<int>(unsafe.add(a, capOffset), grown)
+}
+
+/**
+ * Replaces the `removed` elements at `from` with the elements of `items`,
+ * moving the ones after them; `items` is a new array, never `a` itself.
+ */
+function replace(a: ptr, size: int, from: int, removed: int, items: ptr): void {
+    const len = length(a)
+    const n = length(items)
+    if (n > removed) reserve(a, size, n - removed)
+    const tail = len - from - removed
+    const d = data(a)
+    if (tail > 0 && n !== removed)
+        unsafe.copy(unsafe.add(d, size * (from + n)), unsafe.add(d, size * (from + removed)), size * tail)
+    if (n > 0) unsafe.copy(unsafe.add(d, size * from), data(items), size * n)
+    unsafe.store<int>(unsafe.add(a, lenOffset), len - removed + n)
+}
+
+/** Inserts the elements of `items` at the start and returns the new length. */
+//ore:runtime ore_rt_array_unshift
+function arrayUnshift(a: ptr, size: int, items: ptr): int {
+    replace(a, size, 0, 0, items)
+    return length(a)
+}
+
+/**
+ * Replaces `count` elements from `start` with the elements of `items` and
+ * returns the removed ones as a new array, with JavaScript `splice` offsets:
+ * a negative start counts from the end, and both are clamped to the array.
+ */
+//ore:runtime ore_rt_array_splice
+function arraySplice(a: ptr, size: int, start: int, count: int, items: ptr): ptr {
+    const len = length(a)
+    const from = sliceOffset(start, len)
+    const removed = count < 0 ? 0 : count > len - from ? len - from : count
+    const r = arrayNew(size, removed)
+    if (removed > 0) unsafe.copy(data(r), unsafe.add(data(a), size * from), size * removed)
+    replace(a, size, from, removed, items)
+    return r
+}
+
 /** A copy of the elements in [start, end), with JavaScript `slice` offsets. */
 //ore:runtime ore_rt_array_slice
 function arraySlice(a: ptr, size: int, start: int, end: int): ptr {

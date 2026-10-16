@@ -321,7 +321,9 @@ export function arrayMethod(
     const T = type.elem
     const args = argsOf(node)
     const arity = arrayMethods.get(name)!
-    if (args.length < arity.min || args.length > arity.max) {
+    if (arity.max === -1 && args.length < arity.min)
+        return c.fail(node, `'${name}' expects at least ${arity.min} argument(s), got ${args.length}.`)
+    if (args.length < arity.min || (arity.max !== -1 && args.length > arity.max)) {
         return c.fail(
             node,
             `'${name}' expects ${arity.min === arity.max ? `${arity.min}` : `${arity.min} to ${arity.max}`} argument(s), got ${args.length}.`,
@@ -382,6 +384,21 @@ export function arrayMethod(
         }
         case "reverse":
             return typed(new ArrayMethod(name, type, array, []))
+        case "shift":
+            return typed(new ArrayMethod(name, T, array, []))
+        case "unshift": {
+            const items = arrayItems(c, args, 0, scope, type)
+            return items !== null ? typed(new ArrayMethod(name, types.i64, array, [items])) : errorOperand
+        }
+        case "splice": {
+            // Without a count, everything from the start is removed.
+            const start = checkIndex(c, args[0], scope, true)
+            const count: Expr | null =
+                args.length > 1 ? checkIndex(c, args[1], scope, true) : new IntLit(types.i64, 9007199254740991)
+            const items = arrayItems(c, args, 2, scope, type)
+            if (start === null || count === null || items === null) return errorOperand
+            return typed(new ArrayMethod(name, type, array, [start, count, items]))
+        }
         default: {
             // sort: by a comparator returning a number, or in natural order for numbers and strings.
             if (args.length === 0) {
@@ -398,6 +415,44 @@ export function arrayMethod(
             return typed(new ArrayMethod(name, type, array, [cb.expr], cb.arity))
         }
     }
+}
+
+/**
+ * The values from `args[from]` on, given to an array method that adds them
+ * to an array of `type` (`push`, `unshift`, `splice`), as an array literal:
+ * arrays spread in add all their elements.
+ */
+function arrayItems(c: Checker, args: Node[], from: int, scope: Scope, type: ArrayType): ArrayLit | null {
+    const values: Expr[] = []
+    const spread: bool[] = []
+    let spreads = false
+    for (let i = from; i < args.length; i++) {
+        const arg = args[i]
+        if (arg.kind !== "SpreadElement") {
+            values.push(c.coerce(checkExpr(c, arg, scope, type.elem), type.elem, arg))
+            spread.push(false)
+            continue
+        }
+        const inner = expression(arg)
+        const array = checkExpr(c, inner, scope, type)
+        if (array.k === "error") return null
+        if (array.k !== "typed" || array.expr.type.kind !== "array") {
+            c.error(inner, "Only an array can be spread into an array.")
+            return null
+        }
+        const elem = array.expr.type.elem
+        if (!sameType(elem, type.elem)) {
+            c.error(
+                inner,
+                `An array of '${typeToString(elem)}' cannot be spread into an array of '${typeToString(type.elem)}'.`,
+            )
+            return null
+        }
+        values.push(array.expr)
+        spread.push(true)
+        spreads = true
+    }
+    return new ArrayLit(type, values, spreads ? spread : null)
 }
 
 /**
@@ -1855,31 +1910,9 @@ export function methodCall(c: Checker, value: Expr, node: Node, callee: Node, sc
         return typed(new StringMethod(name, result, str, values))
     }
     if (type.kind === "array" && name === "push") {
-        const values: Expr[] = []
-        const spread: bool[] = []
-        let spreads = false
-        for (const arg of args) {
-            if (arg.kind !== "SpreadElement") {
-                values.push(c.coerce(checkExpr(c, arg, scope, type.elem), type.elem, arg))
-                spread.push(false)
-                continue
-            }
-            const inner = expression(arg)
-            const array = checkExpr(c, inner, scope, type)
-            if (array.k === "error") return errorOperand
-            if (array.k !== "typed" || array.expr.type.kind !== "array")
-                return c.fail(inner, "Only an array can be spread into an array.")
-            const elem = array.expr.type.elem
-            if (!sameType(elem, type.elem))
-                return c.fail(
-                    inner,
-                    `An array of '${typeToString(elem)}' cannot be spread into an array of '${typeToString(type.elem)}'.`,
-                )
-            values.push(array.expr)
-            spread.push(true)
-            spreads = true
-        }
-        return typed(new Push(types.i64, value, values, spreads ? spread : null))
+        const items = arrayItems(c, args, 0, scope, type)
+        if (items === null) return errorOperand
+        return typed(new Push(types.i64, value, items.elems, items.spread))
     }
     if (type.kind === "array" && name === "pop") {
         if (args.length > 0) return c.fail(node, `'pop' expects no arguments, got ${args.length}.`)
