@@ -39,6 +39,13 @@ mkdir -p "$home/slots" "$home/logs" "$home/queue" "$home/done"
 
 machines() { grep -v '^\s*\(#\|$\)' "$hosts"; }
 
+# The machines, those with the fewest jobs running first.
+by_load() {
+    machines | while read -r host rest; do
+        echo "$(ls -d "$home/slots/$host-"* 2>/dev/null | wc -l | tr -d ' ') $host $rest"
+    done | sort -n -k1,1 | cut -d' ' -f2-
+}
+
 # Takes a free slot, waiting for one: prints `host slots slot`. A light job
 # (a probe, a filtered test) takes one of the light slots, named l1, l2...
 acquire() {
@@ -61,7 +68,7 @@ acquire() {
                     return
                 fi
             done
-        done < <(machines)
+        done < <(by_load)
         sleep 5
     done
 }
