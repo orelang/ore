@@ -66,6 +66,8 @@ import {
     typeNode,
     typeArguments,
     typeParameters,
+    whenFalse,
+    whenTrue,
     types as typeNodes,
 } from "../syntax/nodes"
 import { checkAsyncBody, isAsync, promiseValue } from "./async"
@@ -211,6 +213,8 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
     }
     const className = type.name!
     const decls = c.memberDecls.get(type)!
+    // The non-static members see the type `this` as the class.
+    const instanceScope = thisScope(scope, type, decl)
     // The members of the base class come first, in its order.
     const inherited = new Map<string, bool>()
     if (base !== null) {
@@ -254,7 +258,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             let fieldType: Type | null = null
             const annotation = typeNode(member)
             const init = initializer(member)
-            if (annotation !== null) fieldType = c.resolveValueType(annotation, scope)
+            if (annotation !== null) fieldType = c.resolveValueType(annotation, instanceScope)
             else if (question !== null) c.error(nameNode(member), `Optional field '${name}' needs a type annotation.`)
             else if (init === null)
                 c.error(nameNode(member), `Field '${name}' needs a type annotation or an initializer.`)
@@ -304,8 +308,11 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                 c.error(nameNode(member), "A method must have a body.")
                 continue
             }
+            // An override's `this` is the type of the class that first declared the method, so that its type
+            // stays that of the method it overrides.
+            const memberScope = inherited.has(name) ? thisScope(scope, rootClass(base!, name), decl) : instanceScope
             if (typeParams.length > 0) {
-                const generic = new GenericClass(name, member, typeParams, scope, new Map())
+                const generic = new GenericClass(name, member, typeParams, memberScope, new Map())
                 if (!c.genericMethods.has(type)) c.genericMethods.set(type, new Map<string, GenericMethod>())
                 c.genericMethods
                     .get(type)!
@@ -317,7 +324,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
                 c,
                 member,
                 info,
-                scope,
+                memberScope,
                 `${className}.${name}`,
                 `ore_m_${info.cname}_${cIdent(name)}`,
             )
@@ -369,7 +376,7 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
             c.funcDecls.set(ctor, member)
             type.ctor = ctor
         } else if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
-            declareAccessor(c, member, info, scope, flags)
+            declareAccessor(c, member, info, instanceScope, flags)
         } else {
             c.error(
                 member,
@@ -908,7 +915,26 @@ export function checkClassBodies(c: Checker, info: ClassInfo, outer: Scope) {
         }
     }
 
-    for (const m of info.methods) checkMethodBody(c, m.decl, m.func, type, outer)
+    const instanceScope = thisScope(outer, type, info.decl)
+    for (const m of info.methods) checkMethodBody(c, m.decl, m.func, type, instanceScope)
+}
+
+/** A scope in which the type `this` names `type`, for the non-static members of a class or interface. */
+export function thisScope(outer: Scope, type: Type, decl: Node): Scope {
+    const scope = new Scope(outer)
+    scope.declareType("this", new TypeSymbol(type, decl))
+    return scope
+}
+
+/** The class that first declared method `name`, the topmost one up from `s` that has it. */
+function rootClass(s: StructType, name: string): StructType {
+    let root = s
+    let base = s.base
+    while (base !== null && findMethod(base, name) !== null) {
+        root = base
+        base = base.base
+    }
+    return root
 }
 
 /** `this.name = value`, run by a constructor. */
@@ -1111,6 +1137,62 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     func.body.body = prepend(prologue, func.body.body)
     c.fn = null
     checkReturns(c, func, typeNode(decl) ?? nameNode(decl))
+    if (isThisType(typeNode(decl))) checkThisReturns(c, body(decl)!, type)
+}
+
+/** Whether a type annotation is the type `this`, maybe in parentheses. */
+export function isThisType(node: Node | null): bool {
+    if (node === null) return false
+    if (node.kind === "ParenthesizedType") return isThisType(typeNode(node))
+    return node.kind === "ThisType"
+}
+
+/**
+ * Checks that the returns of a method of the type `this` return the receiver:
+ * callers through a subclass take the result as of the subclass. The type
+ * `this` is the class inside the method, so its type alone does not tell.
+ */
+function checkThisReturns(c: Checker, node: Node, type: StructType) {
+    const k = node.kind
+    if (
+        k === "ArrowFunction" ||
+        k === "FunctionExpression" ||
+        k === "FunctionDeclaration" ||
+        k === "ClassDeclaration" ||
+        k === "MethodDeclaration" ||
+        k === "GetAccessor" ||
+        k === "SetAccessor"
+    )
+        return
+    if (k === "ReturnStatement") {
+        const value = node.child("expression")
+        if (value !== null && !isReceiver(c, value, type))
+            c.error(
+                value,
+                "A method returning 'this' must return 'this' or what a method returning 'this' returns on it.",
+            )
+        return
+    }
+    for (const child of node.children) checkThisReturns(c, child, type)
+}
+
+/** Whether an expression in a method of `type` is the receiver: `this`, or a call on it of a method returning `this`. */
+function isReceiver(c: Checker, node: Node, type: StructType): bool {
+    const k = node.kind
+    if (k === "ThisKeyword") return true
+    if (k === "ParenthesizedExpression" || k === "NonNullExpression") return isReceiver(c, expression(node), type)
+    if (k === "ConditionalExpression")
+        return isReceiver(c, whenTrue(node), type) && isReceiver(c, whenFalse(node), type)
+    if (k !== "CallExpression") return false
+    const callee = expression(node)
+    if (callee.kind !== "PropertyAccessExpression") return false
+    const target = expression(callee)
+    const base = type.base
+    const owner = target.kind === "SuperKeyword" ? base : isReceiver(c, target, type) ? type : null
+    if (owner === null) return false
+    const decls = c.memberDecls.get(owner)
+    const decl = decls !== null ? decls.get(nameNode(callee).text) : null
+    return decl !== null && decl.kind === "MethodDeclaration" && isThisType(typeNode(decl))
 }
 
 /** Checks that a class has the members of the interfaces it `implements`. */
@@ -1311,6 +1393,8 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
                 addMember(c, found, decls, m, ref, c.memberDecls.get(baseType)!.get(m.name)!)
         }
     }
+    // The members see the type `this` as the interface.
+    const memberScope = thisScope(scope, info.type, info.decl)
     for (const member of members(info.decl)) {
         const memberName = member.child("name")
         if (memberName === null) {
@@ -1333,7 +1417,7 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
                 c.error(memberName, `Property '${name}' must have a type annotation.`)
                 continue
             }
-            const resolved = c.resolveValueType(annotation, scope)
+            const resolved = c.resolveValueType(annotation, memberScope)
             const isReadonly = hasModifier(member, "ReadonlyKeyword")
             if (resolved !== null) {
                 const type = question !== null ? c.unionOf([resolved, types.null]) : resolved
@@ -1349,9 +1433,9 @@ export function fillInterface(c: Checker, info: InterfaceInfo, scope: Scope) {
                     typeParams[0],
                     "Generic methods are not supported in interfaces: calls through an interface cannot pick an instance.",
                 )
-            const params = resolveParams(c, parameters(member), scope)
+            const params = resolveParams(c, parameters(member), memberScope)
             const annotation = typeNode(member)
-            const result = annotation !== null ? (c.resolveType(annotation, scope) ?? types.void) : types.void
+            const result = annotation !== null ? (c.resolveType(annotation, memberScope) ?? types.void) : types.void
             addMember(
                 c,
                 found,

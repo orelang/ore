@@ -83,6 +83,7 @@ import {
     nameNode,
     parameters,
     properties,
+    dotDotDotToken,
     questionDotToken,
     questionToken,
     typeArguments,
@@ -92,7 +93,7 @@ import {
 import { bigFromF64, bigText, bigToI64 } from "./bigint"
 import { type Checker } from "./base"
 import { consoleCall } from "./console"
-import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
+import { checkAccess, dispatch, genericMethod, initOf, isThisType, itab } from "./classes"
 import { closureCallee, genericCall, instantiate, isInternal } from "./declarations"
 import {
     checkArrayElements,
@@ -2238,7 +2239,7 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         if (call === null) return errorOperand
         const instance = call.instance
         if (!(instance instanceof Func)) return errorOperand
-        return call.bind(
+        const bound = call.bind(
             callFunc(
                 c,
                 instance,
@@ -2250,14 +2251,24 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
                 call.operands.length > 0 ? call.operands : null,
             ),
         )
+        // A result of the type `this` is of the receiver's type, which may be a subclass.
+        if (bound.k === "typed" && isThisType(typeNode(generic.generic.decl)) && !sameType(bound.expr.type, type))
+            return typed(new Recast(type, bound.expr))
+        return bound
     }
     if (type.kind === "struct") {
         const method = findMethod(type, name)
         if (method !== null) {
             defineMember(c, nameId, type, name)
             if (!checkAccess(c, type, method.private, name, nameId)) return errorOperand
-            const call = callFunc(c, method.func, args, node, scope, `Method '${type.name}.${name}'`, value)
-            if (call.k === "typed") dispatch(c, call.expr, name)
+            // Parameters and a result of the type `this` are of the receiver's type, which may be a subclass.
+            const decl = c.funcDecls.get(method.func)
+            const operands = decl !== null ? thisArguments(c, decl, args, type, scope, method.func.type.params) : null
+            const call = callFunc(c, method.func, args, node, scope, `Method '${type.name}.${name}'`, value, operands)
+            if (call.k !== "typed") return call
+            dispatch(c, call.expr, name)
+            if (decl !== null && isThisType(typeNode(decl)) && !sameType(call.expr.type, type))
+                return typed(new Recast(type, call.expr))
             return call
         }
         const field = findField(type, name)
@@ -2459,4 +2470,32 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         )
     }
     return c.fail(nameId, noProperty(type, name).replace("Property", "Method"))
+}
+
+/**
+ * The arguments of a method whose parameters of the type `this` take the
+ * receiver's type `self`, which may be a subclass of the method's class; null
+ * when it has none, or when spread arguments leave them to `callFunc`.
+ */
+function thisArguments(
+    c: Checker,
+    decl: Node,
+    args: Node[],
+    self: StructType,
+    scope: Scope,
+    params: Type[],
+): Operand[] | null {
+    const declared = parameters(decl)
+    let count = 0
+    while (count < declared.length && count < params.length && dotDotDotToken(declared[count]) === null) count++
+    let any = false
+    for (let i = 0; i < count; i++) if (isThisType(typeNode(declared[i]))) any = true
+    if (!any || args.some((arg) => arg.kind === "SpreadElement")) return null
+    const operands: Operand[] = []
+    for (let i = 0; i < count && i < args.length; i++) {
+        if (isThisType(typeNode(declared[i])))
+            operands.push(typed(c.coerceTo(checkExpr(c, args[i], scope, self), self, args[i], declared[i])))
+        else operands.push(checkExpr(c, args[i], scope, params[i]))
+    }
+    return operands
 }

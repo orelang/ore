@@ -372,6 +372,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE5056](ORE5056.md) | This interface member is not supported. |
 | [ORE5057](ORE5057.md) | '…' is protected and only accessible inside class '…' and its subclasses. |
 | [ORE5058](ORE5058.md) | '…' is private and only accessible inside class '…'. |
+| [ORE5059](ORE5059.md) | A 'this' type is available only in a non-static member of a class or interface. |
+| [ORE5060](ORE5060.md) | A 'this' type in an interface is not supported yet. |
+| [ORE5061](ORE5061.md) | A method returning 'this' must return 'this' or what a method returning 'this' returns on it. |
 
 ## ORE6xxx: Declarations, functions, generics, modules and C
 
