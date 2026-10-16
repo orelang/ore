@@ -14,9 +14,11 @@ replaced, since it inlines into the program (array indexing 17 times,
 float formatting 44 times), and it agrees with JavaScript where the C did
 not (`toFixed`, `parseFloat`, number layout).
 
-Still needed for the compiler in Ore: running a process and reading its
-output, directories and paths. Hashing (`ore:crypto`) and files embedded at
-compile time (`import x from "./f" with { type: "text" }`) are done.
+What the compiler in Ore needed from the standard library is done too:
+running a process and reading its output (`process.output`), directories
+(`fs.readDir`, `fs.mkdir`, `fs.stat`), paths (`ore:path`), hashing
+(`ore:crypto`) and files embedded at compile time
+(`import x from "./f" with { type: "text" }`).
 
 ## 2. Compiler in Ore (done)
 
@@ -48,11 +50,12 @@ exports, type assertions (Ore converts: `i32(x)`).
   - the constants and predicates of `Number` (done);
   - `JSON.stringify(value, null, space)` as in JavaScript (done; replacer
     functions are not supported);
-  - narrowing through `||` and by assigning with `?:`;
+  - narrowing through `||` and by assigning with `?:` (done);
   - object spread `{ ...o }` (done);
   - methods and accessors in object literals (done; accessors implement
     interface fields, in classes too);
-  - `static` members of classes (done; not of generic classes);
+  - `static` members of classes (done; generic classes have static
+    methods, generic ones too, but no static fields yet);
   - default values in destructuring, and `...rest` in object destructuring
     (done), optional properties of object types (done);
   - optional, default and rest parameters of closures (done);
@@ -117,13 +120,12 @@ exports, type assertions (Ore converts: `i32(x)`).
   true color, the terminal's default colors otherwise, none when the output
   is not a terminal or `NO_COLOR` is set; one consistent style for headers,
   paths, codes and hints.
-- Benchmarks: the same algorithms in Ore, Bun, Node and Go (numbers,
+- Benchmarks: the same algorithms in Ore, C, Go, Bun and Node (numbers,
   strings, maps, allocation, JSON, channels and tasks against goroutines and
   promises, regular expressions), run by one script that prints a table of
-  times and memory, kept in the repository with their results (started:
-  `bench/run.sh` times and measures peak memory of numbers, strings, maps,
-  allocation, JSON, channels, tasks and regular expressions; the results are
-  not kept yet).
+  times and memory, kept in the repository with their results (done:
+  [`bench/run.sh`](../bench/run.sh), with the results of each machine in
+  [`bench/results`](../bench/results)).
 - Modules from GitHub: `import { x } from "https://github.com/owner/repo/..."`
   resolves a module of a repository by its URL, without vendoring it into
   the project: it is downloaded into the cache (`~/.cache/ore`), and
@@ -211,5 +213,4 @@ the collector does not move objects, so it does not need them.
 
 - Escape analysis for arrays of known size.
 - UDP, TLS and HTTP in the standard library.
-- Semantic tokens in the language server.
 - Snap package; Windows.
