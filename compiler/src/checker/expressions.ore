@@ -117,6 +117,7 @@ import {
     declaringClass,
     dispatch,
     genericMethod,
+    genericStaticField,
     staticMember,
 } from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
@@ -2129,8 +2130,8 @@ export function defineMember(c: Checker, node: Node, type: StructType | Interfac
 /**
  * `C.name` for a generic class `C`: its static methods do not see the class's
  * type parameters, as in TypeScript, so they are functions of their own,
- * made once on first use (generic ones per call); static fields are not
- * supported in generic classes yet.
+ * made once on first use (generic ones per call); a static field is one
+ * global shared by all instances (see `genericStaticField`).
  */
 function genericStatic(c: Checker, decl: Node, object: Node, nameId: Node): ValueSymbol | null {
     const known = c.genericStatics.get(nameId.text + "@" + `${decl.start}`)
@@ -2148,8 +2149,18 @@ function genericStatic(c: Checker, decl: Node, object: Node, nameId: Node): Valu
     }
     c.info.definitions.set(object, decl)
     if (isIdentifier(nameId)) c.info.definitions.set(nameId, found)
+    // A private static member is used only inside the declaration of its class.
+    const inside = c.sourceOf(nameId) === c.sourceOf(decl) && nameId.start >= decl.start && nameId.end <= decl.end
+    if (hasModifier(found, "PrivateKeyword") && !inside) {
+        c.error(nameId, `'${nameId.text}' is private and only accessible inside class '${object.text}'.`)
+        return new ConstSymbol(errorOperand, null, nameId)
+    }
+    if (found.kind === "PropertyDeclaration") {
+        const local = genericStaticField(c, found, owner!)
+        return new LocalSymbol(local, found)
+    }
     if (found.kind !== "MethodDeclaration" || body(found) === null) {
-        c.error(nameId, "Static fields of generic classes are not supported yet.")
+        c.error(nameId, `Class '${object.text}' has no static member '${nameId.text}'.`)
         return new ConstSymbol(errorOperand, null, nameId)
     }
     const name = `${object.text}.${nameId.text}`

@@ -1,0 +1,32 @@
+// Static fields of a generic class: one for all instances, initialized where the class is declared.
+class Box<T> {
+    static count = 0
+    static readonly label: string = "box"
+    private static made: int[] = []
+    static last: string | null = null
+    constructor(public value: T) {
+        Box.count++
+        Box.made.push(Box.count)
+    }
+    describe(): string {
+        return `${Box.label} #${Box.count}`
+    }
+    static reset(): void {
+        Box.count = 0
+        Box.last = "reset"
+    }
+    static history(): int[] {
+        return Box.made
+    }
+}
+console.log(Box.count, Box.label)
+const a = new Box<int>(1)
+const b = new Box<string>("x")
+console.log(Box.count, a.describe(), b.describe())
+Box.count += 10
+console.log(Box.count, Box.history())
+Box.reset()
+console.log(Box.count, Box.last)
+class Sub extends Box<int> {}
+new Sub(3)
+console.log(Sub.count, Box.count)

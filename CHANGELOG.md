@@ -33,6 +33,11 @@ before 1.0, a minor version may change the language.
   parameter binds it to `void`. A function returning `null` may end without
   a `return`. A null-returning call converted to a union is no longer
   dropped.
+- Generic classes can have static fields, `class Box<T> { static count = 0 }`:
+  one for all instances, as in TypeScript, initialized where the class is
+  declared, and read, assigned and updated from anywhere, its static and
+  instance methods too. Their types cannot name the class's type
+  parameters (ORE3082); ORE3079 is no longer reported.
 - `Map` and `Set` have JavaScript's whole API: `map.forEach((value, key,
   map) => ...)`, `Map.groupBy(items, (element, index) => key)`,
   `set.forEach((value, value2, set) => ...)`, `set.keys()`,
@@ -61,6 +66,14 @@ before 1.0, a minor version may change the language.
   initialized with literals works in type aliases without an annotation
   (`keyof typeof obj`); a string constant for a parameter `k: K` with
   `K extends keyof T` has its literal type, as in TypeScript.
+- The condition of a `for` narrows its update clause too, as in TypeScript,
+  unless the body assigns the variable: `for (let at = list; at !== null;
+  at = at.next)` no longer reports that `at` may be null.
+- `typeof` of a top-level `const` works in annotations: after the
+  constant for any initializer (`let x: typeof name` with `const name =
+  "ore"`), and before it, as in function signatures, when the initializer
+  is made of literals, a template literal, `new C(...)` of a class that is
+  not generic, or the name of another such constant.
 - Stack overflow is a panic, `panic: stack overflow` with the Ore call stack
   (runs of the same frame counted on one line) and status 2, instead of a
   silent crash with status 138 or 139: a SIGSEGV/SIGBUS handler, on an

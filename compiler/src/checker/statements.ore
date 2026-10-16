@@ -1088,15 +1088,23 @@ export function checkFor(c: Checker, stmt: Node, outer: Scope): Stmt {
     invalidateAssigned(c, stmt, scope)
     const condNode = conditionNode(stmt)
     const cond = condNode !== null ? condition(c, condNode, scope) : null
-    let update: Expr | null = null
-    const inc = incrementor(stmt)
-    if (inc !== null) {
-        const value = checkExpr(c, inc, scope)
-        if (value.k === "typed") update = value.expr
-    }
     c.pushFacts(cond !== null ? cond.whenTrue : [])
     const loop = checkLoopBody(c, statement(stmt), scope)
     c.popFacts()
+    // The update runs after the body, where the condition's facts still hold
+    // for what the body does not assign: `for (; at !== null; at = at.next)`.
+    let update: Expr | null = null
+    const inc = incrementor(stmt)
+    if (inc !== null) {
+        const assigned: string[] = []
+        assignedKeys(c, statement(stmt), scope, assigned)
+        const kept: Fact[] = []
+        if (cond !== null) for (const f of cond.whenTrue) if (!changedBy(f.key, assigned)) kept.push(f)
+        c.pushFacts(kept)
+        const value = checkExpr(c, inc, scope)
+        c.popFacts()
+        if (value.k === "typed") update = value.expr
+    }
     const perIteration: Local[] = []
     for (const s of prelude) if (s.k === "let" && s.local.mutable) perIteration.push(s.local)
     const condExpr = cond !== null && !isTrue(cond.expr) ? cond.expr : null
@@ -1937,6 +1945,21 @@ export function invalidate(c: Checker, key: string) {
         for (const [k, _] of frame) if (k === key || k.startsWith(prefix)) drop.push(k)
         for (const k of drop) frame.delete(k)
     }
+}
+
+/** The keys of the variables and field paths assigned anywhere in `node`. */
+function assignedKeys(c: Checker, node: Node, scope: Scope, out: string[]) {
+    if (node.kind === "BinaryExpression" && isAssignmentOperator(operatorToken(node).kind)) {
+        const key = refKey(c, left(node), scope)
+        if (key !== null) out.push(key)
+    }
+    for (const child of node.children) assignedKeys(c, child, scope, out)
+}
+
+/** Whether a fact about `key` may change by assigning `assigned`: the path itself or one it goes through. */
+function changedBy(key: string, assigned: string[]): bool {
+    for (const a of assigned) if (key === a || key.startsWith(`${a}.`)) return true
+    return false
 }
 
 /** Forgets facts about variables assigned anywhere in a loop, which may change between iterations. */

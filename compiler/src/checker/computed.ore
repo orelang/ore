@@ -20,6 +20,7 @@ import {
     operand,
     parameters,
     properties,
+    typeArguments,
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
@@ -27,7 +28,7 @@ import { type Checker } from "./base"
 import { satisfiesConstraint } from "./declarations"
 import { checkExpr } from "./expressions"
 import { typeOf } from "./helpers"
-import { Scope, TypeSymbol } from "./symbols"
+import { type ValueSymbol, Scope, TypeSymbol } from "./symbols"
 
 /** The names of the members of a type that `keyof` lists: public fields and methods, or interface members. */
 function memberNames(type: Type): string[] | null {
@@ -172,8 +173,14 @@ function annotatedFunction(c: Checker, decl: Node, scope: Scope): Type | null {
     return type
 }
 
-/** The declared type of a top-level variable or function named `name` of a module, from its annotations; null without them. */
-function annotatedTopLevel(c: Checker, scope: Scope, name: string, at: Node): Type | null {
+/**
+ * The declared type of a top-level variable or function named `name` of a
+ * module, from its annotations, or of a constant from an initializer whose
+ * type is known before it is checked (see `knownType`); null otherwise.
+ */
+function annotatedTopLevel(c: Checker, scope: Scope, name: string, at: Node, depth: int = 0): Type | null {
+    // `const a = b` follows `b`, a few steps, which also ends a cycle.
+    if (depth > 8) return null
     const source = c.sourceOf(at)
     for (const stmt of source.ast.list("statements")) {
         if (stmt.kind === "FunctionDeclaration") {
@@ -188,10 +195,48 @@ function annotatedTopLevel(c: Checker, scope: Scope, name: string, at: Node): Ty
             if (annotation !== null) return c.resolveValueType(annotation, scope)
             const init = initializer(d)
             const isConst = declarationKind(declarationList(stmt), source.text) === "const"
-            return isConst && init !== null && isData(init) ? dataType(c, init, scope) : null
+            return isConst && init !== null ? knownType(c, init, scope, depth) : null
         }
     }
     return null
+}
+
+/**
+ * The type of the initializer of a top-level constant, when it is known
+ * before the code around it is checked: literals (see `isData`), a template
+ * literal, `new C(...)` of a class that is not generic, and
+ * another such top-level name.
+ */
+function knownType(c: Checker, init: Node, scope: Scope, depth: int): Type | null {
+    const k = init.kind
+    if (isData(init)) return dataType(c, init, scope)
+    if (k === "ParenthesizedExpression") return knownType(c, expression(init), scope, depth)
+    if (k === "TemplateExpression") return types.string
+    if (k === "NewExpression") {
+        const target = expression(init)
+        if (!isIdentifier(target) || typeArguments(init).length > 0) return null
+        const symbol = scope.lookupType(target.text)
+        return symbol !== null && symbol.generic === null && symbol.decl.kind === "ClassDeclaration"
+            ? symbol.type
+            : null
+    }
+    if (k === "Identifier") {
+        const symbol = scope.lookupValue(init.text)
+        if (symbol !== null) return valueType(c, symbol, init)
+        return annotatedTopLevel(c, scope, init.text, init, depth + 1)
+    }
+    return null
+}
+
+/** The type of a variable, a constant or a function already declared; null when it is not known yet. */
+function valueType(c: Checker, symbol: ValueSymbol, at: Node): Type | null {
+    if (symbol.k === "local") return c.untyped.has(symbol.local) ? null : symbol.local.type
+    if (symbol.k === "func") return symbol.func.type
+    if (symbol.k !== "const") return null
+    const declared = symbol.type
+    if (declared !== null) return declared
+    const value = symbol.value
+    return value.k === "error" ? null : typeOf(c.toDefault(value, at))
 }
 
 /**
@@ -248,9 +293,8 @@ export function typeQuery(c: Checker, node: Node, scope: Scope): Type | null {
     if (!isIdentifier(n)) return null
     let type: Type | null = null
     const symbol = scope.lookupValue(n.text)
-    if (symbol !== null && symbol.k === "local" && !c.untyped.has(symbol.local)) type = symbol.local.type
-    else if (symbol !== null && symbol.k === "func") type = symbol.func.type
-    else if (symbol === null) type = annotatedTopLevel(c, scope, n.text, node)
+    if (symbol !== null) type = valueType(c, symbol, n)
+    else type = annotatedTopLevel(c, scope, n.text, node)
     if (type === null) {
         c.error(
             n,

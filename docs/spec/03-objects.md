@@ -63,11 +63,10 @@
   may have type parameters of its own (`static of<T>(x: T): T[]`), inferred
   from each call's arguments or written (`List.of<string>("a")`).
   `private` static members are used only inside the class declaration.
-- A generic class can have static methods, generic ones too
-  (`Box.of<U>(v)`), as in TypeScript: one function shared by every
-  instance of the class, which cannot use the class's type parameters.
-  Static fields of a generic class are not supported yet
-  ([ORE3079](../errors/ORE3079.md)).
+- A generic class can have static fields and methods, generic methods too
+  (`Box.of<U>(v)`), as in TypeScript: one field or function shared by every
+  instance of the class, which cannot name the class's type parameters
+  ([ORE3082](../errors/ORE3082.md)).
 - Getters and setters (`get celsius(): f64`, `set celsius(v: f64)`) define a
   property read and written like a field, by calling them; a getter needs a
   return type annotation, and both must have the same type. A property with
