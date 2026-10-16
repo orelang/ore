@@ -3,27 +3,10 @@
 All notable changes of Ore. Versions follow [Semantic Versioning](https://semver.org);
 before 1.0, a minor version may change the language.
 
-## Unreleased
+## 0.5.0
 
-- Regular expressions take one group name in different alternatives
-  (ES2025, `(?<y>\d{4})-\d\d|\d\d\/(?<y>\d{4})`): the group that took part
-  gives the name's value in `groups`, `\k<name>` and `$<name>`. A quantifier
-  on a group around a lookaround (`(?:(?<=a))*`) is no longer rejected. Both
-  found by tests/fuzz/regexp, which now matches tens of thousands of random
-  patterns as Node does.
-- `Array.prototype.sort` is faster: still a stable merge sort, now with
-  insertion-sorted runs of 16, merges that skip runs already in order and a
-  buffer for half the elements instead of all of them, and inlined where it
-  is called, so that the element size is a constant, elements move by
-  loads and stores instead of `memmove`, and the comparison (the default
-  order or the comparator's closure) is inlined too. `bench/sort` takes 40%
-  less CPU time.
-- bigint arithmetic is faster: addition and subtraction work two limbs at a
-  time, multiplication runs its long operand in the inner loop, has a path
-  for a one-limb operand and uses Karatsuba's algorithm when both operands
-  have 40 limbs or more, and `toString()` in decimal divides by a constant.
-  `bench/bigint` takes 40% less CPU time; its wall time is mostly
-  allocation of the immutable results.
+Dictionaries and Object, type predicates, generators and iterators, globalThis, URL, TextEncoder, structuredClone, as const, tuple forms, the this type, and class features.
+
 - Dictionaries: `{ [key: string]: V }` and `Record<string, V>` are a type
   of their own, a hash table of string keys in insertion order used with
   the syntax of objects. Object literals create them (computed keys and
@@ -175,14 +158,58 @@ before 1.0, a minor version may change the language.
   `interface X` adds its members to the first instead of reporting
   ORE5050, and `interface I extends SomeClass` takes the class's public
   fields and methods instead of reporting ORE5053.
-- Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
-  0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
-  0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its
-  registers saved and its stack pointer recorded, so the collector counts it
-  as stopped without a signal; stopped threads sleep on a futex (`__ulock`
-  on macOS) until the world runs again; the collector's waits spin before
-  they sleep; and the second pause finishes marking on one thread when
-  little is left.
+- Copies of a read-only array (`slice`, `filter`, `concat`, `with`,
+  `toSorted`, `toReversed`, `toSpliced`, `values`) are mutable arrays,
+  as in TypeScript.
+- `Object.keys`, `values` and `entries` of an object list its fields in
+  the order it shows them.
+
+## 0.4.8
+
+Unterminated strings are errors; a heap that does not fragment.
+
+- A string in quotes that a line break ends is an error, ORE1009
+  ("Unterminated string literal."), as in JavaScript; it was read as if
+  closed, and `ore fmt` printed code it could not read back. Found by
+  `tests/fuzz/syntax.sh`.
+- The collector keeps free runs of pages in bins by size and merges a freed
+  run with its free neighbours: a large heap no longer breaks into small
+  runs that every new span searched under the heap lock (the test runner,
+  building hundreds of programs at once, grew to 7 GB and stalled).
+
+## 0.4.7
+
+Regular expressions: one group name in different alternatives, quantified groups around lookarounds.
+
+- Regular expressions take one group name in different alternatives
+  (ES2025, `(?<y>\d{4})-\d\d|\d\d\/(?<y>\d{4})`): the group that took part
+  gives the name's value in `groups`, `\k<name>` and `$<name>`. A quantifier
+  on a group around a lookaround (`(?:(?<=a))*`) is no longer rejected. Both
+  found by tests/fuzz/regexp, which now matches tens of thousands of random
+  patterns as Node does.
+- `ORE_GCVERIFY=1` fills what a collection frees with garbage, so that a use
+  of a freed object shows at once; `ci/matrix.sh` runs the suite's
+  programs in release, on 16 threads, and under frequent and verified
+  collections.
+
+## 0.4.6
+
+Objects show their fields in the order of their declaration; coverage of the suite.
+
+- Printing, `console.table` and `JSON.stringify` show an object type's
+  fields in the order of its declaration, or of the literal that made the
+  type first, as JavaScript shows properties in the order they were added;
+  they were sorted by name. Found by running the suite's programs under
+  Node (`ci/node-diff.sh`).
+- `ORE_COVERAGE=1` builds programs that count the runs of every statement
+  and write them at exit, a panic included, as lcov to
+  `$ORE_COVERAGE_DIR/ore-<pid>.lcov`; `ci/coverage.sh` measures the
+  coverage of the compiler and the runtime by the test suite.
+
+## 0.4.5
+
+Value classes: small immutable classes without allocation.
+
 - Small immutable classes are values when nothing can tell: a class with no
   base class or subclass and one to eight `readonly` fields of numbers,
   booleans or other such classes, whose instances the program never
@@ -191,12 +218,50 @@ before 1.0, a minor version may change the language.
   registers and inside the objects that hold them instead of on the heap.
   `bench/structs`, which moves particles with an immutable `Vec3`, no
   longer allocates in its loop.
+
+## 0.4.4
+
+Tagged templates and String.raw.
+
 - Tagged templates: `` tag`a${x}b` `` calls the tag with a
   `TemplateStringsArray` (the cooked strings, `null` for an invalid escape,
   and their `raw` text) and the substitutions, checked as a call against
   the tag's parameters. Each site passes the same strings object every
   time. `String.raw` works as a tag and as a function of `{ raw }` and
   strings.
+
+## 0.4.3
+
+Garbage collection pauses under 0.1 ms.
+
+- Garbage collection pauses are under 0.1 ms on a 16-thread machine (from
+  0.35 + 0.43 ms to 0.065 + 0.01 ms median, worst 1.2 ms to 0.2 ms; Go's are
+  0.14 + 0.05 ms): a worker idle in the scheduler waits parked, with its
+  registers saved and its stack pointer recorded, so the collector counts it
+  as stopped without a signal; stopped threads sleep on a futex (`__ulock`
+  on macOS) until the world runs again; the collector's waits spin before
+  they sleep; and the second pause finishes marking on one thread when
+  little is left.
+
+## 0.4.2
+
+Faster string-keyed maps.
+
+- String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
+  1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
+  keeps the high bits of each key's hash beside the entry, so probing
+  compares keys only when those match; string keys and 8-byte keys
+  (integers, objects by identity) are hashed and compared by the runtime
+  itself, strings a word at a time instead of FNV-1a's byte at a time; and
+  `map.set(key, f(map.get(key)))`, where `f` only computes with locals and
+  constants (`counts.set(w, (counts.get(w) ?? 0) + 1)`), hashes and looks
+  up the key once. `indexOf` and `split` no longer call memcmp for a
+  one-byte separator.
+
+## 0.4.1
+
+JavaScript's Date as a global class, and checker fixes.
+
 - `Date` is a global class, JavaScript's, written in Ore
   (runtime/core/date.ore): the constructors (`new Date()`, `new Date(ms)`,
   `new Date("2024-10-15T12:00Z")`, `new Date(2024, 9, 15, 12)`), the
@@ -212,16 +277,6 @@ before 1.0, a minor version may change the language.
   `console.log` prints a date as Node does, and `JSON.stringify` writes it,
   as its ISO string.
   `Date.now()` is still an `int`.
-- String-keyed maps are faster (`bench/knucleotide` about 1.9x, `wordcount`
-  1.25x, `map` 1.25x, in CPU time on an M-series Mac). The index of a map
-  keeps the high bits of each key's hash beside the entry, so probing
-  compares keys only when those match; string keys and 8-byte keys
-  (integers, objects by identity) are hashed and compared by the runtime
-  itself, strings a word at a time instead of FNV-1a's byte at a time; and
-  `map.set(key, f(map.get(key)))`, where `f` only computes with locals and
-  constants (`counts.set(w, (counts.get(w) ?? 0) + 1)`), hashes and looks
-  up the key once. `indexOf` and `split` no longer call memcmp for a
-  one-byte separator.
 - Generic classes can have static fields, `class Box<T> { static count = 0 }`:
   one for all instances, as in TypeScript, initialized where the class is
   declared, and read, assigned and updated from anywhere, its static and
