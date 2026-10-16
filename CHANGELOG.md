@@ -30,6 +30,20 @@ before 1.0, a minor version may change the language.
 - A top-level `await` resumes the top-level code as the microtask that its
   promise's reaction is, as in JavaScript: the microtasks queued after it
   run once the code awaits again or ends, where all of them ran first.
+- `JSON.parse<T>(text, reviver)` takes a reviver, as JavaScript's: `(key:
+  string, value: unknown, context: { source: string } | null) => unknown`,
+  called with each value, the parts first and the whole last with the key
+  `""`, its result replacing the value and `JSON.omit` deleting it (an
+  element left out is `null`: arrays have no holes). The context has the
+  source text of a value that is not an array or an object. What it
+  returns for the whole is then read as a `T` and checked as text is,
+  with the place of the first problem in the `Error`. Without a reviver,
+  `JSON.parse` reads the text straight into `T` as before.
+- `JSON.parse<unknown>(text)` reads any JSON, as JavaScript's
+  `JSON.parse`: numbers as `f64`s, arrays as `unknown[]`s and objects as
+  dictionaries of `unknown`s; it returns an `unknown`, which holds the
+  `Error` when the text is not JSON. An `unknown` in a type, a field
+  `body: unknown`, is read the same way.
 
 - The timers of the web and Node are global names: `setTimeout(f, ms?,
   ...args)`, `setInterval`, `setImmediate`, `clearTimeout`,

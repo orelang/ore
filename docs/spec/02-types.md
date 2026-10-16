@@ -525,8 +525,14 @@ for it. Numbers, `bool`, strings, string literal types, `null`, arrays,
 `Map`s with string keys, object types, classes (all their fields) and unions
 of these can be converted; interfaces and functions cannot. `JSON.stringify`
 also writes an `unknown`, alone or as a part, as the value it holds (`null`
-for none), and panics if that is of a type JSON cannot convert;
-`JSON.parse` cannot read one. `JSON.parse<T>`
+for none), and panics if that is of a type JSON cannot convert.
+`JSON.parse` reads an `unknown` untyped, as JavaScript reads any JSON: a
+number as an `f64`, a string, a `bool`, `null`, an array as an
+`unknown[]` and an object as a dictionary `{ [key: string]: unknown }` (a
+repeated key where it first appears, with its last value).
+`JSON.parse<unknown>(text)` is thus JavaScript's `JSON.parse(text)`; its
+result is an `unknown`, which holds the `Error` when the text is not JSON
+(`unknown | Error` is `unknown`). `JSON.parse<T>`
 checks the shape: an integer must be whole and in range, a string literal
 type must match, and a field must be present unless its type includes
 `null`; unknown fields are ignored. Its errors name the place, e.g.
@@ -549,11 +555,36 @@ where JavaScript returns `undefined`, it returns `JSON.omit`: a property is
 not written, an element is written as `null`, and the whole value left out
 makes the result `null`, which is why `JSON.stringify` with a replacer
 function returns `string | null`. A function returned is left out the same
-way, as in JavaScript. `JSON.parse` takes no reviver function.
+way, as in JavaScript.
 
 ```ts
 JSON.stringify(user, (key, value) => (key === "password" ? JSON.omit : value))
 JSON.stringify([1, 2], (key, value) => (typeof value === "number" ? value * 10 : value)) // "[10,20]"
+```
+
+A reviver function of `JSON.parse<T>(text, reviver)` has the type `(key:
+string, value: unknown, context: { source: string } | null) => unknown`
+(it may declare fewer parameters), and works as in JavaScript but for
+`this`. The text is parsed untyped, as for `JSON.parse<unknown>`, and the
+reviver is called with each value, the parts first, depth-first: the
+elements of an array, whose keys are their indexes as strings, and the
+properties of an object, each once, in the order the text gives them; last
+with the key `""` and the whole. An array or an object it sees has its
+parts already replaced. What it returns replaces the value; `JSON.omit`
+deletes a property, makes an element `null` (where JavaScript leaves a hole,
+which Ore's arrays have not) and the whole value `null`. The context has
+the source text of a value that is neither an array nor an object, `"1.50"`
+or `"\"a\""`, and is `null` for those (JavaScript's `{}`). The value
+returned for the whole is then read as a `T`, checked as text is, its
+errors naming the place: the untyped values directly, any other value as
+`JSON.stringify` writes it (an integer exactly, a date as its ISO string,
+a map or a class as an object); a value of a type JSON cannot convert
+panics. Without a reviver, `JSON.parse<T>` reads the text straight into
+the type.
+
+```ts
+JSON.parse<User>(text, (key, value) => (typeof value === "string" ? value.trim() : value))
+JSON.parse<string[]>("[12345678901234567890]", (key, value, context) => context?.source ?? value) // ["12345678901234567890"]
 ```
 
 Strings and bytes convert as with the globals of JavaScript's hosts, which
@@ -1322,11 +1353,14 @@ event is only ever at its target:
 - Checks narrow it: `typeof x === "string"` to `string`, `"number"` to
   `number` (`f64`, which a number of any type converts to), `"boolean"` to
   `bool`, `"bigint"` to `bigint`, and `x instanceof C` to the class `C` or
-  a subclass. A narrowed read unboxes the value. `typeof x` is also
+  a subclass; `x instanceof Error` narrows to the class of `new Error`,
+  which the runtime's errors are and other errors extend, as JavaScript's
+  `Error` is a class. A narrowed read unboxes the value. `typeof x` is also
   `"function"` or `"object"`, which tell no type: such a value stays
   `unknown`.
 - `typeof x === "object"` is true for `null`, arrays, maps, sets and
   objects, as in JavaScript.
-- An `unknown` cannot be formatted in a template literal, read from JSON
-  (`JSON.stringify` writes the value it holds), or be a `Map` key or a
-  `Set` element.
+- An `unknown` cannot be formatted in a template literal, or be a `Map`
+  key or a `Set` element. `JSON.stringify` writes the value it holds, and
+  `JSON.parse` reads one untyped: a number as an `f64`, an array as an
+  `unknown[]`, an object as a dictionary.

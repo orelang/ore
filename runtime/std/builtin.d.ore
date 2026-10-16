@@ -791,9 +791,20 @@ declare namespace JSON {
     /**
      * Reads a value of type `T` from JSON text, checking its shape:
      * `JSON.parse<Config>(text)`. A missing field is an error unless its type
-     * includes `null`; unknown fields are ignored.
+     * includes `null`; unknown fields are ignored. An `unknown` is read
+     * untyped: numbers as `f64`s, arrays as `unknown[]`s, objects as
+     * dictionaries.
+     *
+     * A reviver is given each key and value, untyped, the parts first and the
+     * whole last under `""`, with the source text of a value that is not an
+     * array or an object; it returns the value to keep instead, or
+     * `JSON.omit` to delete it, and what it returns for the whole is read as
+     * a `T`.
      */
-    function parse<T>(text: string): T | Error
+    function parse<T>(
+        text: string,
+        reviver?: (key: string, value: unknown, context: { source: string } | null) => unknown,
+    ): T | Error
 }
 
 /**

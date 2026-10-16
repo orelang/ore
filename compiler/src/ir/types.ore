@@ -970,14 +970,13 @@ export function isStringLike(type: Type): bool {
 
 /**
  * Why values of a type cannot be converted to or from JSON, if they cannot.
- * With `writing`, for `JSON.stringify` only: an `unknown` is written as the
- * value it holds, and panics if that cannot be.
+ * An `unknown` is written as the value it holds, which panics if that cannot
+ * be, and read as an untyped value.
  */
-export function jsonProblem(type: Type, seen: Set<StructType> | null = null, writing: bool = false): string | null {
+export function jsonProblem(type: Type, seen: Set<StructType> | null = null): string | null {
     const visited = seen ?? new Set<StructType>()
     switch (type.kind) {
         case "unknown":
-            return writing ? null : `Type '${typeToString(type)}' cannot be converted to or from JSON.`
         case "int":
         case "float":
         case "bool":
@@ -988,23 +987,23 @@ export function jsonProblem(type: Type, seen: Set<StructType> | null = null, wri
         case "array":
             // Only a tagged template makes the strings with their raw strings: JSON has an array of them.
             if (type.template) return `Type '${typeToString(type)}' cannot be converted to or from JSON.`
-            return jsonProblem(type.elem, visited, writing)
+            return jsonProblem(type.elem, visited)
         case "map":
             if (!isStringLike(type.key))
                 return `Type '${typeToString(type)}' cannot be converted to or from JSON: the keys of a Map must be strings.`
-            return jsonProblem(type.value, visited, writing)
+            return jsonProblem(type.value, visited)
         case "struct": {
             if (visited.has(type)) return null
             visited.add(type)
             for (const f of type.fields) {
-                const problem = jsonProblem(f.type, visited, writing)
+                const problem = jsonProblem(f.type, visited)
                 if (problem !== null) return problem
             }
             return null
         }
         case "union": {
             for (const m of type.members) {
-                const problem = jsonProblem(m, visited, writing)
+                const problem = jsonProblem(m, visited)
                 if (problem !== null) return problem
             }
             return null

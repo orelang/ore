@@ -1,0 +1,45 @@
+// What a reviver returns is read as the type JSON.parse is given, checked as
+// JSON.parse checks text, with the place of the first problem; a value of
+// another type than the untyped ones converts as JSON.stringify writes it.
+
+function show(r: unknown) {
+    if (r instanceof Error) console.log(r.message)
+    else console.log(r)
+}
+
+type Count = {
+    n: int
+}
+
+// The wrong type, a fraction, NaN and infinity for an integer.
+show(JSON.parse<Count>(`{"n": 1}`, (key, value) => (key === "n" ? "one" : value)))
+show(JSON.parse<Count>(`{"n": 1}`, (key, value) => (key === "n" ? 1.5 : value)))
+show(JSON.parse<Count>(`{"n": 1}`, (key, value) => (key === "n" ? Number.NaN : value)))
+show(JSON.parse<u8>("1", (key, value) => Number.POSITIVE_INFINITY))
+show(JSON.parse<Count[]>(`[{"n": 1}, {"n": 2}]`, (key, value) => (key === "1" ? "two" : value)))
+// A property deleted that is required.
+show(JSON.parse<Count>(`{"n": 1}`, (key, value) => (key === "n" ? JSON.omit : value)))
+// The whole left out, for a type without null.
+show(JSON.parse<int>("1", (key, value) => JSON.omit))
+// Text that is not JSON fails before the reviver is called.
+show(JSON.parse<int>("[1,", (key, value) => value))
+
+// Integers stay exact, a map is an object, a class an object, a date its ISO string.
+show(JSON.parse<i64>("0", (key, value) => 9007199254740993))
+show(JSON.parse<{ [key: string]: int }>("{}", (key, value) => new Map<string, int>([["a", 1]])))
+class Point {
+    constructor(
+        readonly x: int,
+        readonly y: int,
+    ) {}
+}
+show(JSON.parse<{ x: int; y: int }>("null", (key, value) => new Point(1, 2)))
+show(JSON.parse<{ when: string }>(`{"when": 0}`, (key, value) => (key === "when" ? new Date(0) : value)))
+show(JSON.parse<int[]>("[]", (key, value) => [1, 2, 3]))
+
+// A NaN from the reviver stays NaN for a float.
+show(JSON.parse<f64>("1", (key, value) => Number.NaN))
+
+// JSON.parse<unknown> holds an Error when it fails.
+const failed = JSON.parse<unknown>("{")
+if (failed instanceof Error) console.log(failed.message)

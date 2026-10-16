@@ -3,6 +3,8 @@
 import { elementData, entryData } from "./gcdata"
 import { type BuiltinCall } from "../ir/nodes"
 import {
+    arrayOf,
+    dictOf,
     fieldOrders,
     intRange,
     jsonProblem,
@@ -36,7 +38,7 @@ import {
 import { Emitter } from "./base"
 import { choose, constArray, equals, expr, fieldPtr, inject, payload, recast, slotTest, unionOf } from "./expressions"
 import { globalName, sizeOf, type V } from "./ll"
-import { box, encodeHeld, replacingJson, unknownIsNull } from "./unknown"
+import { box, descriptor, descriptorOf, encodeHeld, held, replacingJson, unknownIsNull } from "./unknown"
 
 /**
  * The runtime's class `Date` if a class is it or extends it, or null:
@@ -90,7 +92,7 @@ export function errorClass(g: Emitter, t: StructType): StructType | null {
 
 export function json(g: Emitter, e: BuiltinCall): V {
     g.defs.set(SB, `${SB} = type { ptr, i64, i64 }`)
-    g.defs.set(JSON_VALUE, `${JSON_VALUE} = type { i32, i8, double, ${STR}, i64, ptr, ptr }`)
+    g.defs.set(JSON_VALUE, `${JSON_VALUE} = type { i32, i8, double, ${STR}, i64, ptr, ptr, ${STR} }`)
     g.defs.set(JSON_CTX, `${JSON_CTX} = type { i8, ${STR}, ${STR} }`)
     if (e.name === "JSON.stringify") {
         // The arguments: the value, the replacer (null, an array of keys or a function), then the space if given.
@@ -130,17 +132,57 @@ export function json(g: Emitter, e: BuiltinCall): V {
         g.b.emit(`call void ${jsonEncoder(g, e.args[0].type)}(ptr ${b.v}, ${value.ty} ${value.v}, ptr ${o.v}, i64 0)`)
         return g.rt("ore_sb_string", [b])
     }
-    // JSON.parse<T>(text): parses, then reads a T, or makes an Error from the first problem.
-    const u = unionOf(e.type)
+    // JSON.parse<T>(text, reviver?): parses, then reads a T, or makes an Error from the first problem.
     const typeArgs = e.typeArgs
     if (typeArgs === null || typeArgs.length === 0) process.panic("JSON.parse without a type")
     const target = typeArgs[0]
     const text = expr(g, e.args[0])
-    let errorIndex = -1
-    for (let i = 0; i < u.members.length && errorIndex === -1; i++)
-        if (u.members[i].kind === "interface") errorIndex = i
-    const fail = (m: V): V => inject(g, u, errorIndex, error(g, e, m))
+    const reviver = e.args.length > 1 ? expr(g, e.args[1]) : null
+    // The result is a `T | Error`, or an `unknown` holding either for `JSON.parse<unknown>`.
+    const result = e.type
+    const rt = g.lt(result)
+    const fail = (m: V): V => {
+        if (result.kind !== "union") return box(g, error(g, e, m), e.error!.itab.iface)
+        const u = unionOf(result)
+        let errorIndex = -1
+        for (let i = 0; i < u.members.length && errorIndex === -1; i++)
+            if (u.members[i].kind === "interface") errorIndex = i
+        return inject(g, u, errorIndex, error(g, e, m))
+    }
     const ty = g.lt(target)
+    // Reads a T from parsed values, or fails with the first problem and where it is.
+    const decoded = (parsed: V): V => {
+        const c = g.b.alloca(JSON_CTX)
+        g.b.emit(`store ${JSON_CTX} zeroinitializer, ptr ${c}`)
+        const r = g.b.value(ty, `call ${ty} ${jsonDecoder(g, target)}(ptr ${parsed.v}, ptr ${c})`)
+        return choose(
+            g,
+            jsonFailed(g, c),
+            () => fail(g.rt("ore_rt_json_error", [{ ty: "ptr", v: c }])),
+            () => recast(g, r, target, result),
+            rt,
+        )
+    }
+    // Parses the text into values, then makes the result of them.
+    const parsing = (then: (parsed: V) => V): V => {
+        const message = g.b.alloca(STR)
+        const parsed = g.rt("ore_rt_json_parse", [text, { ty: "ptr", v: message }])
+        return choose(
+            g,
+            g.b.value("i1", `icmp eq ptr ${parsed.v}, null`),
+            () => fail(g.b.value(STR, `load ${STR}, ptr ${message}`)),
+            () => then(parsed),
+            rt,
+        )
+    }
+    if (reviver !== null) {
+        // The values pass through the reviver as `unknown`s; what it gives is read as a T.
+        return parsing((parsed) => {
+            const revived = g.rt("ore_rt_json_revive", [parsed, reviver])
+            if (target.kind === "unknown") return revived
+            return decoded(g.b.value("ptr", `call ptr ${jsonTree(g)}(${UNKNOWN} ${revived.v})`))
+        })
+    }
     // The text is read straight into a T first. Should that fail, it is parsed
     // again into values and decoded from them, which finds the error to report.
     const reader = g.rt("ore_rt_json_reader", [text])
@@ -152,31 +194,81 @@ export function json(g: Emitter, e: BuiltinCall): V {
     return choose(
         g,
         done,
-        () => recast(g, fast, target, u),
-        () => {
-            const message = g.b.alloca(STR)
-            const parsed = g.rt("ore_rt_json_parse", [text, { ty: "ptr", v: message }])
-            return choose(
-                g,
-                g.b.value("i1", `icmp eq ptr ${parsed.v}, null`),
-                () => fail(g.b.value(STR, `load ${STR}, ptr ${message}`)),
-                () => {
-                    const c = g.b.alloca(JSON_CTX)
-                    g.b.emit(`store ${JSON_CTX} zeroinitializer, ptr ${c}`)
-                    const r = g.b.value(ty, `call ${ty} ${jsonDecoder(g, target)}(ptr ${parsed.v}, ptr ${c})`)
-                    return choose(
-                        g,
-                        jsonFailed(g, c),
-                        () => fail(g.rt("ore_rt_json_error", [{ ty: "ptr", v: c }])),
-                        () => recast(g, r, target, u),
-                        g.lt(u),
-                    )
-                },
-                g.lt(u),
-            )
-        },
-        g.lt(u),
+        () => recast(g, fast, target, result),
+        () => parsing(decoded),
+        rt,
     )
+}
+
+/**
+ * A helper making parsed values of what an `unknown` holds, for the decoder
+ * of `JSON.parse` with a reviver: `ptr (unknown u)`. What the parser makes
+ * an `unknown` of (an `f64`, a string, a `bool`, null, an `unknown[]` or a
+ * dictionary of `unknown`s) converts directly; any other value is written as
+ * `JSON.stringify` writes it and parsed again, which keeps an integer exact.
+ */
+function jsonTree(g: Emitter): string {
+    const name = globalName("json.tree")
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    replacingJson(g)
+    helper(g, name, `define internal ptr ${name}(${UNKNOWN} %u)`, (e) => {
+        const u: V = { ty: UNKNOWN, v: "%u" }
+        // Returns what `make` gives when `test` holds.
+        const when = (test: V, make: () => V) => {
+            const here = e.b.label("tkind")
+            const next = e.b.label("tnext")
+            e.b.condBr(test, here, next)
+            e.b.start(here)
+            e.b.terminate(`ret ptr ${make().v}`)
+            e.b.start(next)
+        }
+        const exactly = (t: Type): V => e.b.value("i1", `icmp eq ptr ${descriptorOf(e, u).v}, ${descriptor(e, t)}`)
+        const tree = (x: V): V => e.b.value("ptr", `call ptr ${name}(${UNKNOWN} ${x.v})`)
+        when(unknownIsNull(e, u), () => e.rt("ore_rt_json_null", []))
+        when(exactly(types.f64), () => e.rt("ore_rt_json_number", [held(e, u, types.f64)]))
+        when(exactly(types.string), () => e.rt("ore_rt_json_string", [held(e, u, types.string)]))
+        when(exactly(types.bool), () => e.rt("ore_rt_json_bool", [held(e, u, types.bool)]))
+        const list = arrayOf(types.unknown)
+        when(exactly(list), () => {
+            const a = held(e, u, list)
+            const len = e.b.value("i64", `load i64, ptr ${e.field(a.v, ARRAY, 1)}`)
+            const v = e.rt("ore_rt_json_list", [len, { ty: "i1", v: "false" }])
+            const elem = e.mt(types.unknown)
+            counted(e, len, (i) => {
+                const data = e.b.value("ptr", `load ptr, ptr ${e.field(a.v, ARRAY, 0)}`)
+                const at = e.b.value("ptr", `getelementptr ${elem}, ptr ${data.v}, i64 ${i.v}`)
+                e.rt("ore_rt_json_push", [v, e.str(""), tree(e.load(at.v, types.unknown))])
+            })
+            return v
+        })
+        const dict = dictOf(types.unknown, false)
+        when(exactly(dict), () => {
+            const m = held(e, u, dict)
+            const count = e.b.value("i64", `load i64, ptr ${e.field(m.v, MAP, 6)}`)
+            const v = e.rt("ore_rt_json_list", [count, { ty: "i1", v: "true" }])
+            counted(e, count, (i) => {
+                const live = e.b.label("live")
+                const dead = e.b.label("dead")
+                e.b.condBr(e.rtBool("ore_rt_map_live", [m, i]), live, dead)
+                e.b.start(live)
+                const key = e.load(e.rt("ore_rt_map_key", [m, i]).v, types.string)
+                const x = e.load(e.rt("ore_rt_map_value", [m, i]).v, types.unknown)
+                e.rt("ore_rt_json_push", [v, key, tree(x)])
+                e.b.br(dead)
+                e.b.start(dead)
+            })
+            return v
+        })
+        // Any other value, written and read again.
+        const b: V = { ty: "ptr", v: e.b.alloca(SB) }
+        e.b.emit(`store ${SB} zeroinitializer, ptr ${b.v}`)
+        encodeHeld(e, u, b, e.rt("ore_rt_json_spaces", [e.i64(0)]), e.i64(0))
+        const message = e.b.alloca(STR)
+        const parsed = e.rt("ore_rt_json_parse", [e.rt("ore_sb_string", [b]), { ty: "ptr", v: message }])
+        e.b.terminate(`ret ptr ${parsed.v}`)
+    })
+    return name
 }
 
 export function jsonFailed(g: Emitter, c: string): V {
@@ -537,7 +629,7 @@ export function jsonHeld(g: Emitter, t: Type): string {
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
     helper(g, name, `define internal void ${name}(ptr %p, ptr %b, ptr %o, i64 %depth)`, (e) => {
-        if (jsonProblem(t, null, true) !== null) {
+        if (jsonProblem(t) !== null) {
             e.panic(`JSON.stringify: a value of type ${typeToString(t)} cannot be converted to JSON`)
             return
         }
@@ -1161,6 +1253,10 @@ export function decodeJson(g: Emitter, type: Type) {
             d.ret(o)
             return
         }
+        case "unknown":
+            // Any value, untyped: numbers as `f64`s, arrays as `unknown[]`s, objects as dictionaries.
+            d.ret(g.rt("ore_rt_json_untyped", [v]))
+            return
         default:
             g.rt("ore_rt_json_expected", [c, g.cstr("a value"), v])
             d.fail()

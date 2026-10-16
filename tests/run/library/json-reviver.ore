@@ -1,0 +1,60 @@
+// JSON.parse with a reviver: it sees every value as an `unknown`, the parts
+// first, depth-first, then the whole with the key ""; what it returns
+// replaces the value, JSON.omit deletes it, and the result is read as the
+// type JSON.parse is given.
+
+// The calls in order, the keys of elements as strings, with the source text
+// of each value that is not an array or an object.
+const calls: string[] = []
+const text = `{"a": [1, 2.50, "x\\n"], "b": {"c": true, "d": null}, "e": 1e2}`
+const traced = JSON.parse<unknown>(text, (key, value, context) => {
+    calls.push(`${JSON.stringify(key)} ${typeof value} ${context?.source ?? "-"}`)
+    return value
+})
+for (const call of calls) console.log(call)
+console.log(traced)
+
+// Changing values, which are then read as the type.
+type Event = {
+    name: string
+    at: int
+    tags: string[]
+}
+const event = JSON.parse<Event>(`{"name":"Launch","at":"seven","tags":["A","B"]}`, (key, value) => {
+    if (key === "at" && typeof value === "string") return value.length
+    if (typeof value === "string") return value.toLowerCase()
+    return value
+})
+if (!(event instanceof Error)) console.log(JSON.stringify(event))
+
+// JSON.omit deletes a property; an optional field is then null.
+type User = {
+    name: string
+    password?: string
+    age: int
+}
+const user = JSON.parse<User>(`{"name":"ann","password":"secret","age":41}`, (key, value) =>
+    key === "password" ? JSON.omit : value,
+)
+if (!(user instanceof Error)) console.log(JSON.stringify(user))
+
+// An element left out is null.
+const list = JSON.parse<(int | null)[]>("[1, 2, 3, 4]", (key, value) =>
+    typeof value === "number" && value % 2 === 0 ? JSON.omit : value,
+)
+if (!(list instanceof Error)) console.log(JSON.stringify(list))
+
+// Numbers changed by the reviver are f64s, read as integers when whole.
+const scaled = JSON.parse<int[]>("[1, 2, 3]", (key, value) => (typeof value === "number" ? value * 10 : value))
+if (!(scaled instanceof Error)) console.log(JSON.stringify(scaled))
+
+// The whole value, replaced, or left out.
+console.log(JSON.parse<string>(`{"a":1}`, (key, value) => (key === "" ? "whole" : value)))
+console.log(JSON.parse<int | null>("5", (key, value) => JSON.omit) ?? "none")
+
+// The source keeps the digits of an integer that a number cannot hold.
+const exact = JSON.parse<string[]>("[12345678901234567890, 1.50]", (key, value, context) => context?.source ?? value)
+if (!(exact instanceof Error)) console.log(JSON.stringify(exact))
+
+// A reviver of two parameters, and repeated keys: the last value, where the key first appears.
+console.log(JSON.parse<unknown>(`{"a":1,"b":2,"a":3}`, (key, value) => value))

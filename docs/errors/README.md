@@ -345,6 +345,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE4096](ORE4096.md) | 'Object.fromEntries' takes [string, value] pairs, got '…'. |
 | [ORE4097](ORE4097.md) | A dictionary is not iterable: use 'Object.entries(d)'. |
 | [ORE4098](ORE4098.md) | Type '…' has no '[Symbol.iterator]' method. |
+| [ORE4099](ORE4099.md) | The second argument of 'JSON.parse' is a reviver function '(key: string, value: unknown, context: { source: string } \| null) => unknown'. |
 
 ## ORE5xxx: Classes and interfaces
 

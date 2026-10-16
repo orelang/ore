@@ -1,0 +1,27 @@
+// JSON.parse<unknown> reads any JSON as JavaScript does: numbers as f64s,
+// arrays as unknown[]s and objects as dictionaries of unknowns; an unknown
+// in a type is read the same way.
+
+const v = JSON.parse<unknown>(`{"a": [1, 2.5, "x", true, null], "b": {"c": {}, "d": []}, "e": -7e-3}`)
+console.log(v)
+console.log(typeof v, JSON.stringify(v))
+for (const text of ["1", "2.5", `"s"`, "true", "null", "[]", "{}"]) {
+    const x = JSON.parse<unknown>(text)
+    console.log(typeof x, x)
+}
+const n = JSON.parse<unknown>("12")
+if (typeof n === "number") console.log(n / 8)
+
+type Message = {
+    id: int
+    body: unknown
+}
+const m = JSON.parse<Message>(`{"id": 1, "body": {"k": [1, "two", {"three": 3}]}}`)
+if (!(m instanceof Error)) {
+    console.log(m.id, m.body)
+    console.log(JSON.stringify(m))
+}
+const many = JSON.parse<unknown[]>(`[1, "a", [null]]`)
+console.log(many)
+const dict = JSON.parse<{ [key: string]: unknown }>(`{"x": 1, "y": [true]}`)
+console.log(dict)

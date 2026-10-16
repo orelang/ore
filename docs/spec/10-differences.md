@@ -38,6 +38,8 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `x instanceof Box<int>` | tests for the class `Box` (type arguments are erased) | tests for the instance `Box<int>`, and narrows to it |
 | `map.get(missing)` | `undefined` | `null` |
 | a replacer function of `JSON.stringify` leaving a value out | returns `undefined` | returns `JSON.omit` (`null` writes `null`, as in JavaScript); the call returns `string \| null`, where TypeScript declares `string` |
+| a reviver function of `JSON.parse` | returns `undefined` to delete a value, which leaves a hole in an array; its `context` is `{}` for an array or an object; the result is `any` | returns `JSON.omit` to delete a value, which is `null` in an array; `context` is `null` for an array or an object; the result is read as the `T` of `JSON.parse<T>`, an `Error` if it is not one |
+| `JSON.parse(text)` | `any` | `JSON.parse<unknown>(text)`: an `unknown` holding numbers as `f64`s, arrays as `unknown[]`s and objects as dictionaries, or the `Error` (the type to read is required) |
 | `d[k]` of `{ [k: string]: V }` | `V` (`V \| undefined` with `noUncheckedIndexedAccess`) | `V \| null` |
 | `d[k] += 1` on a dictionary | `NaN` when missing | compile error: `d[k] = (d[k] ?? 0) + 1` |
 | `Object.groupBy(...)` | an object with a null prototype | a dictionary, printed as an object |

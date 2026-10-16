@@ -4,7 +4,9 @@
 // type. Generated code reads these layouts directly:
 //   builder  {data: ptr, len: int, cap: int}
 //   value    {kind: i32 @0, bool: u8 @4, number: f64 @8, text: string @16,
-//             len: int @32, items: ptr @40, keys: ptr @48}, 56 bytes
+//             len: int @32, items: ptr @40, keys: ptr @48, source: string @56},
+//             72 bytes; `source` is the text of a parsed string, quotes and
+//             escapes included, for the context of a reviver
 //   context  {failed: u8 @0, message: string @8, path: string @24}
 // Messages and field names come from generated code as NUL-terminated bytes.
 
@@ -226,7 +228,7 @@ function jsonNewline(b: ptr, o: JsonOptions, depth: int): void {
 // ---------------------------------------------------------------------------
 // Parsing JSON into values
 
-const valueSize = 56
+const valueSize = 72
 
 function newValue(kind: int): ptr {
     const v = unsafe.alloc(valueSize)
@@ -408,10 +410,13 @@ function scanString(ps: Parser, out: ptr): bool {
     return true
 }
 
-/** A string at the opening quote, as a string value, or null with an error. */
+/** A string at the opening quote, as a string value with its source, or null with an error. */
 function parseString(ps: Parser): ptr {
+    const start = ps.at
     const v = newValue(kindString)
-    return scanString(ps, unsafe.add(v, 16)) ? v : nil()
+    if (!scanString(ps, unsafe.add(v, 16))) return nil()
+    unsafe.store<string>(unsafe.add(v, 56), unsafe.makeString(unsafe.add(ps.text, start), ps.at - start))
+    return v
 }
 
 /** The byte at `at`, or 0 at the end. */
@@ -614,6 +619,153 @@ function jsonField(object: ptr, key: ptr, len: int): ptr {
             return unsafe.load<ptr>(unsafe.add(items, i * 8))
     }
     return nil()
+}
+
+// ---------------------------------------------------------------------------
+// Untyped values: what `JSON.parse<unknown>` gives and a reviver sees
+
+/** The number of items of an array or an object. */
+function lengthOf(v: ptr): int {
+    return unsafe.load<int>(unsafe.add(v, 32))
+}
+
+function itemAt(v: ptr, i: int): ptr {
+    return unsafe.load<ptr>(unsafe.add(unsafe.load<ptr>(unsafe.add(v, 40)), i * 8))
+}
+
+function keyAt(v: ptr, i: int): string {
+    return unsafe.load<string>(unsafe.add(unsafe.load<ptr>(unsafe.add(v, 48)), i * 16))
+}
+
+/**
+ * A value as an `unknown`, as JavaScript makes it: a number as an `f64`, a
+ * string, a `bool`, null, an array as an `unknown[]` and an object as a
+ * dictionary `{ [key: string]: unknown }`, a repeated key where it first
+ * appears with the value it has last.
+ */
+//ore:runtime ore_rt_json_untyped
+function untyped(v: ptr): unknown {
+    const kind = kindOf(v)
+    if (kind === kindNull) return null
+    if (kind === kindBool) return unsafe.load<u8>(unsafe.add(v, 4)) !== 0
+    if (kind === kindNumber) return unsafe.load<f64>(unsafe.add(v, 8))
+    if (kind === kindString) return textOf(v)
+    if (kind === kindArray) {
+        const a: unknown[] = []
+        for (let i = 0; i < lengthOf(v); i++) a.push(untyped(itemAt(v, i)))
+        return a
+    }
+    const o: { [key: string]: unknown } = {}
+    for (let i = 0; i < lengthOf(v); i++) o[keyAt(v, i)] = untyped(itemAt(v, i))
+    return o
+}
+
+/** The text a value was parsed from, for the context of a reviver: a string's with its quotes. */
+function sourceOf(v: ptr): string {
+    const kind = kindOf(v)
+    if (kind === kindNull) return "null"
+    if (kind === kindBool) return unsafe.load<u8>(unsafe.add(v, 4)) !== 0 ? "true" : "false"
+    if (kind === kindString) return unsafe.load<string>(unsafe.add(v, 56))
+    return textOf(v)
+}
+
+/** A reviver function of `JSON.parse`. */
+type Reviver = (key: string, value: unknown, context: { source: string } | null) => unknown
+
+/**
+ * What the reviver gives for the value at `key`, as JavaScript's
+ * InternalizeJSONProperty: the parts of an array or an object are revived
+ * first, depth-first, each replaced by what the reviver gives for it, an
+ * element's key its index as a string. A part left out (`JSON.omit`) is
+ * deleted from an object, and is null in an array, which has no holes. The
+ * context has the source text of a value that is neither an array nor an
+ * object, and is null for those.
+ */
+function revive(reviver: Reviver, key: string, v: ptr): unknown {
+    const kind = kindOf(v)
+    if (kind === kindArray) {
+        const a: unknown[] = []
+        for (let i = 0; i < lengthOf(v); i++) {
+            const x = revive(reviver, `${i}`, itemAt(v, i))
+            a.push(x instanceof Omitted ? null : x)
+        }
+        return reviver(key, a, null)
+    }
+    if (kind === kindObject) {
+        // Each key once, where it first appears, with the value it has last.
+        const o: { [key: string]: unknown } = {}
+        const keys: string[] = []
+        for (let i = 0; i < lengthOf(v); i++) {
+            const k = keyAt(v, i)
+            if (k in o) continue
+            o[k] = null
+            keys.push(k)
+        }
+        for (const k of keys) {
+            const x = revive(reviver, k, jsonField(v, unsafe.stringData(k), k.length))
+            if (x instanceof Omitted) delete o[k]
+            else o[k] = x
+        }
+        return reviver(key, o, null)
+    }
+    return reviver(key, untyped(v), { source: sourceOf(v) })
+}
+
+/** A parsed value passed through a reviver, first the parts, last the whole with the key ""; the whole left out is null. */
+//ore:runtime ore_rt_json_revive
+function jsonRevive(v: ptr, reviver: Reviver): unknown {
+    const x = revive(reviver, "", v)
+    return x instanceof Omitted ? null : x
+}
+
+// The values that the decoder of `JSON.parse` with a reviver reads what the
+// reviver gave from (`jsonTree` in compiler/src/llvm/json.ore).
+
+//ore:runtime ore_rt_json_null
+function jsonNull(): ptr {
+    return newValue(kindNull)
+}
+
+//ore:runtime ore_rt_json_bool
+function jsonBool(b: bool): ptr {
+    const v = newValue(kindBool)
+    unsafe.store<u8>(unsafe.add(v, 4), b ? 1 : 0)
+    return v
+}
+
+/** A number, with its text as JavaScript writes it, which the decoders of integers read. */
+//ore:runtime ore_rt_json_number
+function jsonNumber(x: f64): ptr {
+    const v = newValue(kindNumber)
+    unsafe.store<f64>(unsafe.add(v, 8), x)
+    unsafe.store<string>(unsafe.add(v, 16), `${x}`)
+    return v
+}
+
+//ore:runtime ore_rt_json_string
+function jsonString(s: string): ptr {
+    const v = newValue(kindString)
+    unsafe.store<string>(unsafe.add(v, 16), s)
+    return v
+}
+
+/** An array, or an object if `keyed`, with room for `n` items, which `jsonPush` adds. */
+//ore:runtime ore_rt_json_list
+function jsonList(n: int, keyed: bool): ptr {
+    const v = newValue(keyed ? kindObject : kindArray)
+    const room = n > 0 ? n : 1
+    unsafe.store<ptr>(unsafe.add(v, 40), unsafe.alloc(room * 8))
+    if (keyed) unsafe.store<ptr>(unsafe.add(v, 48), unsafe.alloc(room * 16))
+    return v
+}
+
+/** Adds an item, with its key in an object, to a value of `jsonList`. */
+//ore:runtime ore_rt_json_push
+function jsonPush(v: ptr, key: string, item: ptr): void {
+    const len = lengthOf(v)
+    if (kindOf(v) === kindObject) unsafe.store<string>(unsafe.add(unsafe.load<ptr>(unsafe.add(v, 48)), len * 16), key)
+    unsafe.store<ptr>(unsafe.add(unsafe.load<ptr>(unsafe.add(v, 40)), len * 8), item)
+    unsafe.store<int>(unsafe.add(v, 32), len + 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -858,7 +1010,8 @@ function jsonInt(c: ptr, v: ptr, min: i64, max: i64, out: ptr): bool {
     const num = unsafe.load<f64>(unsafe.add(v, 8))
     let n: i64 = 0
     let ok = true
-    if (isFloatText(text)) {
+    // A number a reviver gave may be NaN or infinite, whose text has no digits.
+    if (isFloatText(text) || !Number.isFinite(num)) {
         ok = num === Math.trunc(num) && num >= -9223372036854775808.0 && num < 9223372036854775808.0
         if (ok) n = i64(num)
     } else {
@@ -885,7 +1038,7 @@ function jsonUint(c: ptr, v: ptr, max: u64, out: ptr): bool {
     const num = unsafe.load<f64>(unsafe.add(v, 8))
     let n: u64 = 0
     let ok = text.length === 0 || text[0] !== 0x2d
-    if (ok && isFloatText(text)) {
+    if (ok && (isFloatText(text) || !Number.isFinite(num))) {
         ok = num === Math.trunc(num) && num < 18446744073709551616.0
         if (ok) n = u64(num)
     } else if (ok) {
