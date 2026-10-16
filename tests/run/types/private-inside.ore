@@ -1,0 +1,34 @@
+// Private and protected members are accessible anywhere inside the
+// declaration of their class, as in TypeScript: in static methods and
+// blocks, and in function expressions inside methods.
+let peek: (c: Counter) => int = (_) => -1
+
+class Counter {
+    private count = 0
+    protected step = 1
+
+    static {
+        peek = (c) => c.count
+    }
+
+    static of(n: int): Counter {
+        const c = new Counter()
+        c.count = n
+        return c
+    }
+
+    static total(list: Counter[]): int {
+        return list.reduce((sum, c) => sum + c.count * c.step, 0)
+    }
+
+    bump(): void {
+        const add = function (c: Counter): void {
+            c.count += c.step
+        }
+        add(this)
+    }
+}
+
+const a = Counter.of(3)
+a.bump()
+console.log(peek(a), Counter.total([a, Counter.of(10)]))

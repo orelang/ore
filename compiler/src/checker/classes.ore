@@ -2009,6 +2009,12 @@ export function checkAccess(c: Checker, struct: StructType, isPrivate: bool, nam
     const cls = fn === null ? null : fn.cls
     if (cls === owner) return true
     const ownerInfo = c.classInfos.get(owner.id)
+    // Anywhere in the declaration of the class, as TypeScript has it: a static
+    // method or block, a function inside a method.
+    if (ownerInfo !== null) {
+        const decl = ownerInfo.decl
+        if (c.sourceOf(node) === c.sourceOf(decl) && node.start >= decl.start && node.end <= decl.end) return true
+    }
     const isProtected = ownerInfo !== null && ownerInfo.protected.has(name)
     if (isProtected && cls !== null && isSubclass(cls, owner)) return true
     c.error(

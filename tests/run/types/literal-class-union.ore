@@ -1,0 +1,23 @@
+// An object literal is never an instance of a class with private fields, as
+// in TypeScript: for a union of such a class and a dictionary or an object
+// type, the literal is the other member.
+class Secret {
+    private value = 0
+    read(): int {
+        return this.value
+    }
+}
+
+function count(x: Secret | { [key: string]: int }): int {
+    if (x instanceof Secret) return x.read()
+    return Object.keys(x).length
+}
+console.log(count({ a: 1, b: 2 }), count(new Secret()))
+
+type Point = { x: int; y: int }
+function sum(p: Secret | Point | null): int {
+    if (p === null) return -1
+    if (p instanceof Secret) return p.read()
+    return p.x + p.y
+}
+console.log(sum({ x: 3, y: 4 }), sum(null))

@@ -148,7 +148,9 @@ entries of a map or the values of any other iterable, passed through `mapFn(valu
 `Array.from({ length: n }, (_, i) => ...)` makes `n` elements by the
 function, given null and the index. `Array.of(...items)` is an array of its
 arguments, typed as an array literal. `Array.isArray(x)` is known from the
-type of `x`, and tested at run time for a union.
+type of `x`, and tested at run time for a union; as a condition it narrows
+`x`, as in TypeScript: to the array members of its union when true, to the
+others when false.
 
 ## Generators and iteration
 

@@ -2095,6 +2095,16 @@ export function orderBySpreads(literal: Expr, parts: OrderPart[], sources: Expr[
     literal.sources = sources
 }
 
+/**
+ * Whether an object literal can be of a member of a union: an object type or
+ * an interface, but not a class with private or protected fields, which, as
+ * in TypeScript, a literal never is.
+ */
+function objectMember(m: Type): bool {
+    if (m.kind === "interface") return true
+    return m.kind === "struct" && !(m.nominal && m.fields.some((f) => f.private))
+}
+
 /** The dictionary an object literal is for: the expected type, or its only dictionary member when it has no object members. */
 function expectedDict(expected: Type | null): MapType | null {
     if (expected === null) return null
@@ -2102,7 +2112,7 @@ function expectedDict(expected: Type | null): MapType | null {
     if (expected.kind !== "union") return null
     let found: MapType | null = null
     for (const m of expected.members) {
-        if (m.kind === "struct" || m.kind === "interface") return null
+        if (objectMember(m)) return null
         if (m.kind === "map" && m.dict) {
             if (found !== null) return null
             found = m
@@ -2121,7 +2131,7 @@ function objectOf(c: Checker, node: Node, scope: Scope, expected: Type | null, p
 
     if (expected !== null && expected.kind === "union") {
         // Pick the object member whose literal-typed fields match the literal, as in a tagged union.
-        const candidates = expected.members.filter((m) => m.kind === "struct" || m.kind === "interface")
+        const candidates = expected.members.filter((m) => objectMember(m))
         const matching = candidates.filter((m) =>
             props.every((p) => {
                 const type = fieldType(m, p.name)

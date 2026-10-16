@@ -100,6 +100,14 @@ before 1.0, a minor version may change the language.
   lastModified })` adds `name`, `lastModified` (now, in milliseconds, by
   default) and `webkitRelativePath` (`""`). `console.log` prints them as
   Node does and `JSON.stringify` writes `{}`. `stream()` is not there yet.
+- `Array.isArray(x)` as a condition narrows a union, as in TypeScript: to
+  its arrays when true, to its other members when false.
+- Private and protected members are accessible anywhere in the declaration
+  of their class, as in TypeScript: in static methods and `static` blocks,
+  and in function expressions inside methods.
+- An object literal for a union is never of a class with private or
+  protected fields, as in TypeScript: `{ a: 1 }` for `Secret | { [key:
+  string]: int }` is the dictionary.
 
 ## 0.5.0
 

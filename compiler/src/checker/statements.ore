@@ -66,6 +66,7 @@ import {
 } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import {
+    args as argsOf,
     body,
     caseClauses,
     condition as conditionNode,
@@ -1912,6 +1913,12 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
     // A call of a function with a type predicate narrows its argument.
     if (node.kind === "CallExpression") {
         const expr = checkCondition(c, node, scope)
+        // `Array.isArray(x)` narrows a union to its arrays, or to its other members.
+        const tested = isArrayTest(c, node, scope)
+        if (tested !== null) {
+            const facts = narrowFacts(c, tested, scope, (m) => (m.kind === "array" ? "yes" : "no"))
+            return new Condition(expr, facts.yes, facts.no)
+        }
         const pair = predicateFacts(c, node, expr, scope)
         return pair !== null ? new Condition(expr, pair.yes, pair.no) : new Condition(expr, [], [])
     }
@@ -1932,6 +1939,16 @@ export function condition(c: Checker, node: Node, scope: Scope): Condition {
         return new Condition(expr, pair.yes, pair.no)
     }
     return new Condition(checkCondition(c, node, scope), [], [])
+}
+
+/** The argument of a call `Array.isArray(x)`, or null for another call. */
+function isArrayTest(c: Checker, node: Node, scope: Scope): Node | null {
+    const callee = expression(node)
+    const args = argsOf(node)
+    if (callee.kind !== "PropertyAccessExpression" || args.length !== 1) return null
+    if (nameNode(callee).text !== "isArray") return null
+    const ns = c.namespaceAt(expression(callee), scope)
+    return ns !== null && ns.name === "Array" ? args[0] : null
 }
 
 /** The facts true when either list is: for each reference both narrow, the union of its two types. */

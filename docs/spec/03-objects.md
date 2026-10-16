@@ -124,7 +124,10 @@
   generic interface or of an interface that extends another
   ([ORE2046](../errors/ORE2046.md)).
 - `private` members are accessible only inside the class that declares them,
-  `protected` members inside that class and its subclasses. Neither counts
+  `protected` members inside that class and its subclasses. Inside means
+  anywhere in the declaration, as in TypeScript: methods, accessors and
+  constructors, static methods and `static` blocks, and the functions
+  written in them, also on other instances of the class. Neither counts
   for interfaces. `readonly` fields can be assigned only by the constructor
   of the class that declares them.
 - Methods are called on instances; `obj.method` without a call is a
@@ -293,7 +296,10 @@ on that slot reads the class table.
   So do `true` and `false`. An object literal for a union of object types
   is the member whose literal-typed fields match its string and boolean
   constants: `{ done: false, value: 1 }` for
-  `{ done: false; value: T } | { done: true; value: R }`.
+  `{ done: false; value: T } | { done: true; value: R }`. A class with
+  private or protected fields is never the member an object literal is, as
+  in TypeScript: for `Secret | { [key: string]: int }` the literal is the
+  dictionary.
 - A value converts implicitly to a union containing its type. A class or
   object converts to a union member that is an interface it implements, if
   exactly one does.
