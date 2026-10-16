@@ -99,7 +99,7 @@ import {
     moduleMember,
     noProperty,
     optional,
-    printable,
+    inspectable,
 } from "./expressions"
 import {
     arrayMethods,
@@ -247,7 +247,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
                     const tuple = hold(expr)
                     for (const f of type.fields) {
                         const part = new FieldGet(f.type, tuple, f.name)
-                        if (printable(c, part, inner)) {
+                        if (inspectable(c, part, inner)) {
                             values.push(part)
                             spread.push(false)
                         }
@@ -259,14 +259,14 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
                         c.error(inner, "Only an array or a tuple can be spread into arguments.")
                         continue
                     }
-                    if (printable(c, new Index(type.elem, expr, new IntLit(types.i64, 0)), inner)) {
+                    if (inspectable(c, new Index(type.elem, expr, new IntLit(types.i64, 0)), inner)) {
                         values.push(hold(expr))
                         spread.push(true)
                         spreads = true
                     }
                     continue
                 }
-                if (printable(c, expr, inner)) {
+                if (inspectable(c, expr, inner)) {
                     values.push(hold(expr))
                     spread.push(false)
                 }

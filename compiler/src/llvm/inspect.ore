@@ -1,0 +1,342 @@
+// What console.log prints: a value formatted as Node's util.inspect does,
+// by a function generated per type. Arrays, maps, sets and objects give
+// their entries to runtime/core/inspect.ore, which lays them out.
+
+import { type InterfaceType, type StructType, type Type, type UnionType, isNumeric, unionRepr } from "../ir/types"
+import { counted } from "./json"
+import { ARRAY, MAP, STR } from "./context"
+import { Emitter } from "./base"
+import { fieldPtr, payload, slotTest } from "./expressions"
+import { globalName, type V } from "./ll"
+import { helper } from "./calls"
+
+/** The value as console.log prints it: strings as they are, other values as they are inside an array. */
+export function inspectTop(g: Emitter, v: V, t: Type): V {
+    if (t.kind === "string" || t.kind === "literal") return v
+    if (t.kind === "union") {
+        if (unionRepr(t).k === "strings") return v
+        return g.b.value(STR, `call ${STR} ${topInspector(g, t)}(${v.ty} ${v.v})`)
+    }
+    return inspectAt(g, v, t, g.rt("ore_rt_inspect_new", []), g.i64(0))
+}
+
+/** The function formatting a union at the top: a string member as it is, others by their inspectors. */
+function topInspector(g: Emitter, t: UnionType): string {
+    const name = globalName(`inspect.top.${g.names.key(t)}`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const uty = g.lt(t)
+    helper(g, name, `define internal ${STR} ${name}(${uty} %v)`, (e) => {
+        const v: V = { ty: uty, v: "%v" }
+        for (let i = 0; i < t.members.length; i++) {
+            const m = t.members[i]
+            const here = e.b.label("tmember")
+            const next = e.b.label("tnext")
+            e.b.condBr(slotTest(e, t, v, i), here, next)
+            e.b.start(here)
+            const s = m.kind === "null" ? e.str("null") : inspectTop(e, payload(e, t, v, i), m)
+            e.b.terminate(`ret ${STR} ${s.v}`)
+            e.b.start(next)
+        }
+        e.b.terminate(`ret ${STR} ${e.str("").v}`)
+    })
+    return name
+}
+
+/** Calls the inspector of type `t` on `v`, `depth` levels deep, with the state `s`. */
+function inspectAt(g: Emitter, v: V, t: Type, s: V, depth: V): V {
+    return g.b.value(STR, `call ${STR} ${inspector(g, t)}(${v.ty} ${v.v}, ptr ${s.v}, i64 ${depth.v})`)
+}
+
+/** The function formatting a value of a type: `string (T v, ptr s, i64 depth)`. */
+function inspector(g: Emitter, t: Type): string {
+    return inspectorNamed(g, t, `inspect.${g.names.key(t)}`, false)
+}
+
+function inspectorNamed(g: Emitter, t: Type, key: string, exact: bool): string {
+    const name = globalName(key)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const ty = g.lt(t)
+    helper(g, name, `define internal ${STR} ${name}(${ty} %v, ptr %s, i64 %depth)`, (e) => {
+        const r = inspectValue(e, t, { ty, v: "%v" }, exact)
+        e.b.terminate(`ret ${STR} ${r.v}`)
+    })
+    return name
+}
+
+/** Whether Node aligns the entries of an array of this type to the right: numbers. */
+function numeric(t: Type): bool {
+    if (t.kind === "union") return t.members.every((m) => isNumeric(m))
+    return isNumeric(t)
+}
+
+/** A property name as Node writes it: bare when an identifier, else quoted. */
+function propertyName(name: string): string {
+    let plain = name.length > 0
+    for (let i = 0; i < name.length; i++) {
+        const c = name[i]
+        const letter = (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || c === 0x5f
+        if (!letter && !(i > 0 && c >= 0x30 && c <= 0x39)) plain = false
+    }
+    if (plain) return name
+    let quoted = "'"
+    for (let i = 0; i < name.length; i++) {
+        const c = name[i]
+        if (c === 0x27) quoted += "\\'"
+        else if (c === 0x5c) quoted += "\\\\"
+        else if (c === 0x0a) quoted += "\\n"
+        else quoted += name.slice(i, i + 1)
+    }
+    return `${quoted}'`
+}
+
+/** Returns `r` from the inspector unless it is empty, which means to go on. */
+function returnUnlessEmpty(g: Emitter, r: V) {
+    const done = g.b.label("done")
+    const go = g.b.label("entries")
+    const n = g.extract(r, 1, "i64")
+    g.b.condBr(g.b.value("i1", `icmp ne i64 ${n.v}, 0`), done, go)
+    g.b.start(done)
+    g.b.terminate(`ret ${STR} ${r.v}`)
+    g.b.start(go)
+}
+
+/** The state of the inspection, and the depth of the entries of the value being formatted. */
+function state(): V {
+    return { ty: "ptr", v: "%s" }
+}
+
+function inspectValue(g: Emitter, t: Type, v: V, exact: bool): V {
+    const s = state()
+    const depth: V = { ty: "i64", v: "%depth" }
+    switch (t.kind) {
+        case "int":
+            return t.signed
+                ? g.rt("ore_rt_str_from_i64", [g.toI64(v)])
+                : g.rt("ore_rt_str_from_u64", [g.toI64(v, false)])
+        case "float":
+            return g.rt(t.bits === 32 ? "ore_rt_inspect_f32" : "ore_rt_inspect_f64", [v])
+        case "bool":
+            return g.rt("ore_rt_str_from_bool", [v])
+        case "string":
+            return g.rt("ore_rt_inspect_string", [v])
+        case "literal":
+            return g.rt("ore_rt_inspect_string", [v])
+        case "null":
+            return g.str("null")
+        case "func":
+            return g.rt("ore_rt_inspect_function", [functionName(g, g.extract(v, 0, "ptr"))])
+        case "union":
+            return inspectUnion(g, t, v, s, depth)
+        case "interface":
+            return inspectInterface(g, t, v, s, depth)
+        case "array": {
+            const n = g.b.value("i64", `load i64, ptr ${g.field(v.v, ARRAY, 1)}`)
+            returnUnlessEmpty(
+                g,
+                g.rt("ore_rt_inspect_begin", [s, v, n, depth, g.str("["), g.str("]"), g.str("[Array]")]),
+            )
+            const deeper = g.b.value("i64", `add i64 %depth, 1`)
+            const elem = t.elem
+            counted(g, g.rt("ore_rt_inspect_shown", [n]), (i) => {
+                const data = g.b.value("ptr", `load ptr, ptr ${g.field(v.v, ARRAY, 0)}`)
+                const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${i.v}`)
+                g.rt("ore_rt_inspect_entry", [s, inspectAt(g, g.load(place.v, elem), elem, s, deeper)])
+            })
+            g.rt("ore_rt_inspect_more", [s, n])
+            return g.rt("ore_rt_inspect_end", [
+                s,
+                g.str("["),
+                g.str("]"),
+                depth,
+                g.i64(1),
+                g.i64(numeric(elem) ? 1 : 0),
+            ])
+        }
+        case "map":
+            return inspectEntries(g, v, t.key, t.value, s, depth)
+        case "set":
+            return inspectEntries(g, v, t.elem, null, s, depth)
+        case "struct":
+            return inspectStruct(g, t, v, s, depth, exact)
+        default:
+            return g.str(`[${t.kind}]`)
+    }
+}
+
+/** A map, `Map(1) { 'a' => 1 }`, or a set without values, `Set(1) { 'a' }`. */
+function inspectEntries(g: Emitter, v: V, keyType: Type, valueType: Type | null, s: V, depth: V): V {
+    const kind = valueType !== null ? "Map" : "Set"
+    const n = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 8)}`)
+    const open = g.rt("ore_rt_inspect_sized", [g.str(kind), n])
+    returnUnlessEmpty(g, g.rt("ore_rt_inspect_begin", [s, v, n, depth, open, g.str("}"), g.str(`[${kind}]`)]))
+    const deeper = g.b.value("i64", `add i64 %depth, 1`)
+    const shown = g.rt("ore_rt_inspect_shown", [n])
+    const written = g.b.alloca("i64")
+    g.b.emit(`store i64 0, ptr ${written}`)
+    const slots = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 6)}`)
+    counted(g, slots, (i) => {
+        // The live entries, in insertion order, up to the number shown.
+        const live = g.b.label("live")
+        const skip = g.b.label("skip")
+        const count = g.b.value("i64", `load i64, ptr ${written}`)
+        const room = g.b.value("i1", `icmp slt i64 ${count.v}, ${shown.v}`)
+        const isLive = g.rtBool("ore_rt_map_live", [v, i])
+        g.b.condBr(g.b.value("i1", `and i1 ${room.v}, ${isLive.v}`), live, skip)
+        g.b.start(live)
+        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${count.v}, 1`).v}, ptr ${written}`)
+        const key = inspectAt(g, g.load(g.rt("ore_rt_map_key", [v, i]).v, keyType), keyType, s, deeper)
+        if (valueType !== null) {
+            const value = g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType)
+            g.rt("ore_rt_inspect_pair", [s, key, inspectAt(g, value, valueType, s, deeper)])
+        } else {
+            g.rt("ore_rt_inspect_entry", [s, key])
+        }
+        g.b.br(skip)
+        g.b.start(skip)
+    })
+    g.rt("ore_rt_inspect_more", [s, n])
+    return g.rt("ore_rt_inspect_end", [s, open, g.str("}"), depth, g.i64(0), g.i64(0)])
+}
+
+/** A union value: by the inspector of the member it holds. */
+function inspectUnion(g: Emitter, t: UnionType, v: V, s: V, depth: V): V {
+    if (unionRepr(t).k === "strings") return g.rt("ore_rt_inspect_string", [v])
+    for (let i = 0; i < t.members.length; i++) {
+        const m = t.members[i]
+        const here = g.b.label("imember")
+        const next = g.b.label("inext")
+        g.b.condBr(slotTest(g, t, v, i), here, next)
+        g.b.start(here)
+        const r = m.kind === "null" ? g.str("null") : inspectAt(g, payload(g, t, v, i), m, s, depth)
+        g.b.terminate(`ret ${STR} ${r.v}`)
+        g.b.start(next)
+    }
+    return g.str("")
+}
+
+/** An interface value: by the inspector of the class it holds, told by the type id in its table. */
+function inspectInterface(g: Emitter, t: InterfaceType, v: V, s: V, depth: V): V {
+    const table = g.extract(v, 1, "ptr")
+    const object = g.extract(v, 0, "ptr")
+    const isNull = g.b.label("inull")
+    const present = g.b.label("ipresent")
+    g.b.condBr(g.b.value("i1", `icmp eq ptr ${table.v}, null`), isNull, present)
+    g.b.start(isNull)
+    g.b.terminate(`ret ${STR} ${g.str("null").v}`)
+    g.b.start(present)
+    const id = g.b.value("i64", `load i64, ptr ${table.v}`)
+    const done = new Set<int>()
+    for (const itab of g.module.itabs) {
+        const struct = itab.struct
+        if (itab.iface.id !== t.id || done.has(struct.id)) continue
+        done.add(struct.id)
+        const here = g.b.label("iclass")
+        const next = g.b.label("inext")
+        g.b.condBr(g.b.value("i1", `icmp eq i64 ${id.v}, ${g.names.typeId(struct)}`), here, next)
+        g.b.start(here)
+        g.b.terminate(`ret ${STR} ${inspectAt(g, object, struct, s, depth).v}`)
+        g.b.start(next)
+    }
+    return g.str("{}")
+}
+
+/** An object: `{ x: 1 }`, `Point { x: 1 }` for a class, `[ 1, 2 ]` for a tuple, `Error: message` for an Error. */
+function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: bool): V {
+    if (!exact && g.tables.has(t.id)) {
+        // An instance of a subclass is formatted as one.
+        const table = g.b.value("ptr", `load ptr, ptr ${v.v}`)
+        for (const sub of g.subclasses(t)) {
+            if (sub === t) continue
+            const here = g.b.label("subclass")
+            const next = g.b.label("snext")
+            g.b.condBr(g.b.value("i1", `icmp eq ptr ${table.v}, ${g.classTable(sub)}`), here, next)
+            g.b.start(here)
+            const f = inspectorNamed(g, sub, `inspect.exact.${g.names.key(sub)}`, true)
+            g.b.terminate(`ret ${STR} ${g.b.value(STR, `call ${STR} ${f}(ptr ${v.v}, ptr %s, i64 %depth)`).v}`)
+            g.b.start(next)
+        }
+    }
+    const ctor = t.ctor
+    if (ctor !== null && ctor.name === "ore_new_BasicError") {
+        const message = g.load(fieldPtr(g, v.v, t, "message"), t.fields[0].type)
+        return g.rt("ore_rt_inspect_error", [g.str("Error"), message])
+    }
+    const name = t.name
+    const isClass = t.nominal && name !== null
+    const open = t.tuple ? "[" : isClass ? `${name} {` : "{"
+    const close = t.tuple ? "]" : "}"
+    const short = t.tuple ? "[Array]" : isClass ? `[${name}]` : "[Object]"
+    // Optional fields that are null are left out, as JavaScript leaves out undefined properties.
+    const count = g.b.alloca("i64")
+    g.b.emit(`store i64 0, ptr ${count}`)
+    const values: V[] = []
+    const present: (V | null)[] = []
+    for (const f of t.fields) {
+        const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
+        values.push(x)
+        const ft = f.type
+        let isPresent: V | null = null
+        if (f.optional && ft.kind === "union") {
+            let at = -1
+            for (let i = 0; i < ft.members.length; i++) if (ft.members[i].kind === "null") at = i
+            if (at >= 0) isPresent = g.b.value("i1", `xor i1 ${slotTest(g, ft, x, at).v}, true`)
+        }
+        present.push(isPresent)
+        const one = isPresent !== null ? g.b.value("i64", `zext i1 ${isPresent.v} to i64`) : g.i64(1)
+        const before = g.b.value("i64", `load i64, ptr ${count}`)
+        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${before.v}, ${one.v}`).v}, ptr ${count}`)
+    }
+    const n = g.b.value("i64", `load i64, ptr ${count}`)
+    returnUnlessEmpty(g, g.rt("ore_rt_inspect_begin", [s, v, n, depth, g.str(open), g.str(close), g.str(short)]))
+    const deeper = g.b.value("i64", `add i64 %depth, 1`)
+    let numbers = true
+    for (let i = 0; i < t.fields.length; i++) {
+        const f = t.fields[i]
+        if (!numeric(f.type)) numbers = false
+        const skip = g.b.label("absent")
+        const isPresent = present[i]
+        if (isPresent !== null) {
+            const yes = g.b.label("present")
+            g.b.condBr(isPresent, yes, skip)
+            g.b.start(yes)
+        }
+        const text = inspectAt(g, values[i], f.type, s, deeper)
+        if (t.tuple) g.rt("ore_rt_inspect_entry", [s, text])
+        else g.rt("ore_rt_inspect_field", [s, g.str(propertyName(f.name)), text])
+        g.b.br(skip)
+        g.b.start(skip)
+    }
+    return g.rt("ore_rt_inspect_end", [
+        s,
+        g.str(open),
+        g.str(close),
+        depth,
+        g.i64(t.tuple ? 1 : 0),
+        g.i64(numbers ? 1 : 0),
+    ])
+}
+
+/** The name of the function at `fn`, or "" if it has none: through a table made when the module is done. */
+function functionName(g: Emitter, fn: V): V {
+    g.usesFunctionNames = true
+    return g.b.value(STR, `call ${STR} @ore.fnname(ptr ${fn.v})`)
+}
+
+/** The function `@ore.fnname` that `functionName` calls, after all functions are emitted. */
+export function functionNames(g: Emitter, data: string): string {
+    const lines: string[] = [`${data}define internal ${STR} @ore.fnname(ptr %f) #0 {`]
+    let i = 0
+    for (const fn of g.functionNames.keys()) {
+        lines.push(`  %c${i} = icmp eq ptr %f, ${fn}`)
+        lines.push(`  br i1 %c${i}, label %yes${i}, label %no${i}`)
+        lines.push(`yes${i}:`)
+        lines.push(`  ret ${STR} ${g.str(g.functionNames.get(fn)!).v}`)
+        lines.push(`no${i}:`)
+        i++
+    }
+    lines.push(`  ret ${STR} ${g.str("").v}`)
+    lines.push("}")
+    return lines.join("\n")
+}

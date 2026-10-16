@@ -4,6 +4,7 @@
 import { type BoundMethod, type BuiltinCall, type Call, type Closure, type Func, type StringMethod } from "../ir/nodes"
 import { intRange, type FuncType, type Type, type UnionType } from "../ir/types"
 import { counted, json } from "./json"
+import { inspectTop } from "./inspect"
 import { ARRAY, FN, IFACE, STR } from "./context"
 import { Emitter } from "./base"
 import { choose, expr, inject, payload, slotTest, unionOf } from "./expressions"
@@ -98,6 +99,7 @@ export function callClosure(g: Emitter, f: V, type: FuncType, args: V[]): V {
 export function closure(g: Emitter, e: Closure): V {
     const captures = e.func.captures ?? []
     const fn: V = { ty: "ptr", v: globalName(e.func.name) }
+    nameFunction(g, fn.v, e.func.sourceName)
     if (captures.length === 0) return g.aggregate(FN, [fn, { ty: "ptr", v: "null" }])
     const env = g.envType(e.func)
     const ptr = slot(g, e) ?? g.alloc(env).v
@@ -110,11 +112,18 @@ export function closure(g: Emitter, e: Closure): V {
     return g.aggregate(FN, [fn, { ty: "ptr", v: ptr }])
 }
 
+/** Records the name of a function used as a value, the last part of `outer.inner`, for console.log; lambdas have none. */
+function nameFunction(g: Emitter, fn: string, sourceName: string) {
+    const name = sourceName.slice(sourceName.lastIndexOf(".") + 1)
+    if (name !== "<lambda>" && name !== "") g.functionNames.set(fn, name)
+}
+
 /** A function taking an unused environment that calls a top-level function, for function values. */
 export function thunk(g: Emitter, func: Func): string {
     const name = globalName(`${func.name}.thunk`)
     if (g.helpers.has(name)) return name
     g.helpers.set(name, "")
+    nameFunction(g, name, func.sourceName)
     const params: string[] = ["ptr %env"]
     for (let i = 0; i < func.params.length; i++) params.push(`${g.lt(func.params[i].type)} %a${i}`)
     const ret = g.lt(func.type.result)
@@ -264,56 +273,18 @@ export function unionToStr(g: Emitter, t: UnionType): string {
     return name
 }
 
-/** The function printing a value of a union: `@ore.print.<union>`. */
-export function unionPrinter(g: Emitter, t: UnionType): string {
-    const name = globalName(`ore.print.${g.names.union(t)}`)
-    if (g.helpers.has(name)) return name
-    g.helpers.set(name, "")
-    const uty = g.lt(t)
-    helper(g, name, `define internal void ${name}(${uty} %v)`, (e) => {
-        const v: V = { ty: uty, v: "%v" }
-        const end = e.b.label("printed")
-        for (let i = 0; i < t.members.length; i++) {
-            const m = t.members[i]
-            const here = e.b.label("pmember")
-            const next = e.b.label("pnext")
-            e.b.condBr(slotTest(e, t, v, i), here, next)
-            e.b.start(here)
-            if (m.kind === "null") e.rt("ore_rt_print_string", [e.str("null")])
-            else print(e, payload(e, t, v, i), m)
-            e.b.br(end)
-            e.b.start(next)
-        }
-        e.b.start(end)
-        e.b.terminate("ret void")
-    })
-    return name
-}
-
+/** Prints a value as console.log does: numbers, booleans and strings as they are, other values as Node's util.inspect formats them. */
 export function print(g: Emitter, v: V, t: Type) {
-    if (t.kind === "union") {
-        g.b.emit(`call void ${unionPrinter(g, t)}(${v.ty} ${v.v})`)
-        return
-    }
     switch (t.kind) {
         case "int":
             if (t.signed) g.rt("ore_rt_print_i64", [g.toI64(v)])
             else g.rt("ore_rt_print_u64", [g.toI64(v, false)])
             return
-        case "float":
-            g.rt("ore_rt_print_string", [g.rt(`ore_rt_str_from_${t.name}`, [v])])
-            return
         case "bool":
             g.rt("ore_rt_print_bool", [v])
             return
-        case "string":
-            g.rt("ore_rt_print_string", [v])
-            return
-        case "literal":
-            g.rt("ore_rt_print_string", [v])
-            return
         default:
-            process.panic(`cannot print ${t.kind}`)
+            g.rt("ore_rt_print_string", [inspectTop(g, v, t)])
     }
 }
 

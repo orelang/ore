@@ -10,6 +10,7 @@ import { classTable, itab } from "./collections"
 import { ARRAY, EmitOptions, FN, FRAME, IFACE, MAP, STR } from "./context"
 import { declareExtern, emitFunction } from "./functions"
 import { findGlobals } from "./helpers"
+import { functionNames } from "./inspect"
 import { cString, FRAME_POINTER, globalName, sizeOf } from "./ll"
 import { nameClosures } from "./names"
 import { DATA_MARKER, FILE_MARKER } from "./split"
@@ -93,6 +94,7 @@ export function emit(g: Emitter): string {
     let entry = `${data}define void @ore_entry() #0 {`
     for (const f of m.inits) entry += `\n  call void ${globalName(f.name)}()`
     g.out.push(`${entry}\n  ret void\n}`)
+    if (g.usesFunctionNames) g.out.push(functionNames(g, data))
     // The runtime declares ore_entry to take its address; the definition is here.
     g.decls.delete("@ore_entry")
     // The table of globals for the collector's roots, read through two functions the runtime declares.

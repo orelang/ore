@@ -1,0 +1,263 @@
+//ore:internal
+// Formatting values as console.log prints them, the way Node's util.inspect
+// does without colors. The compiler generates a function per type
+// (llvm/inspect.ore) that formats the entries of an array, a map, a set or
+// an object with the functions here, which then lay them out on one line or
+// on several, by Node's rules: objects nested more than 2 levels deep are
+// `[Object]`, at most 100 entries are shown, a line is at most 80 columns
+// wide, up to 3 inner levels go on one line, and arrays of more than 6 short
+// entries are grouped in columns.
+
+import { strFromF32, strFromF64 } from "ore:runtime/float"
+
+/** The widest line, counting the indentation. */
+const breakLength = 80
+
+/** How deep objects are formatted; deeper ones are `[Object]`. */
+const depthLimit = 2
+
+/** How many inner levels may go on one line. */
+const compact = 3
+
+/** How many entries of an array, a map or a set are shown. */
+const maxEntries = 100
+
+/** The state of formatting one value. */
+class Inspection {
+    /** Node's `currentDepth`: the depth of the object whose entries were formatted last. */
+    currentDepth = 0
+    /** The objects being formatted, outermost first, to find cycles. */
+    seen: ptr[] = []
+    /** The objects found again inside themselves, numbered from 1 for `<ref *1>`. */
+    circular: ptr[] = []
+    /** The entries formatted so far of each object in `seen`. */
+    entries: string[][] = []
+}
+
+//ore:runtime ore_rt_inspect_new
+function inspectNew(): Inspection {
+    return new Inspection()
+}
+
+/**
+ * Starts formatting an object at `p` with `count` entries, `depth` levels
+ * deep. Returns what to print instead of the entries, or "" to go on with
+ * them: `[Circular *1]` for an object inside itself, `{}` for no entries,
+ * or `short` (`[Object]`) beyond the depth limit.
+ */
+//ore:runtime ore_rt_inspect_begin
+function begin(s: Inspection, p: ptr, count: int, depth: int, open: string, close: string, short: string): string {
+    for (const q of s.seen) {
+        if (unsafe.toInt(q) === unsafe.toInt(p)) {
+            let index = s.circular.findIndex((c) => unsafe.toInt(c) === unsafe.toInt(p))
+            if (index < 0) {
+                s.circular.push(p)
+                index = s.circular.length - 1
+            }
+            return `[Circular *${index + 1}]`
+        }
+    }
+    if (count === 0) return `${open}${close}`
+    if (depth > depthLimit) return short
+    s.seen.push(p)
+    s.entries.push([])
+    s.currentDepth = depth + 1
+    return ""
+}
+
+/** Adds an entry, such as `x: 1`, to the object being formatted. */
+//ore:runtime ore_rt_inspect_entry
+function entry(s: Inspection, text: string): void {
+    s.entries[s.entries.length - 1].push(text)
+}
+
+/** Adds a property, `key: value`. */
+//ore:runtime ore_rt_inspect_field
+function field(s: Inspection, key: string, value: string): void {
+    entry(s, `${key}: ${value}`)
+}
+
+/** Adds an entry of a map, `key => value`. */
+//ore:runtime ore_rt_inspect_pair
+function pair(s: Inspection, key: string, value: string): void {
+    entry(s, `${key} => ${value}`)
+}
+
+/** Adds `... 2 more items` for the entries past the first 100 of `count`. */
+//ore:runtime ore_rt_inspect_more
+function more(s: Inspection, count: int): void {
+    const rest = count - maxEntries
+    if (rest > 0) entry(s, `... ${rest} more item${rest > 1 ? "s" : ""}`)
+}
+
+/** How many entries of `count` to show. */
+//ore:runtime ore_rt_inspect_shown
+function shown(count: int): int {
+    return count < maxEntries ? count : maxEntries
+}
+
+/**
+ * Ends formatting the object begun last: its entries between `open` and
+ * `close`, on one line or on several. `array` groups many short entries in
+ * columns, aligned to the right when `numbers`.
+ */
+//ore:runtime ore_rt_inspect_end
+function end(s: Inspection, open: string, close: string, depth: int, array: bool, numbers: bool): string {
+    const p = s.seen.pop()
+    let output: string[] = s.entries.pop()
+    const index = s.circular.findIndex((c) => unsafe.toInt(c) === unsafe.toInt(p))
+    const base = index >= 0 ? `<ref *${index + 1}>` : ""
+    const indentation = depth * 2
+    const entries = output.length
+    if (array && entries > 6) output = group(output, indentation, numbers)
+    const prefix = base !== "" ? `${base} ` : ""
+    if (s.currentDepth - (depth + 1) < compact && entries === output.length) {
+        // On one line, if it fits.
+        const start = output.length + indentation + open.length + base.length + 10
+        if (fits(output, start)) {
+            const joined = output.join(", ")
+            if (!joined.includes("\n")) return `${prefix}${open} ${joined} ${close}`
+        }
+    }
+    const newline = `\n${" ".repeat(indentation)}`
+    return `${prefix}${open}${newline}  ${output.join(`,${newline}  `)}${newline}${close}`
+}
+
+/** Whether the entries fit on one line after `start` columns. */
+function fits(output: string[], start: int): bool {
+    let total = output.length + start
+    if (total + output.length > breakLength) return false
+    for (const o of output) {
+        total += o.length
+        if (total > breakLength) return false
+    }
+    return true
+}
+
+/** Groups the entries of an array in columns, as Node's groupArrayElements does. */
+function group(output: string[], indentation: int, numbers: bool): string[] {
+    let total = 0
+    let maxLength = 0
+    let length = output.length
+    // The "... more items" entry is not grouped.
+    if (length > maxEntries) length--
+    const separatorSpace = 2
+    const lengths: int[] = []
+    for (let i = 0; i < length; i++) {
+        const n = output[i].length
+        lengths.push(n)
+        total += n + separatorSpace
+        if (maxLength < n) maxLength = n
+    }
+    const actualMax = maxLength + separatorSpace
+    if (actualMax * 3 + indentation >= breakLength || (f64(total) / f64(actualMax) <= 5 && maxLength > 6)) return output
+    const averageBias = Math.sqrt(f64(actualMax) - f64(total) / f64(output.length))
+    const biasedMax = Math.max(f64(actualMax) - 3 - averageBias, 1.0)
+    let columns = int(Math.round(Math.sqrt(2.5 * biasedMax * f64(length)) / biasedMax))
+    columns = Math.min(columns, (breakLength - indentation) / actualMax, compact * 4, 15)
+    if (columns <= 1) return output
+    const widths: int[] = []
+    for (let i = 0; i < columns; i++) {
+        let width = 0
+        for (let j = i; j < length; j += columns) if (lengths[j] > width) width = lengths[j]
+        widths.push(width + separatorSpace)
+    }
+    const grouped: string[] = []
+    for (let i = 0; i < length; i += columns) {
+        const last = Math.min(i + columns, length)
+        let line = ""
+        let j = i
+        for (; j < last - 1; j++) {
+            const cell = `${output[j]}, `
+            line += numbers ? cell.padStart(widths[j - i]) : cell.padEnd(widths[j - i])
+        }
+        line += numbers ? output[j].padStart(widths[j - i] - separatorSpace) : output[j]
+        grouped.push(line)
+    }
+    if (length < output.length) grouped.push(output[length])
+    return grouped
+}
+
+/** An f64 as Node prints it: like String(v), but -0 is `-0`. */
+//ore:runtime ore_rt_inspect_f64
+function inspectF64(v: f64): string {
+    if (v === 0 && unsafe.bitcast<u64>(v) >> 63 !== 0) return "-0"
+    return strFromF64(v)
+}
+
+/** An f32 as Node would print it as a number: -0 is `-0`. */
+//ore:runtime ore_rt_inspect_f32
+function inspectF32(v: f32): string {
+    if (v === 0 && unsafe.bitcast<u32>(v) >> 31 !== 0) return "-0"
+    return strFromF32(v)
+}
+
+/** An Error as the first line of Node's stack: `Error: message`. */
+//ore:runtime ore_rt_inspect_error
+function inspectError(name: string, message: string): string {
+    return message === "" ? name : `${name}: ${message}`
+}
+
+/** `Map(2) {`: a name with the number of entries. */
+//ore:runtime ore_rt_inspect_sized
+function sized(name: string, count: int): string {
+    return `${name}(${count}) {`
+}
+
+/** A function: `[Function: name]`, or `[Function (anonymous)]` without a name. */
+//ore:runtime ore_rt_inspect_function
+function inspectFunction(name: string): string {
+    return name === "" ? "[Function (anonymous)]" : `[Function: ${name}]`
+}
+
+const hex = "0123456789ABCDEF"
+
+/** `\x7F`: a byte escaped in hexadecimal. */
+function hexByte(c: u8): string {
+    const high = int(c >> 4)
+    const low = int(c & 15)
+    return `\\x${hex.slice(high, high + 1)}${hex.slice(low, low + 1)}`
+}
+
+/**
+ * A string inside a value, quoted and escaped as Node's strEscape does it:
+ * in single quotes, or double quotes or backticks when it has single quotes.
+ */
+//ore:runtime ore_rt_inspect_string
+function quote(s: string): string {
+    let q = "'"
+    if (s.includes("'")) {
+        if (!s.includes('"')) q = '"'
+        else if (!s.includes("`") && !s.includes("${")) q = "`"
+    }
+    let result = q
+    let start = 0
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i]
+        let escaped = ""
+        if (c < 0x20 || c === 0x7f) {
+            if (c === 8) escaped = "\\b"
+            else if (c === 9) escaped = "\\t"
+            else if (c === 10) escaped = "\\n"
+            else if (c === 12) escaped = "\\f"
+            else if (c === 13) escaped = "\\r"
+            else escaped = hexByte(c)
+        } else if (c === 0x27 && q === "'") escaped = "\\'"
+        else if (c === 0x5c) escaped = "\\\\"
+        else if (c === 0xc2 && i + 1 < s.length && s[i + 1] >= 0x80 && s[i + 1] <= 0x9f) {
+            // U+0080 to U+009F, two bytes in UTF-8.
+            const d = s[i + 1]
+            result += s.slice(start, i)
+            result += hexByte(d)
+            i++
+            start = i + 1
+            continue
+        }
+        if (escaped !== "") {
+            result += s.slice(start, i)
+            result += escaped
+            start = i + 1
+        }
+    }
+    return result + s.slice(start) + q
+}

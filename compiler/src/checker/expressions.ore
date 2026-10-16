@@ -1551,6 +1551,41 @@ export function printable(c: Checker, expr: Expr, node: Node): bool {
     return false
 }
 
+/** Whether console.log can print a value; reports an error if not. */
+export function inspectable(c: Checker, expr: Expr, node: Node): bool {
+    if (canInspect(expr.type, new Set<int>())) return true
+    c.error(node, `Cannot format a value of type '${typeToString(expr.type)}'.`)
+    return false
+}
+
+/** Whether console.log prints values of a type: anything but channels and C pointers, and what holds them. */
+function canInspect(t: Type, seen: Set<int>): bool {
+    switch (t.kind) {
+        case "chan":
+        case "ptr":
+        case "select-case":
+        case "void":
+        case "never":
+            return false
+        case "array":
+            return canInspect(t.elem, seen)
+        case "map":
+            return canInspect(t.key, seen) && canInspect(t.value, seen)
+        case "set":
+            return canInspect(t.elem, seen)
+        case "union":
+            return t.members.every((m) => canInspect(m, seen))
+        case "struct": {
+            // A class may refer to itself.
+            if (seen.has(t.id)) return true
+            seen.add(t.id)
+            return t.fields.every((f) => canInspect(f.type, seen))
+        }
+        default:
+            return true
+    }
+}
+
 /**
  * The exported value `m.name` of a module imported as `* as m`, or null if
  * the expression is not such an access. Reports missing exports.
