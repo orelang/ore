@@ -666,11 +666,17 @@ export class Checker {
         return this.without(type, (m) => m.kind === "null")
     }
 
-    /** The interned anonymous struct type with these fields. */
+    /**
+     * The interned anonymous struct type with these fields. Private fields
+     * hold the getters and setters of an object literal's accessors.
+     */
     shape(fields: Field[]): StructType {
         const sorted = fields.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         const key = sorted
-            .map((f) => `${f.readonly ? "readonly " : ""}${f.name}${f.optional ? "?" : ""}:${typeKey(f.type)}`)
+            .map(
+                (f) =>
+                    `${f.private ? "private " : ""}${f.readonly ? "readonly " : ""}${f.name}${f.optional ? "?" : ""}:${typeKey(f.type)}`,
+            )
             .join(";")
         let struct = this.shapes.get(key)
         if (struct === null) {

@@ -1,0 +1,56 @@
+const o = {
+    n: 0,
+    get readOnly(): int {
+        return this.n
+    },
+    set writeOnly(v: int) {
+        this.n = v
+    },
+}
+o.readOnly = 1 // error: Cannot assign to 'readOnly' because it has a getter but no setter.
+console.log(o.writeOnly) // error: Property 'writeOnly' has a setter but no getter.
+o.writeOnly += 1 // error: Property 'writeOnly' has a setter but no getter.
+o.writeOnly = 2
+
+const untyped = {
+    get value() {
+        // error: Getter 'value' must have a return type annotation.
+        return 1
+    },
+}
+const twice = {
+    set value(a: int, b: int) {}, // error: Setter 'value' must take one parameter with a type annotation.
+}
+const mismatched = {
+    get value(): int {
+        return 1
+    },
+    set value(v: string) {}, // error: The getter and setter of 'value' must have the same type, got 'i64' and 'string'.
+}
+const duplicate = {
+    get value(): int {
+        return 1
+    },
+    get value(): int {
+        // error: Duplicate property 'value'.
+        return 2
+    },
+}
+const field = {
+    value: 1,
+    get value(): int {
+        // error: Duplicate property 'value'.
+        return 2
+    },
+}
+
+// Accessors do not implement interface fields yet, as in classes.
+interface Sized {
+    readonly size: int
+}
+const sized = {
+    get size(): int {
+        return 1
+    },
+}
+const s: Sized = sized // error: Type '{ get size(): i64 }' is not assignable to type 'Sized': property 'size' is an accessor, and accessors do not implement interface fields yet.

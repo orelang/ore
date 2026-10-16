@@ -38,7 +38,6 @@ import {
     Logical,
     MapOp,
     SetOp,
-    MethodCall,
     Not,
     NullLit,
     ObjectLit,
@@ -102,7 +101,18 @@ import {
 import { bigIsNeg, bigLt, bigOf, bigText, bigToI64 } from "./bigint"
 import { type Checker, structOrInterface } from "./base"
 import { checkCall, checkNew, checkRegExpLiteral } from "./calls"
-import { accessor, checkAccess, conformance, declaringClass, dispatch, genericMethod, staticMember } from "./classes"
+import {
+    accessor,
+    accessorField,
+    callGetter,
+    callSetter,
+    checkAccess,
+    conformance,
+    declaringClass,
+    dispatch,
+    genericMethod,
+    staticMember,
+} from "./classes"
 import { type AssignTarget, AccessorTarget, AssignTarget as AssignTargetClass, Fact } from "./context"
 import { foldBinary, foldUnary } from "./fold"
 import {
@@ -591,16 +601,16 @@ export function writeAccessor(
     const self = holder.hold(c, access.object)
     let old: Expr | null = null
     const getOld = (): Expr => {
-        if (old === null) old = holder.hold(c, new MethodCall(type, property.get!, self, []))
+        if (old === null) old = holder.hold(c, callGetter(property, access.name, self))
         return old
     }
-    if ((yieldOld || usesOld) && property.get === null)
+    if ((yieldOld || usesOld) && !property.hasGet)
         return c.fail(node, `Property '${access.name}' has a setter but no getter.`)
     if (yieldOld) getOld()
     const value = next(getOld)
     if (value === null) return errorOperand
     const result = holder.hold(c, value)
-    const set: Expr = new MethodCall(types.void, property.set!, self, [result])
+    const set = callSetter(property, access.name, self, result)
     return typed(new Bind(type, holder.locals, new Seq(type, [set, yieldOld ? old! : result])))
 }
 
@@ -789,7 +799,7 @@ export function assignTarget(c: Checker, node: Node, scope: Scope): AssignTarget
         if (property !== null && ot.kind === "struct") {
             defineMember(c, nameId, ot, name)
             if (!checkAccess(c, ot, property.private, name, nameId)) return null
-            if (property.set === null) {
+            if (!property.hasSet) {
                 c.error(nameId, `Cannot assign to '${name}' because it has a getter but no setter.`)
                 return null
             }
@@ -1229,13 +1239,11 @@ function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null
             name = c.memberName(nameNode(prop))
             at = nameNode(prop)
             valueNode = initializer(prop)!
-        } else if (prop.kind === "ShorthandPropertyAssignment") {
+        } else {
+            // A shorthand property: methods and accessors make an object literal with methods.
             name = nameNode(prop).text
             at = nameNode(prop)
             valueNode = nameNode(prop)
-        } else {
-            c.error(prop, "Accessors in object literals are not supported yet.")
-            return null
         }
         if (name === null) return null
         const hint = context !== null ? fieldType(context, name) : null
@@ -1253,11 +1261,13 @@ function spreadProps(c: Checker, node: Node, scope: Scope, expected: Type | null
 }
 
 /**
- * An object literal with methods: `{ count: 0, add(n: int) { this.count += n } }`.
- * A method is a field holding a closure whose `this` is the object; the
- * object is allocated first and its fields assigned in order, so that the
- * closures can refer to it. The types of a method come from its annotations,
- * or from the expected type.
+ * An object literal with methods or accessors: `{ count: 0, add(n: int) {
+ * this.count += n } }`. A method is a field holding a closure whose `this` is
+ * the object; the object is allocated first and its fields assigned in order,
+ * so that the closures can refer to it. The types of a method come from its
+ * annotations, or from the expected type. A getter or setter of property `x`
+ * is a closure in the hidden field `get x` or `set x`, which reads and writes
+ * of `x` call.
  */
 function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
     let hints: StructType | InterfaceType | null = null
@@ -1270,38 +1280,46 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
         locals.push(new BindLocal(local, value))
         return new LocalRef(value.type, local)
     }
-    // The fields, in order: names, nodes, values (null for a method, checked once `this` is known), types.
+    // The fields, in order: names, the properties they define, nodes, values
+    // (null for a method or accessor, checked once `this` is known), types.
     const names: string[] = []
+    const properties_: string[] = []
     const nodes: Node[] = []
     const values: (Expr | null)[] = []
     const fields: Field[] = []
     const spread: bool[] = []
-    // A later property replaces one from a spread; two written ones are a duplicate.
-    const put = (name: string, at: Node, value: Expr | null, type: Type, fromSpread: bool): bool => {
-        let index = -1
-        for (let i = 0; i < names.length; i++) if (names[i] === name) index = i
-        if (index >= 0 && !fromSpread && !spread[index]) {
-            c.error(at, `Duplicate property '${name}'.`)
-            return false
+    let accessors = false
+    // A later property replaces one from a spread; two written ones are a
+    // duplicate. A getter and a setter of a property go together.
+    const put = (name: string, property: string, at: Node, value: Expr | null, type: Type, fromSpread: bool): bool => {
+        // Entries for the same property, but for the getter and setter of an accessor.
+        const clashes = (i: int): bool =>
+            properties_[i] === property && (names[i] === name || names[i] === property || name === property)
+        for (let i = 0; i < names.length; i++) {
+            if (clashes(i) && !fromSpread && !spread[i]) {
+                c.error(at, `Duplicate property '${property}'.`)
+                return false
+            }
         }
-        if (index >= 0) {
-            removeAt(names, index)
-            removeAt(nodes, index)
-            removeAt(values, index)
-            removeAt(fields, index)
-            removeAt(spread, index)
+        for (let i = names.length - 1; i >= 0; i--) {
+            if (!clashes(i)) continue
+            removeAt(names, i)
+            removeAt(properties_, i)
+            removeAt(nodes, i)
+            removeAt(values, i)
+            removeAt(fields, i)
+            removeAt(spread, i)
         }
         names.push(name)
+        properties_.push(property)
         nodes.push(at)
         values.push(value)
-        fields.push(new Field(name, type, false))
+        fields.push(new Field(name, type, false, name !== property))
         spread.push(fromSpread)
         return true
     }
     for (const prop of properties(node)) {
         const k = prop.kind
-        if (k === "GetAccessor" || k === "SetAccessor")
-            return c.fail(prop, "Accessors are not supported in an object literal with methods yet.")
         if (k === "SpreadAssignment") {
             const inner = expression(prop)
             const operand_ = checkExpr(c, inner, scope)
@@ -1310,14 +1328,14 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
             const type = object.type
             if (type.kind === "struct" && !type.tuple) {
                 for (const f of type.fields)
-                    if (!f.private && !put(f.name, prop, new FieldGet(f.type, object, f.name), f.type, true))
+                    if (!f.private && !put(f.name, f.name, prop, new FieldGet(f.type, object, f.name), f.type, true))
                         return errorOperand
             } else if (type.kind === "interface") {
                 for (let m = 0; m < type.members.length; m++) {
                     const member_ = type.members[m]
                     if (member_.k !== "field") continue
-                    if (!put(member_.name, prop, new IfaceField(member_.type, object, m), member_.type, true))
-                        return errorOperand
+                    const value = new IfaceField(member_.type, object, m)
+                    if (!put(member_.name, member_.name, prop, value, member_.type, true)) return errorOperand
                 }
             } else {
                 return c.fail(
@@ -1330,9 +1348,17 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
         const nameAt = prop.child("name")
         const name = nameAt !== null ? c.memberName(nameAt) : null
         if (nameAt === null || name === null) return errorOperand
+        if (k === "GetAccessor" || k === "SetAccessor") {
+            const type = accessorType(c, prop, name, scope)
+            if (type === null) return errorOperand
+            const field = accessorField(k === "GetAccessor" ? "get" : "set", name)
+            if (!put(field, name, prop, null, type, false)) return errorOperand
+            accessors = true
+            continue
+        }
         if (k === "MethodDeclaration") {
             const type = methodType(c, prop, scope, hints !== null ? memberHint(hints, name) : null)
-            if (type === null || !put(name, prop, null, type, false)) return errorOperand
+            if (type === null || !put(name, name, prop, null, type, false)) return errorOperand
             continue
         }
         const valueNode = k === "ShorthandPropertyAssignment" ? nameAt : initializer(prop)!
@@ -1340,9 +1366,25 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
         const value = checkExpr(c, valueNode, scope, hint)
         if (value.k === "error") return errorOperand
         const expr = hint !== null ? c.coerce(value, hint, valueNode) : c.toDefault(value, valueNode)
-        if (!put(name, prop, hold(expr), expr.type, false)) return errorOperand
+        if (!put(name, name, prop, hold(expr), expr.type, false)) return errorOperand
     }
-    const struct = expected !== null && expected.kind === "struct" && !expected.nominal ? expected : c.shape(fields)
+    // The getter and setter of a property have the same type.
+    for (let i = 0; i < names.length; i++) {
+        const property = properties_[i]
+        if (names[i] !== accessorField("set", property)) continue
+        for (let j = 0; j < names.length; j++) {
+            if (names[j] !== accessorField("get", property)) continue
+            const getter = fields[j].type
+            const setter = fields[i].type
+            if (getter.kind !== "func" || setter.kind !== "func" || sameType(getter.result, setter.params[0])) continue
+            return c.fail(
+                nameNode(nodes[i]),
+                `The getter and setter of '${property}' must have the same type, got '${typeToString(getter.result)}' and '${typeToString(setter.params[0])}'.`,
+            )
+        }
+    }
+    const fits = !accessors && expected !== null && expected.kind === "struct" && !expected.nominal
+    const struct = fits && expected !== null && expected.kind === "struct" ? expected : c.shape(fields)
     const self = c.newLocal("this", struct, false)
     const selfRef: Expr = new LocalRef(struct, self)
     const assigns: Expr[] = []
@@ -1362,6 +1404,31 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
     assigns.push(selfRef)
     locals.push(new BindLocal(self, new Alloc(struct)))
     return typed(new Bind(struct, locals, new Seq(struct, assigns)))
+}
+
+/**
+ * The function type of a getter (`() => T`, with its result type annotated)
+ * or setter (`(v: T) => void`, with one annotated parameter) of an object
+ * literal, as in a class.
+ */
+function accessorType(c: Checker, node: Node, name: string, scope: Scope): FuncType | null {
+    if (node.kind === "GetAccessor") {
+        const annotation = typeNode(node)
+        if (annotation === null) {
+            c.error(nameNode(node), `Getter '${name}' must have a return type annotation.`)
+            return null
+        }
+        const result = c.resolveValueType(annotation, scope)
+        return result !== null ? new FuncType([], result) : null
+    }
+    const list = parameters(node)
+    const annotation = list.length === 1 ? typeNode(list[0]) : null
+    if (annotation === null) {
+        c.error(nameNode(node), `Setter '${name}' must take one parameter with a type annotation.`)
+        return null
+    }
+    const type = c.resolveValueType(annotation, scope)
+    return type !== null ? new FuncType([type], types.void) : null
 }
 
 /** Removes the element at an index, moving the later ones down. */
@@ -1424,7 +1491,9 @@ function returnsValue(node: Node | null): bool {
 }
 
 export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expected: Type | null): Operand {
-    if (properties(node).some((p) => p.kind === "MethodDeclaration")) return objectWithMethods(c, node, scope, expected)
+    const withMethods = (p: Node): bool =>
+        p.kind === "MethodDeclaration" || p.kind === "GetAccessor" || p.kind === "SetAccessor"
+    if (properties(node).some(withMethods)) return objectWithMethods(c, node, scope, expected)
     if (properties(node).some((p) => p.kind === "SpreadAssignment")) {
         const locals: BindLocal[] = []
         const props = spreadProps(c, node, scope, expected, locals)
@@ -1438,10 +1507,9 @@ export function checkObjectLiteral(c: Checker, node: Node, scope: Scope, expecte
         if (prop.kind === "PropertyAssignment") {
             const name = c.memberName(nameNode(prop))
             if (name !== null) props.push(new Prop(name, nameNode(prop), initializer(prop)!))
-        } else if (prop.kind === "ShorthandPropertyAssignment") {
-            props.push(new Prop(nameNode(prop).text, nameNode(prop), nameNode(prop)))
         } else {
-            return c.fail(prop, "Accessors in object literals are not supported yet.")
+            // A shorthand property: methods, accessors and spreads are handled above.
+            props.push(new Prop(nameNode(prop).text, nameNode(prop), nameNode(prop)))
         }
     }
     for (let i = 0; i < props.length; i++) {
@@ -1712,9 +1780,8 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     if (property !== null && type.kind === "struct") {
         defineMember(c, nameNode_, type, name)
         if (!checkAccess(c, type, property.private, name, nameNode_)) return errorOperand
-        const get = property.get
-        if (get === null) return c.fail(nameNode_, `Property '${name}' has a setter but no getter.`)
-        return typed(new MethodCall(property.type, get, value, []))
+        if (!property.hasGet) return c.fail(nameNode_, `Property '${name}' has a setter but no getter.`)
+        return typed(callGetter(property, name, value))
     }
     if (type.kind === "struct") {
         const field = findField(type, name)

@@ -8,7 +8,9 @@ import {
     Assign,
     Block,
     BuiltinCall,
+    CallValue,
     ExprStmt,
+    FieldGet,
     FieldLValue,
     Func,
     Itab,
@@ -925,13 +927,22 @@ export function declareAccessor(c: Checker, member: Node, info: ClassInfo, scope
     }
     if (flags.isProtected) info.protected.set(name, true)
     const property = existing ?? new Accessor(propertyType, flags.isPrivate || flags.isProtected)
-    if (getter) property.get = func
-    else property.set = func
+    if (getter) {
+        property.get = func
+        property.hasGet = true
+    } else {
+        property.set = func
+        property.hasSet = true
+    }
     accessors.set(name, property)
 }
 
-/** The accessor property `name` of a class, inherited ones included, if any. */
+/**
+ * The accessor property `name` of a class, inherited ones included, or of an
+ * object literal, if any.
+ */
 export function accessor(c: Checker, type: Type, name: string): Accessor | null {
+    if (type.kind === "struct" && !type.nominal) return literalAccessor(type, name)
     let s: StructType | null = type.kind === "struct" ? type : null
     while (s !== null) {
         const accessors = c.accessors.get(s)
@@ -940,6 +951,47 @@ export function accessor(c: Checker, type: Type, name: string): Accessor | null 
         s = s.base
     }
     return null
+}
+
+/** The hidden field of an object literal that holds the getter (`get`) or setter (`set`) of property `name`. */
+export function accessorField(kind: "get" | "set", name: string): string {
+    return `${kind} ${name}`
+}
+
+/** The accessor property `name` of an object literal: its getter and setter are in hidden fields. */
+function literalAccessor(s: StructType, name: string): Accessor | null {
+    const get = findField(s, accessorField("get", name))
+    const set = findField(s, accessorField("set", name))
+    const getType = get !== null && get.private && get.type.kind === "func" ? get.type : null
+    const setType = set !== null && set.private && set.type.kind === "func" ? set.type : null
+    let type: Type | null = null
+    if (getType !== null) type = getType.result
+    else if (setType !== null && setType.params.length === 1) type = setType.params[0]
+    if (type === null) return null
+    const property = new Accessor(type, false)
+    property.inFields = true
+    property.hasGet = getType !== null
+    property.hasSet = setType !== null
+    return property
+}
+
+/** Calls the getter of an accessor property on an object. */
+export function callGetter(property: Accessor, name: string, self: Expr): Expr {
+    if (!property.inFields) return new MethodCall(property.type, property.get!, self, [])
+    return new CallValue(property.type, hiddenField(self, accessorField("get", name)), [])
+}
+
+/** Calls the setter of an accessor property on an object. */
+export function callSetter(property: Accessor, name: string, self: Expr, value: Expr): Expr {
+    if (!property.inFields) return new MethodCall(types.void, property.set!, self, [value])
+    return new CallValue(types.void, hiddenField(self, accessorField("set", name)), [value])
+}
+
+/** Reads a hidden field of an object literal. */
+function hiddenField(self: Expr, name: string): Expr {
+    const s = self.type
+    const field = s.kind === "struct" ? findField(s, name) : null
+    return new FieldGet(field !== null ? field.type : types.void, self, name)
 }
 
 /** A method with the signature of a declaration, resolved in `scope`; the body is checked later. */
@@ -1281,6 +1333,11 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
             const field = findField(from, member.name)
             // An optional member may be missing.
             if ((field === null || field.private) && member.optional) continue
+            if (field === null && accessor(c, from, member.name) !== null)
+                return new Conformance(
+                    `${what} is an accessor, and accessors do not implement interface fields yet`,
+                    null,
+                )
             if (field === null || field.private) return new Conformance(`${what} is missing`, null)
             if (!sameType(field.type, member.type))
                 return new Conformance(

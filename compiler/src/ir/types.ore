@@ -464,6 +464,16 @@ export function typeToString(t: Type): string {
             if (t.tuple) return `[${t.fields.map((f) => typeToString(f.type)).join(", ")}]`
             const fields: string[] = []
             for (const f of t.fields) {
+                // The hidden fields of an object literal's accessors: `get x(): T` and `set x(value: T)`.
+                const ft = f.type
+                if (f.private && ft.kind === "func" && f.name.startsWith("get ")) {
+                    fields.push(`${f.name}(): ${typeToString(ft.result)}`)
+                    continue
+                }
+                if (f.private && ft.kind === "func" && f.name.startsWith("set ") && ft.params.length === 1) {
+                    fields.push(`${f.name}(value: ${typeToString(ft.params[0])})`)
+                    continue
+                }
                 const type = f.optional && f.type.kind === "union" ? withoutNullMembers(f.type) : typeToString(f.type)
                 fields.push(`${f.readonly ? "readonly " : ""}${f.name}${f.optional ? "?" : ""}: ${type}`)
             }

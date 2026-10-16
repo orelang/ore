@@ -1,0 +1,86 @@
+// Getters and setters in object literals: closures whose this is the object,
+// called by reads and writes of the property.
+let reads = 0
+const temperature = {
+    celsius: 20.0,
+    get fahrenheit(): f64 {
+        reads++
+        return (this.celsius * 9) / 5 + 32
+    },
+    set fahrenheit(value: f64) {
+        this.celsius = ((value - 32) * 5) / 9
+    },
+}
+console.log(temperature.fahrenheit, reads)
+temperature.fahrenheit = 212
+console.log(temperature.celsius, temperature.fahrenheit)
+
+// Compound assignments and ++ call the getter, then the setter, evaluating the object once.
+let made = 0
+const counter = {
+    n: 0,
+    get value(): int {
+        return this.n
+    },
+    set value(v: int) {
+        this.n = v
+    },
+}
+const make = (): typeof counter => {
+    made++
+    return counter
+}
+make().value += 5
+make().value++
+console.log(counter.value, made)
+const old = counter.value--
+console.log(old, counter.value)
+
+// A getter alone is a read-only property; it sees the variables around it.
+const prefix = "id-"
+const item = {
+    id: 7,
+    get key(): string {
+        return `${prefix}${this.id}`
+    },
+    twice(): int {
+        return this.id * 2
+    },
+}
+item.id = 8
+console.log(item.key, item.twice())
+
+// Accessors with spreads: a later accessor replaces a spread field.
+const base = { label: "base", size: 1 }
+const sized = {
+    ...base,
+    get size(): int {
+        return this.label.length
+    },
+}
+console.log(sized.label, sized.size)
+
+// A setter alone.
+let last = ""
+const sink = {
+    set value(v: string) {
+        last = v
+    },
+}
+sink.value = "written"
+console.log(last)
+
+// Two literals with the same accessors have the same type.
+const point = (x: int): typeof item => {
+    return {
+        id: x,
+        get key(): string {
+            return `p${this.id}`
+        },
+        twice(): int {
+            return this.id + this.id
+        },
+    }
+}
+const points = [item, point(3)]
+for (const p of points) console.log(p.key, p.twice())
