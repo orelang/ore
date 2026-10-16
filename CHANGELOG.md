@@ -5,6 +5,14 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `console` has the rest of Node's API: `info` and `debug` (stdout),
+  `warn` and `trace` (stderr, with the stack), `assert`, `count` and
+  `countReset`, `time`, `timeLog` and `timeEnd` (`label: 1.234ms`),
+  `group`, `groupCollapsed` and `groupEnd` (every line printed indented by
+  two spaces a level), `table` (Node's box-drawn table of an array, a map,
+  a set or an object) and `dir`. A first string with more values after it
+  is a format, as in Node: `%s`, `%d`, `%i`, `%f`, `%j`, `%o`, `%O`, `%c`
+  and `%%`.
 - Benchmarks in plain C next to Ore, Go, Bun and Node: `bench/<name>/main.c`
   for every benchmark, C17 and libc only (pthreads for `channels` and
   `tasks`, POSIX `regex.h` for `regex`), built by `bench/run.sh` with

@@ -14,22 +14,13 @@
 // cyan. Lines are broken by the width of the text without the colors.
 
 import { strFromF32, strFromF64 } from "ore:runtime/float"
-import { printColors } from "ore:runtime/io"
-
-/** The widest line, counting the indentation. */
-const breakLength = 80
-
-/** How deep objects are formatted; deeper ones are `[Object]`. */
-const depthLimit = 2
+import { colorsOf, printColors } from "ore:runtime/io"
 
 /** How many inner levels may go on one line. */
 const compact = 3
 
-/** How many entries of an array, a map or a set are shown. */
-const maxEntries = 100
-
 /** The state of formatting one value. */
-class Inspection {
+export class Inspection {
     /** Node's `currentDepth`: the depth of the object whose entries were formatted last. */
     currentDepth = 0
     /** The objects being formatted, outermost first, to find cycles. */
@@ -42,12 +33,33 @@ class Inspection {
     colors = false
     /** Whether every level and every entry is formatted, arrays not in columns, for "ore:test": no `[Object]` and no `... more items`. */
     whole = false
+    /** How deep objects are formatted; deeper ones are `[Object]`. */
+    depthLimit = 2
+    /** How many entries of an array, a map or a set are shown. */
+    maxEntries = 100
+    /** The widest line, counting the indentation. */
+    breakLength = 80
 }
 
 //ore:runtime ore_rt_inspect_new
 function inspectNew(): Inspection {
     const s = new Inspection()
     s.colors = printColors()
+    return s
+}
+
+/**
+ * The state of formatting a value with util.inspect's options, for the
+ * console: colored as the output `fd` is (none for 0), objects `depth`
+ * levels deep, `entries` entries of each, lines `breakLength` wide.
+ */
+//ore:runtime ore_rt_inspect_with
+function inspectWith(fd: int, depth: int, entries: int, breakLength: int): Inspection {
+    const s = new Inspection()
+    s.colors = fd !== 0 && colorsOf(fd)
+    s.depthLimit = depth
+    s.maxEntries = entries
+    s.breakLength = breakLength
     return s
 }
 
@@ -61,7 +73,7 @@ function inspectPlain(whole: bool): Inspection {
 
 /** `text` in a color, between the SGR codes `open` and `close`, when colors are on. */
 //ore:runtime ore_rt_inspect_paint
-function paint(s: Inspection, text: string, open: int, close: int): string {
+export function paint(s: Inspection, text: string, open: int, close: int): string {
     return s.colors ? `\u001b[${open}m${text}\u001b[${close}m` : text
 }
 
@@ -94,7 +106,15 @@ function width(s: Inspection, text: string): int {
  * or `short` (`[Object]`) beyond the depth limit.
  */
 //ore:runtime ore_rt_inspect_begin
-function begin(s: Inspection, p: ptr, count: int, depth: int, open: string, close: string, short: string): string {
+export function begin(
+    s: Inspection,
+    p: ptr,
+    count: int,
+    depth: int,
+    open: string,
+    close: string,
+    short: string,
+): string {
     for (const q of s.seen) {
         if (unsafe.toInt(q) === unsafe.toInt(p)) {
             let index = s.circular.findIndex((c) => unsafe.toInt(c) === unsafe.toInt(p))
@@ -106,7 +126,7 @@ function begin(s: Inspection, p: ptr, count: int, depth: int, open: string, clos
         }
     }
     if (count === 0) return `${open}${close}`
-    if (depth > depthLimit && !s.whole) return special(s, short)
+    if (depth > s.depthLimit && !s.whole) return special(s, short)
     s.seen.push(p)
     s.entries.push([])
     s.currentDepth = depth + 1
@@ -115,13 +135,13 @@ function begin(s: Inspection, p: ptr, count: int, depth: int, open: string, clos
 
 /** Adds an entry, such as `x: 1`, to the object being formatted. */
 //ore:runtime ore_rt_inspect_entry
-function entry(s: Inspection, text: string): void {
+export function entry(s: Inspection, text: string): void {
     s.entries[s.entries.length - 1].push(text)
 }
 
 /** Adds a property, `key: value`. */
 //ore:runtime ore_rt_inspect_field
-function field(s: Inspection, key: string, value: string): void {
+export function field(s: Inspection, key: string, value: string): void {
     entry(s, `${key}: ${value}`)
 }
 
@@ -141,7 +161,7 @@ function more(s: Inspection, count: int): void {
 /** How many entries of `count` to show. */
 //ore:runtime ore_rt_inspect_shown
 function shown(s: Inspection, count: int): int {
-    return count < maxEntries || s.whole ? count : maxEntries
+    return count < s.maxEntries || s.whole ? count : s.maxEntries
 }
 
 /**
@@ -150,7 +170,7 @@ function shown(s: Inspection, count: int): int {
  * columns, aligned to the right when `numbers`.
  */
 //ore:runtime ore_rt_inspect_end
-function end(s: Inspection, open: string, close: string, depth: int, array: bool, numbers: bool): string {
+export function end(s: Inspection, open: string, close: string, depth: int, array: bool, numbers: bool): string {
     const p = s.seen.pop()
     let output: string[] = s.entries.pop()
     const index = s.circular.findIndex((c) => unsafe.toInt(c) === unsafe.toInt(p))
@@ -174,10 +194,10 @@ function end(s: Inspection, open: string, close: string, depth: int, array: bool
 /** Whether the entries fit on one line after `start` columns. */
 function fits(s: Inspection, output: string[], start: int): bool {
     let total = output.length + start
-    if (total + output.length > breakLength) return false
+    if (total + output.length > s.breakLength) return false
     for (const o of output) {
         total += width(s, o)
-        if (total > breakLength) return false
+        if (total > s.breakLength) return false
     }
     return true
 }
@@ -188,7 +208,7 @@ function group(s: Inspection, output: string[], indentation: int, numbers: bool)
     let maxLength = 0
     let length = output.length
     // The "... more items" entry is not grouped.
-    if (length > maxEntries) length--
+    if (length > s.maxEntries) length--
     const separatorSpace = 2
     const lengths: int[] = []
     for (let i = 0; i < length; i++) {
@@ -198,11 +218,12 @@ function group(s: Inspection, output: string[], indentation: int, numbers: bool)
         if (maxLength < n) maxLength = n
     }
     const actualMax = maxLength + separatorSpace
-    if (actualMax * 3 + indentation >= breakLength || (f64(total) / f64(actualMax) <= 5 && maxLength > 6)) return output
+    if (actualMax * 3 + indentation >= s.breakLength || (f64(total) / f64(actualMax) <= 5 && maxLength > 6))
+        return output
     const averageBias = Math.sqrt(f64(actualMax) - f64(total) / f64(output.length))
     const biasedMax = Math.max(f64(actualMax) - 3 - averageBias, 1.0)
     let columns = int(Math.round(Math.sqrt(2.5 * biasedMax * f64(length)) / biasedMax))
-    columns = Math.min(columns, (breakLength - indentation) / actualMax, compact * 4, 15)
+    columns = Math.min(columns, (s.breakLength - indentation) / actualMax, compact * 4, 15)
     if (columns <= 1) return output
     const widths: int[] = []
     for (let i = 0; i < columns; i++) {
@@ -275,7 +296,7 @@ function hexByte(c: u8): string {
  * in single quotes, or double quotes or backticks when it has single quotes.
  */
 //ore:runtime ore_rt_inspect_string
-function quote(s: string): string {
+export function quote(s: string): string {
     let q = "'"
     if (s.includes("'")) {
         if (!s.includes('"')) q = '"'

@@ -88,6 +88,7 @@ import {
 } from "../syntax/nodes"
 import { bigFromF64, bigText } from "./bigint"
 import { type Checker } from "./base"
+import { consoleCall } from "./console"
 import { checkAccess, dispatch, genericMethod, initOf, itab } from "./classes"
 import { closureCallee, genericCall, isInternal } from "./declarations"
 import {
@@ -244,54 +245,7 @@ export function checkCall(c: Checker, node: Node, scope: Scope, expected: Type |
         }
         case "builtin": {
             if (!found.name.startsWith("console.")) return builtinCall(c, found.name, found.decl, node, scope, expected)
-            // Spread tuples print their elements, and spread arrays theirs, each value once, in order.
-            const values: Expr[] = []
-            const spread: bool[] = []
-            const locals: BindLocal[] = []
-            let spreads = false
-            const spreading = args.some((arg) => arg.kind === "SpreadElement")
-            const hold = (value: Expr): Expr => {
-                if (!spreading) return value
-                const local = c.newLocal("arg", value.type, false)
-                locals.push(new BindLocal(local, value))
-                return new LocalRef(value.type, local)
-            }
-            for (const arg of args) {
-                const inner = arg.kind === "SpreadElement" ? expression(arg) : arg
-                const value = checkExpr(c, inner, scope)
-                if (value.k === "error") continue
-                const expr = c.toDefault(value, inner)
-                const type = expr.type
-                if (arg.kind === "SpreadElement" && type.kind === "struct" && type.tuple) {
-                    const tuple = hold(expr)
-                    for (const f of type.fields) {
-                        const part = new FieldGet(f.type, tuple, f.name)
-                        if (inspectable(c, part, inner)) {
-                            values.push(part)
-                            spread.push(false)
-                        }
-                    }
-                    continue
-                }
-                if (arg.kind === "SpreadElement") {
-                    if (type.kind !== "array") {
-                        c.error(inner, "Only an array or a tuple can be spread into arguments.")
-                        continue
-                    }
-                    if (inspectable(c, new Index(type.elem, expr, new IntLit(types.i64, 0)), inner)) {
-                        values.push(hold(expr))
-                        spread.push(true)
-                        spreads = true
-                    }
-                    continue
-                }
-                if (inspectable(c, expr, inner)) {
-                    values.push(hold(expr))
-                    spread.push(false)
-                }
-            }
-            const call = new BuiltinCall(types.void, found.name, values, null, null, spreads ? spread : null)
-            return bindAround(locals, typed(call))
+            return consoleCall(c, found.name, node, scope)
         }
         case "func": {
             const overloads = found.overloads

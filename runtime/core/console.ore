@@ -1,0 +1,436 @@
+//ore:internal
+// The console beyond printing values (runtime/core/io.ore): counters,
+// timers and groups, util.format's specifiers, the tables of console.table
+// and the stack of console.trace, as Node has them.
+//
+// The exports of this module are members of the namespace `console`; the
+// compiler calls the others (checker/console.ore, llvm/calls.ore).
+
+import { strFromF64 } from "ore:runtime/float"
+import { getTop } from "ore:runtime/frames"
+import { indentGroup } from "ore:runtime/io"
+import { isNil, lock, nowNs, permanentMutex, unlock } from "ore:runtime/os"
+
+/** Guards the counters and the timers, which tasks on several threads may use. */
+const consoleLock = permanentMutex()
+
+const counts = new Map<string, int>()
+const timers = new Map<string, int>()
+
+/** A warning on standard error, as Node's process.emitWarning prints one. */
+function warning(message: string): void {
+    console.error(`Warning: ${message}`)
+}
+
+/** Writes how many times `count` was called with the label, as "label: 3". */
+export function count(label: string = "default"): void {
+    lock(consoleLock)
+    const n = (counts.get(label) ?? 0) + 1
+    counts.set(label, n)
+    unlock(consoleLock)
+    console.log(`${label}: ${n}`)
+}
+
+/** Resets the count of a label; warns if it has none. */
+export function countReset(label: string = "default"): void {
+    lock(consoleLock)
+    const known = counts.has(label)
+    if (known) counts.set(label, 0)
+    unlock(consoleLock)
+    if (!known) warning(`Count for '${label}' does not exist`)
+}
+
+function now(): int {
+    return nowNs(unsafe.alloc(16))
+}
+
+/** Starts a timer with a label; warns if it runs already. */
+export function time(label: string = "default"): void {
+    lock(consoleLock)
+    const known = timers.has(label)
+    if (!known) timers.set(label, now())
+    unlock(consoleLock)
+    if (known) warning(`Label '${label}' already exists for console.time()`)
+}
+
+/** Writes the time since `time` with the label, as "label: 1.234ms", and stops the timer. */
+export function timeEnd(label: string = "default"): void {
+    const text = elapsed(label, "timeEnd", true)
+    if (text !== "") console.log(text)
+}
+
+/** Ends a level of indentation of console.group. */
+export function groupEnd(): void {
+    indentGroup(-1)
+}
+
+/** Starts a level of indentation, after console.group printed its label. */
+//ore:runtime ore_rt_console_group
+function group(): void {
+    indentGroup(1)
+}
+
+/** "label: time" for console.timeLog, or "" after a warning when the label has no timer. */
+//ore:runtime ore_rt_console_time_text
+function timeText(label: string): string {
+    return elapsed(label, "timeLog", false)
+}
+
+/** "label: time" since the timer of the label started, or "" after a warning when it has none; `stop` ends the timer. */
+function elapsed(label: string, method: string, stop: bool): string {
+    lock(consoleLock)
+    const start = timers.get(label)
+    if (start !== null && stop) timers.delete(label)
+    unlock(consoleLock)
+    if (start === null) {
+        warning(`No such label '${label}' for console.${method}()`)
+        return ""
+    }
+    return `${label}: ${formatTime(f64(now() - start) / 1e6)}`
+}
+
+/** Two digits, as Node pads minutes and seconds. */
+function pad(text: string): string {
+    return text.padStart(2, "0")
+}
+
+/** Milliseconds as Node's console writes a time: "1.234ms", "1.234s", "1:02.345 (m:ss.mmm)" or "1:02:03.456 (h:mm:ss.mmm)". */
+function formatTime(milliseconds: f64): string {
+    let ms = milliseconds
+    let hours = 0.0
+    let minutes = 0.0
+    let seconds = 0.0
+    if (ms >= 1000) {
+        if (ms >= 60000) {
+            if (ms >= 3600000) {
+                hours = Math.floor(ms / 3600000)
+                ms = ms % 3600000
+            }
+            minutes = Math.floor(ms / 60000)
+            ms = ms % 60000
+        }
+        seconds = ms / 1000
+    }
+    if (hours !== 0 || minutes !== 0) {
+        const fixed = seconds.toFixed(3)
+        const dot = fixed.indexOf(".")
+        const whole = hours !== 0 ? `${hours}:${pad(`${minutes}`)}` : `${minutes}`
+        return `${whole}:${pad(fixed.slice(0, dot))}.${fixed.slice(dot + 1)} (${hours !== 0 ? "h:m" : ""}m:ss.mmm)`
+    }
+    if (seconds !== 0) return `${seconds.toFixed(3)}s`
+    return `${Number.parseFloat(ms.toFixed(3)) ?? 0.0}ms`
+}
+
+// ---------------------------------------------------------------------------
+// util.format
+
+/** A number as util.format writes one: like String(x), but -0 is "-0". */
+function numberText(x: f64): string {
+    if (x === 0 && unsafe.bitcast<u64>(x) >> 63 !== 0) return "-0"
+    return strFromF64(x)
+}
+
+function nan(): f64 {
+    return Number.NaN
+}
+
+function isSpace(c: u8): bool {
+    return c === 0x20 || (c >= 0x09 && c <= 0x0d)
+}
+
+/** The digits of `s` from `i` in a radix, or -1 if none: the end of a run of them. */
+function digitsEnd(s: string, i: int, radix: int): int {
+    let j = i
+    while (j < s.length) {
+        const c = s[j]
+        const d =
+            c >= 0x30 && c <= 0x39
+                ? int(c) - 0x30
+                : c >= 0x61 && c <= 0x7a
+                  ? int(c) - 0x57
+                  : c >= 0x41 && c <= 0x5a
+                    ? int(c) - 0x37
+                    : 99
+        if (d >= radix) break
+        j++
+    }
+    return j
+}
+
+/** A string converted to a number as JavaScript's Number(s) does: NaN unless all of it, but white space around, is a number. */
+function numberOf(text: string): f64 {
+    const s = text.trim()
+    if (s === "") return 0
+    if (s.length > 2 && s[0] === 0x30) {
+        const p = s[1] | 0x20
+        const radix = p === 0x78 ? 16 : p === 0x6f ? 8 : p === 0x62 ? 2 : 0
+        if (radix !== 0) {
+            if (digitsEnd(s, 2, radix) !== s.length) return nan()
+            let v = 0.0
+            for (let i = 2; i < s.length; i++) {
+                const c = s[i] | 0x20
+                v = v * f64(radix) + f64(c >= 0x61 ? int(c) - 0x57 : int(c) - 0x30)
+            }
+            return v
+        }
+    }
+    let i = 0
+    if (s[0] === 0x2b || s[0] === 0x2d) i++
+    if (s.slice(i) === "Infinity") return Number.parseFloat(s) ?? nan()
+    // Digits, a point and digits, at least one digit in all, then an exponent.
+    const whole = digitsEnd(s, i, 10)
+    let end = whole
+    let digits = whole - i
+    if (end < s.length && s[end] === 0x2e) {
+        const fraction = digitsEnd(s, end + 1, 10)
+        digits += fraction - end - 1
+        end = fraction
+    }
+    if (digits === 0) return nan()
+    if (end < s.length && (s[end] | 0x20) === 0x65) {
+        let e = end + 1
+        if (e < s.length && (s[e] === 0x2b || s[e] === 0x2d)) e++
+        const exponent = digitsEnd(s, e, 10)
+        if (exponent === e) return nan()
+        end = exponent
+    }
+    if (end !== s.length) return nan()
+    return Number.parseFloat(s) ?? nan()
+}
+
+/** parseInt of a string, as util.format's `%i` writes it. */
+function integerText(s: string): string {
+    const n = Number.parseInt(s)
+    if (n === null) return "NaN"
+    // parseInt("-0") is -0.
+    if (n === 0 && s.trim().startsWith("-")) return "-0"
+    return `${n}`
+}
+
+/** parseFloat of a string, as util.format's `%f` writes it. */
+function floatText(s: string): string {
+    const x = Number.parseFloat(s)
+    return x === null ? "NaN" : numberText(x)
+}
+
+/** Whether a string has a `%`: only then is it a format that changes anything. */
+//ore:runtime ore_rt_console_has_percent
+function hasPercent(s: string): bool {
+    return s.includes("%")
+}
+
+/**
+ * The output of util.format for a format and the values after it, each in
+ * 6 parts made by the compiler: its kind ("s" a string, "n" a number, "b" a
+ * bigint, "t" a boolean, "o" anything else), as console.log prints it, as
+ * `%s` prints it, as JSON, as `%O` and as `%o` print it. The parts of a
+ * value that the format does not use may be empty. The values the format
+ * does not take follow, separated by spaces, as console.log prints them.
+ */
+//ore:runtime ore_rt_console_format
+function format(first: string, parts: string[]): string {
+    const count = parts.length / 6
+    let a = 0
+    let str = ""
+    let lastPos = 0
+    for (let i = 0; i < first.length - 1; i++) {
+        if (first[i] !== 0x25) continue
+        i++
+        const next = first[i]
+        if (a < count) {
+            const at = a * 6
+            const kind = parts[at]
+            const plain = parts[at + 2]
+            let temp = ""
+            if (next === 0x73) {
+                // %s
+                temp = plain
+            } else if (next === 0x6a) {
+                // %j
+                temp = parts[at + 3]
+            } else if (next === 0x64) {
+                // %d: Number(x), a bigint as it is.
+                temp =
+                    kind === "n" || kind === "b"
+                        ? plain
+                        : kind === "t"
+                          ? plain === "true"
+                              ? "1"
+                              : "0"
+                          : kind === "s"
+                            ? numberText(numberOf(plain))
+                            : "NaN"
+            } else if (next === 0x4f) {
+                // %O
+                temp = parts[at + 4]
+            } else if (next === 0x6f) {
+                // %o
+                temp = parts[at + 5]
+            } else if (next === 0x69) {
+                // %i: parseInt(String(x)), a bigint as it is.
+                temp = kind === "b" ? plain : kind === "n" || kind === "s" ? integerText(plain) : "NaN"
+            } else if (next === 0x66) {
+                // %f: parseFloat(String(x)).
+                temp = kind === "n" || kind === "s" || kind === "b" ? floatText(plain) : "NaN"
+            } else if (next === 0x63) {
+                // %c: a CSS style, which the console ignores.
+                temp = ""
+            } else if (next === 0x25) {
+                str += first.slice(lastPos, i)
+                lastPos = i + 1
+                continue
+            } else {
+                continue
+            }
+            a++
+            if (lastPos !== i - 1) str += first.slice(lastPos, i - 1)
+            str += temp
+            lastPos = i + 1
+        } else if (next === 0x25) {
+            str += first.slice(lastPos, i)
+            lastPos = i + 1
+        }
+    }
+    if (lastPos === 0) str = first
+    else if (lastPos < first.length) str += first.slice(lastPos)
+    for (; a < count; a++) str += ` ${parts[a * 6 + 1]}`
+    return str
+}
+
+// ---------------------------------------------------------------------------
+// console.trace
+
+/** The stack of debug frames, a line for each from the innermost, as Node writes a stack after an Error's message. */
+//ore:runtime ore_rt_console_stack
+function stack(): string {
+    let frame = getTop()
+    if (isNil(frame)) return "\n    (no stack trace in release builds)"
+    let out = ""
+    while (!isNil(frame)) {
+        const func = copy(unsafe.load<ptr>(unsafe.add(frame, 8)))
+        const file = copy(unsafe.load<ptr>(unsafe.add(frame, 16)))
+        out += `\n    at ${func} (${file}:${unsafe.load<i32>(unsafe.add(frame, 24))})`
+        frame = unsafe.load<ptr>(frame)
+    }
+    return out
+}
+
+/** The NUL-terminated bytes at `p`, copied into a string. */
+function copy(p: ptr): string {
+    let n = 0
+    while (unsafe.load<u8>(unsafe.add(p, n)) !== 0) n++
+    const bytes = unsafe.allocBytes(n)
+    unsafe.copy(bytes, p, n)
+    return unsafe.makeString(bytes, n)
+}
+
+// ---------------------------------------------------------------------------
+// console.table
+
+/** The rows of console.table, filled by code the compiler generates per type, then drawn. */
+class Table {
+    /** The header of the first column: "(index)", or "(iteration index)" for a map or a set. */
+    index = "(index)"
+    /** The key of each row, in the first column. */
+    keys: string[] = []
+    /** The cells of each row, by column. */
+    cells: Map<string, string>[] = []
+    /** The value of each row whose entry is a primitive, in the column "Values", or null. */
+    values: (string | null)[] = []
+    /** The columns, in the order they first appear in. */
+    columns: string[] = []
+    /** The columns to show, when given. */
+    only: string[] | null = null
+}
+
+//ore:runtime ore_rt_table_new
+function tableNew(): Table {
+    return new Table()
+}
+
+/** A table of a map or a set, whose first column counts the entries. */
+//ore:runtime ore_rt_table_iteration
+function tableIteration(t: Table): void {
+    t.index = "(iteration index)"
+}
+
+/** Starts a row. */
+//ore:runtime ore_rt_table_row
+function tableRow(t: Table, key: string): void {
+    t.keys.push(key)
+    t.cells.push(new Map<string, string>())
+    t.values.push(null)
+}
+
+/** A cell of the last row. */
+//ore:runtime ore_rt_table_cell
+function tableCell(t: Table, column: string, text: string): void {
+    if (!t.columns.includes(column)) t.columns.push(column)
+    t.cells[t.cells.length - 1].set(column, text)
+}
+
+/** The value of the last row, a primitive, in the column "Values". */
+//ore:runtime ore_rt_table_value
+function tableValue(t: Table, text: string): void {
+    t.values[t.values.length - 1] = text
+}
+
+/** Shows only these columns, as console.table's `properties`. */
+//ore:runtime ore_rt_table_only
+function tableOnly(t: Table, columns: string[]): void {
+    t.only = columns
+}
+
+/** The width of text on the screen: its characters, without the escape sequences of colors. */
+function screenWidth(text: string): int {
+    let n = 0
+    let i = 0
+    while (i < text.length) {
+        const c = text[i]
+        if (c === 0x1b) {
+            while (i < text.length && text[i] !== 0x6d) i++
+        } else if ((c & 0xc0) !== 0x80) {
+            n++
+        }
+        i++
+    }
+    return n
+}
+
+/** A row of the table: its cells padded to the widths of the columns. */
+function renderRow(row: string[], widths: int[]): string {
+    let out = "│ "
+    for (let i = 0; i < row.length; i++) {
+        out += row[i] + " ".repeat(widths[i] - screenWidth(row[i]))
+        if (i !== row.length - 1) out += " │ "
+    }
+    return `${out} │`
+}
+
+/** The table drawn as Node's console.table draws one, with box-drawing characters. */
+//ore:runtime ore_rt_table_render
+function tableRender(t: Table): string {
+    const only = t.only
+    const columns = only !== null ? (t.keys.length > 0 ? only : []) : t.columns
+    const hasValues = only === null && t.values.some((v) => v !== null)
+    const head: string[] = [t.index]
+    for (const c of columns) head.push(c)
+    if (hasValues) head.push("Values")
+    const rows: string[][] = []
+    for (let r = 0; r < t.keys.length; r++) {
+        const row: string[] = [t.keys[r]]
+        for (const c of columns) row.push(t.cells[r].get(c) ?? "")
+        if (hasValues) row.push(t.values[r] ?? "")
+        rows.push(row)
+    }
+    const widths: int[] = []
+    for (let i = 0; i < head.length; i++) {
+        let width = screenWidth(head[i])
+        for (const row of rows) width = Math.max(width, screenWidth(row[i]))
+        widths.push(width)
+    }
+    const divider = widths.map((w) => "─".repeat(w + 2))
+    let out = `┌${divider.join("┬")}┐\n${renderRow(head, widths)}\n├${divider.join("┼")}┤\n`
+    for (const row of rows) out += `${renderRow(row, widths)}\n`
+    return `${out}└${divider.join("┴")}┘`
+}

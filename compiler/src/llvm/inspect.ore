@@ -441,3 +441,205 @@ export function functionNames(g: Emitter, data: string): string {
     lines.push("}")
     return lines.join("\n")
 }
+
+/**
+ * A value as util.inspect formats it with options, for the console: colored
+ * as the output `fd` is (none for 0), objects `depth` levels deep.
+ */
+export function inspectWith(g: Emitter, v: V, t: Type, fd: int, depth: int): V {
+    const s = g.rt("ore_rt_inspect_with", [g.i64(fd), g.i64(depth), g.i64(100), g.i64(80)])
+    return inspectAt(g, v, t, s, g.i64(0))
+}
+
+/** `inspectWith` at the top of what console.log prints: a string as it is, also the one a union holds. */
+export function inspectTopWith(g: Emitter, v: V, t: Type, fd: int, depth: int): V {
+    if (t.kind === "string" || t.kind === "literal") return v
+    if (t.kind === "unknown") return inspectTop(g, v, t)
+    if (t.kind !== "union") return inspectWith(g, v, t, fd, depth)
+    if (unionRepr(t).k === "strings") return v
+    if (!t.members.some((m) => m.kind === "string" || m.kind === "literal")) return inspectWith(g, v, t, fd, depth)
+    // By the member the union holds.
+    const s = g.rt("ore_rt_inspect_with", [g.i64(fd), g.i64(depth), g.i64(100), g.i64(80)])
+    const out = g.b.alloca(STR)
+    const done = g.b.label("ttop")
+    for (let i = 0; i < t.members.length; i++) {
+        const m = t.members[i]
+        const here = g.b.label("tmember")
+        const next = g.b.label("tnext")
+        g.b.condBr(slotTest(g, t, v, i), here, next)
+        g.b.start(here)
+        const held = m.kind === "null" ? null : payload(g, t, v, i)
+        const r =
+            held === null
+                ? inspectNull(g, s)
+                : m.kind === "string" || m.kind === "literal"
+                  ? held
+                  : inspectAt(g, held, m, s, g.i64(0))
+        g.b.emit(`store ${STR} ${r.v}, ptr ${out}`)
+        g.b.br(done)
+        g.b.start(next)
+    }
+    g.b.emit(`store ${STR} ${g.str("").v}, ptr ${out}`)
+    g.b.br(done)
+    g.b.start(done)
+    return g.b.value(STR, `load ${STR}, ptr ${out}`)
+}
+
+/**
+ * A cell of console.table, as Node formats one: an object with more than 2
+ * properties as `[Object]`, others 1 level deep, 3 entries of an array or a
+ * map, on one line, colored as standard output is.
+ */
+function cell(g: Emitter, v: V, t: Type): V {
+    const depth = t.kind === "struct" && !t.tuple && t.fields.length > 2 ? -1 : 0
+    const s = g.rt("ore_rt_inspect_with", [g.i64(1), g.i64(depth), g.i64(3), g.i64(1 << 40)])
+    return inspectAt(g, v, t, s, g.i64(0))
+}
+
+/** Whether console.table makes a table of a type: an array, a map, a set or an object; it logs other values. */
+function tabular(t: Type): bool {
+    return t.kind === "array" || t.kind === "map" || t.kind === "set" || t.kind === "struct"
+}
+
+/** Prints a drawn table and a newline. */
+function printTable(g: Emitter, tb: V) {
+    g.rt("ore_rt_print_string", [g.rt("ore_rt_table_render", [tb])])
+    g.rt("ore_rt_print_newline", [])
+}
+
+/**
+ * Prints `console.table(data, properties)`: a row for each element of an
+ * array, entry of a map or a set, or property of an object; in each row a
+ * cell for each property of an object, element of an array, or the value
+ * of a primitive in the column "Values". `only`, the properties, limits
+ * the columns of an array or an object.
+ */
+export function table(g: Emitter, v: V, t: Type, only: V | null) {
+    if (!tabular(t)) {
+        // As console.log prints the value.
+        if (t.kind === "string" || t.kind === "literal") g.rt("ore_rt_print_string", [v])
+        else g.rt("ore_rt_print_string", [inspectTop(g, v, t)])
+        g.rt("ore_rt_print_newline", [])
+        return
+    }
+    const tb = g.rt("ore_rt_table_new", [])
+    // Node shows all the columns of a map or a set: their properties do not apply.
+    if (t.kind === "map") {
+        entriesTable(g, tb, v, t.key, t.value)
+        return
+    }
+    if (t.kind === "set") {
+        entriesTable(g, tb, v, t.elem, null)
+        return
+    }
+    if (t.kind === "array") {
+        const elem = t.elem
+        const n = g.b.value("i64", `load i64, ptr ${g.field(v.v, ARRAY, 1)}`)
+        counted(g, n, (k) => {
+            g.rt("ore_rt_table_row", [tb, g.rt("ore_rt_str_from_i64", [k])])
+            const data = g.b.value("ptr", `load ptr, ptr ${g.field(v.v, ARRAY, 0)}`)
+            const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${k.v}`)
+            tableItem(g, tb, g.load(place.v, elem), elem)
+        })
+    } else if (t.kind === "struct") {
+        for (let i = 0; i < t.fields.length; i++) {
+            const f = t.fields[i]
+            g.rt("ore_rt_table_row", [tb, g.str(t.tuple ? `${i}` : f.name)])
+            tableItem(g, tb, g.load(fieldPtr(g, v.v, t, f.name), f.type), f.type)
+        }
+    }
+    if (only !== null) g.rt("ore_rt_table_only", [tb, only])
+    printTable(g, tb)
+}
+
+/** The table of a map (with `valueType`) or a set: a row for each entry, numbered, with its key and its value. */
+function entriesTable(g: Emitter, tb: V, v: V, keyType: Type, valueType: Type | null) {
+    g.rt("ore_rt_table_iteration", [tb])
+    const written = g.b.alloca("i64")
+    g.b.emit(`store i64 0, ptr ${written}`)
+    const slots = g.b.value("i64", `load i64, ptr ${g.field(v.v, MAP, 6)}`)
+    counted(g, slots, (i) => {
+        const live = g.b.label("live")
+        const skip = g.b.label("skip")
+        g.b.condBr(g.rtBool("ore_rt_map_live", [v, i]), live, skip)
+        g.b.start(live)
+        const count = g.b.value("i64", `load i64, ptr ${written}`)
+        g.b.emit(`store i64 ${g.b.value("i64", `add i64 ${count.v}, 1`).v}, ptr ${written}`)
+        g.rt("ore_rt_table_row", [tb, cell(g, count, types.i64)])
+        const key = cell(g, g.load(g.rt("ore_rt_map_key", [v, i]).v, keyType), keyType)
+        if (valueType !== null) {
+            g.rt("ore_rt_table_cell", [tb, g.str("Key"), key])
+            const value = g.load(g.rt("ore_rt_map_value", [v, i]).v, valueType)
+            g.rt("ore_rt_table_value", [tb, cell(g, value, valueType)])
+        } else {
+            g.rt("ore_rt_table_value", [tb, key])
+        }
+        g.b.br(skip)
+        g.b.start(skip)
+    })
+    printTable(g, tb)
+}
+
+/** The cells of a row of console.table for an entry: its properties or elements, or a primitive's value. */
+function tableItem(g: Emitter, tb: V, v: V, t: Type) {
+    if (t.kind === "struct") {
+        for (let i = 0; i < t.fields.length; i++) {
+            const f = t.fields[i]
+            const x = g.load(fieldPtr(g, v.v, t, f.name), f.type)
+            const ft = f.type
+            // An optional property that is null is not there, as an undefined one in JavaScript.
+            let absent: V | null = null
+            if (f.optional && ft.kind === "union") {
+                for (let m = 0; m < ft.members.length; m++)
+                    if (ft.members[m].kind === "null") absent = slotTest(g, ft, x, m)
+            }
+            const skip = g.b.label("absent")
+            if (absent !== null) {
+                const yes = g.b.label("present")
+                g.b.condBr(absent, skip, yes)
+                g.b.start(yes)
+            }
+            g.rt("ore_rt_table_cell", [tb, g.str(t.tuple ? `${i}` : f.name), cell(g, x, ft)])
+            g.b.br(skip)
+            g.b.start(skip)
+        }
+        return
+    }
+    if (t.kind === "array") {
+        const elem = t.elem
+        const n = g.b.value("i64", `load i64, ptr ${g.field(v.v, ARRAY, 1)}`)
+        counted(g, n, (k) => {
+            const data = g.b.value("ptr", `load ptr, ptr ${g.field(v.v, ARRAY, 0)}`)
+            const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${k.v}`)
+            const text = cell(g, g.load(place.v, elem), elem)
+            g.rt("ore_rt_table_cell", [tb, g.rt("ore_rt_str_from_i64", [k]), text])
+        })
+        return
+    }
+    // A map or a set is an object without properties of its own: no cells.
+    if (t.kind === "map" || t.kind === "set") return
+    if (t.kind === "union" && !isNumberLiterals(t) && unionRepr(t).k !== "strings") {
+        // By the member the value holds.
+        const done = g.b.label("item")
+        for (let i = 0; i < t.members.length; i++) {
+            const m = t.members[i]
+            const here = g.b.label("imember")
+            const next = g.b.label("inext")
+            g.b.condBr(slotTest(g, t, v, i), here, next)
+            g.b.start(here)
+            if (m.kind === "null") g.rt("ore_rt_table_value", [tb, inspectNull(g, cellState(g))])
+            else tableItem(g, tb, payload(g, t, v, i), m)
+            g.b.br(done)
+            g.b.start(next)
+        }
+        g.b.br(done)
+        g.b.start(done)
+        return
+    }
+    g.rt("ore_rt_table_value", [tb, cell(g, v, t)])
+}
+
+/** The state of formatting a cell of console.table, for `null`. */
+function cellState(g: Emitter): V {
+    return g.rt("ore_rt_inspect_with", [g.i64(1), g.i64(0), g.i64(3), g.i64(1 << 40)])
+}
