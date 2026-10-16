@@ -133,7 +133,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE2065](ORE2065.md) | An integer constant is not assignable to type 'bigint'. Write a bigint literal: '…n'. |
 | [ORE2066](ORE2066.md) | Type '…' exists only in computations on types: values cannot have 'never' in a tuple or an object type yet. |
 | [ORE2067](ORE2067.md) | Constant … is not assignable to type '…'. |
-| [ORE2068](ORE2068.md) | The type '…' is 'readonly' and cannot be assigned to the mutable type '…'. |
+| [ORE2070](ORE2070.md) | The type '…' is 'readonly' and cannot be assigned to the mutable type '…'. |
 
 ## ORE3xxx: Expressions
 
@@ -221,9 +221,9 @@ The codes are grouped by the part of the language they concern:
 | [ORE3080](ORE3080.md) | An expression of type 'void' cannot be awaited. |
 | [ORE3081](ORE3081.md) | A union of promises and other values cannot be awaited yet. |
 | [ORE3082](ORE3082.md) | Static members cannot reference class type parameters. |
-| [ORE3083](ORE3083.md) | Index signature in type '…' only permits reading. |
-| [ORE3084](ORE3084.md) | 'as const' takes array literals without spread elements. |
-| [ORE3085](ORE3085.md) | 'as const' takes object literals of 'name: value' properties. |
+| [ORE3084](ORE3084.md) | Index signature in type '…' only permits reading. |
+| [ORE3092](ORE3092.md) | 'as const' takes array literals without spread elements. |
+| [ORE3093](ORE3093.md) | 'as const' takes object literals of 'name: value' properties. |
 
 ## ORE4xxx: Calls and built-in functions
 
