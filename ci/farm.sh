@@ -18,6 +18,9 @@
 #                                          output is in logs/NAME.log. Agents,
 #                                          which cannot reach the machines, use
 #                                          this.
+#   ci/farm.sh wait NAME                   waits for a submitted job (at most
+#                                          50 minutes), prints its log and
+#                                          exits with its status
 #   ci/farm.sh serve                       runs the queue, a job per free slot
 #   ci/farm.sh base REF                    builds each machine's base compiler
 #   ci/farm.sh status                      slots, queue and recent results
@@ -112,6 +115,17 @@ submit)
     mv "$home/queue/$name.job.tmp" "$home/queue/$name.job"
     echo "queued $name: wait for $home/done/$name.status, the log is $home/logs/$name.log"
     ;;
+wait)
+    for ((t = 0; t < 600; t++)); do
+        if [ -f "$home/done/$2.status" ]; then
+            tail -n 80 "$home/logs/$2.log"
+            exit "$(cat "$home/done/$2.status")"
+        fi
+        sleep 5
+    done
+    echo "$2 is still running: ci/farm.sh wait $2 again" >&2
+    exit 124
+    ;;
 serve)
     # Queued jobs start as slots free; each runs in its own process.
     while true; do
@@ -157,7 +171,7 @@ status)
     done
     ;;
 *)
-    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
