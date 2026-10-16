@@ -134,14 +134,15 @@ right, as in TypeScript.
 - Loops and switches may be labeled for `break label`, and loops for
   `continue label`; labels on other statements are rejected.
 - A function with a return type must return a value on every path. A path
-  ending in an infinite loop or a `process.panic(...)` call needs no return.
+  ending in an infinite loop or a `process.panic(...)` call needs no return,
+  and a function whose result type is `null` may end without one.
 
 ## Panics
 
 A panic prints its message and exits with status 2. Debug builds (the default)
 print the Ore call stack with source lines:
 
-```
+```text
 panic: integer divide by zero
 
   div at main.ore:9
@@ -149,3 +150,7 @@ panic: integer divide by zero
 ```
 
 Release builds (`--release`) keep no call stack information.
+
+Recursion that overflows the stack of a task is a panic too, `panic: stack
+overflow`, with the call stack; the size of stacks is set by `ORE_STACK`
+(see [concurrency](06-concurrency.md)).
