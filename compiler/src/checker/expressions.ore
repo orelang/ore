@@ -122,7 +122,7 @@ import {
     whenTrue,
 } from "../syntax/nodes"
 import { bigIsNeg, bigLt, bigOf, bigText, bigToI64 } from "./bigint"
-import { checkAwait } from "./async"
+import { checkAwait, isAsync, promiseOf } from "./async"
 import { checkYield, inferGenerator, isGenerator } from "./generators"
 import { type Checker, structOrInterface } from "./base"
 import { basicErrorClass, checkCall, checkNew, checkRegExpLiteral } from "./calls"
@@ -1904,7 +1904,8 @@ function objectWithMethods(c: Checker, node: Node, scope: Scope, expected: Type 
         }
         if (k === "MethodDeclaration") {
             const hint = hints !== null ? memberHint(hints, name) : null
-            if (typeNode(prop) === null && isGenerator(prop) && (hint === null || hint.kind !== "func")) {
+            const inferred = isGenerator(prop) || (isAsync(prop) && returnsValue(body(prop)))
+            if (typeNode(prop) === null && inferred && (hint === null || hint.kind !== "func")) {
                 const closure = generatorMethod(c, prop, scope)
                 if (closure === null || !put(name, name, prop, closure, closure.type, false)) return errorOperand
                 continue
@@ -2044,22 +2045,31 @@ function methodType(c: Checker, method: Node, scope: Scope, hint: Type | null): 
             )
             return null
         }
-        result = types.void
+        // An async method that returns no value: `Promise<void>`.
+        result = isAsync(method) && !isGenerator(method) ? promiseOf(c, types.void, method) : types.void
+        if (result === null) return null
     }
     return new FuncType(params, result)
 }
 
 /**
  * A generator method of an object literal without a return type annotation
- * or a type to fit: its body gives its type, before the object's type, its
- * `this`, is known, so it cannot use `this`.
+ * or a type to fit, or an async one that returns a value: its body gives its
+ * type, before the object's type, its `this`, is known, so it cannot use
+ * `this`.
  */
 function generatorMethod(c: Checker, method: Node, scope: Scope): Closure | null {
     if (usesThis(body(method))) {
-        c.error(
-            method.child("name")!,
-            "A generator function needs a return type annotation, such as 'Generator<T>': a method of an object literal that uses 'this'.",
-        )
+        if (isGenerator(method))
+            c.error(
+                method.child("name")!,
+                "A generator function needs a return type annotation, such as 'Generator<T>': a method of an object literal that uses 'this'.",
+            )
+        else
+            c.error(
+                method.child("name")!,
+                "An async function needs a return type annotation, such as 'Promise<T>': a method of an object literal that uses 'this'.",
+            )
         return null
     }
     const closure = checkClosure(c, method, scope)
@@ -2079,12 +2089,13 @@ function usesThis(node: Node | null): bool {
 }
 
 /** Whether a function body returns a value somewhere (not counting nested functions). */
-function returnsValue(node: Node | null): bool {
+export function returnsValue(node: Node | null): bool {
     if (node === null) return false
     if (node.kind === "ReturnStatement" && node.child("expression") !== null) return true
     const k = node.kind
     if (k === "FunctionDeclaration" || k === "FunctionExpression" || k === "ArrowFunction" || k === "MethodDeclaration")
         return false
+    if (k === "GetAccessor" || k === "SetAccessor" || k === "Constructor" || k === "ClassDeclaration") return false
     for (const child of node.children) if (returnsValue(child)) return true
     return false
 }

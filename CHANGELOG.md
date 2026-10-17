@@ -30,6 +30,18 @@ before 1.0, a minor version may change the language.
   may return nothing, a void call, or a promise, and an async one returns
   its promise. `void` is still in no other union
   ([ORE2005](docs/errors/ORE2005.md)).
+- An async function, method, arrow function or function expression without
+  a return type annotation returns `Promise<T>` of the values it returns, as
+  in TypeScript, where it was always `Promise<void>`: `const f = async () =>
+  1` is `() => Promise<int>`. T is the union of their types (a promise's
+  value for a promise), with `null` when a `return` has no value or the
+  body can end without one; a type from the context, as a callback's
+  `() => Promise<int>`, still wins. One used in its own body, a nested
+  declaration and a method of an object literal that uses `this` need an
+  annotation when they return a value (new:
+  [ORE6087](docs/errors/ORE6087.md)); an async nested declaration or
+  object literal method returning nothing is `Promise<void>`, where its
+  result was `void`.
 - `x as T` of an `unknown` is the value it holds as a `T`, checked at run
   time (a panic when it holds another type).
 - A `return` without a value ends a function whose result is `null`, as an

@@ -80,7 +80,7 @@ import {
     whenTrue,
     types as typeNodes,
 } from "../syntax/nodes"
-import { checkAsyncBody, isAsync, promiseValue } from "./async"
+import { isAsync, promiseValue } from "./async"
 import { generatorStmts, inferGenerator, isGenerator, startBody } from "./generators"
 import { type Checker } from "./base"
 import {
@@ -98,6 +98,7 @@ import {
 } from "./context"
 import {
     applyFuncDirectives,
+    asyncStmts,
     checkDefaults,
     checkFunctionBody,
     declareGeneric,
@@ -1476,7 +1477,7 @@ export function checkMethodBody(c: Checker, decl: Node, func: Func, type: Struct
     c.fn = new FuncContext(func.type.result, [], 0, null, null, func.receiver, type)
     enterPredicate(c, func, scope)
     const value = isAsync(decl) && !isGenerator(decl) ? promiseValue(c, func.type.result) : null
-    if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName))
+    if (value !== null) func.body = new Block(asyncStmts(c, decl, func, scope, value, null))
     else if (isGenerator(decl)) func.body = new Block(generatorStmts(c, decl, func, scope))
     else func.body = checkBlock(c, body(decl)!, scope)
     if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))

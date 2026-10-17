@@ -511,6 +511,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6084](ORE6084.md) | The return type of an async generator function must be 'AsyncGenerator<T, TReturn, TNext>', 'AsyncIterator<T>' or 'AsyncIterableIterator<T>', not '…'. |
 | [ORE6085](ORE6085.md) | 'yield*' yields values of type '…', which type '…' does not include. |
 | [ORE6086](ORE6086.md) | Parameter '…' needs a type annotation: its default value uses '…', whose type is not known before its declaration. |
+| [ORE6087](ORE6087.md) | An async function needs a return type annotation, such as 'Promise<T>': …. |
 
 ## ORE7xxx: Statements
 

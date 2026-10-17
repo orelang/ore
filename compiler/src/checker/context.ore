@@ -121,13 +121,37 @@ export class InferredYields {
 }
 
 /**
+ * The `return`s of an async function without a return type annotation,
+ * checked before its type is known: they give T of its `Promise<T>`, and are
+ * completed once it is.
+ */
+export class InferredReturns {
+    /** The types of the values returned, of a promise's value for a promise. */
+    readonly types: Type[] = []
+    /** Untyped constants are returned too: integers, and floats (which make them `f64`). */
+    ints = false
+    floats = false
+    /** A `return` without a value, or of a void call. */
+    empty = false
+    /** The result type of the body, once known: T or `Promise<T>`. */
+    result: Type | null = null
+    /** Complete each `return` once the type is known. */
+    readonly fixups: (() => void)[] = []
+}
+
+/**
  * A generator function or method without a return type annotation, whose
  * body gives its type: checked at its first use, or with the other bodies.
+ * So is an async one that returns a value.
  */
 export class InferredGenerator {
     /** "waiting", "checking" (its body is being checked) or "done". */
     state = "waiting"
-    constructor(readonly check: () => void) {}
+    constructor(
+        readonly check: () => void,
+        /** An async function, not a generator. */
+        readonly promised: bool = false,
+    ) {}
 }
 
 export class FuncContext {
@@ -172,6 +196,8 @@ export class FuncContext {
     nextType: Type | null = null
     /** In the body of a generator without a return type annotation: its `yield`s, which give its types. */
     yields: InferredYields | null = null
+    /** In the body of an async function without a return type annotation: its `return`s, which give its type. */
+    returns: InferredReturns | null = null
     /**
      * In the top-level code of a module or an arrow function in it, where
      * `this` is null: JavaScript's `undefined` there.

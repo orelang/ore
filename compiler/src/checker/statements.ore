@@ -102,7 +102,16 @@ import {
     typeNode,
     typeParameters,
 } from "../syntax/nodes"
-import { asyncValue, checkAsyncBody, isAsync, promiseOf, promiseOrNull } from "./async"
+import {
+    type AsyncBody,
+    asyncValue,
+    checkAsyncBody,
+    inferredEmptyReturn,
+    inferredReturn,
+    isAsync,
+    promiseOf,
+    promiseOrNull,
+} from "./async"
 import { checkAsyncReturn, generatorBody, inferGenerator, isGenerator, iteratorModule } from "./generators"
 import {
     type AsyncSource,
@@ -136,6 +145,7 @@ import {
     member,
     narrowTo,
     orderBySpreads,
+    returnsValue,
     settle,
     storeKeyed,
     writeAccessor,
@@ -379,7 +389,16 @@ export function declareNestedFunction(c: Checker, decl: Node, scope: Scope): Loc
         )
         return null
     }
-    const result = annotation !== null ? c.resolveType(annotation, scope) : types.void
+    const promised = isAsync(decl) && !isGenerator(decl)
+    if (annotation === null && promised && returnsValue(body(decl))) {
+        c.error(
+            name,
+            "An async function needs a return type annotation, such as 'Promise<T>': a nested async function declaration that returns a value is hoisted.",
+        )
+        return null
+    }
+    let result = annotation !== null ? c.resolveType(annotation, scope) : types.void
+    if (annotation === null && promised) result = promiseOf(c, types.void, decl)
     if (result === null) return null
     const local = c.newLocal(name.text, new FuncTypeClass(params, result), false)
     // Assigned once its closure exists; a recursive function captures itself through a box.
@@ -1513,6 +1532,12 @@ export function checkReturn(c: Checker, stmt: Node, scope: Scope): ReturnStmt {
         return new ReturnStmt(new LocalRef(self.type, self))
     }
     if (fn.asyncGenerator && valueNode !== null) return checkAsyncReturn(c, valueNode, scope)
+    // An async function without a return type annotation takes its type from its returns.
+    const returns = fn.returns
+    if (returns !== null) {
+        if (valueNode === null) return inferredEmptyReturn(c, returns, stmt)
+        return inferredReturn(c, checkExpr(c, valueNode, scope), returns, valueNode)
+    }
     const current = fn.result
     if (current === null) {
         // A closure without a return type takes the type of its first return.
@@ -1761,7 +1786,11 @@ export function checkClosure(
     return typed(closure)
 }
 
-/** The body of an async closure: its result is `Promise<void>` unless annotated or expected. */
+/**
+ * The body of an async closure: its result is annotated or expected, or else
+ * (also for a context of a void result, such as a callback's) comes from the
+ * body: `Promise<T>` of the values it returns.
+ */
 function asyncClosureBody(
     c: Checker,
     node: Node,
@@ -1772,16 +1801,24 @@ function asyncClosureBody(
     name: string,
 ): bool {
     const fn = c.fn!
-    let result = fn.result
-    if (result === null || result.kind === "void") result = promiseOf(c, types.void, node)
-    if (result === null) return false
+    const given = fn.result
+    let result: Type | null = null
+    let checked: AsyncBody | null = null
+    if (given === null || given.kind === "void") {
+        checked = checkAsyncBody(c, node, scope, null, name)
+        if (checked === null) return false
+        result = checked.type
+    } else {
+        // For a `void | Promise<T>`, the promise.
+        const promise = promiseOrNull(c, given)
+        const value = asyncValue(c, promise ?? given, resultNode ?? node)
+        if (value === null) return false
+        checked = checkAsyncBody(c, node, scope, value, name, promise !== null ? given : null)
+        if (checked === null) return false
+        result = given
+    }
     fn.result = result
-    // For a `void | Promise<T>`, the promise.
-    const promise = promiseOrNull(c, result)
-    const value = asyncValue(c, promise ?? result, resultNode ?? node)
-    if (value === null) return false
-    const wrapped = promise !== null ? result : null
-    func.body = new Block(prepend(prologue, checkAsyncBody(c, node, scope, value, name, wrapped)))
+    func.body = new Block(prepend(prologue, checked.stmts))
     const done = new FuncTypeClass(func.type.params, result)
     done.required = func.type.required
     done.rest = func.type.rest

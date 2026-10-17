@@ -31,7 +31,9 @@
   `for (let ...)` has its own copy of the loop variable.
 - Parameters of a function literal take their types from the context
   (`xs.map((x) => x * 2)`) or from annotations. The return type comes from
-  an annotation or the context, or is inferred from the first `return`.
+  an annotation or the context, or is inferred from the first `return`;
+  an async one's is `Promise<T>` of all its returns (see [Async functions
+  and promises](06-concurrency.md#async-functions-and-promises)).
 - Arrow functions keep `this` of the enclosing method; function expressions
   have no `this`.
 - Nested function declarations are hoisted: they can be called anywhere in

@@ -81,10 +81,21 @@ console.log(counts) // [ 1, 3 ]
   that resolves it, for code that resolves it outside an executor. There
   is no `reject` and no `catch`.
 - An `async` function, method or arrow function returns `Promise<T>`, which
-  its return type must be (`Promise<void>` without an annotation, whose
-  `return` may have no value); its `return` statements give a `T` or a
-  promise of one. It runs at once until its first `await`, then the caller
-  continues. As the result of a callback that may be async, `void |
+  its return type must be; its `return` statements give a `T` or a
+  promise of one. Without an annotation, and for an arrow function or
+  function expression without a type from the context (or with a context of
+  a `void` result), T comes from the body, as in TypeScript: the union of
+  the types of the values returned (of a promise's value, for a promise;
+  untyped constants take their default type), with `null` when a `return`
+  has no value or the body can end without one, TypeScript's `undefined`
+  (`async (n: int) => { if (n > 0) return n }` is `(n: int) =>
+  Promise<int | null>`); `Promise<void>` when no `return` has a value. A
+  function or method whose type comes from its body is checked at its first
+  use, so one used in its own body (a recursive call), a nested function
+  declaration (which is hoisted) and a method of an object literal that
+  uses `this` need an annotation when they return a value
+  ([ORE6087](../errors/ORE6087.md)). It runs at once until its first
+  `await`, then the caller continues. As the result of a callback that may be async, `void |
   Promise<T>` takes an async function too (see
   [Unions and null](03-objects.md#unions-and-null)).
 - `await p` suspends an async function until `p` is fulfilled and gives its

@@ -269,17 +269,24 @@ export function generatorBody(
 
 /**
  * Makes sure that the type of `func` is known, before it is used at `node`:
- * a generator without a return type annotation has its body checked first.
- * Reports one used in its own body, whose type is not known yet.
+ * a generator without a return type annotation has its body checked first,
+ * and so does an async function that returns a value. Reports one used in
+ * its own body, whose type is not known yet.
  */
 export function inferGenerator(c: Checker, func: Func, node: Node): bool {
     const inferred = c.inferredGenerators.get(func)
     if (inferred === null || inferred.state === "done") return true
     if (inferred.state === "checking") {
-        c.error(
-            node,
-            `A generator function needs a return type annotation, such as 'Generator<T>': '${func.sourceName}' is used in its own body.`,
-        )
+        if (inferred.promised)
+            c.error(
+                node,
+                `An async function needs a return type annotation, such as 'Promise<T>': '${func.sourceName}' is used in its own body.`,
+            )
+        else
+            c.error(
+                node,
+                `A generator function needs a return type annotation, such as 'Generator<T>': '${func.sourceName}' is used in its own body.`,
+            )
         return false
     }
     const savedFn = c.fn

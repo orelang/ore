@@ -1,0 +1,109 @@
+// The result of an async function without a return type annotation, as in
+// TypeScript: `Promise<T>` of the values it returns.
+
+const one = async () => 1
+const greet = async (name: string) => `hi ${name}`
+const half = async function () {
+    return 0.5
+}
+const chained = async () => one()
+const voidCall = async () => console.log("a void call")
+const nothing = async () => {
+    await null
+}
+
+const pick = async (n: int) => {
+    if (n > 0) return "positive"
+    if (n < 0) return n
+    return false
+}
+
+const maybe = async (n: int) => {
+    if (n > 0) return n
+}
+
+const early = async (n: int) => {
+    if (n > 0) return
+    return "small"
+}
+
+async function total(xs: int[]) {
+    let sum = 0
+    for (const x of xs) sum += await x
+    return sum
+}
+
+async function twice(n: int) {
+    return (await total([n, n])) * 1
+}
+
+class Counter {
+    count = 0
+
+    async next() {
+        this.count++
+        return this.count
+    }
+
+    static async make(start: int) {
+        const c = new Counter()
+        c.count = start
+        return c
+    }
+}
+
+const doubler = {
+    async double(n: int) {
+        return n * 2
+    },
+}
+
+const n: int = await one()
+console.log(n + 1)
+const s: string = await greet("ore")
+console.log(s.length, s)
+const h: f64 = await half()
+console.log(h * 2)
+const c: int = await chained()
+console.log(c)
+await voidCall()
+await nothing()
+console.log(await pick(3), await pick(-2), await pick(0))
+console.log((await maybe(4)) ?? "none", (await maybe(0)) ?? "none")
+console.log((await early(1)) ?? "none", (await early(0)) ?? "none")
+const sum: int = await total([1, 2, 3])
+console.log(sum, await twice(5))
+
+const counter = await Counter.make(10)
+const first: int = await counter.next()
+console.log(first, await counter.next())
+console.log(await doubler.double(21))
+
+// A type from the context still wins.
+const typed: () => Promise<f64> = async () => 2
+console.log(await typed())
+const tens = await Promise.all([1, 2, 3].map(async (x) => x * 10))
+console.log(tens)
+
+// A nested declaration and a method of an object literal that return nothing: `Promise<void>`.
+function outer(): Promise<void> {
+    async function inner() {
+        await null
+        console.log("inner")
+    }
+    return inner()
+}
+await outer()
+const pinger = {
+    async ping() {
+        await null
+        console.log("ping")
+    },
+}
+await pinger.ping()
+
+// A context of a void result does not type the function.
+setTimeout(async () => {
+    console.log("in a timer")
+    return 1
+}, 0)

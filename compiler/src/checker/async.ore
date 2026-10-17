@@ -4,15 +4,15 @@
 // function returns with what the body returns; `await` is `awaitPromise`
 // for a promise and `awaitValue` for any other value.
 
-import { type Expr, type Stmt, Block, Call, Closure, ExprStmt, Func, ReturnStmt } from "../ir/nodes"
+import { type Expr, type Stmt, Block, Call, Closure, ExprStmt, Func, NullLit, ReturnStmt, Seq } from "../ir/nodes"
 import { type Type, FuncType, types } from "../ir/types"
 import { type Node } from "../syntax/ast"
 import { body, expression, hasModifier } from "../syntax/nodes"
 import { type Checker } from "./base"
-import { FuncContext } from "./context"
+import { FuncContext, InferredReturns } from "./context"
 import { checkReturns, instantiate } from "./declarations"
 import { checkExpr } from "./expressions"
-import { typed } from "./helpers"
+import { terminates, typed } from "./helpers"
 import { type Operand, errorOperand } from "./operand"
 import { checkBlock } from "./statements"
 import { GenericFuncSymbol, Scope } from "./symbols"
@@ -80,25 +80,43 @@ function runtimeFunc(c: Checker, name: string, typeArgs: Type[], node: Node): Fu
     return null
 }
 
+/** The statements of an async function's body, and its result type `Promise<T>`. */
+export class AsyncBody {
+    constructor(
+        readonly stmts: Stmt[],
+        readonly type: Type,
+    ) {}
+}
+
 /**
  * The body of an async function `decl`, whose promise has the value type
- * `value`: a closure of the body, which returns a value or a promise of it,
- * called by `asyncCall`. Returns the statements of the function's body,
+ * `declared`: a closure of the body, which returns a value or a promise of
+ * it, called by `asyncCall`. Returns the statements of the function's body,
  * which returns the promise as a `wrapped` when that is not null (a `void |
- * Promise<T>`).
+ * Promise<T>`). Without a value type (`declared` null), the body gives it,
+ * as in TypeScript: the union of the types of the values returned (of a
+ * promise's value for a promise), with null when the body also returns
+ * without a value or can end without a return; `Promise<void>` when it
+ * returns no value.
  */
 export function checkAsyncBody(
     c: Checker,
     decl: Node,
     scope: Scope,
-    value: Type,
+    declared: Type | null,
     name: string,
     wrapped: Type | null = null,
-): Stmt[] {
+): AsyncBody | null {
     const outer = c.fn!
-    const promise = promiseOf(c, value, decl)
-    if (promise === null) return []
-    const result = value.kind === "null" ? types.null : c.unionOf([value, promise])
+    let value: Type = types.null
+    let promise: Type | null = null
+    let result: Type = types.null
+    if (declared !== null) {
+        value = declared
+        promise = promiseOf(c, value, decl)
+        if (promise === null) return null
+        result = value.kind === "null" ? types.null : c.unionOf([value, promise])
+    }
     const func = new Func(
         `ore_lambda_${c.nextLambda++}`,
         `${name}.<async>`,
@@ -122,25 +140,82 @@ export function checkAsyncBody(
     c.facts = [new Map<string, Type>()]
     c.fn = new FuncContext(result, [], 0, func, captures, outer.thisLocal, outer.cls)
     c.fn.inAsync = true
+    const returns = declared === null ? new InferredReturns() : null
+    c.fn.returns = returns
     const fnBody = body(decl)!
     if (fnBody.kind === "Block") {
         func.body = checkBlock(c, fnBody, inner)
     } else {
-        const v = checkExpr(c, fnBody, inner, result)
+        const v = checkExpr(c, fnBody, inner, returns !== null ? null : result)
         if (v.k !== "error") {
             if (result.kind === "null" && v.k === "typed" && v.expr.type.kind === "void")
                 func.body = new Block([new ExprStmt(v.expr)])
+            else if (returns !== null) func.body = new Block([inferredReturn(c, v, returns, fnBody)])
             else func.body = new Block([new ReturnStmt(c.coerce(v, result, fnBody))])
         }
     }
     c.fn = outer
     c.facts = savedFacts
+    let type: Type | null = promise
+    if (returns !== null) {
+        // Untyped constants take their default type, as the elements of an array literal do.
+        const found = returns.types.slice()
+        if (returns.floats) found.push(types.f64)
+        else if (returns.ints) found.push(types.i64)
+        // Beside values, a return without one or the end of the body gives null: TypeScript's undefined.
+        const ends = !terminates(func.body)
+        if (found.length > 0 && (returns.empty || ends)) found.push(types.null)
+        if (found.length > 0) value = c.unionOf(found)
+        promise = promiseOf(c, value, decl)
+        if (promise === null) return null
+        // Without a value returned, `Promise<void>`, whose value is null.
+        type = found.length > 0 ? promise : promiseOf(c, types.void, decl)
+        if (found.length > 0) result = c.unionOf([value, promise])
+        if (found.length > 0 && ends)
+            func.body.body.push(new ReturnStmt(c.coerce(typed(new NullLit(types.null)), result, decl)))
+        func.type = new FuncType([], result)
+        returns.result = result
+        for (const fix of returns.fixups) fix()
+    }
     checkReturns(c, func, decl)
     const call = runtimeFunc(c, "asyncCall", [value], decl)
-    if (call === null) return []
+    if (call === null || promise === null || type === null) return null
     const closure: Expr = new Closure(func.type, func)
     const started: Expr = new Call(promise, call, [closure])
-    return [new ReturnStmt(wrapped !== null ? c.coerce(typed(started), wrapped, decl) : started)]
+    const stmts: Stmt[] = [new ReturnStmt(wrapped !== null ? c.coerce(typed(started), wrapped, decl) : started)]
+    return new AsyncBody(stmts, type)
+}
+
+/**
+ * A `return` of `v` in an async function whose type its body gives, at
+ * `node`: the type of the value is recorded, and the return completed once
+ * the type is known. A void call is made before returning null.
+ */
+export function inferredReturn(c: Checker, v: Operand, returns: InferredReturns, node: Node): ReturnStmt {
+    const stmt = new ReturnStmt()
+    if (v.k === "error") return stmt
+    if (v.k === "untyped-float") returns.floats = true
+    else if (v.k === "untyped-int") returns.ints = true
+    else if (v.expr.type.kind === "void") returns.empty = true
+    else returns.types.push(promiseValue(c, v.expr.type) ?? v.expr.type)
+    returns.fixups.push(() => {
+        const result = returns.result!
+        if (v.k === "typed" && v.expr.type.kind === "void") {
+            const none = c.coerce(typed(new NullLit(types.null)), result, node)
+            stmt.value = new Seq(none.type, [v.expr, none])
+        } else stmt.value = c.coerce(v, result, node)
+    })
+    return stmt
+}
+
+/** A `return` without a value, at `node`, in an async function whose type its body gives. */
+export function inferredEmptyReturn(c: Checker, returns: InferredReturns, node: Node): ReturnStmt {
+    const stmt = new ReturnStmt()
+    returns.empty = true
+    returns.fixups.push(() => {
+        stmt.value = c.coerce(typed(new NullLit(types.null)), returns.result!, node)
+    })
+    return stmt
 }
 
 /** `await value`: the value of a promise, or the value itself after a tick. */

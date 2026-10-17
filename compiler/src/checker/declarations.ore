@@ -107,7 +107,7 @@ import {
     Signature,
 } from "./context"
 import { intrinsicType, isObjectKind } from "./computed"
-import { checkExpr } from "./expressions"
+import { checkExpr, returnsValue } from "./expressions"
 import {
     cIdent,
     directiveKind,
@@ -1206,7 +1206,8 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
 /**
  * The declared result type of a function or method; `void`, or `Promise<void>`
  * for an async one, without an annotation. A generator's comes from its body
- * then (see `inferredGenerator`), an async generator's too.
+ * then (see `inferredGenerator`), an async generator's too, and so does an
+ * async one's that returns a value.
  */
 export function resultType(c: Checker, decl: Node, scope: Scope): Type {
     const annotation = typeNode(decl)
@@ -1222,12 +1223,15 @@ export function resultType(c: Checker, decl: Node, scope: Scope): Type {
 
 /**
  * Whether a function or method is a generator without a return type
- * annotation, whose type comes from its body: `check` checks it, at the
- * first use of the function or with the other bodies.
+ * annotation, or an async one that returns a value, whose type comes from
+ * its body: `check` checks it, at the first use of the function or with the
+ * other bodies.
  */
 export function inferredGenerator(c: Checker, decl: Node, func: Func, check: () => void) {
-    if (!isGenerator(decl) || typeNode(decl) !== null || body(decl) === null) return
-    c.inferredGenerators.set(func, new InferredGenerator(check))
+    if (typeNode(decl) !== null || body(decl) === null) return
+    const promised = !isGenerator(decl) && isAsync(decl) && returnsValue(body(decl))
+    if (!isGenerator(decl) && !promised) return
+    c.inferredGenerators.set(func, new InferredGenerator(check, promised))
 }
 
 export function makeFunc(
@@ -2438,7 +2442,7 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
     const promise = promiseOrNull(c, func.type.result)
     const value = isAsync(decl) && !isGenerator(decl) ? promiseValue(c, promise ?? func.type.result) : null
     const wrapped = promise !== null ? func.type.result : null
-    if (value !== null) func.body = new Block(checkAsyncBody(c, decl, scope, value, func.sourceName, wrapped))
+    if (value !== null) func.body = new Block(asyncStmts(c, decl, func, scope, value, wrapped))
     else if (isGenerator(decl)) func.body = new Block(generatorStmts(c, decl, func, scope))
     else func.body = checkBlock(c, body(decl)!, scope)
     if (!terminates(func.body)) assertionReturn(c, typeNode(decl) ?? nameNode(decl))
@@ -2455,6 +2459,33 @@ export function checkFunctionBody(c: Checker, decl: Node, func: Func, outer: Sco
                 "A '//ore:naked' function can branch only on conditions known at compile time, such as 'target.arch'.",
             )
     }
+}
+
+/**
+ * The statements of the body of an async function or method `func` whose
+ * promise has the value type `value`: of one without a return type
+ * annotation that returns a value, the body gives its result type.
+ */
+export function asyncStmts(
+    c: Checker,
+    decl: Node,
+    func: Func,
+    scope: Scope,
+    value: Type,
+    wrapped: Type | null,
+): Stmt[] {
+    const inferred = c.inferredGenerators.get(func)
+    const checked = checkAsyncBody(c, decl, scope, inferred === null ? value : null, func.sourceName, wrapped)
+    if (inferred !== null) inferred.state = "done"
+    if (checked === null) return []
+    if (inferred !== null) {
+        const type = new FuncType(func.type.params, checked.type)
+        type.required = func.type.required
+        type.rest = func.type.rest
+        func.type = type
+        c.fn!.result = checked.type
+    }
+    return checked.stmts
 }
 
 export function checkReturns(c: Checker, func: Func, node: Node) {

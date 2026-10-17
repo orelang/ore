@@ -1,0 +1,29 @@
+async function depth(n: int) {
+    if (n === 0) return 0
+    return (await depth(n - 1)) + 1
+    // error: An async function needs a return type annotation, such as 'Promise<T>': 'depth' is used in its own body.
+}
+
+function outer() {
+    async function inner() {
+        // error: An async function needs a return type annotation, such as 'Promise<T>': a nested async function declaration that returns a value is hoisted.
+        return 1
+    }
+}
+
+const counter = {
+    n: 3,
+    async value() {
+        // error: An async function needs a return type annotation, such as 'Promise<T>': a method of an object literal that uses 'this'.
+        return this.n
+    },
+}
+
+const one = async () => 1
+const wrong: string = await one() // error: Type 'i64' is not assignable to type 'string'.
+
+async function name() {
+    return "ore"
+}
+
+const promised: Promise<int> = name() // error: Type 'Promise<string>' is not assignable to type 'Promise<i64>'.
