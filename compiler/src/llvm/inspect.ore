@@ -6,9 +6,12 @@
 import {
     type Field,
     type InterfaceType,
+    type Method,
     type StructType,
     type Type,
     type UnionType,
+    findMethod,
+    inspectHook,
     isNumberLiterals,
     isNumeric,
     types,
@@ -21,7 +24,7 @@ import { ARRAY, MAP, STR } from "./context"
 import { Emitter } from "./base"
 import { fieldPtr, payload, slotTest } from "./expressions"
 import { globalName, type V } from "./ll"
-import { concat, helper } from "./calls"
+import { callDirect, concat, helper } from "./calls"
 import { heldString, holdsString, inspectHeld, unknownIsNull } from "./unknown"
 
 /** The value as console.log prints it: strings as they are, other values as they are inside an array. */
@@ -406,6 +409,11 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
             g.b.start(next)
         }
     }
+    // The runtime's iterators and promises, as Node prints them: `Object [Generator] {}`, `Promise { 1 }`.
+    const values = inspectHook(t, "inspectValues")
+    if (values !== null) return inspectValues(g, t, v, s, depth, values)
+    const inspected = inspectHook(t, "inspected")
+    if (inspected !== null) return callDirect(g, inspected.func.name, STR, [v])
     // A match of a regular expression, as Node prints a match array.
     if (t.nominal && t.name === "RegExpMatch" && t.fields.some((f) => f.name === "captures"))
         return g.rt("ore_rt_inspect_match", [s, v, depth])
@@ -444,6 +452,34 @@ function inspectStruct(g: Emitter, t: StructType, v: V, s: V, depth: V, exact: b
         g.b.terminate(`ret ${STR} ${inspectFields(g, t, v, s, depth, shown, open, close, short).v}`)
     })
     return g.str("")
+}
+
+/**
+ * An object of the runtime printed as the entries its `inspectValues()`
+ * gives, between the braces of `inspectOpen()`: `Promise { 1 }`,
+ * `[Map Iterator] { 'a', 'b' }`, or `inspectNone()` without entries.
+ */
+function inspectValues(g: Emitter, t: StructType, v: V, s: V, depth: V, values: Method): V {
+    const array = values.func.type.result
+    if (array.kind !== "array") return g.str("")
+    const elem = array.elem
+    const call = (m: Method | null, ty: string): V => (m !== null ? callDirect(g, m.func.name, ty, [v]) : g.str(""))
+    const items = call(values, "ptr")
+    const open = call(findMethod(t, "inspectOpen"), STR)
+    const n = g.b.value("i64", `load i64, ptr ${g.field(items.v, ARRAY, 1)}`)
+    const close = g.rt("ore_rt_inspect_close", [s, n, call(findMethod(t, "inspectNone"), STR)])
+    returnUnlessEmpty(
+        g,
+        g.rt("ore_rt_inspect_begin", [s, v, n, depth, open, close, g.rt("ore_rt_inspect_short", [open])]),
+    )
+    const deeper = g.b.value("i64", `add i64 %depth, 1`)
+    counted(g, g.rt("ore_rt_inspect_shown", [s, n]), (i) => {
+        const data = g.b.value("ptr", `load ptr, ptr ${g.field(items.v, ARRAY, 0)}`)
+        const place = g.b.value("ptr", `getelementptr ${g.mt(elem)}, ptr ${data.v}, i64 ${i.v}`)
+        g.rt("ore_rt_inspect_entry", [s, inspectAt(g, g.load(place.v, elem), elem, s, deeper)])
+    })
+    g.rt("ore_rt_inspect_more", [s, n])
+    return g.rt("ore_rt_inspect_end", [s, open, close, depth, g.i64(0), g.i64(0)])
 }
 
 /** The fields of an object in the order `shown`, between `open` and `close`; `short` when it is too deep. */

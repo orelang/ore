@@ -626,6 +626,20 @@ export function findMethod(t: StructType, name: string): Method | null {
 }
 
 /**
+ * A method by which console.log prints the instances of a class of the
+ * runtime, as Node prints them: `inspected()`, the whole text (`Object
+ * [Generator] {}`), or `inspectValues()`, `inspectOpen()` and
+ * `inspectNone()`, entries between braces (`Promise { 1 }`). Null for a
+ * class of the program, which may have methods of these names.
+ */
+export function inspectHook(t: StructType, name: string): Method | null {
+    const ctor = t.ctor
+    if (!t.nominal || ctor === null || !(ctor.file ?? "").startsWith("ore:runtime/")) return null
+    const m = findMethod(t, name)
+    return m !== null && (m.func.file ?? "").startsWith("ore:runtime/") ? m : null
+}
+
+/**
  * The name of overload signature `index` of method `name` among the methods
  * of a class: `name#index`, which no method of the source is named. Each
  * signature is a method of its own, overridden by the subclasses' signature

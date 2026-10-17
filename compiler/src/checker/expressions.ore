@@ -77,6 +77,7 @@ import {
     displayFields,
     findField,
     findMethod,
+    inspectHook,
     findOverloads,
     isNumberLiterals,
     isNumeric,
@@ -2382,6 +2383,10 @@ function canInspect(t: Type, seen: Set<int>): bool {
             // A class may refer to itself.
             if (seen.has(t.id)) return true
             seen.add(t.id)
+            // The runtime's iterators and promises print as Node prints them, not by their fields.
+            const values = inspectHook(t, "inspectValues")
+            if (values !== null) return canInspect(values.func.type.result, seen)
+            if (inspectHook(t, "inspected") !== null) return true
             return t.fields.every((f) => canInspect(f.type, seen))
         }
         default:

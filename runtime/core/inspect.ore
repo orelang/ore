@@ -291,6 +291,24 @@ function sized(name: string, count: int): string {
     return `${name}(${count}) {`
 }
 
+/**
+ * The end of a value printed as the entries of `open` (`Promise {`,
+ * `[Map Iterator] {`): `}`, or without entries `none` between the braces,
+ * as Node prints `Promise { <pending> }` and `[Map Iterator] {  }`.
+ */
+//ore:runtime ore_rt_inspect_close
+function closeWith(s: Inspection, count: int, none: string): string {
+    if (count > 0) return "}"
+    return none === "" ? "  }" : ` ${special(s, none)} }`
+}
+
+/** What a value printed as the entries of `open` is beyond the depth: `[Promise]`, `[Map Iterator]`. */
+//ore:runtime ore_rt_inspect_short
+function shortOf(open: string): string {
+    const name = open.slice(0, open.length - 2)
+    return name.startsWith("[") ? name : `[${name}]`
+}
+
 /** A function: `[Function: name]`, or `[Function (anonymous)]` without a name. */
 //ore:runtime ore_rt_inspect_function
 function inspectFunction(name: string): string {

@@ -340,6 +340,13 @@ before 1.0, a minor version may change the language.
   on it or on the parameter (new: [ORE6086](docs/errors/ORE6086.md)).
 - The language server lists an optional method of an interface, `area?():
   int`, as a method in completions, where it was a field.
+- `console.log` prints generators, iterators, promises and async
+  generators as Node does: `Object [Generator] {}`, `Object [Array
+  Iterator] {}`, `Object [Iterator Helper] {}`, `[Map Iterator] { 'a', 'b'
+  }` (the values left), `Promise { 1 }`, `Promise { <pending> }`, `Object
+  [AsyncGenerator] {}`; a generator, which holds its fiber, was an error
+  (ORE3060), and the others printed their fields. Generators and async
+  generators have `toString()`, `[object Generator]`, as in JavaScript.
 
 ## 0.5.0
 

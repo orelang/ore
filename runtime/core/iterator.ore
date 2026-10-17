@@ -76,6 +76,20 @@ export abstract class IteratorObject<T, TReturn = void, TNext = null> {
      */
     close(): void {}
 
+    /** `[object Iterator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Iterator]"
+    }
+
+    /**
+     * What console.log prints, as Node does: `Object [Array Iterator] {}`
+     * for `[object Array Iterator]` (see llvm/inspect.ore).
+     */
+    inspected(): string {
+        const name = this.toString()
+        return `Object [${name.slice(8, name.length - 1)}] {}`
+    }
+
     /** The values passed through `mapper`. */
     map<U>(mapper: (value: T, index: int) => U): IteratorHelper<U> {
         let counter = 0
@@ -452,6 +466,11 @@ export class Generator<T, TReturn = void, TNext = null> extends IteratorObject<T
     delegating(inner: (() => void) | null): void {
         this.inner = inner
     }
+
+    /** `[object Generator]`, as JavaScript names it. */
+    toString(): string {
+        return "[object Generator]"
+    }
 }
 
 /** A generator whose body is `body`, given the generator for its `yield`s: what a generator function returns. */
@@ -541,6 +560,8 @@ export class MapIterator<K, V, T> extends IteratorObject<T> {
     constructor(
         private readonly source: Map<K, V>,
         private readonly read: (key: K, value: V) => T,
+        /** "Map Iterator", or "Map Entries" for `entries()`, as Node shows it. */
+        private readonly tag: string,
     ) {
         super()
     }
@@ -561,6 +582,26 @@ export class MapIterator<K, V, T> extends IteratorObject<T> {
     toString(): string {
         return "[object Map Iterator]"
     }
+
+    /** The values left, without stepping: what console.log prints, as Node does (see llvm/inspect.ore). */
+    inspectValues(): T[] {
+        const out: T[] = []
+        if (this.done) return out
+        const m = unsafe.addressOf(this.source)
+        for (let i = this.index; i < mapCount(m); i++)
+            if (mapLive(m, i)) out.push(this.read(unsafe.load<K>(mapKey(m, i)), unsafe.load<V>(mapValue(m, i))))
+        return out
+    }
+
+    /** How console.log starts it: `[Map Iterator] {`. */
+    inspectOpen(): string {
+        return `[${this.tag}] {`
+    }
+
+    /** What console.log prints between the braces without values left. */
+    inspectNone(): string {
+        return ""
+    }
 }
 
 /** The iterator of a set's `values()`, `keys()` and `entries()`: what `read` makes of each element. */
@@ -571,6 +612,8 @@ export class SetIterator<E, T> extends IteratorObject<T> {
     constructor(
         private readonly set: Set<E>,
         private readonly read: (value: E) => T,
+        /** "Set Iterator", or "Set Entries" for `entries()`, as Node shows it. */
+        private readonly tag: string,
     ) {
         super()
     }
@@ -590,6 +633,26 @@ export class SetIterator<E, T> extends IteratorObject<T> {
     /** `[object Set Iterator]`, as JavaScript names it. */
     toString(): string {
         return "[object Set Iterator]"
+    }
+
+    /** The values left, without stepping: what console.log prints, as Node does (see llvm/inspect.ore). */
+    inspectValues(): T[] {
+        const out: T[] = []
+        if (this.done) return out
+        const m = unsafe.addressOf(this.set)
+        for (let i = this.index; i < mapCount(m); i++)
+            if (mapLive(m, i)) out.push(this.read(unsafe.load<E>(mapKey(m, i))))
+        return out
+    }
+
+    /** How console.log starts it: `[Set Iterator] {`. */
+    inspectOpen(): string {
+        return `[${this.tag}] {`
+    }
+
+    /** What console.log prints between the braces without values left. */
+    inspectNone(): string {
+        return ""
     }
 }
 
@@ -687,25 +750,25 @@ export function arrayEntries<T>(items: T[]): ArrayIterator<T, [int, T]> {
 
 /** `map.keys()`. */
 export function mapKeys<K, V>(map: Map<K, V>): MapIterator<K, V, K> {
-    return new MapIterator<K, V, K>(map, (k, v) => k)
+    return new MapIterator<K, V, K>(map, (k, v) => k, "Map Iterator")
 }
 
 /** `map.values()`. */
 export function mapValues<K, V>(map: Map<K, V>): MapIterator<K, V, V> {
-    return new MapIterator<K, V, V>(map, (k, v) => v)
+    return new MapIterator<K, V, V>(map, (k, v) => v, "Map Iterator")
 }
 
 /** `map.entries()`, also a map's `[Symbol.iterator]()`. */
 export function mapEntries<K, V>(map: Map<K, V>): MapIterator<K, V, [K, V]> {
-    return new MapIterator<K, V, [K, V]>(map, (k, v) => [k, v])
+    return new MapIterator<K, V, [K, V]>(map, (k, v) => [k, v], "Map Entries")
 }
 
 /** `set.values()` and `set.keys()`, also a set's `[Symbol.iterator]()`. */
 export function setValues<T>(set: Set<T>): SetIterator<T, T> {
-    return new SetIterator<T, T>(set, (v) => v)
+    return new SetIterator<T, T>(set, (v) => v, "Set Iterator")
 }
 
 /** `set.entries()`: each value twice, as JavaScript's. */
 export function setEntries<T>(set: Set<T>): SetIterator<T, [T, T]> {
-    return new SetIterator<T, [T, T]>(set, (v) => [v, v])
+    return new SetIterator<T, [T, T]>(set, (v) => [v, v], "Set Entries")
 }

@@ -474,6 +474,8 @@ in the shortest form that round-trips, like JavaScript: `0.1`, `1`, `1e+21`,
 | `Map`, `Set` | `Map(2) { 'a' => 1, 'b' => 2 }`, `Set(1) { 1 }` |
 | function | `[Function: name]`, `[Function (anonymous)]` for an arrow function |
 | `Error` | `Error: message`, the first line of what Node prints |
+| generator, iterator | `Object [Generator] {}`, `Object [AsyncGenerator] {}`, `Object [Array Iterator] {}`, `Object [Iterator Helper] {}`; the iterator of a map or a set with the values it has left, `[Map Iterator] { 'a', 'b' }`, `[Map Entries] { [ 'a', 1 ] }`, `[Set Iterator] {  }` |
+| `Promise` | `Promise { 1 }`, `Promise { <pending> }` |
 | string literal union | its value, `'circle'` |
 
 As in Node, objects nested more than two levels deep print as `[Object]`

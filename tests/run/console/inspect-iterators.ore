@@ -1,0 +1,53 @@
+// Generators, iterators, promises and async generators print as Node prints them.
+
+function* count() {
+    yield 1
+    yield 2
+}
+async function* ticks() {
+    yield 1
+}
+async function one(): Promise<int> {
+    return 1
+}
+
+const xs = [1, 2]
+console.log(count(), [count()], { gen: count() })
+console.log(xs.values(), xs.keys(), xs.entries(), xs[Symbol.iterator]())
+console.log("ab"[Symbol.iterator](), "a-b".matchAll(/-/g))
+const mapped = xs.values().map((x) => x)
+const filtered = xs.values().filter((x) => x > 0)
+console.log(mapped, filtered, xs.values().take(1))
+const flat = xs.values().flatMap((x) => [x])
+console.log(xs.values().drop(1), flat)
+const done = count()
+done.next()
+done.next()
+done.next()
+console.log(done)
+
+const m = new Map<string, int>([
+    ["a", 1],
+    ["b", 2],
+    ["c", 3],
+])
+const keys = m.keys()
+keys.next()
+console.log(keys, m.values(), m.entries())
+keys.next()
+keys.next()
+console.log(keys, [keys], new Map<int, int>().keys())
+const s = new Set<int>([1, 2])
+console.log(s.values(), s.keys(), s.entries(), [s.values()])
+const many = new Set<int>()
+for (let i = 0; i < 120; i++) many.add(i)
+console.log(many.values())
+console.log(new Map<string, int[]>([["k", [1, 2]]]).entries())
+
+const pending = new Promise<int>(() => {})
+console.log(Promise.resolve(1), pending, Promise.resolve([1]))
+const p = Promise.resolve({ a: 1 })
+await p
+console.log(p, [p], { p, q: [Promise.resolve(2)] })
+console.log(Promise.resolve(new Map<int, int>([[1, 2]])), Promise.resolve(null))
+console.log(ticks(), one())
