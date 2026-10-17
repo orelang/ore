@@ -1027,6 +1027,56 @@ function unpark(t: ptr): void {
     if (unsafe.atomicLoad<i64>(stoppingCell) !== 0) stopHere(t)
 }
 
+/**
+ * Parks the thread for a call into C that may block, a `//ore:blocking`
+ * external function, whose wrapper saved the registers in its frame and kept
+ * the arguments there, above `sp` (see `blockingWrapper` in the compiler's
+ * llvm/calls.ore). A stop signal would interrupt the call, and on macOS a
+ * wait on a `pthread_rwlock` in C can then miss its wakeup and hang; the
+ * collector counts a parked thread stopped without one. A collection that
+ * started before the thread parked may have sent the signal already: the
+ * thread then stops here, where the signal arrives, rather than in C.
+ */
+//ore:runtime ore_rt_park
+export function parkForeign(sp: ptr): void {
+    const t = threadRecord()
+    if (isNil(t)) return
+    while (true) {
+        unsafe.atomicStore<ptr>(unsafe.add(t, threadSp), sp)
+        unsafe.atomicStore<i64>(unsafe.add(t, threadParked), 1)
+        if (unsafe.atomicLoad<i64>(stoppingCell) === 0) return
+        unpark(t)
+    }
+}
+
+/** Ends a call into C that `parkForeign` parked for, after a collection that counted the thread stopped. */
+//ore:runtime ore_rt_unpark
+export function unparkForeign(): void {
+    const t = threadRecord()
+    if (!isNil(t)) unpark(t)
+}
+
+/**
+ * Enters Ore code that C calls back (through `unsafe.functionAddress` or
+ * `//ore:export`): in a blocking call, the thread is parked and must not
+ * touch the heap, so it unparks for the time the code runs. Returns the stack
+ * pointer to park at again after, or null when the thread was not parked.
+ */
+//ore:runtime ore_rt_callback_enter
+export function enterCallback(): ptr {
+    const t = threadRecord()
+    if (isNil(t) || unsafe.atomicLoad<i64>(unsafe.add(t, threadParked)) === 0) return nil()
+    const sp = unsafe.atomicLoad<ptr>(unsafe.add(t, threadSp))
+    unpark(t)
+    return sp
+}
+
+/** Leaves Ore code that C called back, parking the thread again if `enterCallback` unparked it. */
+//ore:runtime ore_rt_callback_leave
+export function leaveCallback(sp: ptr): void {
+    if (!isNil(sp)) parkForeign(sp)
+}
+
 function currentSp(): ptr {
     if (target.arch === "arm64") return unsafe.asm<ptr>("mov $0, sp", "=r")
     return unsafe.asm<ptr>("movq %rsp, $0", "=r")

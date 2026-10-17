@@ -134,6 +134,30 @@ A rest parameter declares a variadic C function, such as
 Its element type is `i64`, `f64` or `ptr`, the types C promotes variadic
 arguments to, and each argument after the fixed ones converts to it.
 
+The garbage collector stops the threads that run Ore code with a signal (see
+[Concurrency](06-concurrency.md)), which interrupts what a thread does in C
+too. A C function that may wait, for a lock, a condition variable, I/O or
+another thread, is declared `//ore:blocking`:
+
+```ts
+//ore:blocking
+declare function pthread_rwlock_wrlock(lock: ptr): i32
+```
+
+Its thread is parked while it runs: the collector scans its stack without
+stopping it, and the thread waits for a collection in progress when the
+call returns. A signal would break the wait of some C code: on macOS, a
+thread interrupted in `pthread_rwlock_rdlock` or `pthread_rwlock_wrlock`
+can miss its wakeup and wait forever. Parking costs two atomic operations
+per call, which C functions that never wait need not pay. The directive
+applies to functions with fixed parameters, not variadic ones
+([ORE6088](../errors/ORE6088.md)). The arguments, strings and `ptr` values
+into the heap among them, stay reachable for the time of the call.
+
+C may call back Ore code, a function passed by `unsafe.functionAddress` or
+one marked `//ore:export`, during a blocking call: the thread runs unparked
+for the time of the Ore code, which may allocate and wait as any other.
+
 In package.json, `"ore": { "link": [...], "sources": [...] }` adds libraries
 to link (`-l`) and C files, relative to the package, to compile into the
 program. This applies to every package of the program, including

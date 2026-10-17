@@ -512,6 +512,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE6085](ORE6085.md) | 'yield*' yields values of type '…', which type '…' does not include. |
 | [ORE6086](ORE6086.md) | Parameter '…' needs a type annotation: its default value uses '…', whose type is not known before its declaration. |
 | [ORE6087](ORE6087.md) | An async function needs a return type annotation, such as 'Promise<T>': …. |
+| [ORE6088](ORE6088.md) | '//ore:…' applies to a 'declare function' that is not variadic. |
 
 ## ORE7xxx: Statements
 

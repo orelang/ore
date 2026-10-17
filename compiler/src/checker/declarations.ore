@@ -251,6 +251,14 @@ export function checkDirectives(c: Checker, stmt: Node) {
                 directiveError(c, stmt, d, "'//ore:export' applies to a function, or to a top-level 'let' of one name.")
             continue
         }
+        if (kind === "declare") {
+            // The call goes through a wrapper with the C function's parameters, which a variadic one has not all.
+            let ok = stmt.kind === "FunctionDeclaration" && hasModifier(stmt, "DeclareKeyword")
+            if (ok) for (const p of parameters(stmt)) if (dotDotDotToken(p) !== null) ok = false
+            if (!ok)
+                directiveError(c, stmt, d, `'//ore:${d.name}' applies to a 'declare function' that is not variadic.`)
+            continue
+        }
         if (kind === "function") {
             const ok = stmt.kind === "FunctionDeclaration" && body(stmt) !== null && typeParameters(stmt).length === 0
             if (!ok)
@@ -1241,6 +1249,14 @@ export function declareExtern(c: Checker, decl: Node, scope: Scope) {
         true,
         variadic,
     )
+    // `//ore:blocking` (checkDirectives reports it on a variadic function).
+    for (const d of directives(c, decl)) {
+        if (d.name === "blocking" && variadic === null) {
+            const attributes = new FuncAttributes()
+            attributes.blocking = true
+            func.attributes = attributes
+        }
+    }
     c.module.functions.push(func)
     if (!scope.declareValue(name, new FuncSymbol(func, decl)))
         c.duplicate(scope, name, nameId, `Duplicate declaration '${name}'.`)

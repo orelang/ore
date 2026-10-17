@@ -40,6 +40,7 @@ errors.
 | `//ore:export name` | function, or top-level `let` | visible to C as `name`: a function with the C calling convention, or a variable C can read and write; numbers, `bool` and `ptr` only |
 | `//ore:internal` | the module, before its first statement | allows the namespace `internal` and `//ore:runtime`, otherwise only for the standard library |
 | `//ore:runtime name` | function in the standard library | implements the runtime function `name` (see `runtime/core`) |
+| `//ore:blocking` | `declare function`, not variadic | the C function may wait (for a lock, a condition, I/O or another thread): the thread is parked while it runs (see [External C functions](07-modules.md#external-c-functions)) |
 | `//ore:threadlocal` | `let name: T` | a separate value in each OS thread, starting at zero; `T` is a number, `bool` or `ptr`, and there is no initializer |
 
 Tasks move between OS threads when they wait, so a thread-local variable is

@@ -5,6 +5,15 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `//ore:blocking` on a `declare function`: a C function that may wait (for
+  a lock, a condition, I/O or another thread) runs with its thread parked,
+  so that the collector scans the thread's stack instead of interrupting the
+  wait with its stop signal. On macOS, a thread interrupted in a
+  `pthread_rwlock` wait could miss its wakeup and hang, as in OpenSSL's
+  `SSL_CTX_new` under `ore:tls`, whose locking OpenSSL functions are now
+  blocking. Ore code that C calls back during a blocking call, through
+  `unsafe.functionAddress` or `//ore:export`, runs unparked
+  ([ORE6088](docs/errors/ORE6088.md)).
 - Streams, as in JavaScript, after the WHATWG Streams Standard with Node's
   algorithms, so that their promises settle in Node's order: the global
   classes `ReadableStream<R>` (`getReader()`, `cancel`, `tee`, `pipeTo`,

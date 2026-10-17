@@ -14,7 +14,7 @@ import { type Type } from "../ir/types"
 import { type SlotNode } from "../opt/escape"
 import { ARRAY, FRAME, MAP, type Breakable, type Disposal } from "./context"
 import { Emitter } from "./base"
-import { helper } from "./calls"
+import { calledBack, helper } from "./calls"
 import { expr } from "./expressions"
 import { boxed } from "./helpers"
 import { FnBuilder, globalName, sizeOf } from "./ll"
@@ -66,6 +66,9 @@ export function signature(g: Emitter, func: Func, at: bool): string {
         if (attrs.naked) flags.push("naked")
     }
     const flagText = flags.length > 0 ? ` ${flags.join(" ")}` : ""
+    // C calls an exported function through its wrapper (`callbackWrapper`), which has its name.
+    if (exported && calledBack(func))
+        return `define internal ${result} ${globalName(`${func.name}.body`)}(${params.join(", ")})${flagText}`
     return `define ${exported ? "" : "internal "}${result} ${globalName(func.name + (at ? "_at" : ""))}(${params.join(", ")})${flagText}`
 }
 

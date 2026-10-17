@@ -47,6 +47,12 @@ console.log(results.receive())
   with the call stack (runs of the same frame counted on one line), status 2;
   a release build has no call stack, and may turn simple recursion into a
   loop that does not overflow.
+- The garbage collector stops the world: it sends a signal to each OS
+  thread running Ore code, and the thread waits in the handler until the
+  collection ends. A thread waiting in the scheduler, or in a C function
+  declared `//ore:blocking` ([External C functions](07-modules.md#external-c-functions)),
+  is parked instead: the collector scans its stack without a signal, and
+  the thread waits for the collection when it leaves the wait.
 - A file operation blocks only its OS thread: the scheduler starts another
   thread for the other tasks meanwhile. A task waiting for a program it ran
   (`process.output`, `process.run`) parks on the poller, like one waiting

@@ -7,6 +7,7 @@ import { inlineCalls } from "../opt/inline"
 import { planStack } from "../opt/escape"
 import { valueClasses } from "../opt/values"
 import { Emitter } from "./base"
+import { calledBack, callbackWrapper } from "./calls"
 import { classTable, itab } from "./collections"
 import { ARRAY, EmitOptions, FN, FRAME, IFACE, MAP, STR, TYPE, UNKNOWN } from "./context"
 import { coverageEntry, declareExtern, emitFunction } from "./functions"
@@ -101,6 +102,8 @@ export function emit(g: Emitter): string {
         const marker = opts.debug && file !== null ? `${FILE_MARKER}${file}` : ""
         if (marker !== "") g.out.push(marker)
         g.out.push(emitFunction(g, func, false))
+        const attrs = func.attributes
+        if (attrs !== null && attrs.exportName !== null && calledBack(func)) callbackWrapper(g, func, true)
         const counted = coverageEntry(g, func)
         if (counted !== "") g.out.push(counted)
         if (g.plan.ctorsAt.has(func)) {

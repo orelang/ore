@@ -1,0 +1,51 @@
+// threads: 8
+// env: ORE_GOGC=1
+// Threads wait on a pthread_rwlock in C while collections run all the time.
+// The calls are //ore:blocking: the thread is parked while C runs, and a
+// collection counts it stopped instead of interrupting its wait with a
+// signal, after which a wait on an rwlock on macOS can miss its wakeup and
+// hang.
+
+declare function malloc(size: u64): ptr
+declare function pthread_rwlock_init(lock: ptr, attributes: ptr): i32
+//ore:blocking
+declare function pthread_rwlock_rdlock(lock: ptr): i32
+//ore:blocking
+declare function pthread_rwlock_wrlock(lock: ptr): i32
+//ore:blocking
+declare function pthread_rwlock_unlock(lock: ptr): i32
+
+const tasks = 16
+const rounds = 3000
+
+// Room for a pthread_rwlock_t on every platform (200 bytes on macOS, 56 on Linux).
+const rwlock = malloc(256)
+pthread_rwlock_init(rwlock, unsafe.fromInt(0))
+let shared = 0
+
+function work(id: int): int {
+    let kept: string[] = []
+    let sum = 0
+    for (let i = 0; i < rounds; i++) {
+        if (i % 4 === 0) {
+            pthread_rwlock_wrlock(rwlock)
+            shared++
+        } else pthread_rwlock_rdlock(rwlock)
+        // Garbage while holding the lock, and after: collections start on every thread.
+        const label = `${id}:${i}`
+        pthread_rwlock_unlock(rwlock)
+        kept.push(label)
+        if (kept.length > 64) kept = []
+        sum += label.length
+    }
+    return sum
+}
+
+const done = new Chan<int>(tasks)
+for (let t = 0; t < tasks; t++) {
+    const id = t
+    task.spawn(() => done.send(work(id)))
+}
+let total = 0
+for (let t = 0; t < tasks; t++) total += done.receive() ?? 0
+console.log(total, shared)

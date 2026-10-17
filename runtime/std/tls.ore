@@ -19,27 +19,45 @@ import { cString, errno, fromCString } from "ore:runtime/sys"
 
 // ---------------------------------------------------------------------------
 // OpenSSL 3 (libssl, libcrypto)
+//
+// OpenSSL takes locks, pthread_rwlock among them, in what allocates, frees
+// or reaches shared state (the context, the certificate store, the error
+// queue, the providers): those functions are `//ore:blocking`, so that a
+// collection does not interrupt their waits with a signal, which on macOS can
+// leave a thread waiting on an rwlock forever. Plain accessors are not.
 
 declare function TLS_client_method(): ptr
 declare function TLS_server_method(): ptr
+//ore:blocking
 declare function SSL_CTX_new(method: ptr): ptr
+//ore:blocking
 declare function SSL_CTX_free(ctx: ptr): void
+//ore:blocking
 declare function SSL_CTX_set_default_verify_paths(ctx: ptr): i32
 declare function SSL_CTX_get_cert_store(ctx: ptr): ptr
+//ore:blocking
 declare function SSL_CTX_ctrl(ctx: ptr, command: i32, larg: i64, parg: ptr): i64
 declare function SSL_CTX_set_options(ctx: ptr, options: u64): u64
+//ore:blocking
 declare function SSL_CTX_use_certificate(ctx: ptr, x509: ptr): i32
+//ore:blocking
 declare function SSL_CTX_use_PrivateKey(ctx: ptr, key: ptr): i32
+//ore:blocking
 declare function SSL_CTX_check_private_key(ctx: ptr): i32
 declare function SSL_CTX_set_alpn_select_cb(ctx: ptr, callback: ptr, argument: ptr): void
+//ore:blocking
 declare function SSL_new(ctx: ptr): ptr
+//ore:blocking
 declare function SSL_free(ssl: ptr): void
+//ore:blocking
 declare function SSL_set_fd(ssl: ptr, fd: i32): i32
 declare function SSL_set_connect_state(ssl: ptr): void
 declare function SSL_set_accept_state(ssl: ptr): void
 declare function SSL_set_verify(ssl: ptr, mode: i32, callback: ptr): void
+//ore:blocking
 declare function SSL_ctrl(ssl: ptr, command: i32, larg: i64, parg: ptr): i64
 declare function SSL_get0_param(ssl: ptr): ptr
+//ore:blocking
 declare function SSL_set_alpn_protos(ssl: ptr, protocols: ptr, length: u32): i32
 declare function SSL_get0_alpn_selected(ssl: ptr, data: ptr, length: ptr): void
 declare function SSL_select_next_proto(
@@ -50,33 +68,53 @@ declare function SSL_select_next_proto(
     client: ptr,
     clientLength: u32,
 ): i32
+//ore:blocking
 declare function SSL_do_handshake(ssl: ptr): i32
+//ore:blocking
 declare function SSL_read(ssl: ptr, buffer: ptr, size: i32): i32
+//ore:blocking
 declare function SSL_write(ssl: ptr, buffer: ptr, size: i32): i32
+//ore:blocking
 declare function SSL_shutdown(ssl: ptr): i32
+//ore:blocking
 declare function SSL_get_error(ssl: ptr, result: i32): i32
 declare function SSL_get_verify_result(ssl: ptr): i64
+//ore:blocking
 declare function SSL_get1_peer_certificate(ssl: ptr): ptr
 declare function SSL_get_peer_cert_chain(ssl: ptr): ptr
+//ore:blocking
 declare function X509_VERIFY_PARAM_set1_host(param: ptr, name: string, length: u64): i32
+//ore:blocking
 declare function X509_VERIFY_PARAM_set1_ip_asc(param: ptr, address: string): i32
 declare function X509_VERIFY_PARAM_set_hostflags(param: ptr, flags: u32): void
 declare function X509_verify_cert_error_string(error: i64): string
+//ore:blocking
 declare function X509_free(x509: ptr): void
+//ore:blocking
 declare function X509_STORE_add_cert(store: ptr, x509: ptr): i32
+//ore:blocking
 declare function X509_get_ext_d2i(x509: ptr, nid: i32, critical: ptr, index: ptr): ptr
+//ore:blocking
 declare function GENERAL_NAMES_free(names: ptr): void
 declare function OPENSSL_sk_num(stack: ptr): i32
 declare function OPENSSL_sk_value(stack: ptr, index: i32): ptr
 declare function ASN1_STRING_get0_data(s: ptr): ptr
 declare function ASN1_STRING_length(s: ptr): i32
+//ore:blocking
 declare function BIO_new_mem_buf(data: ptr, length: i32): ptr
+//ore:blocking
 declare function BIO_free(bio: ptr): i32
+//ore:blocking
 declare function PEM_read_bio_X509(bio: ptr, x509: ptr, callback: ptr, argument: ptr): ptr
+//ore:blocking
 declare function PEM_read_bio_PrivateKey(bio: ptr, key: ptr, callback: ptr, argument: ptr): ptr
+//ore:blocking
 declare function EVP_PKEY_free(key: ptr): void
+//ore:blocking
 declare function ERR_get_error(): u64
+//ore:blocking
 declare function ERR_clear_error(): void
+//ore:blocking
 declare function ERR_error_string_n(error: u64, buffer: ptr, length: u64): void
 
 // libc

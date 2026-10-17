@@ -1,3 +1,6 @@
+// threads: 4
+// env: ORE_GOGC=1
+
 // Functions of the C library.
 declare function strlen(s: string): u64
 declare function abs(x: i32): i32
@@ -7,16 +10,26 @@ declare function atoi(s: string): i32
 declare function counter_new(): ptr
 declare function counter_add(c: ptr, n: int): int
 declare function counter_free(c: ptr): void
+// Through the wrapper that parks the thread: a string in and out.
+//ore:blocking
 declare function greeting(name: string): string
 
 // Functions of native/callback.c, which call back the exported functions below.
 declare function sum_of_squares(n: int): int
+//ore:blocking
 declare function count_small(limit: i32): i32
 declare function half_of(x: f64): f64
+//ore:blocking
 declare function negate(b: bool): bool
+//ore:blocking
 declare function next_byte(x: u8): u8
 declare function read_counter(): i64
 declare function bump_counter(): void
+// Blocking calls (the thread parks while C runs), from several tasks while collections run.
+//ore:blocking
+declare function total_label_length(n: int): int
+//ore:blocking
+declare function sum_bytes(bytes: ptr, n: int): int
 
 // A variadic C function.
 declare function snprintf(buffer: ptr, size: u64, format: string, ...args: i64[]): i32
@@ -33,6 +46,12 @@ function square(x: int): int {
 //ore:export ore_is_small
 function isSmall(x: u8): bool {
     return x < 10
+}
+
+/** Called back from a blocking call: it allocates, so it runs unparked. */
+//ore:export ore_label_length
+function labelLength(i: int): int {
+    return `label ${i}`.length
 }
 
 //ore:export ore_half // called from C
@@ -71,3 +90,16 @@ console.log(counter, read_counter())
 const formatted = unsafe.allocBytes(64)
 const written = snprintf(formatted, 64, "%lld|%lld|%lld", 7, -8, 9000000000)
 console.log(unsafe.makeString(formatted, i64(written)))
+
+// Tasks on several threads call C, which calls back Ore code that allocates,
+// and reads the bytes of a string only C holds, while collections run.
+const results = new Chan<int>(4)
+for (let k = 0; k < 4; k++) {
+    task.spawn(() => {
+        const text = "x".repeat(1000)
+        results.send(total_label_length(20000) + sum_bytes(unsafe.stringData(text), text.length))
+    })
+}
+let total = 0
+for (let k = 0; k < 4; k++) total += results.receive() ?? 0
+console.log(total)

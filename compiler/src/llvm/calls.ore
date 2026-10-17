@@ -73,7 +73,9 @@ export function call(g: Emitter, e: Call): V {
         const ret = externType(g, result, false)
         // A variadic call names the function's type, so that LLVM passes the arguments as the platform's C does.
         let callee = `@${func.name}`
-        if (func.variadic !== null) {
+        const attrs = func.attributes
+        if (attrs !== null && attrs.blocking) callee = blockingWrapper(g, func)
+        else if (func.variadic !== null) {
             const types: string[] = []
             for (const p of func.params) types.push(externType(g, p.type, true))
             types.push("...")
@@ -127,6 +129,102 @@ export function closure(g: Emitter, e: Closure): V {
 function nameFunction(g: Emitter, fn: string, sourceName: string) {
     const name = sourceName.slice(sourceName.lastIndexOf(".") + 1)
     if (name !== "<lambda>" && name !== "") g.functionNames.set(fn, name)
+}
+
+/**
+ * The wrapper of an external function marked `//ore:blocking`, which parks
+ * the thread around the call (`ore_rt_park`, `parkForeign` in
+ * runtime/core/gc.ore): the collector scans its stack from the recorded
+ * stack pointer up without stopping it by a signal, which could break a wait
+ * in C. The clobbers make the wrapper save every callee-saved register in its
+ * frame, above that stack pointer, as `parkedWait` does, and the wrapper keeps
+ * the pointer arguments in its frame too: C may hold them only in registers
+ * and in its own frames, below.
+ */
+export function blockingWrapper(g: Emitter, func: Func): string {
+    const name = globalName(`${func.name}.blocking`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const params: string[] = []
+    for (let i = 0; i < func.params.length; i++) params.push(`${externType(g, func.params[i].type, true)} %a${i}`)
+    const ret = externType(g, func.type.result, false)
+    helper(g, name, `define internal ${ret} ${name}(${params.join(", ")}) noinline`, (e) => {
+        const pointers: string[] = []
+        for (let i = 0; i < func.params.length; i++) if (params[i].startsWith("ptr ")) pointers.push(`%a${i}`)
+        if (pointers.length > 0) {
+            const kept = e.b.alloca(`[${pointers.length} x ptr]`)
+            for (let i = 0; i < pointers.length; i++) {
+                const at = e.b.value("ptr", `getelementptr ptr, ptr ${kept}, i64 ${i}`)
+                e.b.emit(`store volatile ptr ${pointers[i]}, ptr ${at.v}`)
+            }
+        }
+        if (target.arch === "arm64") {
+            e.b.emit(
+                'call void asm sideeffect "", "~{x19},~{x20},~{x21},~{x22},~{x23},~{x24},~{x25},~{x26},~{x27},~{x28}"()',
+            )
+        } else e.b.emit('call void asm sideeffect "", "~{rbx},~{r12},~{r13},~{r14},~{r15}"()')
+        const sp =
+            target.arch === "arm64"
+                ? e.b.value("ptr", 'call ptr asm sideeffect "mov $0, sp", "=r"()')
+                : e.b.value("ptr", 'call ptr asm sideeffect "movq %rsp, $0", "=r"()')
+        e.rt("ore_rt_park", [sp])
+        const call = `call ${ret} @${func.name}(${params.join(", ")})`
+        if (ret === "void") {
+            e.b.emit(call)
+            e.rt("ore_rt_unpark", [])
+            e.b.terminate("ret void")
+            return
+        }
+        // `ret` takes the type without the extension attribute.
+        const words = ret.split(" ")
+        const result = e.b.value(words[words.length - 1], call)
+        e.rt("ore_rt_unpark", [])
+        e.b.terminate(`ret ${result.ty} ${result.v}`)
+    })
+    return name
+}
+
+/** Whether C may call a function, through `unsafe.functionAddress` or `//ore:export`, in a blocking call (see `callbackWrapper`). */
+export function calledBack(func: Func): bool {
+    const file = func.file
+    const attrs = func.attributes
+    // The runtime's own entries from C, signal handlers and thread starts, run unparked.
+    return (file === null || !file.startsWith("ore:runtime/")) && (attrs === null || !attrs.naked)
+}
+
+/**
+ * The wrapper through which C calls an Ore function: when C runs in a
+ * blocking call (`//ore:blocking`), the thread is parked, and must not touch
+ * the heap, so the wrapper unparks it for the time the function runs and
+ * parks it again after. For `//ore:export`, the wrapper has the exported name
+ * and the function itself is `name.body`.
+ */
+export function callbackWrapper(g: Emitter, func: Func, exported: bool): string {
+    const name = globalName(exported ? func.name : `${func.name}.callback`)
+    if (g.helpers.has(name)) return name
+    g.helpers.set(name, "")
+    const params: string[] = []
+    for (let i = 0; i < func.params.length; i++) {
+        const t = func.params[i].type
+        params.push(`${exported ? externType(g, t, true) : g.lt(t)} %a${i}`)
+    }
+    const ret = exported ? externType(g, func.type.result, false) : g.lt(func.type.result)
+    const callee = globalName(exported ? `${func.name}.body` : func.name)
+    helper(g, name, `define ${exported ? "" : "internal "}${ret} ${name}(${params.join(", ")})`, (e) => {
+        const sp = e.rt("ore_rt_callback_enter", [])
+        const call = `call ${ret} ${callee}(${params.join(", ")})`
+        if (ret === "void") {
+            e.b.emit(call)
+            e.rt("ore_rt_callback_leave", [sp])
+            e.b.terminate("ret void")
+            return
+        }
+        const words = ret.split(" ")
+        const result = e.b.value(words[words.length - 1], call)
+        e.rt("ore_rt_callback_leave", [sp])
+        e.b.terminate(`ret ${result.ty} ${result.v}`)
+    })
+    return name
 }
 
 /** A function taking an unused environment that calls a top-level function, for function values. */
@@ -702,6 +800,10 @@ export function unsafeCall(g: Emitter, e: BuiltinCall): V {
     if (name === "functionAddress") {
         const f = e.args[0]
         if (f.k !== "func-ref") process.panic("unsafe.functionAddress of a value that is not a function")
+        // C calls it through a wrapper (an exported function's has its name).
+        const attrs = f.func.attributes
+        const exported = attrs !== null && attrs.exportName !== null
+        if (!exported && calledBack(f.func)) return { ty: "ptr", v: callbackWrapper(g, f.func, false) }
         return { ty: "ptr", v: globalName(f.func.name) }
     }
     const a: V[] = []
