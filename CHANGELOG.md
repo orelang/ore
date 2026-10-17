@@ -342,6 +342,9 @@ before 1.0, a minor version may change the language.
   function called earlier, is `""`: it held a string that printed and
   measured as `""` but was not `=== ""` and became `null` as a `string |
   null`. A tagged union with `null` (`int | string | null`) is `null` then.
+- So is one of an array, `Map` or `Set` type an empty one, where it was a
+  null pointer that crashed: those used by functions are made before any
+  top-level code runs.
 - The default value of a parameter without an annotation may use module
   variables and constants declared further down, as in TypeScript
   (`function join(xs: string[], sep = separator)`): the variables are typed

@@ -27,6 +27,7 @@ console.log(`hello, ${name}`)
 - Other top-level `let` and `const` declarations are module variables. Used
   by functions of the module (or exported), they are global variables,
   holding the zero value of their type until their declaration runs (`0`,
-  `false`, `""`, `null`); tasks share them, so concurrent access needs
+  `false`, `""`, `null`, and an empty array, `Map` or `Set`, made before
+  any top-level code runs); tasks share them, so concurrent access needs
   channels or `ore:sync`, as in Go. Variables used only by the top-level code
   itself are ordinary locals of it.

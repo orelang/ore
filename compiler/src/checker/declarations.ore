@@ -5,16 +5,21 @@ import { bindAround, callFunc, type Expanded, expandArgs } from "./calls"
 import {
     type Expr,
     type Stmt,
+    ArrayLit,
+    Assign,
     Block,
     Closure,
     ExprStmt,
     Func,
     FuncAttributes,
     Local,
+    LocalLValue,
     LocalRef,
+    MapOp,
     Recast,
     ReturnStmt,
     NullLit,
+    SetOp,
 } from "../ir/nodes"
 import {
     type InterfaceType,
@@ -428,6 +433,45 @@ export function localizeGlobals(c: Checker) {
     }
     for (const [local, _] of owners)
         if (!shared.has(local) && !local.threadLocal && local.exportName === null) local.global = false
+}
+
+/**
+ * Gives the module variables of array, `Map` and `Set` types that functions
+ * use an empty value before any top-level code runs: their zero value, which
+ * a function called before a declaration runs reads, as it reads "" of a
+ * string. Only those need it: the others are zero from the start.
+ */
+export function addEmptyGlobals(c: Checker) {
+    const stmts: Stmt[] = []
+    for (const init of c.module.inits) emptyGlobals(init.body.body, stmts)
+    if (stmts.length === 0) return
+    const func = new Func(
+        "ore_globals_init",
+        "<module variables>",
+        1,
+        new FuncType([], types.void),
+        [],
+        new Block(stmts),
+        false,
+    )
+    const inits: Func[] = [func]
+    for (const init of c.module.inits) inits.push(init)
+    c.module.inits = inits
+    c.module.functions.push(func)
+}
+
+/** Appends to `out` the assignments of an empty value to the globals that `body` declares and need one. */
+function emptyGlobals(body: Stmt[], out: Stmt[]) {
+    for (const s of body) {
+        if (s.k !== "let" || !s.local.global || s.local.threadLocal) continue
+        const local = s.local
+        const type = local.type
+        let empty: Expr | null = null
+        if (type.kind === "array" && !type.template) empty = new ArrayLit(type, [])
+        else if (type.kind === "map" && !type.dict) empty = new MapOp("new", type, type)
+        else if (type.kind === "set") empty = new SetOp("new", type, type)
+        if (empty !== null) out.push(new ExprStmt(new Assign(type, new LocalLValue(local), empty)))
+    }
 }
 
 /** Whether an expression is made of literals and constants. */
