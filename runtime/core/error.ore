@@ -1,6 +1,8 @@
 // The class of `new Error(message)`, which other classes extend: `class
 // NotFound extends Error`. The type `Error` stays the interface of
-// builtin.d.ore, which any class with a `message` implements.
+// builtin.d.ore, which any class with a `message` implements; the value
+// `Error` is the class, for its static `Error.isError`. Also the global
+// class `AggregateError`.
 
 /** The options of `new Error(message, options)`: the error that caused this one. */
 export type ErrorOptions = { cause?: unknown }
@@ -24,6 +26,29 @@ export class Error {
         if (this.message === "") return this.name
         if (this.name === "") return this.message
         return `${this.name}: ${this.message}`
+    }
+
+    /**
+     * Whether `value` is an instance of this class or of a subclass, as
+     * JavaScript's `Error.isError` tells a genuine error: what `value
+     * instanceof Error` tells of an `unknown`.
+     */
+    static isError(value: unknown): value is Error {
+        return value instanceof Error
+    }
+}
+
+/**
+ * Several errors as one, as JavaScript's: what `Promise.any` gives when
+ * every promise fails. `errors` are the errors, in order.
+ */
+export class AggregateError extends Error {
+    errors: unknown[]
+
+    constructor(errors: unknown[], message: string = "", options: ErrorOptions | null = null) {
+        super(message, options)
+        this.name = "AggregateError"
+        this.errors = errors
     }
 }
 

@@ -33,6 +33,19 @@ builds keep no frames, and debug builds keep them only for panics.
 Through the `Error` interface only `message` is visible; narrow with
 `instanceof` to the class to read the rest.
 
+`Error.isError(value)` takes any value, as an `unknown`, and tells whether
+it is an instance of the class `Error` or of a subclass, as JavaScript's
+tells a genuine error; it narrows the value to the class, as `value
+instanceof Error` narrows an `unknown`. An instance of a class that only
+has a `message`, without extending `Error`, is an `Error` by the interface
+but not by this test.
+
+`AggregateError` is a global class that extends `Error`, as JavaScript's:
+`new AggregateError(errors, message?, options?)` holds several errors in
+`errors`, an `unknown[]`, and its name is `"AggregateError"`. It is what
+`Promise.any` gives when every promise fails (see
+[Concurrency](06-concurrency.md#async-functions-and-promises)).
+
 `process.panic(message)` aborts the program with a stack trace. It is reserved for
 bugs and unrecoverable states. `throw`, `try`, `catch`, `finally` are
 rejected.

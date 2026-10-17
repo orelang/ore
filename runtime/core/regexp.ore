@@ -704,6 +704,19 @@ function escapeSource(pattern: string): string {
     return out + pattern.slice(from)
 }
 
+/** The two lowercase hexadecimal digits of a byte, or the four of a UTF-16 code unit, for `RegExp.escape`. */
+function hexDigits(c: int, digits: int): string {
+    const text = c.toString(16)
+    return "0".repeat(digits - text.length) + text
+}
+
+/** Whether `RegExp.escape` writes the code point `c` as a hexadecimal escape: punctuators, white space and line breaks. */
+function escapedAsHex(c: int): bool {
+    if (c < 0x80) return ",-=<>#&!%:;@~'`\"".includes(String.fromCharCode(c)) || c === 0x20
+    if (c === 0xa0 || c === 0x1680 || c === 0x2028 || c === 0x2029 || c === 0x202f) return true
+    return (c >= 0x2000 && c <= 0x200a) || c === 0x205f || c === 0x3000 || c === 0xfeff
+}
+
 /**
  * A regular expression, as in JavaScript: `/ab+c/gi`, or
  * `new RegExp("ab+c", "gi")`, which panics on an invalid pattern. Flags:
@@ -731,6 +744,34 @@ export class RegExp {
     private spare: Matcher
     /** A word that is 1 while a call uses `spare`. */
     private busy: ptr = unsafe.allocBytes(8)
+
+    /**
+     * `s` with what a pattern would read as syntax escaped, as JavaScript's
+     * `RegExp.escape`: `new RegExp(RegExp.escape(s))` matches `s` itself.
+     * Syntax characters and `/` get a backslash, tabs and line breaks their
+     * escapes (`\n`), other punctuators and white space a hexadecimal
+     * escape (`\x2c`, `\u2028`), and so does a leading ASCII letter or digit.
+     */
+    static escape(s: string): string {
+        let out = ""
+        let first = true
+        for (const r of s) {
+            const c = int(r)
+            const text = String.fromCodePoint(c)
+            if (first && ((c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a)))
+                out += `\\x${hexDigits(c, 2)}`
+            else if ("^$\\.*+?()[]{}|/".includes(text)) out += `\\${text}`
+            else if (c === 0x09) out += "\\t"
+            else if (c === 0x0a) out += "\\n"
+            else if (c === 0x0b) out += "\\v"
+            else if (c === 0x0c) out += "\\f"
+            else if (c === 0x0d) out += "\\r"
+            else if (escapedAsHex(c)) out += c <= 0xff ? `\\x${hexDigits(c, 2)}` : `\\u${hexDigits(c, 4)}`
+            else out += text
+            first = false
+        }
+        return out
+    }
 
     constructor(pattern: string, flags = "") {
         const program = compileRegExp(pattern, flags)

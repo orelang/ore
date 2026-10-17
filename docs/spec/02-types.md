@@ -757,6 +757,12 @@ console.log("a1b22".replace(/\d+/g, "[$&]"), "a, b,c".split(/\s*,\s*/).length)
   `ignoreCase`, `multiline`, `dotAll`, `unicode`, `unicodeSets` and
   `sticky` tell each, `re.source` is the pattern (with `/` escaped) and
   `re.toString()` is `/source/flags`.
+- `RegExp.escape(s)` is `s` with what a pattern reads as syntax escaped, as
+  in JavaScript (ES2025), so that `new RegExp(RegExp.escape(s))` matches
+  `s` itself: the syntax characters and `/` take a backslash, tabs and
+  line breaks their escapes (`\n`), the other punctuators, white space and
+  a leading ASCII letter or digit a hexadecimal escape (`\x2c`,
+  `\u2028`).
 - `u` has the syntax of JavaScript's `u` flag: `\u{1F600}`, `\p{...}` and
   `\P{...}` (not in the property), and the strict escapes and quantifier
   braces without Annex B (`/\a/u` is an error). Ignoring case compares

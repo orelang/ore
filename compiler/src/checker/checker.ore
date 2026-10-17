@@ -145,13 +145,15 @@ export function check(program: Program, signaturesOnly?: Set<Source>): CheckResu
                 builtins.scope.declareType(generic.name, new TypeSymbol(types.never, stmt, generic))
             }
         }
-        // The class of `new Error(...)`, which classes extend with `extends Error`.
+        // The class of `new Error(...)`, which classes extend with `extends Error`; as a value, for `Error.isError`.
         if (m.source.path === errorModule) {
             const errorClass = m.scope.ownType("Error")
             if (errorClass !== null) {
                 const t = errorClass.type
                 if (t.kind === "struct") c.basicError = t
             }
+            const errorValue = m.scope.ownValue("Error")
+            if (errorValue !== null) builtins.scope.declareValue("Error", errorValue)
         }
         for (let i = 0; i < globalClasses.length; i++) {
             if (m.source.path !== globalClassModules[i]) continue

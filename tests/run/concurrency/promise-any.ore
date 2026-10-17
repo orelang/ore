@@ -1,0 +1,22 @@
+// Promise.any: the first value that is not an Error, as JavaScript's is of
+// the first promise that fulfills; an AggregateError when every one is an Error.
+
+function after(ms: number, value: int | Error): Promise<int | Error> {
+    return new Promise<int | Error>((resolve) => setTimeout(() => resolve(value), ms))
+}
+
+const first = await Promise.any([after(30, 1), after(10, new Error("fast")), after(20, 2)])
+console.log(first)
+
+const all = await Promise.any([after(20, new Error("a")), after(10, new Error("b"))])
+if (all instanceof AggregateError) {
+    console.log(all.name, all.message, all.errors.length)
+    for (const e of all.errors) if (Error.isError(e)) console.log(e.message)
+}
+
+const empty: Promise<int>[] = []
+const none = await Promise.any(empty)
+console.log(none instanceof AggregateError ? none.errors.length : none)
+
+const plain = await Promise.any([Promise.resolve("x"), Promise.resolve("y")])
+console.log(plain)

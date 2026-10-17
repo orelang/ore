@@ -1,0 +1,34 @@
+// AggregateError, Error.isError and RegExp.escape, as in JavaScript.
+
+class NotFound extends Error {
+    constructor(readonly path: string) {
+        super(`${path} not found`)
+        this.name = "NotFound"
+    }
+}
+
+const aggregate = new AggregateError([new Error("a"), new NotFound("b"), "c"], "several", { cause: 1 })
+console.log(aggregate.name, aggregate.message, aggregate.cause, aggregate.errors.length)
+console.log(aggregate.toString(), aggregate instanceof Error, aggregate instanceof AggregateError)
+for (const e of aggregate.errors) console.log(Error.isError(e))
+console.log(new AggregateError([]).message === "", new AggregateError([]).errors.length)
+
+const values: unknown[] = [new Error("x"), new NotFound("y"), aggregate, "text", 1, null, { message: "m" }]
+for (const value of values) console.log(Error.isError(value))
+const maybe: unknown = new NotFound("z")
+if (Error.isError(maybe)) console.log(maybe.message, maybe.name)
+
+const samples = [
+    "abc",
+    "1a",
+    "_A",
+    "a\tb c,d€  x﻿",
+    "^$\\.*+?()[]{}|/",
+    "-=<>#&!%:;@~'`\"",
+    "\n\r\u000b\f",
+    "日本 x",
+    "",
+]
+for (const s of samples) console.log(JSON.stringify(RegExp.escape(s)))
+const literal = "1.5 (a+b)*c? $x [y] {z} | w/v"
+console.log(new RegExp(RegExp.escape(literal)).test(`= ${literal} =`), new RegExp(RegExp.escape(literal)).test("1x5"))

@@ -479,6 +479,32 @@ before 1.0, a minor version may change the language.
   `decodeURIComponent` and `decodeURI`, as in JavaScript, over the UTF-8
   bytes of strings. Malformed escapes panic with `URIError: URI malformed`,
   as JavaScript throws.
+- `AggregateError`, a global class that extends `Error` with `errors`, as
+  in JavaScript; `Error.isError(value)`, which tells and narrows an
+  instance of the class `Error` or a subclass; and `RegExp.escape(s)`
+  (ES2025).
+- `Promise.any(promises)` resolves with the first value that is not an
+  `Error`, as JavaScript's with the first promise that fulfills, and with
+  an `AggregateError` of them when every value is an `Error` or there is
+  no promise: it is a `Promise<T | AggregateError>`, where it was the same
+  as `Promise.race`.
+- `Array.isArray(x)` of an `unknown` tells whether it holds an array, of
+  any element type, where it was an error
+  ([ORE4081](docs/errors/ORE4081.md)); it does not narrow `x`, as an array
+  in an `unknown` is no `unknown[]`.
+- `new Headers(init)` takes a `Map<string, string>`, a set, a generator or
+  any other iterable of `[name, value]` pairs, as in JavaScript.
+- `process.pid`, `process.ppid`, `process.argv0`, `process.execPath`,
+  `process.chdir(directory)`, `process.setenv(name, value)` and
+  `process.unsetenv(name)` (Node's `process.env.NAME = value` and `delete
+  process.env.NAME`: `getenv`, `env()` and the programs started see the
+  change), `process.exitCode` (a variable: the status of a normal exit),
+  `process.hrtime.bigint()` and `process.memoryUsage()` (the resident set
+  and the collected heap).
+- The global functions `encodeURIComponent`, `encodeURI`,
+  `decodeURIComponent` and `decodeURI`, as in JavaScript, over the UTF-8
+  bytes of strings. Malformed escapes panic with `URIError: URI malformed`,
+  as JavaScript throws.
 
 ## 0.5.0
 

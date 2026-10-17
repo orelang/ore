@@ -11,6 +11,7 @@
 // posts its work to the loop, so that promises are only touched by the task
 // that holds it.
 
+import { AggregateError } from "ore:runtime/error"
 import { drive, microtask, post } from "ore:runtime/loop"
 import { current, endFiber, handBack, handTo, newFiber, onLoop } from "ore:runtime/task"
 
@@ -137,9 +138,39 @@ export class Promise<T> {
         return out
     }
 
-    /** As `race`: promises do not reject, so the first fulfilled one is the first to settle. */
-    static any<U>(promises: Promise<U>[]): Promise<U> {
-        return Promise.race(promises)
+    /**
+     * A promise of the first value of `promises` that is not an `Error`, as
+     * JavaScript's is of the first that fulfills: an `Error` value is how a
+     * promise fails where JavaScript's rejects (an instance of the class
+     * `Error` or of a subclass, as `instanceof Error` tells of an
+     * `unknown`). When every one is an `Error`, or there is none, an
+     * `AggregateError` of them, in the order of `promises`.
+     */
+    static any<U>(promises: Promise<U>[]): Promise<U | AggregateError> {
+        const out = pending<U | AggregateError>()
+        const errors: unknown[] = []
+        let left = promises.length
+        if (left === 0) {
+            out.resolveWith(new AggregateError(errors, "All promises were rejected"))
+            return out
+        }
+        for (let i = 0; i < promises.length; i++) {
+            const p = promises[i]
+            const at = i
+            p.react(() => {
+                const value = p.values[0]
+                const held: unknown = value
+                if (!(held instanceof Error)) {
+                    out.resolveWith(value)
+                    return
+                }
+                while (errors.length <= at) errors.push(null)
+                errors[at] = held
+                left--
+                if (left === 0) out.resolveWith(new AggregateError(errors, "All promises were rejected"))
+            })
+        }
+        return out
     }
 
     /**

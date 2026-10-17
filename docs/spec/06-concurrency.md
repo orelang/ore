@@ -81,11 +81,18 @@ console.log(counts) // [ 1, 3 ]
   nothing), and `resolve(promise)` makes it follow that promise.
   `then(f)` returns a promise of what `f` returns (of its value, when `f`
   returns a promise), `finally(f)` one of the same value after `f` ran.
-  The statics are `Promise.resolve(value?)`, `all`, `race` and `any` (the
-  same as `race`, since nothing rejects), and `Promise.withResolvers<T>()`,
+  The statics are `Promise.resolve(value?)`, `all`, `race` and `any`, and
+  `Promise.withResolvers<T>()`,
   which returns `{ promise, resolve }`: a pending promise and the function
   that resolves it, for code that resolves it outside an executor. There
-  is no `reject` and no `catch`.
+  is no `reject` and no `catch`. A promise fails with a value that is an
+  `Error`, where JavaScript's rejects, and `Promise.any(promises)` follows
+  that: it is a `Promise<T | AggregateError>` of the first value that is
+  not an `Error` (an instance of the class `Error` or a subclass, as
+  `Error.isError` tells), as JavaScript's is of the first promise that
+  fulfills, or, when every value is an `Error` or there is no promise, of
+  an `AggregateError` of them in the order of `promises`, with the message
+  `All promises were rejected`.
 - An `async` function, method or arrow function returns `Promise<T>`, which
   its return type must be; its `return` statements give a `T` or a
   promise of one. Without an annotation, and for an arrow function or
