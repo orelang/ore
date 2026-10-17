@@ -2,18 +2,26 @@
 // environment. Its exports are members of `process` (see `namespaceModule`
 // in compiler/src/checker/builtins.ore): `process.run`, `process.output`,
 // `process.spawn`, `process.Child`, `process.Output`,
-// `process.CommandOptions`, `process.env`, `process.cpus`. args, getenv,
-// panic and exit are runtime functions of other files.
+// `process.CommandOptions`, `process.env`, `process.cpus`, the constants
+// `process.pid` and the others, and the variable `process.exitCode`. args,
+// getenv, cwd, panic and exit are runtime functions of other files.
 //
 // The short `run`, `output` and `spawn` here are those of the nested
 // namespace `process.command` (runtime/core/process-command.ore) without
 // options; children are started and awaited by runtime/core/spawn.ore.
 
-import { cpuCount, isatty as cIsatty } from "ore:runtime/os"
-import { codeOf, reason, variables, waitExit } from "ore:runtime/spawn"
-import { errno } from "ore:runtime/sys"
+import { heapSize, releasedSize, used } from "ore:runtime/gc"
+import { chdir as cChdir, cpuCount, isatty as cIsatty, nil, pageSize } from "ore:runtime/os"
+import { programName } from "ore:runtime/program"
+import { changeVariable, codeOf, reason, variables, waitExit } from "ore:runtime/spawn"
+import { errno, fromCString } from "ore:runtime/sys"
+import { now } from "ore:runtime/time"
 
 declare function kill(pid: i32, signal: i32): i32
+declare function getpid(): i32
+declare function getppid(): i32
+declare function _NSGetExecutablePath(buffer: ptr, size: ptr): i32
+declare function proc_pid_rusage(pid: i32, flavor: i32, buffer: ptr): i32
 
 const sigterm = 15
 
@@ -33,6 +41,118 @@ export function isatty(fd: int): bool {
 /** The variables of this process's environment, by name. */
 export function env(): Map<string, string> {
     return variables()
+}
+
+/** Why a variable cannot be set: a name that is empty or holds `=` or NUL, or a value that holds NUL; or null. */
+function invalidVariable(name: string, value: string): string | null {
+    if (name === "" || name.includes("=") || name.includes("\x00"))
+        return `cannot set the environment variable "${name}": invalid name`
+    if (value.includes("\x00")) return `cannot set the environment variable ${name}: its value holds a NUL`
+    return null
+}
+
+/**
+ * Sets a variable of this process's environment, which `getenv` and `env`
+ * then read and the programs it starts inherit, as `process.env.NAME =
+ * value` does in Node; an Error for an invalid name (empty, or holding `=`)
+ * or a value holding a NUL.
+ */
+export function setenv(name: string, value: string): Error | null {
+    const invalid = invalidVariable(name, value)
+    if (invalid !== null) return new Error(invalid)
+    if (!changeVariable(name, value))
+        return new Error(`cannot set the environment variable ${name}: ${reason(errno())}`)
+    return null
+}
+
+/** Removes a variable of this process's environment, as `delete process.env.NAME` does in Node; nothing when it is not set. */
+export function unsetenv(name: string): Error | null {
+    const invalid = invalidVariable(name, "")
+    if (invalid !== null) return new Error(invalid)
+    if (!changeVariable(name, null))
+        return new Error(`cannot unset the environment variable ${name}: ${reason(errno())}`)
+    return null
+}
+
+/** Changes the working directory of the process, as Node's `process.chdir`; an Error when it cannot. */
+export function chdir(directory: string): Error | null {
+    if (directory.includes("\x00"))
+        return new Error(`cannot change the working directory to ${directory}: invalid path`)
+    if (cChdir(directory) === 0) return null
+    return new Error(`cannot change the working directory to ${directory}: ${reason(errno())}`)
+}
+
+/** The process id. */
+export const pid = int(getpid())
+
+/** The process id of the parent, when the program started. */
+export const ppid = int(getppid())
+
+/** The program's name as it was started: its first argument, as Node's `process.argv0`. */
+export const argv0 = programName()
+
+/** The absolute path of the program's executable, with symbolic links resolved, as Node's `process.execPath`. */
+export const execPath = executablePath()
+
+function executablePath(): string {
+    let path = "/proc/self/exe"
+    if (target.os === "darwin") {
+        const size = unsafe.allocBytes(4)
+        _NSGetExecutablePath(nil(), size)
+        const buffer = unsafe.allocBytes(i64(unsafe.load<u32>(size)) + 1)
+        if (_NSGetExecutablePath(buffer, size) !== 0) return ""
+        path = fromCString(buffer)
+    }
+    const resolved = fs.realpath(path)
+    return resolved instanceof Error ? path : resolved
+}
+
+/**
+ * The status the program exits with when it ends without `process.exit`,
+ * as Node's `process.exitCode`: 0 while it is null. A panic still exits
+ * with 2.
+ */
+export let exitCode: int | null = null
+
+/** High-resolution time, as Node's `process.hrtime`: only `bigint()`, the legacy `hrtime()` left out. */
+export const hrtime = {
+    /** Nanoseconds on a monotonic clock, from an arbitrary time in the past. */
+    bigint(): bigint {
+        return BigInt(now())
+    },
+}
+
+/**
+ * The memory of the process in bytes, as Node's `process.memoryUsage()`:
+ * `rss` is the resident set, `heapTotal` the memory of the collected heap
+ * and `heapUsed` the part of it in use, live after the last collection or
+ * allocated since. No memory is outside the heap: `external` and
+ * `arrayBuffers` are 0.
+ */
+export type MemoryUsage = { rss: int; heapTotal: int; heapUsed: int; external: int; arrayBuffers: int }
+
+/** How much memory the process uses: see `MemoryUsage`. */
+export function memoryUsage(): MemoryUsage {
+    const heapUsed = used()
+    let heapTotal = heapSize() - releasedSize()
+    if (heapTotal < heapUsed) heapTotal = heapUsed
+    return { rss: residentSize(), heapTotal, heapUsed, external: 0, arrayBuffers: 0 }
+}
+
+/** The resident set size of the process in bytes: from proc_pid_rusage on macOS, /proc/self/statm on Linux. */
+function residentSize(): int {
+    if (target.os === "darwin") {
+        // struct rusage_info_v0: a 16-byte uuid, then u64s, resident_size the seventh.
+        const info = unsafe.allocBytes(96)
+        if (proc_pid_rusage(i32(pid), 0, info) !== 0) return 0
+        return unsafe.load<i64>(unsafe.add(info, 64))
+    }
+    const statm = fs.readFile("/proc/self/statm")
+    if (statm instanceof Error) return 0
+    const fields = statm.split(" ")
+    if (fields.length < 2) return 0
+    const pages = Number.parseInt(fields[1])
+    return pages === null ? 0 : pages * pageSize()
 }
 
 // ---------------------------------------------------------------------------

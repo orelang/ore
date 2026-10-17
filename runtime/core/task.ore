@@ -47,6 +47,7 @@ import {
     setStackRootsHook,
 } from "ore:runtime/gc"
 import { exitProgram, flushOutputIfFree } from "ore:runtime/io"
+import { exitCode } from "ore:runtime/process"
 import {
     cpuCount,
     deadlineIn,
@@ -1021,12 +1022,12 @@ function taskMain(self: ptr): void {
         const ended = taskEnded
         if (ended !== null) ended()
     }
-    // The program ends with its top-level code, after what "ore:test" runs then.
+    // The program ends with its top-level code, after what "ore:test" runs then, with `process.exitCode`.
     if (t === s.mainTask) {
         const end = mainEnd
         mainEnd = null
         if (end !== null) end()
-        exitProgram(0)
+        exitProgram(i32(exitCode ?? 0))
     }
     endTask()
 }

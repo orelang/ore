@@ -53,9 +53,20 @@ function args(): string[] {
     return out
 }
 
-/** The environment the process started with: a NULL-terminated array of "NAME=value" C strings. */
+/** The environment: a NULL-terminated array of "NAME=value" C strings, the one the process started with until `setEnvironment`. */
 export function environment(): ptr {
     return envValues
+}
+
+/** Replaces the array that `environment` returns, after a variable changed. */
+export function setEnvironment(entries: ptr): void {
+    envValues = entries
+}
+
+/** The program's name as it was started, its first argument: empty when there is none. */
+export function programName(): string {
+    if (argCount < 1) return ""
+    return copyCString(unsafe.load<ptr>(argValues))
 }
 
 // ---------------------------------------------------------------------------

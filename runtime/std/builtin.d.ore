@@ -644,7 +644,12 @@ declare namespace internal {
 /**
  * The running process, and other programs it runs. The members from `env`
  * on are written in Ore, in runtime/core/process.ore, whose exports are
- * members of the namespace: these declarations document them.
+ * members of the namespace: these declarations document them. So are its
+ * constants `pid: int`, `ppid: int` (the parent's, when the program
+ * started), `argv0: string` (the program's name as it was started) and
+ * `execPath: string` (the absolute path of its executable), the variable
+ * `exitCode: int | null` (the status of a normal exit, 0 while null), and
+ * `hrtime`, whose `bigint()` is a monotonic clock in nanoseconds.
  */
 declare namespace process {
     /** The command-line arguments after the program name. */
@@ -668,6 +673,17 @@ declare namespace process {
 
     /** The environment variables, by name. */
     function env(): Map<string, string>
+    /** Sets an environment variable (Node's `process.env.NAME = value`); an Error for an invalid name or a value with a NUL. */
+    function setenv(name: string, value: string): Error | null
+    /** Removes an environment variable (Node's `delete process.env.NAME`). */
+    function unsetenv(name: string): Error | null
+
+    /** Changes the working directory. */
+    function chdir(directory: string): Error | null
+
+    /** The memory of the process in bytes: the resident set, the collected heap and its part in use. */
+    function memoryUsage(): MemoryUsage
+    type MemoryUsage = { rss: int; heapTotal: int; heapUsed: int; external: int; arrayBuffers: int }
 
     /** The number of CPUs the system has online. */
     function cpus(): int

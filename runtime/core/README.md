@@ -59,7 +59,7 @@ Rules for this code:
 | `http.ore` | HTTP/1.1 for `fetch`: connections (`Transport`s: TCP, and a connector of TLS for `https:` once one is set), kept alive by origin, requests written and responses read, bodies of known length, chunked or until the connection closes, in tasks that hold the event loop |
 | `fetch.ore` | The global classes `Request` and `Response` of the Fetch Standard and the global function `fetch`: bodies of strings, bytes, blobs, form data (`multipart/form-data` written and parsed), queries and streams, read once as streams of `u8[]`, redirects, aborts, and failures as values |
 | `spawn.ore` | Starting programs with `posix_spawn`, their output through non-blocking pipes, their exit through the poller: for `process` and `process.command` |
-| `process.ore` | The namespace `process` in Ore: `run`, `output` and `spawn` without options, `Child`, `Output`, `CommandOptions`, the environment |
+| `process.ore` | The namespace `process` in Ore: `run`, `output` and `spawn` without options, `Child`, `Output`, `CommandOptions`, the environment and `setenv`, `chdir`, the constants `pid`, `ppid`, `argv0` and `execPath`, the variable `exitCode`, `hrtime` and `memoryUsage` |
 | `process-command.ore` | The namespace `process.command`, nested in `process`: `run`, `output` and `spawn` with a `process.CommandOptions` |
 | `net.ore` | TCP on non-blocking sockets: listen, connect, accept, read, write, with the socket layouts and constants of each platform |
 | `io.ore` | Printing through one shared buffer, and the end of the program |

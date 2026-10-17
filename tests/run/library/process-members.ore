@@ -1,0 +1,32 @@
+// exit: 3
+// The members of `process` after Node's: ids, paths, the environment, the
+// working directory, the clock, the memory and the exit status.
+
+console.log(process.pid > 0, process.ppid > 0, process.pid !== process.ppid)
+console.log(process.argv0.length > 0, process.execPath.startsWith("/"), fs.isFile(process.execPath))
+
+console.log(process.getenv("ORE_PARITY"))
+console.log(process.setenv("ORE_PARITY", "a b"))
+console.log(process.getenv("ORE_PARITY"), process.env().get("ORE_PARITY"))
+console.log(process.setenv("ORE_PARITY", "c"), process.getenv("ORE_PARITY"))
+const child = process.output("sh", ["-c", "echo $ORE_PARITY"])
+if (!(child instanceof Error)) console.log(child.stdout.trim())
+console.log(process.unsetenv("ORE_PARITY"), process.getenv("ORE_PARITY"), process.env().has("ORE_PARITY"))
+console.log(process.unsetenv("ORE_PARITY"))
+console.log(process.setenv("", "x") instanceof Error, process.setenv("A=B", "x") instanceof Error)
+
+const before = process.cwd()
+console.log(process.chdir("/"), process.cwd())
+console.log(process.chdir("/nonexistent-ore-directory") instanceof Error, process.cwd())
+console.log(process.chdir(before), process.cwd() === before)
+
+const t0 = process.hrtime.bigint()
+const t1 = process.hrtime.bigint()
+console.log(typeof t0, t1 >= t0)
+
+const m = process.memoryUsage()
+console.log(m.rss > 0, m.heapTotal > 0, m.heapUsed >= 0, m.external, m.arrayBuffers)
+
+console.log(process.exitCode)
+process.exitCode = 3
+console.log(process.exitCode)

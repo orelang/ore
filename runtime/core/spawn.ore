@@ -24,7 +24,7 @@
 import { allowCollections, holdCollections } from "ore:runtime/gc"
 import { isNil, stat } from "ore:runtime/os"
 import { exitWait, netWait } from "ore:runtime/poll"
-import { environment } from "ore:runtime/program"
+import { environment, setEnvironment } from "ore:runtime/program"
 import { cString, errno, fromCString } from "ore:runtime/sys"
 import { blockingEnter, blockingExit } from "ore:runtime/task"
 
@@ -53,6 +53,8 @@ declare function close(fd: i32): i32
 declare function strerror(code: i32): ptr
 declare function signal(signal: i32, handler: ptr): ptr
 declare function access(path: string, mode: i32): i32
+declare function setenv(name: string, value: string, overwrite: i32): i32
+declare function unsetenv(name: string): i32
 
 // ---------------------------------------------------------------------------
 // Constants of each platform
@@ -108,6 +110,31 @@ export function variables(): Map<string, string> {
         if (eq > 0 && !vars.has(text.slice(0, eq))) vars.set(text.slice(0, eq), text.slice(eq + 1))
     }
     return vars
+}
+
+/**
+ * Sets a variable of this process's environment, or removes it when `value`
+ * is null: in libc's, which `getenv` reads, and in the array that
+ * `variables` reads and children inherit, made again with the variable in
+ * its place (or last when new). Returns false, with errno set, when libc
+ * refuses.
+ */
+export function changeVariable(name: string, value: string | null): bool {
+    const ok = value === null ? unsetenv(name) === 0 : setenv(name, value, 1) === 0
+    if (!ok) return false
+    const entries: string[] = []
+    let found = false
+    for (const [key, old] of variables()) {
+        if (key !== name) {
+            entries.push(`${key}=${old}`)
+        } else if (value !== null) {
+            entries.push(`${key}=${value}`)
+            found = true
+        }
+    }
+    if (value !== null && !found) entries.push(`${name}=${value}`)
+    setEnvironment(cArray(entries))
+    return true
 }
 
 /** A NULL-terminated array of C strings, which keeps them alive as long as it lives. */

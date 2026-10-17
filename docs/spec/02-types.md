@@ -242,11 +242,17 @@ Built-in functions live in namespaces, as in TypeScript and Node:
 | `console.time(label?)`, `console.timeLog(label?, ...values)`, `console.timeEnd(label?)` | the time since `time`, as Node writes it: `label: 1.234ms`, `1.234s`, `1:02.345 (m:ss.mmm)`; `timeEnd` stops the timer |
 | `process.panic(message)` | aborts with the message and a stack trace (status 2) |
 | `process.exit(code)` | exits with a status code |
+| `process.exitCode` | a variable, `int \| null`: the status the program exits with when its top-level code and event loop end, 0 while `null` (a panic still exits with 2), as in Node |
 | `process.args` | the command-line arguments after the program name |
 | `process.platform`, `process.arch` | the platform, with Node's names: `"darwin"` or `"linux"`, `"arm64"` or `"x64"`; constants of the target, as `target.os` and `target.arch` (which names the latter `"x86_64"`) |
 | `process.getenv(name)` | an environment variable, or `null` |
-| `process.cwd()` | the working directory, as an absolute path |
-| `process.env()` | the environment variables, as a `Map<string, string>` |
+| `process.setenv(name, value)`, `process.unsetenv(name)` | sets or removes an environment variable, which `getenv` and `env` then read and the programs started inherit (Node's `process.env.NAME = value` and `delete process.env.NAME`); `null`, or an `Error` for a name that is empty or holds `=` or a NUL, or a value holding a NUL |
+| `process.cwd()`, `process.chdir(directory)` | the working directory, as an absolute path; changes it: `null`, or an `Error` |
+| `process.env()` | the environment variables, as a `Map<string, string>` (a copy) |
+| `process.pid`, `process.ppid` | the process id, and the parent's when the program started, `int` constants |
+| `process.argv0`, `process.execPath` | the program's name as it was started (its first argument), and the absolute path of its executable with links resolved, `string` constants |
+| `process.hrtime.bigint()` | nanoseconds on a monotonic clock, as a `bigint` (Node's legacy `process.hrtime()` is left out) |
+| `process.memoryUsage()` | `{ rss, heapTotal, heapUsed, external, arrayBuffers }` in bytes, `int`s: the resident set, the collected heap and its part in use (live after the last collection or allocated since); `external` and `arrayBuffers` are 0, no memory being outside the heap |
 | `process.cpus()` | the number of CPUs online |
 | `process.isatty(fd)` | whether a file descriptor (1 stdout, 2 stderr) is a terminal |
 | `process.run(program, args?)`, `process.output(program, args?)`, `process.spawn(program, args?)` | other programs (below); `spawn` starts one without waiting: a `process.Child` |
