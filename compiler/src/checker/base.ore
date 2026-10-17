@@ -947,11 +947,21 @@ export class Checker {
         let members_: Type[] = []
         // `unknown` holds every value: a union with it is `unknown`.
         for (const t of found) if (t.kind === "unknown") return t
+        // An interface whose members are not known yet (a type alias is resolved
+        // before the interfaces are filled) is only the same as itself.
+        const unfilled = (t: InterfaceType): bool => {
+            const info = this.interfaces.get(t)
+            return info !== null && info.state !== "filled"
+        }
+        const same = (x: Type, m: Type): bool => {
+            if (x.kind === "interface" && m.kind === "interface" && (unfilled(x) || unfilled(m))) return x.id === m.id
+            return sameType(x, m)
+        }
         for (const t of found) {
             for (const m of membersOf(t)) {
                 if (m.kind === "never") continue
                 let present = false
-                for (const x of members_) if (sameType(x, m)) present = true
+                for (const x of members_) if (same(x, m)) present = true
                 if (!present) members_.push(m)
             }
         }

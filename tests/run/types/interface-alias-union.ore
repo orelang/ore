@@ -1,0 +1,31 @@
+// A type alias of a function whose result is a union of an interface and
+// Error: the alias is resolved before the interfaces have their members,
+// and the union keeps both.
+interface Source {
+    read(): string
+}
+
+class Fixed {
+    read(): string {
+        return "fixed"
+    }
+}
+
+type Make = (n: int) => Source | Error
+
+function make(n: int): Source | Error {
+    if (n > 0) return new Fixed()
+    return new Error("none")
+}
+
+const m: Make = make
+const v = m(1)
+if (v instanceof Error) console.log("error", v.message)
+else console.log(v.read())
+
+function call(f: (n: int) => Source | Error): void {
+    const w = f(0)
+    if (w instanceof Error) console.log("error", w.message)
+    else console.log(w.read())
+}
+call(make)
