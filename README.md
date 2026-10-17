@@ -5,7 +5,7 @@
 <p align="center">
   <img alt="Written in Ore" src="https://img.shields.io/badge/written%20in-Ore-D1A994?labelColor=293239&style=for-the-badge">
   <a href="https://github.com/orelang/ore/releases/latest"><img alt="Latest release" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Forelang%2Fore%2Fmain%2Fcompiler%2Fpackage.json&query=%24.version&prefix=v&label=release&color=D1A994&labelColor=293239&style=for-the-badge"></a>
-  <img alt="Platforms: Linux and macOS, x86-64 and arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-D1A994?labelColor=293239&style=for-the-badge">
+  <img alt="Platforms: Linux on x86-64 and arm64, macOS on arm64" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS-D1A994?labelColor=293239&style=for-the-badge">
   <a href="https://github.com/orelang/ore/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/orelang/ore/release.yml?label=release%20build&color=D1A994&labelColor=293239&style=for-the-badge"></a>
 </p>
 
@@ -77,7 +77,7 @@ total: 1200
   size-classed spans.
 - **Tooling.** One `ore` binary builds, runs, checks, tests and formats code
   and serves the language server. Debug builds keep stack traces for panics.
-- **Platforms.** macOS and Linux, arm64 and x86-64.
+- **Platforms.** Linux on x86-64 and arm64, macOS on arm64.
 
 The [specification](docs/spec) describes the language, the
 [architecture](docs/architecture.md) the implementation, the
@@ -268,10 +268,12 @@ console.log(unsafe.atomicLoad<i64>(counter), unsafe.sizeOf<string>())   // 5 16
 
 **Scripts, built-ins in namespaces.** A program is the top-level code of its
 files, with no `main`. Built-ins live in namespaces: `console.log`,
-`process.args`, `Math.sqrt`, `fs.readFile`; there are no bare globals.
+`process.args`, `Math.sqrt`, `fs.readFile`; the only bare globals are
+JavaScript's own, as `setTimeout`, `URL` and `structuredClone`.
 
 What is left out on purpose: `any`, `undefined`, `var`, `==`, `throw`,
-`enum`, `namespace`, `prototype`, `eval`, `delete`. See
+`enum`, `namespace`, `prototype`, `eval`, `delete` (but of a dictionary's
+entries). See
 [differences from TypeScript](docs/spec/10-differences.md).
 
 ## Getting started
@@ -375,13 +377,15 @@ Rust installed with rustup). Another binary can be set in Zed settings:
 { "lsp": { "ore": { "binary": { "path": "/path/to/ore", "arguments": ["lsp"] } } } }
 ```
 
-**VS Code.** Build the extension and install it:
+**VS Code.** Install "Ore" from the Visual Studio Marketplace, or the
+`.vsix` of a [release](https://github.com/orelang/ore/releases)
+(`code --install-extension ore-vscode-vX.Y.Z.vsix`), or build it:
 
 ```sh
 cd editors/vscode
 npm install
-npm run package                      # ore-0.1.0.vsix
-code --install-extension ore-0.1.0.vsix
+npm run package                      # ore-<version>.vsix
+code --install-extension ore-*.vsix
 ```
 
 Another binary can be set with the `ore.path` setting.
@@ -433,9 +437,10 @@ In short, against the fastest of the five in each benchmark:
 | 8.5. Language completeness: destructuring, default and rest parameters, generic methods, getters and setters, `JSON` | done |
 | 9. Runtime in Ore: no C left; only libc outside Ore | done |
 | 10. Compiler in Ore: the whole toolchain (`ore` command, LLVM through its C API, tests), bootstrapped; no TypeScript left | done |
-| 11. Own garbage collector: mark-sweep with parallel marking (done); precise heap, concurrent marking | in progress |
-| 11.5. TypeScript gaps: tuples, spreads, `static`, overloads, optional properties, regular expressions, … ([roadmap](docs/roadmap.md)) | in progress |
-| 12. Promises and `async`/`await`: the JavaScript event loop on fibers, timers, `task.microtask` | done |
+| 11. Own garbage collector: mark-sweep with parallel and concurrent marking, a precise heap, a pacer (done); precise maps, sets and channels, concurrent sweeping ([roadmap](docs/roadmap.md#5-own-garbage-collector)) | in progress |
+| 11.5. TypeScript gaps: tuples, spreads, `static`, overloads, optional properties, `unknown`, computed types, regular expressions, … | done |
+| 12. Promises and `async`/`await`: the JavaScript event loop on fibers, timers, `task.microtask`, generators and async generators | done |
+| 13. Web APIs: `URL`, `Blob`, `Headers`, `FormData`, events, messages, streams, timers, `ore:tls` (done); `fetch`, an HTTP server, `WebSocket` ([roadmap](docs/roadmap.md#7-web-apis)) | in progress |
 
 ### Known limitations
 
@@ -443,10 +448,8 @@ In short, against the fastest of the five in each benchmark:
   thread. Data races are not detected.
 - A file operation occupies a whole OS thread while it runs (the network does
   not).
-- A task has a fixed stack (256 KiB, 8 MiB for the top-level code); deep
-  recursion in a task can overflow it.
-- No numeric literal types (`1 | 2`); case mapping of strings covers ASCII
-  only.
+- A task has a fixed stack (1 MiB, 8 MiB for the top-level code;
+  `ORE_STACK` sets it): deeper recursion panics with `stack overflow`.
 - A generic function or class that is never used is parsed but not checked.
 
 ## Development
@@ -460,7 +463,7 @@ ci/test-linux.sh                 # the tests in Linux containers (arm64 and amd6
 ci/stress.sh                     # run the concurrent programs many times
 ```
 
-The tests run on macOS and Linux, on arm64 and x86-64.
+The tests run on Linux (x86-64 and arm64) and macOS (arm64).
 
 Every directory below has a README with the details.
 
