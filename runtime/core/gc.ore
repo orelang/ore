@@ -104,11 +104,9 @@ const spanTypes = 96
  * `scavengeLocked`), 0 while none were.
  */
 const spanReleased = 104
-/** For a free run: the number of the collection that freed it, so that only runs free for a while are given back. */
-const spanFreedAt = 112
 /** For a free run: the one before it in its bin (see `freeBins`), or nil. */
-const spanPrev = 120
-const spanRecordSize = 128
+const spanPrev = 112
+const spanRecordSize = 120
 /** The most objects a span holds; a span of more would have room for more, unused. */
 const maxElems = 512
 
@@ -619,7 +617,6 @@ function releaseSpan(span: ptr): void {
         setField(run, spanReleased, field(run, spanReleased) + field(after, spanReleased))
         freeRecord(after)
     }
-    setField(run, spanFreedAt, collections)
     linkFree(run)
 }
 
@@ -1603,10 +1600,11 @@ export function collect(): void {
     if (trace !== 0) {
         dprintf(
             2,
-            "gc %ld: %ld KB live, %ld KB heap (%ld KB released), %ld threads, %ld markers, pauses %ld + %ld us (roots %ld; finish %ld), marking %ld us, sweeping %ld us\n",
+            "gc %ld: %ld KB live, %ld KB heap (%ld KB in spans, %ld KB released), %ld threads, %ld markers, pauses %ld + %ld us (roots %ld; finish %ld), marking %ld us, sweeping %ld us\n",
             number,
             liveBytes >> 10,
             heapSize() >> 10,
+            spanBytes >> 10,
             releasedBytes >> 10,
             others + 1,
             markerCount,
@@ -1651,6 +1649,7 @@ function prepareSweep(): void {
  */
 function sweep(): void {
     liveBytes = 0
+    spanBytes = 0
     let kept = 0
     for (let s = 0; s < spanCount; s++) {
         const span = pointerAt(spans, s * 8)
@@ -1666,6 +1665,7 @@ function sweep(): void {
         }
         if (verify !== 0) poisonFreed(span, marks, elems)
         liveBytes += live * field(span, spanElemSize)
+        spanBytes += field(span, spanPages) * pageSize
         const bits = pointerAt(span, spanAllocBits)
         // A freed object is no longer growable: its slot may hold anything next.
         const grow = pointerAt(span, spanGrowBits)
@@ -1701,55 +1701,72 @@ function poisonFreed(span: ptr, marks: ptr, elems: int): void {
     }
 }
 
+/** Bytes of the pages of the spans the last sweep kept: the live objects and the free room around them. */
+let spanBytes: int
+
 /** Bytes of the heap's pages given back to the system and not used since. */
 let releasedBytes: int
 
-/** How many collections a run must stay free before its pages are given back. */
-const scavengeAge = 2
-
 /**
- * Gives the pages of free runs back to the system once more than half of the
- * heap's pages are free: those of runs that stayed free for `scavengeAge`
- * collections, since the others are likely taken again soon. The pages stay
- * reserved, and come back (zeroed) when a span uses them again. Runs after
- * the world is started again; the caller holds `heapLock`.
+ * Gives the pages of free runs back to the system, but for those the heap is
+ * to use before the next collection: the pages of its spans and what the pacer
+ * lets the program allocate meanwhile, and a tenth more, as Go's scavenger
+ * keeps. The largest runs go first. Without it, the pages of a heap that
+ * once grew (a large build among small ones) stayed resident however little
+ * of them was used since. The pages stay reserved, and come back (zeroed) when
+ * a span uses them again. Runs after the world is started again; the caller
+ * holds `heapLock`.
  */
 function scavengeLocked(): void {
-    let free = 0
-    for (let b = 0; b < binCount; b++)
-        for (let run = pointerAt(freeBins, b * 8); !isNil(run); run = pointerAt(run, spanNext))
-            free += field(run, spanPages)
-    if (free * 2 < nextPage) return
+    const keep = ((spanBytes + nextCollection) / 10) * 11
+    let resident = nextPage * pageSize - releasedBytes
     // MADV_FREE_REUSABLE on macOS, which the kernel counts out of the footprint at once, and which `newSpan`
     // undoes with MADV_FREE_REUSE before the pages are used again; MADV_DONTNEED on Linux.
     const advice: i32 = target.os === "darwin" ? 7 : 4
-    for (let b = 0; b < binCount; b++) {
-        for (let run = pointerAt(freeBins, b * 8); !isNil(run); run = pointerAt(run, spanNext)) {
-            if (field(run, spanReleased) !== 0 || collections - field(run, spanFreedAt) < scavengeAge) continue
+    for (let b = binCount - 1; b >= 0 && resident > keep; b--) {
+        for (let run = pointerAt(freeBins, b * 8); !isNil(run) && resident > keep; run = pointerAt(run, spanNext)) {
+            // A run merged from free runs may have been given back in part only.
+            const released = field(run, spanReleased)
+            if (released >= systemBytes(run)) continue
             const bytes = adviseSystemPages(run, advice)
-            releasedBytes += bytes
+            if (bytes <= released) continue
+            releasedBytes += bytes - released
+            resident -= bytes - released
             setField(run, spanReleased, bytes)
         }
     }
 }
 
 /**
+ * The bytes of the system's pages that lie wholly inside the pages of a free
+ * run, from `systemStart`. The system's pages may be larger than the heap's:
+ * 16 KB on Apple silicon, two heap pages, and madvise rounds its range out to
+ * whole system pages, so advice for the whole run would also reach the heap
+ * page next to it, which may hold live objects.
+ */
+function systemBytes(run: ptr): int {
+    const system = u64(systemPageSize())
+    const end = (unsafe.toInt(pointerAt(run, spanStart)) + u64(field(run, spanPages) * pageSize)) & ~(system - 1)
+    const from = systemStart(run)
+    return end > from ? i64(end - from) : 0
+}
+
+/** The address of the first system page that starts inside a free run. */
+function systemStart(run: ptr): u64 {
+    const system = u64(systemPageSize())
+    return (unsafe.toInt(pointerAt(run, spanStart)) + system - 1) & ~(system - 1)
+}
+
+/**
  * Gives `advice` to madvise for the system's pages that lie wholly inside the
- * pages of a free run, and returns how many bytes that covered (0 for none, or
- * when madvise failed). The system's pages may be larger than the heap's: 16 KB
- * on Apple silicon, two heap pages, and madvise rounds its range out to whole
- * system pages, so advice for the whole run would also reach the heap page
- * next to it, which may hold live objects.
+ * pages of a free run (see `systemBytes`), and returns how many bytes that
+ * covered (0 for none, or when madvise failed).
  */
 function adviseSystemPages(run: ptr, advice: i32): int {
-    const system = u64(systemPageSize())
-    const start = unsafe.toInt(pointerAt(run, spanStart))
-    const end = start + u64(field(run, spanPages) * pageSize)
-    const from = (start + system - 1) & ~(system - 1)
-    const to = end & ~(system - 1)
-    if (to <= from) return 0
-    if (madvise(unsafe.fromInt(from), to - from, advice) !== 0) return 0
-    return i64(to - from)
+    const bytes = systemBytes(run)
+    if (bytes === 0) return 0
+    if (madvise(unsafe.fromInt(systemStart(run)), u64(bytes), advice) !== 0) return 0
+    return bytes
 }
 
 /**
