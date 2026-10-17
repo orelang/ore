@@ -5,9 +5,8 @@
 
 import { test, expect, fail } from "ore:test"
 import { join } from "ore:path"
-import { lockCommand } from "../src/cli/lock"
 import { LoadOptions, loadProgram, lockPath } from "../src/project/load"
-import { lockKey, Locked, Lockfile, lockSettings, readLock, treeHash } from "../src/project/lock"
+import { lockKey, Locked, Lockfile, lockSettings, namesRepository, readLock, treeHash } from "../src/project/lock"
 import { commitDir, parseGithubUrl, settings } from "../src/project/remote"
 
 declare function setenv(name: string, value: string, overwrite: i32): i32
@@ -80,6 +79,13 @@ test("keys, writes and reads lock files", () => {
     const head = parseGithubUrl("https://github.com/acme/geo/src/point")
     if (head instanceof Error) fail(head.message)
     expect(lockKey(head)).toBe("https://github.com/acme/geo")
+    // `ore lock --update` names a repository by owner/repo, or by URL, with a ref or without.
+    expect(namesRepository("acme/geo", module)).toBe(true)
+    expect(namesRepository("acme/other", module)).toBe(false)
+    expect(namesRepository("https://github.com/acme/geo", module)).toBe(true)
+    expect(namesRepository("https://github.com/acme/geo/tree/v1.2.0", module)).toBe(true)
+    expect(namesRepository("https://github.com/acme/geo/tree/v2", module)).toBe(false)
+    expect(namesRepository("https://github.com/acme/geo/tree/v2", head)).toBe(false)
 
     const root = fs.mkdtemp("ore-lock-")
     if (root instanceof Error) fail(root.message)
@@ -198,11 +204,18 @@ test("builds lock, reuse, update and check the commits of repositories from GitH
     expect(fs.exists(join(editor, "ore.lock"))).toBe(false)
 
     // `ore lock --update` moves the default branch to its new commit; the tag stays.
-    expect(lockCommand(["--update", main])).toBe(0)
+    const updating = lockAt(path)
+    const other = updating.update(["acme/other"])
+    expect(other instanceof Error && other.message === `${path} does not lock acme/other.`).toBe(true)
+    const moved = updating.update(["acme/geo"])
+    if (moved instanceof Error) fail(moved.message)
+    expect(moved.join("\n")).toBe(
+        `${key}: ${first.slice(0, 12)} -> ${second.slice(0, 12)}\n${key}/tree/v1: ${second.slice(0, 12)}, unchanged`,
+    )
+    expect(updating.write() === null).toBe(true)
     expect(locked(path, key)).toBe(`${second} ${secondHash}`)
     expect(locked(path, `${key}/tree/v1`)).toBe(`${second} ${secondHash}`)
     expect(loadsFrom(main, commitDir(cache, "acme", "geo", second))).toBe(true)
-    expect(lockCommand(["--update", "acme/other", main])).toBe(2)
 
     // --offline never downloads: a ref the cache does not have is an error.
     commit(repo, "index.ore", "export const answer = 3\n")

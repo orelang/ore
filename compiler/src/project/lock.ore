@@ -22,7 +22,15 @@
 
 import { Sha256, sha256 } from "ore:crypto"
 import { dirname, join } from "ore:path"
-import { type Fetched, fetchModule, type GithubModule, isCommitHash, parseGithubUrl } from "./remote"
+import {
+    type Fetched,
+    fetchModule,
+    type GithubModule,
+    headCommit,
+    isCommitHash,
+    isGithubUrl,
+    parseGithubUrl,
+} from "./remote"
 
 /** The name of the lock file. */
 export const lockName = "ore.lock"
@@ -188,11 +196,67 @@ export class Lockfile {
         return fetched
     }
 
+    /**
+     * Moves the repositories of the lock to the commits their branches (or
+     * default branches) are at now on GitHub, all of them or those `named`
+     * by `owner/repo` or by URL (`namesRepository`), downloading the commits
+     * to hash their files. A repository locked at a commit's hash stays
+     * where it is. A line per repository, its key and its commits; an Error
+     * when a repository cannot be checked or downloaded, or a name names
+     * none.
+     */
+    update(named: string[]): string[] | Error {
+        const keys: string[] = []
+        for (const key of this.entries.keys()) keys.push(key)
+        keys.sort()
+        const used: string[] = []
+        const lines: string[] = []
+        for (const key of keys) {
+            const module = parseGithubUrl(key)
+            const locked = this.entries.get(key)
+            if (module instanceof Error || locked === null) continue
+            let wanted = named.length === 0
+            for (const name of named)
+                if (namesRepository(name, module)) {
+                    wanted = true
+                    if (!used.includes(name)) used.push(name)
+                }
+            if (!wanted || isCommitHash(module.ref)) continue
+            const commit = headCommit(module)
+            if (commit instanceof Error) return commit
+            if (commit === locked.commit) {
+                lines.push(`${key}: ${commit.slice(0, 12)}, unchanged`)
+                continue
+            }
+            const fetched = fetchModule(module.at(commit))
+            if (fetched instanceof Error) return fetched
+            const hash = treeHash(fetched.dir)
+            if (hash instanceof Error) return hash
+            this.set(key, new Locked(commit, hash))
+            lines.push(`${key}: ${locked.commit.slice(0, 12)} -> ${commit.slice(0, 12)}`)
+        }
+        for (const name of named) if (!used.includes(name)) return new Error(`${this.path} does not lock ${name}.`)
+        return lines
+    }
+
     /** The module at the commit the lock has for its repository and ref, or the module itself when it has none. */
     pinned(module: GithubModule): GithubModule {
         const locked = this.entries.get(lockKey(module))
         return locked === null ? module : module.at(locked.commit)
     }
+}
+
+/**
+ * Whether a name given to `ore lock --update` names a locked repository:
+ * `owner/repo`, or a URL of the repository, which names it at any ref, or
+ * at the ref it has (`/tree/<ref>`).
+ */
+export function namesRepository(name: string, module: GithubModule): bool {
+    if (!isGithubUrl(name)) return name === `${module.owner}/${module.repo}`
+    const given = parseGithubUrl(name)
+    if (given instanceof Error) return false
+    if (given.owner !== module.owner || given.repo !== module.repo) return false
+    return given.ref === "" || lockKey(given) === lockKey(module)
 }
 
 /** The lock file at a path: empty when there is none; an Error when it cannot be read or is not a lock file. */
