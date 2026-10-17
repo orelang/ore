@@ -51,14 +51,18 @@ import { x } from "https://github.com/owner/repo/tree/v1.2.0/src/point" // at a 
   without it, the repository's default branch. A ref with `/` in its name
   cannot be named this way; a path cannot have `.` or `..` parts.
 - The repository is downloaded with `git` into the cache (`ore cache`), by
-  commit: `<cache>/modules/github/<owner>/<repo>/<commit>/`. Once per
-  build, the compiler asks GitHub (`git ls-remote`) which commit the branch
-  or tag is at, and downloads that commit when the cache does not have it;
-  the commit it resolved to is recorded in `<repo>/refs/<ref>` (`refs/HEAD`
-  for the default branch). A commit named by its hash is never asked about.
+  commit: `<cache>/modules/github/<owner>/<repo>/<commit>/`. A repository
+  the lock file has (below) is taken at its locked commit. Otherwise, once
+  per build, the compiler asks GitHub (`git ls-remote`) which commit the
+  branch or tag is at, and downloads that commit when the cache does not
+  have it; the commit it resolved to is recorded in `<repo>/refs/<ref>`
+  (`refs/HEAD` for the default branch). A commit named by its hash is never
+  asked about.
 - Offline, the commit recorded last is used, with a warning; a repository
-  never downloaded is an error. `ore cache clean` removes the downloaded
-  modules with the rest of the cache.
+  never downloaded is an error. With `--offline`, git is never run: the
+  cache alone is used, and a repository it does not have is an error.
+  `ore cache clean` removes the downloaded modules with the rest of the
+  cache.
 - Inside a downloaded module, relative imports resolve in the repository,
   and further GitHub URLs the same way.
 - The language server downloads a repository as soon as an import names
@@ -69,6 +73,63 @@ import { x } from "https://github.com/owner/repo/tree/v1.2.0/src/point" // at a 
   an analysis looks the repository up, or at once when a document that
   imports it is saved. The hover of the import's URL tells the state of
   the download: its phase, the commit cached, or the error.
+
+### The lock file
+
+So that a build does not change when someone pushes to a repository it
+imports, the commits are locked in `ore.lock`, a JSON file next to the
+package.json of the program's package, or next to the entry file when it
+has none. It is meant to be committed with the program. For each
+repository and ref imported — the default branch, or the `/tree/<ref>` of
+the URL — it records the commit and a hash of the files of that commit:
+
+```json
+{
+  "version": 1,
+  "github": {
+    "https://github.com/acme/geo": {
+      "commit": "0123456789abcdef0123456789abcdef01234567",
+      "hash": "sha256-9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    },
+    "https://github.com/acme/geo/tree/v1.2.0": {
+      "commit": "89abcdef0123456789abcdef0123456789abcdef",
+      "hash": "sha256-60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"
+    }
+  }
+}
+```
+
+The keys are sorted and the formatting fixed, so that the file changes only
+where a lock does. The hash is `sha256-` and the SHA-256 of a line per file
+of the commit, in the order of their paths: the SHA-256 of the file's
+contents, two spaces and its path in the repository, and a newline.
+
+- A build (`ore run`, `build`, `check`, `test`, `doc`) takes a locked
+  repository at its locked commit: from the cache without the network, or
+  downloaded by its hash. When its files do not have the locked hash, the
+  import is an error that names the repository and both hashes: the cache,
+  or the lock, was tampered with.
+- A repository the lock does not have is taken where its branch is now, as
+  above, and added to the lock, which the build writes. Builds running at
+  the same time each add their entries to the file as it is when they
+  write it. Entries no import uses any more are kept; delete them by hand.
+- `ore lock [file.ore]` loads the program (by default the `main` of the
+  nearest package.json) as a build does: it downloads the locked commits
+  the cache does not have, checks their hashes and adds what is missing,
+  without compiling.
+- `ore lock --update [repos...]` first moves every locked repository, or
+  those named (as `owner/repo`, or by URL, with a `/tree/<ref>` to name one
+  ref), to the commit its branch or tag is at now on GitHub. A repository
+  imported at a commit's hash stays where it is.
+- `--frozen`, for CI, fails instead of changing the lock: a repository the
+  lock does not have is an error at its import. `--offline` never runs git:
+  a commit the cache does not have is an error. `ore run`, `build`,
+  `check`, `test` and `lock` take both (`ore run` before the file).
+- The language server reads the lock of each document's program the same
+  way, downloading the locked commits in the background, but never writes
+  it: a repository the lock does not have is taken where its branch is
+  now, and the next build adds it. Running `ore lock --update` while the
+  editor is open moves the analyses to the new commits.
 
 ## Files as text
 

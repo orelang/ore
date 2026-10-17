@@ -175,7 +175,10 @@ what an `unknown` holds).
   [Modules from GitHub](spec/07-modules.md#modules-from-github); URLs with
   a path and `/tree/<ref>`, downloads by commit with git, the check of the
   head, offline use with a warning, `ore cache clean`, and the language
-  server's downloads in background tasks, one at a time).
+  server's downloads in background tasks, one at a time; builds are
+  reproducible with [`ore.lock`](spec/07-modules.md#the-lock-file), which
+  locks each repository's commit and a hash of its files: `ore lock
+  --update`, `--frozen` for CI, `--offline`).
 - Diagnostics with codes (`ORE1234`) and a page per code in the
   documentation, linked from the editor (`codeDescription`) and printed by
   the command line; messages that explain the cause and the fix, with the

@@ -505,6 +505,18 @@ before 1.0, a minor version may change the language.
   `decodeURIComponent` and `decodeURI`, as in JavaScript, over the UTF-8
   bytes of strings. Malformed escapes panic with `URIError: URI malformed`,
   as JavaScript throws.
+- `ore.lock`: builds of a program that imports modules from GitHub are
+  reproducible. The lock file, JSON next to the package.json (or the entry
+  file), records for each repository and ref the commit it was locked at
+  and a SHA-256 hash of the commit's files. A build takes the locked commit,
+  without the network when the cache has it, and fails, naming the
+  repository, when the files do not have the locked hash; a new import is
+  added to the lock. `ore lock [file.ore]` locks and checks a program's
+  repositories, `ore lock --update [owner/repo...]` moves them to the
+  commits their branches are at now. `--frozen` (for CI) fails instead of
+  adding to the lock, `--offline` never downloads; `run`, `build`, `check`,
+  `test` and `lock` take both. The language server reads the lock and never
+  writes it.
 
 ## 0.5.0
 
