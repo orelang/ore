@@ -12,7 +12,7 @@
 #   ci/farm.sh run NAME REF COMMAND...     any command in the tree of REF
 #   ci/farm.sh probe NAME REF FILE...      builds the compiler of REF and runs
 #                                          each FILE of its tree with it
-#   ci/farm.sh submit NAME test|probe REF [ARGS...]
+#   ci/farm.sh submit NAME test|probe|verify REF [ARGS...]
 #                                          queues a test or probe for `serve`,
 #                                          which writes done/NAME.status; the
 #                                          output is in logs/NAME.log. Agents,
@@ -157,7 +157,7 @@ serve)
             while IFS= read -r line; do args+=("$line"); done <"$file"
             rm -f "$file"
             case ${args[0]:-} in
-            test | probe)
+            test | probe | verify)
                 (
                     status=0
                     "$0" "${args[0]}" "$name" "${args[@]:1}" >/dev/null 2>&1 || status=$?
