@@ -288,12 +288,10 @@ case "$(uname -m)" in
     arm64 | aarch64) arch=arm64 ;;
     *) die "Unsupported machine: $(uname -m)" "Releases are built for amd64 (x86_64) and arm64 (aarch64)." ;;
 esac
-# The Linux releases are built with glibc 2.31 on amd64 (Ubuntu 20.04) and
-# 2.35 on arm64 (Ubuntu 22.04), and need it or newer; musl (Alpine) has no
-# glibc at all.
+# The Linux releases are built with glibc 2.35 (Ubuntu 22.04) and need it or
+# newer; musl (Alpine) has no glibc at all.
 if [ "$os" = linux ]; then
-    need=31 needed="2.31 or newer (Ubuntu 20.04, Debian 11, RHEL 9 and later)"
-    [ "$arch" = arm64 ] && need=35 needed="2.35 or newer on arm64 (Ubuntu 22.04, Debian 12, RHEL 10 and later)"
+    need=35 needed="2.35 or newer (Ubuntu 22.04, Debian 12, RHEL 10 and later)"
     glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
     [ -n "$glibc" ] || die "This system's C library is not glibc" \
         "ore is built for glibc $needed; musl systems such as Alpine are not supported."
