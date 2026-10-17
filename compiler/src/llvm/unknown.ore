@@ -37,6 +37,8 @@ const CLONE_FN = 6
 
 /** A descriptor flag: the value is a string, which console.log prints as it is. */
 export const STRING_FLAG = 1
+/** A descriptor flag: the value is an array, for `Array.isArray`. */
+export const ARRAY_FLAG = 2
 
 /** The type a value of a type is boxed as. */
 function boxedAs(t: Type): Type {
@@ -79,7 +81,7 @@ function descriptorConstant(g: Emitter, t: Type): string {
     const toF64 = isNumeric(t) ? globalName(`ore.unknown.f64.${key}`) : "null"
     const json = g.jsonReplacing ? jsonHeld(g, t) : "null"
     const clone = g.cloningUnknown ? heldCloner(g, t) : "null"
-    const flags = t.kind === "string" ? STRING_FLAG : 0
+    const flags = t.kind === "string" ? STRING_FLAG : t.kind === "array" ? ARRAY_FLAG : 0
     return `${name} = internal constant ${TYPE} { ${STR} ${g.str(typeofName(t)).v}, i64 ${flags}, ptr ${inspect}, ptr ${eq}, ptr ${toF64}, ptr ${json}, ptr ${clone} }`
 }
 
@@ -333,8 +335,18 @@ export function encodeHeld(g: Emitter, v: V, b: V, o: V, depth: V) {
     g.b.emit(`call void ${f.v}(ptr ${words(g, v)}, ptr ${b.v}, ptr ${o.v}, i64 ${depth.v})`)
 }
 
-/** Whether a descriptor is that of a string. */
+/** Whether an `unknown` holds a string. */
 export function holdsString(g: Emitter, v: V): V {
+    return holdsFlag(g, v, STRING_FLAG)
+}
+
+/** Whether an `unknown` holds an array, of any type: `Array.isArray`. */
+export function holdsArray(g: Emitter, v: V): V {
+    return holdsFlag(g, v, ARRAY_FLAG)
+}
+
+/** Whether an `unknown` is not null and its descriptor has a flag. */
+function holdsFlag(g: Emitter, v: V, flag: int): V {
     const desc = descriptorOf(g, v)
     return choose(
         g,
@@ -342,7 +354,8 @@ export function holdsString(g: Emitter, v: V): V {
         () => ({ ty: "i1", v: "false" }),
         () => {
             const flags = descriptorField(g, desc, FLAGS, "i64")
-            return g.b.value("i1", `icmp ne i64 ${flags.v}, 0`)
+            const set = g.b.value("i64", `and i64 ${flags.v}, ${flag}`)
+            return g.b.value("i1", `icmp ne i64 ${set.v}, 0`)
         },
         "i1",
     )

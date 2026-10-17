@@ -176,7 +176,11 @@ function, given null and the index. `Array.of(...items)` is an array of its
 arguments, typed as an array literal. `Array.isArray(x)` is known from the
 type of `x`, and tested at run time for a union; as a condition it narrows
 `x`, as in TypeScript: to the array members of its union when true, to the
-others when false.
+others when false. Of an `unknown`, it tells whether the value holds an
+array, of any element type, and does not narrow it: an `int[]` in an
+`unknown` is no `unknown[]`, whose elements are boxed, so `x as int[]`
+or `x as unknown[]` (as `JSON.parse` makes arrays) reads it as the type it
+holds.
 
 ## Generators and iteration
 

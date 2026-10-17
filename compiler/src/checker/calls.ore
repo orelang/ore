@@ -847,7 +847,8 @@ function arrayStatic(c: Checker, name: string, node: Node, scope: Scope, expecte
         if (value.k === "error") return errorOperand
         const v = c.toDefault(value, args[0])
         const t = v.type
-        if (t.kind === "unknown") return c.fail(args[0], "'Array.isArray' cannot test an 'unknown' yet.")
+        // An `unknown` holding an array of any type: no narrowing, since it is no `unknown[]`.
+        if (t.kind === "unknown") return typed(new BuiltinCall(types.bool, name, [v]))
         if (t.kind !== "union") return typed(new Seq(types.bool, [v, new BoolLit(types.bool, t.kind === "array")]))
         // A union holds an array when it holds one of its array members.
         const local = c.newLocal("value", t, false)

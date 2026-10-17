@@ -22,6 +22,7 @@ import { choose, expr, inject, payload, slotTest, unionOf } from "./expressions"
 import { externType, slot } from "./functions"
 import { boxed } from "./helpers"
 import { cString, globalName, sizeOf, voidValue, type V } from "./ll"
+import { holdsArray } from "./unknown"
 
 /** A value to format with its type: `readonly [V, Type]` in TypeScript. */
 export type Part = { v: V; t: Type }
@@ -736,6 +737,8 @@ export function builtin(g: Emitter, e: BuiltinCall): V {
             return g.rt("ore_rt_getenv", [a[0]])
         case "process.cwd":
             return g.rt("ore_rt_cwd", [])
+        case "Array.isArray":
+            return holdsArray(g, a[0])
         case "internal.catchPanic":
             return g.rt("ore_rt_catch_panic", [a[0]])
         case "internal.countTest":

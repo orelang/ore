@@ -39,6 +39,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | missing value | `undefined` | `null` |
 | `let x: unknown` | `undefined` | `null` |
 | `typeof x === "number"` on an `unknown` | narrows to `number` | narrows to `f64`; an integer converts |
+| `Array.isArray(x)` on an `unknown` | narrows to `any[]` | tells whether it holds an array of any type, without narrowing it: `x as T[]` reads it |
 | `x instanceof I` on an `unknown`, for an interface `I` | narrows | compile error: only classes narrow it (`Error` is the class of `new Error(...)`, as `instanceof Error` is in JavaScript) |
 | `x instanceof Box<int>` | tests for the class `Box` (type arguments are erased) | tests for the instance `Box<int>`, and narrows to it |
 | `map.get(missing)` | `undefined` | `null` |
