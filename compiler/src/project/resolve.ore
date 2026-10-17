@@ -2,6 +2,7 @@
 // import specifiers resolved to files like Node does.
 
 import { dirname, isAbsolute, join, resolve } from "ore:path"
+import { type Lockfile } from "./lock"
 import { fetchModule, isGithubUrl, parseGithubUrl } from "./remote"
 import runtimeArray from "../../../runtime/core/array.ore" with { type: "text" }
 import runtimeBigint from "../../../runtime/core/bigint.ore" with { type: "text" }
@@ -263,13 +264,18 @@ export function packageEntry(dir: string): string | Error | null {
 /**
  * Resolves an import specifier like Node does: relative paths against the
  * importing file, package names in `node_modules` directories above it, and
- * GitHub URLs to repositories downloaded into the cache (project/remote.ore).
+ * GitHub URLs to repositories downloaded into the cache (project/remote.ore),
+ * at the commits `lock` has for them when it is given (project/lock.ore).
  * Null when there is no such module; an Error when a package.json is invalid
- * or a repository cannot be downloaded.
+ * or a repository cannot be downloaded or does not match the lock.
  */
-export function resolveImport(specifier: string, fromFile: string): string | Error | null {
+export function resolveImport(
+    specifier: string,
+    fromFile: string,
+    lock: Lockfile | null = null,
+): string | Error | null {
     if (specifier.startsWith("ore:")) return stdModules.has(specifier) ? specifier : null
-    if (isGithubUrl(specifier)) return resolveGithub(specifier)
+    if (isGithubUrl(specifier)) return resolveGithub(specifier, lock)
     if (
         specifier.startsWith("./") ||
         specifier.startsWith("../") ||
@@ -299,11 +305,11 @@ export function resolveImport(specifier: string, fromFile: string): string | Err
 /** The warnings printed about modules from GitHub, each printed once. */
 const warned = new Set<string>()
 
-/** The file of a module imported by a GitHub URL, downloading its repository if needed. */
-function resolveGithub(url: string): string | Error | null {
+/** The file of a module imported by a GitHub URL, downloading its repository if needed, at the commit `lock` has if given. */
+function resolveGithub(url: string, lock: Lockfile | null): string | Error | null {
     const module = parseGithubUrl(url)
     if (module instanceof Error) return module
-    const fetched = fetchModule(module)
+    const fetched = lock === null ? fetchModule(module) : lock.fetch(module)
     if (fetched instanceof Error) return fetched
     const warning = fetched.warning
     if (warning !== null && !warned.has(warning)) {

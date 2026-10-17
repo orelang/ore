@@ -1,0 +1,220 @@
+// The lock file of the modules imported from GitHub (project/lock.ore): its
+// text, and builds that lock, reuse, update and check the commits of a
+// repository. GitHub is a directory of git repositories made by the test,
+// which `settings.base` points git to.
+
+import { test, expect, fail } from "ore:test"
+import { join } from "ore:path"
+import { lockCommand } from "../src/cli/lock"
+import { LoadOptions, loadProgram, lockPath } from "../src/project/load"
+import { lockKey, Locked, Lockfile, lockSettings, readLock, treeHash } from "../src/project/lock"
+import { commitDir, parseGithubUrl, settings } from "../src/project/remote"
+
+declare function setenv(name: string, value: string, overwrite: i32): i32
+
+function write(path: string, text: string) {
+    const slash = path.lastIndexOf("/")
+    const made = fs.mkdir(path.slice(0, slash), true)
+    if (made !== null) fail(made.message)
+    const written = fs.writeFile(path, text)
+    if (written !== null) fail(written.message)
+}
+
+function read(path: string): string {
+    const text = fs.readFile(path)
+    if (text instanceof Error) fail(text.message)
+    return text
+}
+
+/** Runs git; its output without the final newline. */
+function git(args: string[]): string {
+    const out = process.output("git", args)
+    if (out instanceof Error) fail(out.message)
+    if (!out.ok) fail(`git ${args.join(" ")}: ${out.stderr}`)
+    return out.stdout.trim()
+}
+
+/** Commits a file to a repository; the commit's hash. */
+function commit(repo: string, file: string, text: string): string {
+    write(join(repo, file), text)
+    git(["-C", repo, "add", "-A"])
+    git(["-C", repo, "-c", "user.name=ore", "-c", "user.email=ore@example.com", "commit", "--quiet", "-m", file])
+    return git(["-C", repo, "rev-parse", "HEAD"])
+}
+
+function lockAt(path: string): Lockfile {
+    const lock = readLock(path)
+    if (lock instanceof Error) fail(lock.message)
+    return lock
+}
+
+/** The commit and the hash a lock file has for a key, as "<commit> <hash>", or "none". */
+function locked(path: string, key: string): string {
+    const entry = lockAt(path).entries.get(key)
+    return entry === null ? "none" : `${entry.commit} ${entry.hash}`
+}
+
+/** The messages of the diagnostics of loading a program, a line each, or the error. */
+function problems(entry: string, options: LoadOptions): string {
+    const program = loadProgram(entry, options)
+    if (program instanceof Error) return `error: ${program.message}`
+    const messages: string[] = []
+    for (const d of program.diagnostics) messages.push(d.message)
+    return messages.join("\n")
+}
+
+/** Whether a program loads a module from a directory. */
+function loadsFrom(entry: string, dir: string): bool {
+    const options = new LoadOptions()
+    options.absolutePaths = true
+    const program = loadProgram(entry, options)
+    if (program instanceof Error) fail(program.message)
+    for (const m of program.modules) if (m.path.startsWith(`${dir}/`)) return true
+    return false
+}
+
+test("keys, writes and reads lock files", () => {
+    const module = parseGithubUrl("https://github.com/acme/geo/tree/v1.2.0/src/point")
+    if (module instanceof Error) fail(module.message)
+    expect(lockKey(module)).toBe("https://github.com/acme/geo/tree/v1.2.0")
+    const head = parseGithubUrl("https://github.com/acme/geo/src/point")
+    if (head instanceof Error) fail(head.message)
+    expect(lockKey(head)).toBe("https://github.com/acme/geo")
+
+    const root = fs.mkdtemp("ore-lock-")
+    if (root instanceof Error) fail(root.message)
+    const path = join(root, "ore.lock")
+    const lock = lockAt(path)
+    expect(lock.entries.size).toBe(0)
+    expect(lock.text()).toBe('{\n  "version": 1,\n  "github": {}\n}\n')
+    const a = "0123456789abcdef0123456789abcdef01234567"
+    const b = "89abcdef0123456789abcdef0123456789abcdef"
+    lock.set("https://github.com/zeta/z", new Locked(b, "sha256-2"))
+    lock.set("https://github.com/acme/geo", new Locked(a, "sha256-1"))
+    // Sorted by key, whatever the order they were locked in.
+    const text = `{
+  "version": 1,
+  "github": {
+    "https://github.com/acme/geo": {
+      "commit": "${a}",
+      "hash": "sha256-1"
+    },
+    "https://github.com/zeta/z": {
+      "commit": "${b}",
+      "hash": "sha256-2"
+    }
+  }
+}
+`
+    expect(lock.text()).toBe(text)
+    expect(lock.write() === null).toBe(true)
+    expect(read(path)).toBe(text)
+    expect(locked(path, "https://github.com/zeta/z")).toBe(`${b} sha256-2`)
+    expect(lock.pinned(head).ref).toBe(a)
+    expect(lock.pinned(module).ref).toBe("v1.2.0")
+
+    write(path, '{"version": 1, "github": {"https://github.com/acme/geo": {"commit": "main", "hash": "sha256-1"}}}')
+    const invalid = readLock(path)
+    expect(invalid instanceof Error && invalid.message.includes("is not a repository locked at a commit")).toBe(true)
+    write(path, '{"version": 2, "github": {}}')
+    expect(readLock(path) instanceof Error).toBe(true)
+
+    // Next to the package.json, or to the entry file without one.
+    write(join(root, "app/package.json"), '{"name": "app"}')
+    expect(lockPath(join(root, "app/src/main.ore"))).toBe(join(root, "app/ore.lock"))
+    expect(lockPath(join(root, "loose/main.ore"))).toBe(join(root, "loose/ore.lock"))
+    fs.remove(root, true)
+})
+
+test("builds lock, reuse, update and check the commits of repositories from GitHub", () => {
+    const root = fs.mkdtemp("ore-lock-github-")
+    if (root instanceof Error) fail(root.message)
+    const upstream = join(root, "github")
+    const repo = join(upstream, "acme/geo")
+    const made = fs.mkdir(repo, true)
+    if (made !== null) fail(made.message)
+    git(["init", "--quiet", repo])
+    // A commit that no branch is at any more is still downloaded by its hash.
+    git(["-C", repo, "config", "uploadpack.allowAnySHA1InWant", "true"])
+    const first = commit(repo, "index.ore", "export const answer = 1\n")
+    const base = settings.base
+    settings.base = `file://${upstream}`
+    const cache = join(root, "cache")
+    const previous = process.getenv("ORE_CACHE")
+    setenv("ORE_CACHE", cache, 1)
+
+    const app = join(root, "app")
+    write(join(app, "package.json"), '{"name": "app", "main": "main.ore"}')
+    const main = join(app, "main.ore")
+    write(main, 'import { answer } from "https://github.com/acme/geo"\nconsole.log(answer)\n')
+    const path = join(app, "ore.lock")
+    const key = "https://github.com/acme/geo"
+
+    // A first build locks the commit the default branch is at.
+    expect(problems(main, new LoadOptions())).toBe("")
+    const firstDir = commitDir(cache, "acme", "geo", first)
+    const firstHash = treeHash(firstDir)
+    if (firstHash instanceof Error) fail(firstHash.message)
+    expect(locked(path, key)).toBe(`${first} ${firstHash}`)
+    const firstText = read(path)
+
+    // A push does not move the build: it takes the locked commit.
+    const second = commit(repo, "index.ore", "export const answer = 2\n")
+    git(["-C", repo, "tag", "v1"])
+    expect(loadsFrom(main, firstDir)).toBe(true)
+    expect(read(path)).toBe(firstText)
+
+    // With --frozen, a repository the lock does not have is an error, and the lock stays as it is.
+    const tagged = join(app, "tagged.ore")
+    write(tagged, 'import { answer } from "https://github.com/acme/geo/tree/v1"\nconsole.log(answer)\n')
+    lockSettings.frozen = true
+    const frozen = problems(tagged, new LoadOptions())
+    lockSettings.frozen = false
+    expect(frozen).toBe(`${path} does not lock ${key}/tree/v1, and --frozen does not add it: build without --frozen.`)
+    expect(read(path)).toBe(firstText)
+    // Without it, the repository is added at the commit of the tag.
+    expect(problems(tagged, new LoadOptions())).toBe("")
+    const secondHash = treeHash(commitDir(cache, "acme", "geo", second))
+    if (secondHash instanceof Error) fail(secondHash.message)
+    expect(locked(path, `${key}/tree/v1`)).toBe(`${second} ${secondHash}`)
+    expect(locked(path, key)).toBe(`${first} ${firstHash}`)
+
+    // Files that do not have the locked hash are an error that names the repository.
+    const tampered = lockAt(path)
+    tampered.set(key, new Locked(first, "sha256-0"))
+    expect(tampered.write() === null).toBe(true)
+    expect(problems(main, new LoadOptions())).toBe(
+        `The files of ${key} at ${first.slice(0, 12)} do not match ${path}: their hash is ${firstHash}, the lock has sha256-0.`,
+    )
+    tampered.set(key, new Locked(first, firstHash))
+    expect(tampered.write() === null).toBe(true)
+
+    // The language server's loads read the lock, and never write it.
+    const editor = join(root, "editor")
+    write(join(editor, "main.ore"), 'import { answer } from "https://github.com/acme/geo"\nconsole.log(answer)\n')
+    const reading = new LoadOptions()
+    reading.updateLock = false
+    expect(problems(join(editor, "main.ore"), reading)).toBe("")
+    expect(fs.exists(join(editor, "ore.lock"))).toBe(false)
+
+    // `ore lock --update` moves the default branch to its new commit; the tag stays.
+    expect(lockCommand(["--update", main])).toBe(0)
+    expect(locked(path, key)).toBe(`${second} ${secondHash}`)
+    expect(locked(path, `${key}/tree/v1`)).toBe(`${second} ${secondHash}`)
+    expect(loadsFrom(main, commitDir(cache, "acme", "geo", second))).toBe(true)
+    expect(lockCommand(["--update", "acme/other", main])).toBe(2)
+
+    // --offline never downloads: a ref the cache does not have is an error.
+    commit(repo, "index.ore", "export const answer = 3\n")
+    git(["-C", repo, "tag", "v2"])
+    write(tagged, 'import { answer } from "https://github.com/acme/geo/tree/v2"\nconsole.log(answer)\n')
+    settings.offline = true
+    const offline = problems(tagged, new LoadOptions())
+    settings.offline = false
+    expect(offline).toBe(`Cannot import ${key}: the cache does not have it, and --offline does not download it.`)
+    expect(locked(path, `${key}/tree/v2`)).toBe("none")
+
+    settings.base = base
+    setenv("ORE_CACHE", previous ?? "", 1)
+    fs.remove(root, true)
+})

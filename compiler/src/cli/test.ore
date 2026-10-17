@@ -1,9 +1,9 @@
-// `ore test [--watch] [-t pattern] [paths...]`: builds and runs the
-// *.test.ore files below the paths (default: "."), and reports which failed;
-// with `--watch`, again after each change of the files the test programs are
-// made of (watch.ore); with `-t`, only the tests whose full names match the
-// regular expression, which the test programs read from
-// ORE_TEST_NAME_PATTERN.
+// `ore test [--watch] [-t pattern] [--frozen] [--offline] [paths...]`:
+// builds and runs the *.test.ore files below the paths (default: "."), and
+// reports which failed; with `--watch`, again after each change of the files
+// the test programs are made of (watch.ore); with `-t`, only the tests whose
+// full names match the regular expression, which the test programs read from
+// ORE_TEST_NAME_PATTERN. `--frozen` and `--offline` go to each build.
 //
 // A test file is a program whose tests (ore:test, runtime/std/test.ore) run
 // each in its own task and print `✓ name`, `✗ name` and the failure, or
@@ -14,7 +14,7 @@
 // outputs are printed in the order of the files.
 
 import { join, resolve } from "ore:path"
-import { toolError } from "./commands"
+import { lockOption, lockOptions, toolError } from "./commands"
 import { oreFiles } from "./files"
 import { executablePath } from "../driver/self"
 import { loadProgram, programFiles } from "../project/load"
@@ -37,6 +37,7 @@ export function testCommand(args: string[]): i32 {
     for (let i = 0; i < args.length; i++) {
         const a = args[i]
         if (a === "--watch" || a === "-w") watch = true
+        else if (lockOption(a)) continue
         else if (a === "-t" || a === "--test-name-pattern") {
             if (i + 1 >= args.length) {
                 console.error(`ore: ${a} needs a pattern`)
@@ -141,7 +142,10 @@ function styledMarks(output: string): string {
 
 /** Builds a test file into `output` with `ore build`, and runs it with the pattern of its tests to run, if not "". */
 function testFile(ore: string, file: string, output: string, pattern: string): FileResult {
-    const built = process.output(ore, ["build", file, "-o", output])
+    const args = ["build"]
+    for (const option of lockOptions()) args.push(option)
+    for (const arg of [file, "-o", output]) args.push(arg)
+    const built = process.output(ore, args)
     if (built instanceof Error) return new FileResult("", `ore: ${built.message}`, false)
     if (!built.ok) return new FileResult(built.stdout, built.stderr, false)
     // The pattern goes in the environment by env(1): the compiler is built by

@@ -1,0 +1,219 @@
+// The lock file, ore.lock: for each repository a program imports from
+// GitHub (project/remote.ore), at a ref or at its default branch, the commit
+// it was locked at and a hash of the files of that commit. A build takes the
+// locked commit instead of asking GitHub where the branch is now, so that it
+// builds the same code whatever is pushed since, and fails when the files of
+// the commit are not those locked. The file is JSON, its keys sorted, so that
+// it changes only where a lock does:
+//
+//   {
+//     "version": 1,
+//     "github": {
+//       "https://github.com/acme/geo": {
+//         "commit": "0123456789abcdef0123456789abcdef01234567",
+//         "hash": "sha256-…"
+//       },
+//       "https://github.com/acme/geo/tree/v1.2.0": { ... }
+//     }
+//   }
+//
+// It is next to the package.json of the program's package, or to the entry
+// file when there is none (`lockPath` in project/load.ore).
+
+import { Sha256, sha256 } from "ore:crypto"
+import { dirname, join } from "ore:path"
+import { type Fetched, fetchModule, type GithubModule, isCommitHash, parseGithubUrl } from "./remote"
+
+/** The name of the lock file. */
+export const lockName = "ore.lock"
+
+/** How builds use their lock files. */
+export class LockSettings {
+    /** Fail instead of adding a repository the lock does not have, as `--frozen` asks (CI). */
+    frozen = false
+}
+
+export const lockSettings = new LockSettings()
+
+/** A repository as the lock records it: the commit and the hash of its files (`treeHash`). */
+export class Locked {
+    constructor(
+        readonly commit: string,
+        readonly hash: string,
+    ) {}
+}
+
+type LockedJson = { commit: string; hash: string }
+type LockJson = { version: int; github: Map<string, LockedJson> | null }
+
+/** The key of a repository at a ref in the lock: its URL, followed by `/tree/<ref>` for a ref. */
+export function lockKey(module: GithubModule): string {
+    return module.ref === "" ? module.url : `${module.url}/tree/${module.ref}`
+}
+
+/** The hashes of the directories hashed in this process, by directory: a commit's files never change. */
+const hashes = new Map<string, string>()
+
+/**
+ * The hash of the files of a directory and its subdirectories: the SHA-256
+ * of a line per file, in the order of their paths, with the SHA-256 of the
+ * file's contents and its path relative to the directory, as
+ * `sha256-<hex>`. A symbolic link counts as the file it links to, or as
+ * its name alone when that is not a file.
+ */
+export function treeHash(dir: string): string | Error {
+    const known = hashes.get(dir)
+    if (known !== null) return known
+    const lines: string[] = []
+    const failed = hashFiles(dir, "", lines)
+    if (failed !== null) return failed
+    const all = new Sha256()
+    for (const line of lines) all.update(line)
+    const hash = `sha256-${all.hex()}`
+    hashes.set(dir, hash)
+    return hash
+}
+
+function hashFiles(dir: string, prefix: string, lines: string[]): Error | null {
+    const names = fs.readDir(dir)
+    if (names instanceof Error) return names
+    for (const name of names) {
+        const path = join(dir, name)
+        const relative = prefix === "" ? name : `${prefix}/${name}`
+        const info = fs.lstat(path)
+        if (info instanceof Error) return info
+        if (info.isDir) {
+            const failed = hashFiles(path, relative, lines)
+            if (failed !== null) return failed
+        } else if (info.isFile || (info.isSymlink && fs.isFile(path))) {
+            const text = fs.readFile(path)
+            if (text instanceof Error) return text
+            lines.push(`${sha256(text)}  ${relative}\n`)
+        } else lines.push(`-  ${relative}\n`)
+    }
+    return null
+}
+
+/** A lock file as read, with the repositories added or moved since. */
+export class Lockfile {
+    /** The repositories locked, by `lockKey`. */
+    readonly entries = new Map<string, Locked>()
+    /** The keys set since the file was read, which `write` writes. */
+    changed: string[] = []
+    /** Whether `fetch` adds a repository the lock does not have; the language server does not. */
+    adds = true
+
+    constructor(readonly path: string) {}
+
+    /** Locks a repository at a ref. */
+    set(key: string, locked: Locked): void {
+        this.entries.set(key, locked)
+        if (!this.changed.includes(key)) this.changed.push(key)
+    }
+
+    /** The file's text: the entries sorted by key, two spaces of indentation, and a newline at the end. */
+    text(): string {
+        const keys: string[] = []
+        for (const key of this.entries.keys()) keys.push(key)
+        keys.sort()
+        const lines: string[] = []
+        for (let i = 0; i < keys.length; i++) {
+            const locked = this.entries.get(keys[i])
+            if (locked === null) continue
+            const comma = i + 1 < keys.length ? "," : ""
+            lines.push(`    ${JSON.stringify(keys[i])}: {`)
+            lines.push(`      "commit": ${JSON.stringify(locked.commit)},`)
+            lines.push(`      "hash": ${JSON.stringify(locked.hash)}`)
+            lines.push(`    }${comma}`)
+        }
+        if (lines.length === 0) return `{\n  "version": 1,\n  "github": {}\n}\n`
+        return `{\n  "version": 1,\n  "github": {\n${lines.join("\n")}\n  }\n}\n`
+    }
+
+    /**
+     * Writes the entries set since the file was read into the file as it is
+     * now, which another build may have changed meanwhile: into a file next
+     * to it, renamed to it, so that a reader never sees half of it. Nothing
+     * when no entry was set.
+     */
+    write(): Error | null {
+        if (this.changed.length === 0) return null
+        const current = readLock(this.path)
+        if (current instanceof Error) return current
+        for (const key of this.changed) {
+            const locked = this.entries.get(key)
+            if (locked !== null) current.entries.set(key, locked)
+        }
+        const temporary = fs.mkdtemp(".ore-lock-", dirname(this.path))
+        if (temporary instanceof Error) return temporary
+        const written = join(temporary, lockName)
+        let failed = fs.writeFile(written, current.text())
+        if (failed === null) failed = fs.rename(written, this.path)
+        fs.remove(temporary, true)
+        if (failed !== null) return failed
+        this.changed = []
+        return null
+    }
+
+    /**
+     * The repository of a module: at the commit the lock has for its
+     * repository and ref, whose files must have the locked hash, or, when
+     * the lock has none, where its ref is now (`fetchModule`), added to the
+     * lock unless `adds` is off. An Error when the files do not have the
+     * locked hash, when the lock has no entry and `lockSettings.frozen`
+     * forbids adding one, or when the repository cannot be had.
+     */
+    fetch(module: GithubModule): Fetched | Error {
+        const key = lockKey(module)
+        const locked = this.entries.get(key)
+        if (locked !== null) {
+            const fetched = fetchModule(module.at(locked.commit))
+            if (fetched instanceof Error) return fetched
+            const hash = treeHash(fetched.dir)
+            if (hash instanceof Error) return hash
+            if (hash !== locked.hash)
+                return new Error(
+                    `The files of ${key} at ${locked.commit.slice(0, 12)} do not match ${this.path}: their hash is ${hash}, the lock has ${locked.hash}.`,
+                )
+            return fetched
+        }
+        if (!this.adds) return fetchModule(module)
+        if (lockSettings.frozen)
+            return new Error(`${this.path} does not lock ${key}, and --frozen does not add it: build without --frozen.`)
+        const fetched = fetchModule(module)
+        if (fetched instanceof Error) return fetched
+        const hash = treeHash(fetched.dir)
+        if (hash instanceof Error) return hash
+        this.set(key, new Locked(fetched.commit, hash))
+        return fetched
+    }
+
+    /** The module at the commit the lock has for its repository and ref, or the module itself when it has none. */
+    pinned(module: GithubModule): GithubModule {
+        const locked = this.entries.get(lockKey(module))
+        return locked === null ? module : module.at(locked.commit)
+    }
+}
+
+/** The lock file at a path: empty when there is none; an Error when it cannot be read or is not a lock file. */
+export function readLock(path: string): Lockfile | Error {
+    const lock = new Lockfile(path)
+    if (!fs.exists(path)) return lock
+    const text = fs.readFile(path)
+    if (text instanceof Error) return text
+    const json = JSON.parse<LockJson>(text)
+    if (json instanceof Error) return new Error(`${path}: ${json.message}`)
+    if (json.version !== 1)
+        return new Error(`${path}: version ${json.version} is not one this ore reads; update ore ('ore update').`)
+    const github = json.github
+    if (github === null) return lock
+    for (const [key, entry] of github) {
+        const invalid = new Error(`${path}: '${key}' is not a repository locked at a commit.`)
+        const module = parseGithubUrl(key)
+        if (module instanceof Error) return invalid
+        if (module.path !== "" || lockKey(module) !== key) return invalid
+        if (!isCommitHash(entry.commit) || !entry.hash.startsWith("sha256-")) return invalid
+        lock.entries.set(key, new Locked(entry.commit, entry.hash))
+    }
+    return lock
+}

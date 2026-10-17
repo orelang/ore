@@ -6,6 +6,8 @@ import { importType, moduleSpecifier, stringValue } from "../syntax/imports"
 import { parse, type ParseResult } from "../syntax/parse"
 import { type Source } from "../syntax/source"
 import { jsonModule } from "./json"
+import { lockName, type Lockfile, readLock } from "./lock"
+import { isGithubUrl } from "./remote"
 import { findPackageRoot, isFile, resolveImport, runtimeModules, stdModules } from "./resolve"
 
 export class Program {
@@ -62,6 +64,23 @@ export class LoadOptions {
      * server keeps one for its session; an overridden module is parsed anew.
      */
     parsed = new Map<string, ParseResult>()
+    /**
+     * Whether the repositories imported from GitHub that the program's
+     * ore.lock does not lock are added to it, and the file written. The
+     * language server leaves the file as it is: it reads the lock, and
+     * takes a repository it does not have where its branch is now.
+     */
+    updateLock = true
+}
+
+/**
+ * The lock file of a program (project/lock.ore): ore.lock next to the
+ * package.json of the entry file's package, or next to the entry file when
+ * it has none.
+ */
+export function lockPath(entryPath: string): string {
+    const dir = dirname(resolve(entryPath))
+    return join(findPackageRoot(dir) ?? dir, lockName)
 }
 
 /**
@@ -78,8 +97,14 @@ export function loadProgram(entryPath: string, given?: LoadOptions): Program | E
         const runtime = loader.visit(name, name)
         if (runtime instanceof Error) return runtime
     }
+    loader.lockPath = lockPath(entryPath)
     const entry = loader.visit(resolve(entryPath), options.absolutePaths ? resolve(entryPath) : entryPath)
     if (entry instanceof Error) return entry
+    const lock = loader.lock
+    if (lock !== null && options.updateLock) {
+        const written = lock.write()
+        if (written !== null) return written
+    }
     const program = new Program(
         loader.order,
         entry,
@@ -100,8 +125,22 @@ class Loader {
     order: Source[] = []
     textFiles: string[] = []
     syntaxErrors = false
+    /** The path of the program's lock file, and the lock, read at the first import from GitHub. */
+    lockPath = ""
+    lock: Lockfile | null = null
 
     constructor(readonly options: LoadOptions) {}
+
+    /** The program's lock, read once; an Error when the file is not a lock file. */
+    private readLock(): Lockfile | Error {
+        const known = this.lock
+        if (known !== null) return known
+        const lock = readLock(this.lockPath)
+        if (lock instanceof Error) return lock
+        lock.adds = this.options.updateLock
+        this.lock = lock
+        return lock
+    }
 
     private read(path: string): string | Error {
         const override = this.options.overrides.get(path)
@@ -167,7 +206,13 @@ class Loader {
             }
             // The checker reports other types.
             if (type !== "") continue
-            const target = resolveImport(name, path)
+            let lock: Lockfile | null = null
+            if (isGithubUrl(name)) {
+                const read = this.readLock()
+                if (read instanceof Error) return read
+                lock = read
+            }
+            const target = resolveImport(name, path, lock)
             if (target instanceof Error) {
                 this.error(source, specifier.start, specifier.end, target.message)
                 continue

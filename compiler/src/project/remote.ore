@@ -11,10 +11,24 @@
 // have it: into a temporary directory next to it, renamed into place, so
 // that builds running at the same time never see half a download. A commit
 // given by its hash is never asked about. Offline, the commit the ref
-// resolved to last is used, with a warning.
+// resolved to last is used, with a warning. With `--offline`
+// (`settings.offline`), git is never run: only the cache is used.
+//
+// Builds take the commit of a repository from the program's ore.lock when
+// it has one (project/lock.ore), as a module at that commit.
 
 import { join } from "ore:path"
 import { cacheRoot } from "../driver/cache"
+
+/** How repositories are downloaded. */
+export class RemoteSettings {
+    /** Never run git, as `--offline` asks: a repository the cache does not have is an error. */
+    offline = false
+    /** Where git finds the repositories: GitHub, or in tests a directory of `<owner>/<repo>` repositories (`file://...`). */
+    base = "https://github.com"
+}
+
+export const settings = new RemoteSettings()
 
 /** A module of a GitHub repository, as its import URL names it. */
 export class GithubModule {
@@ -27,9 +41,19 @@ export class GithubModule {
         readonly path: string,
     ) {}
 
-    /** The repository's URL, for git. */
+    /** The repository's URL, which names it in messages and in ore.lock. */
     get url(): string {
         return `https://github.com/${this.owner}/${this.repo}`
+    }
+
+    /** The URL git downloads the repository from: on GitHub, or below `settings.base`. */
+    get source(): string {
+        return `${settings.base}/${this.owner}/${this.repo}`
+    }
+
+    /** The same module at a commit. */
+    at(commit: string): GithubModule {
+        return new GithubModule(this.owner, this.repo, commit, this.path)
     }
 }
 
@@ -187,7 +211,7 @@ function download(root: string, module: GithubModule, commit: string, progress: 
     progress("downloading", 10)
     const steps = [
         ["-C", temporary, "init", "--quiet"],
-        ["-C", temporary, "fetch", "--quiet", "--depth", "1", module.url, commit],
+        ["-C", temporary, "fetch", "--quiet", "--depth", "1", module.source, commit],
         ["-C", temporary, "-c", "advice.detachedHead=false", "checkout", "--quiet", "FETCH_HEAD"],
     ]
     for (let i = 0; i < steps.length; i++) {
@@ -236,9 +260,10 @@ function recorded(root: string, module: GithubModule): string | null {
 /**
  * The repository of a module at the commit its ref (or the default branch)
  * is at, downloaded into the cache in `root` when the cache does not have
- * it. Offline, the commit the ref resolved to last, with a warning. An
- * Error when the cache is off, the ref does not exist, or the repository
- * cannot be downloaded.
+ * it. Offline, the commit the ref resolved to last, with a warning; with
+ * `settings.offline`, that commit without asking GitHub. An Error when the
+ * cache is off, the ref does not exist, or the repository cannot be
+ * downloaded.
  */
 export function fetchRepository(root: string, module: GithubModule, progress: Progress): Fetched | Error {
     if (root === "")
@@ -248,9 +273,16 @@ export function fetchRepository(root: string, module: GithubModule, progress: Pr
     if (found !== null) return found
     let commit = module.ref
     let warning: string | null = null
-    if (!isCommitHash(commit)) {
+    if (!isCommitHash(commit) && settings.offline) {
+        const last = recorded(root, module)
+        if (last === null)
+            return new Error(
+                `Cannot import ${module.url}: the cache does not have it, and --offline does not download it.`,
+            )
+        commit = last
+    } else if (!isCommitHash(commit)) {
         progress("checking", 0)
-        const remote = remoteCommit(module.url, module.ref)
+        const remote = remoteCommit(module.source, module.ref)
         if (remote === null) return new Error(`Cannot import ${module.url}: it has no branch or tag '${module.ref}'.`)
         if (remote instanceof Error) {
             const last = recorded(root, module)
@@ -263,14 +295,31 @@ export function fetchRepository(root: string, module: GithubModule, progress: Pr
     }
     const dir = commitDir(root, module.owner, module.repo, commit)
     if (!fs.isDir(dir)) {
+        if (settings.offline)
+            return new Error(
+                `Cannot import ${module.url} at ${commit}: the cache does not have it, and --offline does not download it.`,
+            )
         const failed = download(root, module, commit, progress)
         if (failed !== null) return failed
     }
-    if (warning === null && !isCommitHash(module.ref)) record(root, module, commit)
+    if (warning === null && !settings.offline && !isCommitHash(module.ref)) record(root, module, commit)
     progress("done", 100)
     const result = new Fetched(dir, commit, warning)
     fetched.set(key, result)
     return result
+}
+
+/**
+ * The commit a ref, or the default branch, is at on GitHub now, whatever
+ * this process found before, for `ore lock --update`. An Error offline, with
+ * `settings.offline`, or when there is no such ref.
+ */
+export function headCommit(module: GithubModule): string | Error {
+    if (settings.offline) return new Error(`Cannot check ${module.url} for a new commit with --offline.`)
+    const remote = remoteCommit(module.source, module.ref)
+    if (remote === null) return new Error(`${module.url} has no branch or tag '${module.ref}'.`)
+    if (remote instanceof Error) return new Error(`Cannot check ${module.url} for a new commit: ${remote.message}`)
+    return remote
 }
 
 /**

@@ -1,0 +1,110 @@
+// `ore lock [file.ore] [--update [repos...]] [--frozen] [--offline]`: the
+// program's ore.lock (project/lock.ore). It loads the program as a build
+// does: the repositories the lock has are downloaded at their commits when
+// the cache does not have them, and their files checked against the locked
+// hashes; those it does not have are added. With `--update`, it first moves
+// the locked repositories, or those named, to the commits their branches
+// are at now.
+
+import { lockOption, entry, report, toolError, usageError } from "./commands"
+import { loadProgram, lockPath } from "../project/load"
+import { lockKey, Locked, lockSettings, readLock, treeHash } from "../project/lock"
+import {
+    fetchModule,
+    type GithubModule,
+    headCommit,
+    isCommitHash,
+    isGithubUrl,
+    parseGithubUrl,
+    settings as remoteSettings,
+} from "../project/remote"
+
+/** `ore lock [file.ore] [--update [repos...]] [--frozen] [--offline]` */
+export function lockCommand(args: string[]): i32 {
+    let update = false
+    const repositories: string[] = []
+    const positionals: string[] = []
+    for (const arg of args) {
+        if (arg === "--update") update = true
+        else if (lockOption(arg)) continue
+        else if (arg.startsWith("-")) return usageError(`unknown option '${arg}'`)
+        else if (update && !arg.endsWith(".ore")) repositories.push(arg)
+        else positionals.push(arg)
+    }
+    if (!update && repositories.length > 0) return usageError(`unexpected arguments: ${repositories.join(" ")}`)
+    if (update && remoteSettings.offline)
+        return usageError("--update asks GitHub for new commits: it cannot be --offline")
+    if (update && lockSettings.frozen) return usageError("--update changes ore.lock: it cannot be --frozen")
+    const target = entry(positionals)
+    if (target === null) return 2
+    if (target.args.length > 0) return usageError(`unexpected arguments: ${target.args.join(" ")}`)
+    const path = lockPath(target.file)
+    if (update) {
+        const status = updateLock(path, repositories)
+        if (status !== 0) return status
+    }
+    const program = loadProgram(target.file)
+    if (program instanceof Error) return toolError(program)
+    report(program.diagnostics)
+    for (const d of program.diagnostics) if (d.severity === "error") return 1
+    const lock = readLock(path)
+    if (lock instanceof Error) return toolError(lock)
+    if (!fs.exists(path)) console.log("The program imports nothing from GitHub: there is nothing to lock.")
+    else console.log(`${path}: ${lock.entries.size} ${lock.entries.size === 1 ? "repository" : "repositories"} locked.`)
+    return 0
+}
+
+/**
+ * Moves the repositories of a lock file to the commits their branches (or
+ * default branches) are at now, all of them or those named by `owner/repo`
+ * or by URL, downloading the commits to hash their files. A repository
+ * locked by a commit's hash stays where it is.
+ */
+function updateLock(path: string, named: string[]): i32 {
+    const lock = readLock(path)
+    if (lock instanceof Error) return toolError(lock)
+    const keys: string[] = []
+    for (const key of lock.entries.keys()) keys.push(key)
+    keys.sort()
+    const used: string[] = []
+    for (const key of keys) {
+        const module = parseGithubUrl(key)
+        const locked = lock.entries.get(key)
+        if (module instanceof Error || locked === null) continue
+        let wanted = named.length === 0
+        for (const name of named)
+            if (names(name, module)) {
+                wanted = true
+                if (!used.includes(name)) used.push(name)
+            }
+        if (!wanted || isCommitHash(module.ref)) continue
+        const commit = headCommit(module)
+        if (commit instanceof Error) return toolError(commit)
+        if (commit === locked.commit) {
+            console.log(`${key}: ${commit.slice(0, 12)}, unchanged`)
+            continue
+        }
+        const fetched = fetchModule(module.at(commit))
+        if (fetched instanceof Error) return toolError(fetched)
+        const hash = treeHash(fetched.dir)
+        if (hash instanceof Error) return toolError(hash)
+        lock.set(key, new Locked(commit, hash))
+        console.log(`${key}: ${locked.commit.slice(0, 12)} -> ${commit.slice(0, 12)}`)
+    }
+    for (const name of named) if (!used.includes(name)) return usageError(`${path} does not lock ${name}`)
+    const written = lock.write()
+    return written === null ? 0 : toolError(written)
+}
+
+/**
+ * Whether a name given to `--update` names a locked repository: `owner/repo`,
+ * or a URL of the repository, which names it at any ref, or at the ref it
+ * has (`/tree/<ref>`).
+ */
+function names(name: string, module: GithubModule): bool {
+    if (!isGithubUrl(name)) return name === `${module.owner}/${module.repo}`
+    const given = parseGithubUrl(name)
+    if (given instanceof Error) return false
+    if (given.owner !== module.owner || given.repo !== module.repo) return false
+    return given.ref === "" || lockKey(given) === lockKey(module)
+}

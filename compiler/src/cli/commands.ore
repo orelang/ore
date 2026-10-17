@@ -7,6 +7,8 @@ import { basename, join, resolve } from "ore:path"
 import { check } from "../checker/checker"
 import { build, BuildOptions } from "../driver/build"
 import { loadProgram } from "../project/load"
+import { lockSettings } from "../project/lock"
+import { settings as remoteSettings } from "../project/remote"
 import { findPackageRoot, readPackageJson } from "../project/resolve"
 import { type Diagnostic, formatDiagnostic } from "../syntax/diagnostic"
 import { oreFiles } from "./files"
@@ -66,7 +68,28 @@ export function toolError(error: Error): i32 {
     return 1
 }
 
-/** `ore build [file.ore] [-o out] [--release] [--emit-llvm file.ll] [--time] [--watch]` */
+/**
+ * Takes an option of the imports from GitHub: `--frozen`, which fails
+ * instead of adding a repository to ore.lock (project/lock.ore), or
+ * `--offline`, which never downloads (project/remote.ore). Whether `arg` is
+ * one of them.
+ */
+export function lockOption(arg: string): bool {
+    if (arg === "--frozen") lockSettings.frozen = true
+    else if (arg === "--offline") remoteSettings.offline = true
+    else return false
+    return true
+}
+
+/** The options `lockOption` took, for an `ore build` in a child process. */
+export function lockOptions(): string[] {
+    const options: string[] = []
+    if (lockSettings.frozen) options.push("--frozen")
+    if (remoteSettings.offline) options.push("--offline")
+    return options
+}
+
+/** `ore build [file.ore] [-o out] [--release] [--emit-llvm file.ll] [--time] [--watch] [--frozen] [--offline]` */
 export function buildCommand(args: string[]): i32 {
     let output = ""
     let release = false
@@ -79,6 +102,7 @@ export function buildCommand(args: string[]): i32 {
         if (arg === "--release") release = true
         else if (arg === "--watch" || arg === "-w") watching = true
         else if (arg === "--time") times = true
+        else if (lockOption(arg)) continue
         else if (arg.startsWith("--output=")) output = arg.slice(9)
         else if (arg.startsWith("--emit-llvm=")) emitLlvm = arg.slice(12)
         else if (arg === "-o" || arg === "--output" || arg === "--emit-llvm") {
@@ -104,13 +128,20 @@ export function buildCommand(args: string[]): i32 {
 }
 
 /**
- * `ore run [--watch] [file.ore] [args...]`: builds into a temporary
- * directory and runs the program with this process's stdio; with `--watch`
- * (before the file), again after each change of its files.
+ * `ore run [--watch] [--frozen] [--offline] [file.ore] [args...]`: builds
+ * into a temporary directory and runs the program with this process's
+ * stdio; with `--watch`, again after each change of its files. The options
+ * come before the file; those after it are the program's.
  */
 export function runCommand(args: string[]): i32 {
-    const watching = args.length > 0 && (args[0] === "--watch" || args[0] === "-w")
-    const target = entry(watching ? args.slice(1) : args)
+    let watching = false
+    let start = 0
+    for (; start < args.length; start++) {
+        const arg = args[start]
+        if (arg === "--watch" || arg === "-w") watching = true
+        else if (!lockOption(arg)) break
+    }
+    const target = entry(args.slice(start))
     if (target === null) return 2
     const dir = fs.mkdtemp("ore-run-")
     if (dir instanceof Error) return toolError(dir)
@@ -131,12 +162,14 @@ function buildAndRun(target: Entry, output: string): i32 {
 }
 
 /**
- * `ore check [file.ore | paths...]`: reports errors without building. Given
- * directories (or several files), it checks each `.ore` file in them as the
- * entry of a program, except the files that a program checked before
- * already loaded, and reports each diagnostic once.
+ * `ore check [--frozen] [--offline] [file.ore | paths...]`: reports errors
+ * without building. Given directories (or several files), it checks each
+ * `.ore` file in them as the entry of a program, except the files that a
+ * program checked before already loaded, and reports each diagnostic once.
  */
-export function checkCommand(args: string[]): i32 {
+export function checkCommand(given: string[]): i32 {
+    const args: string[] = []
+    for (const arg of given) if (!lockOption(arg)) args.push(arg)
     const paths = args.length > 0 && args.every((a) => a.endsWith(".ore") || fs.isDir(a))
     if (paths && (args.length > 1 || fs.isDir(args[0]))) return checkPaths(args)
     const target = entry(args)

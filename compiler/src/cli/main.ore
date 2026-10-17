@@ -1,10 +1,11 @@
-// The `ore` command: run, build, check, init, test, fmt, doc, cache, lsp, version, help.
+// The `ore` command: run, build, check, init, test, fmt, doc, lock, cache, lsp, version, help.
 
 import { serve } from "../lsp/server"
 import { cacheCommand } from "./cache"
 import { buildCommand, checkCommand, initCommand, runCommand } from "./commands"
 import { docCommand } from "./doc"
 import { fmtCommand } from "./fmt"
+import { lockCommand } from "./lock"
 import { stderr, stdout, Style } from "./style"
 import { testCommand } from "./test"
 import { updateCommand } from "./update"
@@ -51,13 +52,21 @@ export const usage = `Commands:
       --md                       As Markdown (with -o <dir>: a file per module and index.md)
       --json                     As JSON (with -o <file>: into the file)
   ore init [directory]           Create a project: package.json and src/main.ore
+  ore lock [file.ore]            Lock the repositories imported from GitHub in ore.lock
+      --update [repos...]        Move them (or those named, as owner/repo) to their branches' heads
   ore cache [clean]              Print the size of the build cache, or empty it
   ore lsp                        Start the language server on stdio
   ore update [--force]           Update ore to its latest release
-
-Without a file, the program is the 'main' of the nearest package.json.
   ore version                    Print the version
   ore help                       Print this help
+
+Without a file, the program is the 'main' of the nearest package.json.
+
+Imports from GitHub:
+  Builds take each repository at the commit ore.lock (next to the package.json) has for it,
+  and add to it those it lacks. run, build, check, test and lock also take
+      --frozen                   Fail instead of adding a repository to ore.lock
+      --offline                  Never download: use the cache only
 `
 
 /**
@@ -104,6 +113,8 @@ export function main(args: string[]): i32 {
             return fmtCommand(rest)
         case "doc":
             return docCommand(rest)
+        case "lock":
+            return lockCommand(rest)
         case "cache":
             return cacheCommand(rest)
         case "lsp":

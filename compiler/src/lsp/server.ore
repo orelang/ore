@@ -2,7 +2,8 @@
 // kept as the client edits them (full or incremental changes, positions in
 // UTF-16 units) and analyzed on every change, which publishes diagnostics.
 // Repositories imported by GitHub URLs are downloaded in tasks, one at a
-// time and once per session, reported with work-done progress.
+// time and once per session, reported with work-done progress, at the
+// commits the programs' ore.lock files have, which the server never writes.
 
 import {
     analyze,
@@ -23,6 +24,8 @@ import {
     type Message,
 } from "./jsonrpc"
 import { dirname, isAbsolute, join } from "ore:path"
+import { lockPath } from "../project/load"
+import { readLock } from "../project/lock"
 import { resolveImport } from "../project/resolve"
 import {
     Fetched,
@@ -419,7 +422,8 @@ export class Server {
         if (p instanceof Error) return this.invalid(m, p)
         const document = this.documents.get(p.textDocument.uri)
         if (document === null || !document.text.includes("https://github.com/")) return
-        const parsed = parseFile(uriToPath(document.uri), document.text)
+        const path = uriToPath(document.uri)
+        const parsed = parseFile(path, document.text)
         let retried = false
         for (const stmt of parsed.source.ast.list("statements")) {
             const specifier = moduleSpecifier(stmt)
@@ -428,7 +432,7 @@ export class Server {
             if (!isGithubUrl(url)) continue
             const module = parseGithubUrl(url)
             if (module instanceof Error) continue
-            const key = repositoryKey(module)
+            const key = repositoryKey(lockedModule(module, path))
             if (!(known.found.get(key) instanceof Error)) continue
             known.retry(key)
             retried = true
@@ -663,7 +667,7 @@ export class Server {
             const range = rangeOf(text, specifier.start, specifier.end)
             const module = parseGithubUrl(url)
             if (module instanceof Error) return { contents: module.message, range }
-            const remote = this.remotes.get(repositoryKey(module))
+            const remote = this.remotes.get(repositoryKey(lockedModule(module, uriToPath(uri))))
             const contents =
                 remote !== null ? remoteText(remote) : `GitHub: **${module.owner}/${module.repo}**: not downloaded`
             return { contents, range }
@@ -863,6 +867,15 @@ function locationUri(location: Location, current: string): string {
 }
 
 /** The markdown that tells the state of a repository's download: its phase, its commit, or why it failed. */
+/**
+ * A module imported from GitHub as the analyses look it up: at the commit
+ * the lock of a document's program has for its repository (project/lock.ore).
+ */
+function lockedModule(module: GithubModule, path: string): GithubModule {
+    const lock = readLock(lockPath(path))
+    return lock instanceof Error ? module : lock.pinned(module)
+}
+
 function remoteText(remote: Remote): string {
     const name = `GitHub: **${remote.name}**`
     const fetched = remote.fetched
