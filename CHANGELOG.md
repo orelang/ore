@@ -360,6 +360,14 @@ before 1.0, a minor version may change the language.
   OpenSSL: on Linux its run-time library (`libssl.so.3`), on macOS
   Homebrew's `openssl@3`; `install.sh` checks for it and offers to install
   it.
+- A process that spawns many tasks no longer keeps what ended ones captured:
+  a slot of a worker's run queue kept an ended task, and its closure, alive.
+  The test runner, whose builds each spawn a task per part of the IR, grew
+  to 8 GB and more over the suite; it stays under 4 GB on 16 tasks. The
+  collector gives free pages back to the system beyond what the heap is to
+  use before the next collection (as Go's scavenger), not only once half
+  of the heap is free, and a build gives back what LLVM freed in glibc's
+  arenas (`malloc_trim`). `ORE_GCTRACE` also shows the bytes in spans.
 
 ## 0.5.0
 

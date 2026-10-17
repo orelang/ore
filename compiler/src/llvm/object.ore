@@ -139,6 +139,20 @@ export function emitObject(ir: string, options: ObjectOptions): ObjectTimes | Er
     return result
 }
 
+/** glibc's: gives the free memory of every arena of the C allocator back to the system. */
+declare function malloc_trim(pad: u64): i32
+
+/**
+ * Gives the memory LLVM freed back to the system. glibc keeps what is freed
+ * in the arena of the thread that allocated it, with its pages resident, and
+ * gives back only the end of an arena by itself: in a process that compiles
+ * on many threads for long (the test runner builds every test program), what
+ * LLVM freed added up to gigabytes. On macOS, the allocator does it itself.
+ */
+export function releaseFreedMemory(): void {
+    if (target.os === "linux") malloc_trim(0)
+}
+
 function compile(module: ptr, options: ObjectOptions, started: int): ObjectTimes | Error {
     const out = outs()
     const error = unsafe.add(out, 8)

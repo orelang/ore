@@ -7,7 +7,14 @@
 import { basename, join } from "ore:path"
 import { check } from "../checker/checker"
 import { emitModule, EmitOptions } from "../llvm/emit"
-import { emitObject, initializeLLVM, objectTarget, ObjectOptions, ObjectTimes } from "../llvm/object"
+import {
+    emitObject,
+    initializeLLVM,
+    objectTarget,
+    ObjectOptions,
+    ObjectTimes,
+    releaseFreedMemory,
+} from "../llvm/object"
 import { splitModule } from "../llvm/split"
 import { loadProgram, programFiles } from "../project/load"
 import { type Diagnostic } from "../syntax/diagnostic"
@@ -207,6 +214,7 @@ function buildIn(
     }
     counts.objects = parts.length
     counts.cached = cached
+    if (cached < parts.length) releaseFreedMemory()
     // The slowest part's times; with several parts, also the whole.
     if (cached < parts.length) {
         report(options, "llvm parse", parse)
