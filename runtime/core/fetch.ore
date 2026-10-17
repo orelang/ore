@@ -1,0 +1,1261 @@
+// The globals of the Fetch Standard: the classes `Request` and `Response`,
+// whose bodies are streams of bytes, and the function `fetch`, an HTTP/1.1
+// client on the sockets of the runtime (http.ore), as Node's undici.
+//
+// Promises do not reject in Ore. Where JavaScript rejects, Ore fulfills
+// with an Error: `fetch` with a `TypeError` "fetch failed" whose `cause` is
+// what failed, the methods that read a body with a `TypeError` when it was
+// read already, and both with the signal's reason when it aborts. What
+// JavaScript throws at once panics, as an uncaught exception ends a
+// program: an invalid URL or method given to `new Request`, a status out of
+// range given to `new Response`, `clone()` of a body read already.
+//
+// A body is a `ReadableStream<u8[]>`: bytes are `u8[]`, where JavaScript
+// has `Uint8Array`s. A response's body is read from its connection as it
+// is pulled, so a body that is not read holds the connection back.
+
+import { Blob, File, blobBytes } from "ore:runtime/blob"
+import { AbortController, AbortSignal, type Event } from "ore:runtime/events"
+import { FormData } from "ore:runtime/formdata"
+import { Headers, headerEntries } from "ore:runtime/headers"
+import {
+    BodyReader,
+    Connection,
+    type ResponseHead,
+    chunkOf,
+    connectorOf,
+    giveConnection,
+    inTask,
+    readHead,
+    takeConnection,
+} from "ore:runtime/http"
+import {
+    ReadableStream,
+    type ReadableStreamDefaultController,
+    type ReadableStreamDefaultReader,
+    TransformStream,
+} from "ore:runtime/streams"
+import { decodeBytes } from "ore:runtime/text"
+import { URL, URLSearchParams } from "ore:runtime/url"
+
+// ---------------------------------------------------------------------------
+// Types
+
+/** What a `Headers` is made from: another, `[name, value]` pairs, or a record. */
+export type HeadersInit = Headers | [string, string][] | Record<string, string>
+
+/** What a body is made of: text (UTF-8), bytes, a blob, form data, a query, or a stream of bytes. */
+export type BodyInit = string | u8[] | Blob | FormData | URLSearchParams | ReadableStream<u8[]>
+
+/** What `fetch` does with a redirect: follows it, fails, or returns the response of the redirect. */
+export type RequestRedirect = "follow" | "error" | "manual"
+
+/** The cache mode of a request: accepted and kept, but Ore has no HTTP cache. */
+export type RequestCache = "default" | "no-store" | "reload" | "no-cache" | "force-cache" | "only-if-cached"
+
+/** Whether a request sends credentials: kept, but Ore sends no cookies. */
+export type RequestCredentials = "omit" | "same-origin" | "include"
+
+/** The mode of a request; Ore has no origin of its own, so no CORS. */
+export type RequestMode = "cors" | "no-cors" | "same-origin" | "navigate"
+
+/** The kind of a response: `"basic"` from `fetch`, `"default"` when made, `"error"` from `Response.error()`. */
+export type ResponseType = "basic" | "cors" | "default" | "error" | "opaque" | "opaqueredirect"
+
+/** The options of `new Request` and `fetch`. */
+export type RequestInit = {
+    method?: string
+    headers?: HeadersInit
+    body?: BodyInit | null
+    signal?: AbortSignal | null
+    redirect?: RequestRedirect
+    cache?: RequestCache
+    credentials?: RequestCredentials
+    mode?: RequestMode
+    referrer?: string
+    referrerPolicy?: string
+    integrity?: string
+    keepalive?: bool
+    duplex?: "half"
+    priority?: "high" | "low" | "auto"
+}
+
+/** The options of `new Response`. */
+export type ResponseInit = { status?: int; statusText?: string; headers?: HeadersInit }
+
+// ---------------------------------------------------------------------------
+// Bytes
+
+/** The UTF-8 bytes of a string, a byte that is not valid UTF-8 as U+FFFD. */
+function utf8(s: string): u8[] {
+    const text = s.toWellFormed()
+    const out: u8[] = []
+    for (let i = 0; i < text.length; i++) out.push(text[i])
+    return out
+}
+
+/** The bytes of a string as they are. */
+function bytesOf(s: string): u8[] {
+    const out: u8[] = []
+    for (let i = 0; i < s.length; i++) out.push(s[i])
+    return out
+}
+
+/** A string of bytes as they are. */
+function stringOf(bytes: u8[]): string {
+    const p = unsafe.allocBytes(bytes.length)
+    for (let i = 0; i < bytes.length; i++) unsafe.store<u8>(unsafe.add(p, i), bytes[i])
+    return unsafe.makeString(p, bytes.length)
+}
+
+/** Bytes read as UTF-8, invalid sequences as U+FFFD and a leading byte order mark left out. */
+function utf8Decode(bytes: u8[]): string {
+    const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
+    return decodeBytes(bytes, bom ? 3 : 0, bytes.length, false)
+}
+
+/** A stream of a copy of `bytes`, in one chunk (none when empty). */
+function bytesStream(bytes: u8[]): ReadableStream<u8[]> {
+    return new ReadableStream<u8[]>({
+        start: (controller) => {
+            if (bytes.length > 0) controller.enqueue(bytes.slice())
+            controller.close()
+        },
+    })
+}
+
+function typeError(message: string, cause: unknown = null): Error {
+    const e = new Error(message, { cause })
+    e.name = "TypeError"
+    return e
+}
+
+/** What fetch fails with: a TypeError "fetch failed" with what failed as its `cause`, as undici. */
+function fetchFailed(cause: Error): Error {
+    return typeError("fetch failed", cause)
+}
+
+/** The reason of an abort as an Error: itself when it is one. */
+function abortError(reason: unknown): Error {
+    if (reason instanceof Error) return reason
+    const message = typeof reason === "string" ? reason : "This operation was aborted"
+    const e = new Error(message, { cause: reason })
+    e.name = "AbortError"
+    return e
+}
+
+// ---------------------------------------------------------------------------
+// Media types and form data
+
+/** The essence of a media type, lowercased, and its parameters, names lowercased. */
+class MediaType {
+    readonly parameters = new Map<string, string>()
+
+    constructor(readonly essence: string) {}
+
+    static parse(value: string): MediaType {
+        const parts = value.split(";")
+        const type = new MediaType(parts[0].trim().toLowerCase())
+        for (let i = 1; i < parts.length; i++) {
+            const eq = parts[i].indexOf("=")
+            if (eq < 0) continue
+            const name = parts[i].slice(0, eq).trim().toLowerCase()
+            let v = parts[i].slice(eq + 1).trim()
+            if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) v = v.slice(1, v.length - 1)
+            if (!type.parameters.has(name)) type.parameters.set(name, v)
+        }
+        return type
+    }
+
+    /** The type serialized, as the MIME Sniffing Standard writes it: `text/plain;charset=UTF-8`; "" when it is invalid. */
+    toString(): string {
+        const slash = this.essence.indexOf("/")
+        if (slash <= 0 || slash === this.essence.length - 1 || !isToken(this.essence.replace("/", ""))) return ""
+        let out = this.essence
+        for (const [name, value] of this.parameters) {
+            if (!isToken(name)) continue
+            const quoted = isToken(value) ? value : `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
+            out += `;${name}=${quoted}`
+        }
+        return out
+    }
+}
+
+/** A name of a form's part, its line breaks made CRLF and escaped with `"`, as undici writes them. */
+function escapeName(s: string): string {
+    return s.replaceAll("\n", "%0A").replaceAll("\r", "%0D").replaceAll('"', "%22")
+}
+
+/** Line breaks made CRLF: a lone CR or LF too. */
+function crlf(s: string): string {
+    let out = ""
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i]
+        if (c === 0x0d) {
+            out += "\r\n"
+            if (i + 1 < s.length && s[i + 1] === 0x0a) i++
+        } else if (c === 0x0a) out += "\r\n"
+        else out += s.slice(i, i + 1)
+    }
+    return out
+}
+
+/** A boundary of `multipart/form-data`, as undici's: dashes and 11 random digits. */
+function newBoundary(): string {
+    let digits = ""
+    for (let i = 0; i < 11; i++) digits += `${Math.floor(Math.random() * 10)}`
+    return `----formdata-ore-0${digits}`
+}
+
+/** The entries of a form as a `multipart/form-data` body with `boundary`. */
+function multipart(form: FormData, boundary: string): u8[] {
+    const out: u8[] = []
+    const prefix = `--${boundary}\r\nContent-Disposition: form-data`
+    for (const [name, value] of form) {
+        if (typeof value === "string") {
+            for (const b of utf8(`${prefix}; name="${escapeName(crlf(name))}"\r\n\r\n${crlf(value)}\r\n`)) out.push(b)
+            continue
+        }
+        const filename = value.name === "" ? "" : `; filename="${escapeName(value.name)}"`
+        const type = value.type === "" ? "application/octet-stream" : value.type
+        const head = `${prefix}; name="${escapeName(crlf(name))}"${filename}\r\nContent-Type: ${type}\r\n\r\n`
+        for (const b of utf8(head)) out.push(b)
+        for (const b of blobBytes(value)) out.push(b)
+        out.push(0x0d)
+        out.push(0x0a)
+    }
+    for (const b of utf8(`--${boundary}--\r\n`)) out.push(b)
+    return out
+}
+
+/** `%0A`, `%0D` and `%22` of a name of a form's part, back to the bytes they escape. */
+function unescapeName(s: string): string {
+    return s.replaceAll("%0A", "\n").replaceAll("%0D", "\r").replaceAll("%22", '"')
+}
+
+/** The value of a parameter of a `Content-Disposition`, as `name="a"`; null when it has none. */
+function dispositionParameter(value: string, name: string): string | null {
+    for (const part of value.split(";")) {
+        const eq = part.indexOf("=")
+        if (eq < 0 || part.slice(0, eq).trim().toLowerCase() !== name) continue
+        let v = part.slice(eq + 1).trim()
+        if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) v = v.slice(1, v.length - 1)
+        return unescapeName(v)
+    }
+    return null
+}
+
+/** The entries of a `multipart/form-data` body, or null when it is not one. */
+function parseMultipart(body: string, boundary: string): FormData | null {
+    const form = new FormData()
+    const delimiter = `--${boundary}`
+    let at = 0
+    // CRLFs before the first delimiter are left out.
+    while (body.startsWith("\r\n", at)) at += 2
+    if (!body.startsWith(delimiter, at)) return null
+    at += delimiter.length
+    for (;;) {
+        if (body.startsWith("--", at)) return form
+        if (!body.startsWith("\r\n", at)) return null
+        at += 2
+        let name: string | null = null
+        let filename: string | null = null
+        let type: string | null = null
+        // The fields of the part, up to an empty line.
+        for (;;) {
+            const end = body.indexOf("\r\n", at)
+            if (end < 0) return null
+            const line = body.slice(at, end)
+            at = end + 2
+            if (line.length === 0) break
+            const colon = line.indexOf(":")
+            if (colon <= 0) return null
+            const field = line.slice(0, colon).trim().toLowerCase()
+            const value = line.slice(colon + 1).trim()
+            if (field === "content-disposition") {
+                if (!value.toLowerCase().startsWith("form-data")) return null
+                name = dispositionParameter(value, "name")
+                filename = dispositionParameter(value, "filename")
+            } else if (field === "content-type") {
+                type = value
+            }
+        }
+        if (name === null) return null
+        const end = body.indexOf(`\r\n${delimiter}`, at)
+        if (end < 0) return null
+        const data = body.slice(at, end)
+        at = end + 2 + delimiter.length
+        if (filename !== null) form.append(name, new File([bytesOf(data)], filename, { type: type ?? "text/plain" }))
+        else form.append(name, utf8Decode(bytesOf(data)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bodies
+
+/** A body made from a `BodyInit`: its stream, its bytes when known, and the media type it implies. */
+class Extracted {
+    constructor(
+        readonly stream: ReadableStream<u8[]>,
+        readonly source: u8[] | null,
+        readonly type: string | null,
+    ) {}
+}
+
+/** The standard's "extract a body". */
+function extract(body: BodyInit): Extracted {
+    if (typeof body === "string") {
+        const bytes = utf8(body)
+        return new Extracted(bytesStream(bytes), bytes, "text/plain;charset=UTF-8")
+    }
+    if (body instanceof ReadableStream) return new Extracted(body, null, null)
+    if (body instanceof Blob) {
+        const bytes = blobBytes(body)
+        return new Extracted(bytesStream(bytes), bytes, body.type === "" ? null : body.type)
+    }
+    if (body instanceof FormData) {
+        const boundary = newBoundary()
+        const bytes = multipart(body, boundary)
+        return new Extracted(bytesStream(bytes), bytes, `multipart/form-data; boundary=${boundary}`)
+    }
+    if (body instanceof URLSearchParams) {
+        const bytes = utf8(body.toString())
+        return new Extracted(bytesStream(bytes), bytes, "application/x-www-form-urlencoded;charset=UTF-8")
+    }
+    const bytes = body.slice()
+    return new Extracted(bytesStream(bytes), bytes, null)
+}
+
+/** The bytes of a stream, read to its end; an Error when it errors. */
+async function readAll(reader: ReadableStreamDefaultReader<u8[]>): Promise<u8[] | Error> {
+    const out: u8[] = []
+    for (;;) {
+        const r = await reader.read()
+        if (r instanceof Error) return r
+        if (r.done) return out
+        for (const b of r.value) out.push(b)
+    }
+}
+
+/** Whether a stream was read or canceled: what makes a body used. */
+function disturbed(stream: ReadableStream<u8[]> | null): bool {
+    return stream !== null && stream.state.disturbed
+}
+
+/** The stream, bytes and headers of a body, outside the class: its static block sets it. */
+let streamOf: (body: Body) => ReadableStream<u8[]> | null = (_) => null
+let sourceOf: (body: Body) => u8[] | null = (_) => null
+/** Sets the headers and the stream of a body, outside the class. */
+let setFields: (body: Body, headers: Headers) => void = (b, h) => {}
+let setStream: (body: Body, stream: ReadableStream<u8[]> | null) => void = (b, s) => {}
+
+/**
+ * The body of a request or a response, and its headers: the standard's
+ * mixin `Body`, which `Request` and `Response` extend. A body is read once,
+ * by one of the methods that return promises, or through `body`.
+ */
+export class Body {
+    /** The stream of the body; null for none. */
+    protected stream: ReadableStream<u8[]> | null = null
+    /** The bytes of the body when it was made of them: sent again by a redirect, and their length. */
+    protected source: u8[] | null = null
+    protected fields: Headers = new Headers()
+
+    static {
+        streamOf = (b) => b.stream
+        sourceOf = (b) => b.source
+        setFields = (b, h) => {
+            b.fields = h
+        }
+        setStream = (b, s) => {
+            b.stream = s
+        }
+    }
+
+    /** The headers. */
+    get headers(): Headers {
+        return this.fields
+    }
+
+    /** The body as a stream of bytes, or null when there is none. */
+    get body(): ReadableStream<u8[]> | null {
+        return this.stream
+    }
+
+    /** Whether the body was read, or its stream canceled. */
+    get bodyUsed(): bool {
+        return disturbed(this.stream)
+    }
+
+    /** The bytes of the body; an Error when it was read already, or fails. */
+    bytes(): Promise<u8[] | Error> {
+        const stream = this.stream
+        if (stream === null) {
+            const none: u8[] = []
+            return Promise.resolve<u8[] | Error>(none)
+        }
+        if (stream.locked || stream.state.disturbed)
+            return Promise.resolve<u8[] | Error>(typeError("Body is unusable: Body has already been read"))
+        return readAll(stream.getReader())
+    }
+
+    /** The bytes of the body, as `bytes()`: Ore has `u8[]` where JavaScript has an `ArrayBuffer`. */
+    arrayBuffer(): Promise<u8[] | Error> {
+        return this.bytes()
+    }
+
+    /** The body read as UTF-8, a leading byte order mark left out. */
+    async text(): Promise<string | Error> {
+        const bytes = await this.bytes()
+        if (bytes instanceof Error) return bytes
+        return utf8Decode(bytes)
+    }
+
+    /** The body read as JSON, typed as `JSON.parse<T>` reads it: an Error when it is not a `T`. */
+    async json<T = unknown>(): Promise<T | Error> {
+        const text = await this.text()
+        if (text instanceof Error) return text
+        return JSON.parse<T>(text)
+    }
+
+    /** The body as a blob, of the media type of `content-type`. */
+    async blob(): Promise<Blob | Error> {
+        const bytes = await this.bytes()
+        if (bytes instanceof Error) return bytes
+        return new Blob([bytes], { type: MediaType.parse(this.fields.get("content-type") ?? "").toString() })
+    }
+
+    /**
+     * The entries of a body of `multipart/form-data` or
+     * `application/x-www-form-urlencoded`, as its `content-type` says.
+     */
+    async formData(): Promise<FormData | Error> {
+        const bytes = await this.bytes()
+        if (bytes instanceof Error) return bytes
+        const type = MediaType.parse(this.fields.get("content-type") ?? "")
+        if (type.essence === "multipart/form-data") {
+            const boundary = type.parameters.get("boundary")
+            const form = boundary === null ? null : parseMultipart(stringOf(bytes), boundary)
+            if (form === null) return typeError("Failed to parse body as FormData.")
+            return form
+        }
+        if (type.essence === "application/x-www-form-urlencoded") {
+            const form = new FormData()
+            for (const [name, value] of new URLSearchParams(utf8Decode(bytes))) form.append(name, value)
+            return form
+        }
+        return typeError('Content-Type was not one of "multipart/form-data" or "application/x-www-form-urlencoded".')
+    }
+
+    /** Gives `into` a branch of this body's stream, and this body the other, as `clone()` does. */
+    protected cloneBodyInto(into: Body): void {
+        const stream = this.stream
+        if (stream !== null) {
+            const branches = stream.tee()
+            this.stream = branches[0]
+            into.stream = branches[1]
+        }
+        into.source = this.source
+    }
+
+    /** Sets the body to an extracted one, and `content-type` to its type unless it is set. */
+    protected setBody(body: Extracted | null): void {
+        if (body === null) return
+        this.stream = body.stream
+        this.source = body.source
+        const type = body.type
+        if (type !== null && !this.fields.has("content-type")) this.fields.append("content-type", type)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Headers that cannot change
+
+/** The headers of a response from `fetch`, `Response.error()` and `Response.redirect()`: the guard "immutable". */
+class ImmutableHeaders extends Headers {
+    private sealed = false
+
+    /** From now on, the headers cannot change. */
+    seal(): ImmutableHeaders {
+        this.sealed = true
+        return this
+    }
+
+    protected immutable(): bool {
+        return this.sealed
+    }
+}
+
+/** A copy of headers, which cannot change either when they cannot. */
+function copyHeaders(headers: Headers): Headers {
+    if (headers instanceof ImmutableHeaders) return new ImmutableHeaders(headers).seal()
+    return new Headers(headers)
+}
+
+// ---------------------------------------------------------------------------
+// Requests
+
+/** A method of HTTP that `fetch` writes in uppercase, whatever its case. */
+const normalMethods = ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"]
+
+/** A byte of a token of HTTP besides letters and digits. */
+const tokenSymbols = "!#$%&'*+-.^_`|~"
+
+function isToken(s: string): bool {
+    if (s.length === 0) return false
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i]
+        if ((c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39)) continue
+        let symbol = false
+        for (let j = 0; j < tokenSymbols.length; j++) if (tokenSymbols[j] === c) symbol = true
+        if (!symbol) return false
+    }
+    return true
+}
+
+/** What a request is, but its body: what `new Request` checks, and `fetch` sends. */
+class RequestParts {
+    method = "GET"
+    url: URL
+    headers: Headers = new Headers()
+    body: Extracted | null = null
+    signal: AbortSignal
+    redirect: RequestRedirect = "follow"
+    cache: RequestCache = "default"
+    credentials: RequestCredentials = "same-origin"
+    mode: RequestMode = "cors"
+    referrer = "about:client"
+    referrerPolicy = ""
+    integrity = ""
+    keepalive = false
+
+    constructor(url: URL, signal: AbortSignal) {
+        this.url = url
+        this.signal = signal
+    }
+}
+
+/** The parts of a request, outside the class: its static block sets it. */
+let partsOf: (request: Request) => RequestParts | null = (_) => null
+
+/** A signal that aborts when `signal` does, as a request's own signal follows the one it is given. */
+function following(signal: AbortSignal | null): AbortSignal {
+    if (signal === null) return new AbortController().signal
+    return AbortSignal.any([signal])
+}
+
+/** The standard's steps of `new Request(input, init)`: the request, or the TypeError JavaScript throws. */
+function parseRequest(input: string | URL | Request, init: RequestInit): RequestParts | Error {
+    let parts: RequestParts
+    let inputBody: ReadableStream<u8[]> | null = null
+    let inputSource: u8[] | null = null
+    let from: Request | null = null
+    if (input instanceof Request) {
+        const p = partsOf(input)!
+        parts = new RequestParts(p.url, p.signal)
+        parts.method = p.method
+        parts.headers = p.headers
+        parts.redirect = p.redirect
+        parts.cache = p.cache
+        parts.credentials = p.credentials
+        parts.mode = p.mode
+        parts.referrer = p.referrer
+        parts.referrerPolicy = p.referrerPolicy
+        parts.integrity = p.integrity
+        parts.keepalive = p.keepalive
+        inputBody = streamOf(input)
+        inputSource = sourceOf(input)
+        from = input
+    } else {
+        const href = typeof input === "string" ? input : input.href
+        const url = URL.parse(href)
+        if (url === null) return typeError(`Failed to parse URL from ${href}`, typeError("Invalid URL"))
+        if (url.username !== "" || url.password !== "")
+            return typeError(`Request cannot be constructed from a URL that includes credentials: ${href}`)
+        parts = new RequestParts(url, new AbortController().signal)
+    }
+    if (inputBody !== null && (inputBody.locked || inputBody.state.disturbed))
+        return typeError("Cannot construct a Request with a Request object that has already been used.")
+    if (init.mode === "navigate") return typeError("Request constructor: invalid request mode navigate.")
+    parts.mode = init.mode ?? parts.mode
+    parts.credentials = init.credentials ?? parts.credentials
+    parts.cache = init.cache ?? parts.cache
+    parts.redirect = init.redirect ?? parts.redirect
+    parts.referrer = init.referrer ?? parts.referrer
+    parts.referrerPolicy = init.referrerPolicy ?? parts.referrerPolicy
+    parts.integrity = init.integrity ?? parts.integrity
+    parts.keepalive = init.keepalive ?? parts.keepalive
+    const method = init.method
+    if (method !== null) {
+        if (!isToken(method)) return typeError(`'${method}' is not a valid HTTP method.`)
+        const upper = method.toUpperCase()
+        if (upper === "CONNECT" || upper === "TRACE" || upper === "TRACK")
+            return typeError(`'${method}' HTTP method is unsupported.`)
+        parts.method = normalMethods.includes(upper) ? upper : method
+    }
+    // The request's own signal follows the one given, or the input's.
+    parts.signal = following(init.signal ?? (from === null ? null : partsOf(from)!.signal))
+    const headers = init.headers
+    parts.headers = new Headers(headers !== null ? headers : from === null ? null : parts.headers)
+    const body = init.body
+    if ((body !== null || inputBody !== null) && (parts.method === "GET" || parts.method === "HEAD"))
+        return typeError("Request with GET/HEAD method cannot have body.")
+    if (body !== null) {
+        const extracted = extract(body)
+        if (extracted.source === null && init.duplex !== "half")
+            return typeError("RequestInit: duplex option is required when sending a body.")
+        parts.body = extracted
+        const type = extracted.type
+        if (type !== null && !parts.headers.has("content-type")) parts.headers.append("content-type", type)
+    } else if (inputBody !== null) {
+        // The input's body moves to the new request, and is used.
+        if (inputSource !== null) {
+            inputBody.state.disturbed = true
+            parts.body = new Extracted(bytesStream(inputSource), inputSource, null)
+        } else {
+            parts.body = new Extracted(inputBody.pipeThrough(new TransformStream<u8[], u8[]>()), null, null)
+        }
+    }
+    return parts
+}
+
+/**
+ * A request of HTTP, as JavaScript's `Request`: `new Request(url, { method:
+ * "POST", headers, body })`, which `fetch` takes. `new Request(request,
+ * init)` copies one, and takes its body, which is then used.
+ */
+export class Request extends Body {
+    private readonly parts: RequestParts
+
+    static {
+        partsOf = (r) => r.parts
+    }
+
+    /** A request of `input` with `init`; an invalid URL, method or body panics with JavaScript's TypeError. */
+    constructor(input: string | URL | Request, init: RequestInit = {}) {
+        super()
+        const parts = parseRequest(input, init)
+        if (parts instanceof Error) process.panic(`TypeError: ${parts.message}`)
+        this.parts = parts
+        this.fields = parts.headers
+        this.setBody(parts.body)
+    }
+
+    /** The method, uppercase when it is one of DELETE, GET, HEAD, OPTIONS, POST and PUT. */
+    get method(): string {
+        return this.parts.method
+    }
+
+    /** The URL, serialized. */
+    get url(): string {
+        return this.parts.url.href
+    }
+
+    /** Always `""`: Ore makes no requests for documents. */
+    get destination(): string {
+        return ""
+    }
+
+    get referrer(): string {
+        return this.parts.referrer
+    }
+
+    get referrerPolicy(): string {
+        return this.parts.referrerPolicy
+    }
+
+    get mode(): RequestMode {
+        return this.parts.mode
+    }
+
+    get credentials(): RequestCredentials {
+        return this.parts.credentials
+    }
+
+    get cache(): RequestCache {
+        return this.parts.cache
+    }
+
+    get redirect(): RequestRedirect {
+        return this.parts.redirect
+    }
+
+    get integrity(): string {
+        return this.parts.integrity
+    }
+
+    get keepalive(): bool {
+        return this.parts.keepalive
+    }
+
+    get isReloadNavigation(): bool {
+        return false
+    }
+
+    get isHistoryNavigation(): bool {
+        return false
+    }
+
+    /** The signal that aborts the request: it follows the one given. */
+    get signal(): AbortSignal {
+        return this.parts.signal
+    }
+
+    /** Always `"half"`: the body is sent before the response is read. */
+    get duplex(): string {
+        return "half"
+    }
+
+    /** A copy, with a branch of the body; a body used already panics, as JavaScript throws. */
+    clone(): Request {
+        if (this.bodyUsed) process.panic("TypeError: Request.clone: Body has already been consumed.")
+        const p = this.parts
+        const out = new Request(p.url, {
+            method: p.method,
+            headers: p.headers,
+            signal: p.signal,
+            redirect: p.redirect,
+            cache: p.cache,
+            credentials: p.credentials,
+            mode: p.mode,
+            referrer: p.referrer,
+            referrerPolicy: p.referrerPolicy,
+            integrity: p.integrity,
+            keepalive: p.keepalive,
+        })
+        this.cloneBodyInto(out)
+        return out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Responses
+
+/** Whether a status is a redirect's. */
+function redirectStatus(status: int): bool {
+    return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
+}
+
+/** Whether a response of a status has no body. */
+function nullBodyStatus(status: int): bool {
+    return status === 101 || status === 103 || status === 204 || status === 205 || status === 304
+}
+
+/** Whether a reason phrase is valid: tabs, spaces and visible characters. */
+function validStatusText(s: string): bool {
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i]
+        if (c !== 0x09 && (c < 0x20 || c === 0x7f)) return false
+    }
+    return true
+}
+
+/** What a response is besides its body and headers. */
+class ResponseParts {
+    type: ResponseType = "default"
+    status = 200
+    statusText = ""
+    urls: string[] = []
+}
+
+/** The parts of a response, outside the class: its static block sets it. */
+let responsePartsOf: (response: Response) => ResponseParts | null = (_) => null
+
+/**
+ * A response of HTTP, as JavaScript's `Response`: what `fetch` gives, or
+ * `new Response(body, { status, headers })`.
+ */
+export class Response extends Body {
+    private readonly parts = new ResponseParts()
+
+    static {
+        responsePartsOf = (r) => r.parts
+    }
+
+    /**
+     * A response of `body` with `init`; a status out of 200 to 599, an
+     * invalid status text, or a body with a status of no body, panics.
+     */
+    constructor(body: BodyInit | null = null, init: ResponseInit = {}) {
+        super()
+        const status = init.status ?? 200
+        if (status < 200 || status > 599)
+            process.panic('RangeError: init["status"] must be in the range of 200 to 599, inclusive.')
+        const statusText = init.statusText ?? ""
+        if (!validStatusText(statusText)) process.panic("TypeError: Invalid statusText")
+        this.parts.status = status
+        this.parts.statusText = statusText
+        this.fields = new Headers(init.headers ?? null)
+        if (body !== null) {
+            if (nullBodyStatus(status))
+                process.panic(`TypeError: Response constructor: Invalid response status code ${status}`)
+            this.setBody(extract(body))
+        }
+    }
+
+    /** A network error: of type `"error"`, status 0, without a body, its headers immutable. */
+    static error(): Response {
+        const r = new Response()
+        r.parts.type = "error"
+        r.parts.status = 0
+        setFields(r, new ImmutableHeaders().seal())
+        return r
+    }
+
+    /** A redirect to `url` with `status` (302 by default): an invalid URL or status panics. */
+    static redirect(url: string | URL, status: int = 302): Response {
+        const href = typeof url === "string" ? url : url.href
+        const parsed = URL.parse(href)
+        if (parsed === null) process.panic(`TypeError: Failed to parse URL from ${href}`)
+        if (!redirectStatus(status)) process.panic(`RangeError: Invalid status code ${status}`)
+        const r = new Response()
+        r.parts.status = status
+        const headers = new ImmutableHeaders()
+        headers.append("location", parsed.href)
+        setFields(r, headers.seal())
+        return r
+    }
+
+    /** A response of the JSON text of `data`, of type `application/json` unless `init` sets one. */
+    static json<T>(data: T, init: ResponseInit = {}): Response {
+        const headers = new Headers(init.headers ?? null)
+        if (!headers.has("content-type")) headers.set("content-type", "application/json")
+        return new Response(JSON.stringify(data), { status: init.status, statusText: init.statusText, headers })
+    }
+
+    /** `"basic"` from `fetch`, `"default"` when made, `"error"` from `Response.error()`. */
+    get type(): ResponseType {
+        return this.parts.type
+    }
+
+    /** The URL of the response, the last after redirects, without its fragment; `""` when made. */
+    get url(): string {
+        const urls = this.parts.urls
+        return urls.length === 0 ? "" : urls[urls.length - 1]
+    }
+
+    /** Whether `fetch` followed a redirect to get it. */
+    get redirected(): bool {
+        return this.parts.urls.length > 1
+    }
+
+    get status(): int {
+        return this.parts.status
+    }
+
+    /** Whether the status is from 200 to 299. */
+    get ok(): bool {
+        return this.parts.status >= 200 && this.parts.status <= 299
+    }
+
+    get statusText(): string {
+        return this.parts.statusText
+    }
+
+    /** A copy, with a branch of the body; a body used already panics, as JavaScript throws. */
+    clone(): Response {
+        if (this.bodyUsed) process.panic("TypeError: Response.clone: Body has already been consumed.")
+        const out = new Response()
+        out.parts.type = this.parts.type
+        out.parts.status = this.parts.status
+        out.parts.statusText = this.parts.statusText
+        out.parts.urls = this.parts.urls.slice()
+        setFields(out, copyHeaders(this.fields))
+        this.cloneBodyInto(out)
+        return out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fetch
+
+/** The ports fetch does not connect to, as the standard's "bad port". */
+const badPorts = [
+    1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104, 109, 110,
+    111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+    540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
+    6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
+]
+
+/** The fields of a request that its body implies, which a redirect to GET removes. */
+const bodyFields = ["content-encoding", "content-language", "content-location", "content-type", "content-length"]
+
+/** The fields fetch writes itself, not taken from the request's headers. */
+const ownFields = ["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]
+
+/** A URL without its fragment. */
+function withoutFragment(url: URL): string {
+    const href = url.href
+    const at = href.indexOf("#")
+    return at < 0 ? href : href.slice(0, at)
+}
+
+/** The port of a URL, or the default of its scheme. */
+function portOf(url: URL): int {
+    if (url.port === "") return url.protocol === "https:" ? 443 : 80
+    return Number.parseInt(url.port) ?? 0
+}
+
+/** The host of a URL to connect to: an IPv6 address without its brackets. */
+function hostOf(url: URL): string {
+    const host = url.hostname
+    if (host.startsWith("[") && host.endsWith("]")) return host.slice(1, host.length - 1)
+    return host
+}
+
+/** Runs `job` on a connection in a task, which the loop leaves alone meanwhile; closes it then if it was abandoned. */
+async function onConnection<T>(c: Connection, job: () => T): Promise<T> {
+    c.busy = true
+    const value = await inTask(job)
+    c.busy = false
+    if (c.dead) c.transport.close()
+    return value
+}
+
+/**
+ * One call of `fetch`: the requests it sends, one more for each redirect it
+ * follows, and the response, whose body it reads as it is pulled. Its
+ * promise is settled once, with the response, the error, or the reason of
+ * the abort, whichever comes first.
+ */
+class Fetch {
+    private readonly settle: (value: Response | Error | Promise<Response | Error>) => void
+    readonly promise: Promise<Response | Error>
+    private settled = false
+    /** Whether the signal aborted. */
+    private aborted = false
+    /** Whether the body was read to its end, failed or was canceled: an abort then changes nothing. */
+    private finished = false
+    private conn: Connection | null = null
+    private controller: ReadableStreamDefaultController<u8[]> | null = null
+    private url: URL
+    private method: string
+    private readonly headers: Headers
+    private stream: ReadableStream<u8[]> | null
+    private source: u8[] | null
+    private readonly urls: string[] = []
+    private redirects = 0
+
+    constructor(private readonly parts: RequestParts) {
+        const { promise, resolve } = Promise.withResolvers<Response | Error>()
+        this.promise = promise
+        this.settle = resolve
+        this.url = parts.url
+        this.method = parts.method
+        this.headers = new Headers(parts.headers)
+        const body = parts.body
+        this.stream = body === null ? null : body.stream
+        this.source = body === null ? null : body.source
+        this.urls.push(withoutFragment(parts.url))
+    }
+
+    /** Sends the request: the promise of the response. */
+    start(): Promise<Response | Error> {
+        const signal = this.parts.signal
+        if (signal.aborted) {
+            this.finish(abortError(signal.reason))
+            return this.promise
+        }
+        signal.addEventListener("abort", (event: Event) => this.abort(signal.reason))
+        this.run()
+        return this.promise
+    }
+
+    /** Settles the promise, once. */
+    private finish(value: Response | Error): void {
+        if (this.settled) return
+        this.settled = true
+        this.settle(value)
+    }
+
+    /** Fails with "fetch failed", and lets the connection go. */
+    private fail(cause: Error): void {
+        this.finished = true
+        const c = this.conn
+        if (c !== null) c.abandon()
+        this.finish(fetchFailed(cause))
+    }
+
+    /** Aborts: the promise gets the reason if it is pending, and the body errors with it if it is being read. */
+    private abort(reason: unknown): void {
+        if (this.aborted || this.finished) return
+        this.aborted = true
+        this.finished = true
+        const e = abortError(reason)
+        this.finish(e)
+        const controller = this.controller
+        if (controller !== null) controller.error(e)
+        const c = this.conn
+        if (c !== null) c.abandon()
+    }
+
+    private async run(): Promise<void> {
+        for (;;) {
+            const head = await this.exchange()
+            if (this.aborted) return
+            if (head instanceof Error) {
+                this.fail(head)
+                return
+            }
+            const location = head.field("location")
+            if (redirectStatus(head.status) && location !== null && this.parts.redirect !== "manual") {
+                if (this.parts.redirect === "error") {
+                    this.fail(new Error("unexpected redirect"))
+                    return
+                }
+                const failure = await this.follow(head, location)
+                if (this.aborted) return
+                if (failure !== null) {
+                    this.fail(failure)
+                    return
+                }
+                continue
+            }
+            this.respond(head)
+            return
+        }
+    }
+
+    /** Whether the body can be sent again: none, or made of bytes. */
+    private get replayable(): bool {
+        return this.stream === null || this.source !== null
+    }
+
+    /**
+     * Sends the request on a connection at rest or a new one, and reads the
+     * head of the response; once more on a new connection when one at rest
+     * turns out closed by the server.
+     */
+    private async exchange(): Promise<ResponseHead | Error> {
+        const url = this.url
+        const connector = connectorOf(url.protocol)
+        if (connector instanceof Error) return connector
+        const host = hostOf(url)
+        const port = portOf(url)
+        if (badPorts.includes(port)) return new Error("bad port")
+        const origin = `${url.protocol}//${url.host}`
+        const head = this.requestHead()
+        for (let attempt = 0; ; attempt++) {
+            let c = takeConnection(origin)
+            if (c === null) {
+                const made = await inTask(() => connector(host, port))
+                if (made instanceof Error) return made
+                if (this.aborted) {
+                    made.close()
+                    return new Error("aborted")
+                }
+                c = new Connection(origin, made)
+            }
+            this.conn = c
+            const result = await this.send(c, head)
+            if (this.aborted) return result
+            if (result instanceof Error && c.reused && !c.received && attempt === 0 && this.replayable) {
+                c.abandon()
+                continue
+            }
+            if (result instanceof Error) c.abandon()
+            return result
+        }
+    }
+
+    /** The request line and fields of the request, as undici writes them. */
+    private requestHead(): string {
+        const url = this.url
+        const headers = this.headers
+        let out = `${this.method} ${url.pathname}${url.search} HTTP/1.1\r\nhost: ${url.host}\r\nconnection: keep-alive\r\n`
+        for (const [name, value] of headerEntries(headers))
+            if (!ownFields.includes(name.toLowerCase())) out += `${name}: ${value}\r\n`
+        if (!headers.has("accept")) out += "accept: */*\r\n"
+        if (!headers.has("accept-language")) out += "accept-language: *\r\n"
+        if (!headers.has("sec-fetch-mode")) out += `sec-fetch-mode: ${this.parts.mode}\r\n`
+        if (!headers.has("user-agent")) out += "user-agent: ore\r\n"
+        // No decompression: bodies are asked for as they are.
+        if (!headers.has("accept-encoding")) out += "accept-encoding: identity\r\n"
+        const source = this.source
+        if (source !== null) out += `content-length: ${source.length}\r\n`
+        else if (this.stream !== null) out += "transfer-encoding: chunked\r\n"
+        else if (this.method === "POST" || this.method === "PUT") out += "content-length: 0\r\n"
+        return `${out}\r\n`
+    }
+
+    /** Writes the request and its body, and reads the head of the response. */
+    private async send(c: Connection, head: string): Promise<ResponseHead | Error> {
+        c.received = false
+        const source = this.source
+        const stream = this.stream
+        if (stream === null || source !== null) {
+            const data = source === null ? head : head + stringOf(source)
+            return await onConnection<ResponseHead | Error>(c, () => {
+                const failed = c.transport.write(data)
+                if (failed !== null) return failed
+                return readHead(c)
+            })
+        }
+        // A stream of unknown length, in chunks.
+        const failed = await onConnection<Error | null>(c, () => c.transport.write(head))
+        if (failed !== null) return failed
+        const reader = stream.getReader()
+        for (;;) {
+            const r = await reader.read()
+            if (this.aborted) {
+                reader.cancel(null)
+                return new Error("aborted")
+            }
+            if (r instanceof Error) return r
+            if (r.done) break
+            if (r.value.length === 0) continue
+            const chunk = chunkOf(stringOf(r.value))
+            const written = await onConnection<Error | null>(c, () => c.transport.write(chunk))
+            if (written !== null) {
+                reader.cancel(written)
+                return written
+            }
+        }
+        return await onConnection<ResponseHead | Error>(c, () => {
+            const ended = c.transport.write("0\r\n\r\n")
+            if (ended !== null) return ended
+            return readHead(c)
+        })
+    }
+
+    /** Lets a connection go once its response is read: at rest when it can carry another, else closed. */
+    private release(c: Connection, keep: bool): void {
+        if (keep) giveConnection(c)
+        else c.abandon()
+    }
+
+    /** Follows a redirect to `location`: reads the body of the redirect, and sets the next request; an Error when it cannot. */
+    private async follow(head: ResponseHead, location: string): Promise<Error | null> {
+        const c = this.conn!
+        if (this.redirects === 20) {
+            c.abandon()
+            return new Error("redirect count exceeded")
+        }
+        const target = URL.parse(location, this.url)
+        if (target === null) {
+            c.abandon()
+            return new Error("invalid redirect URL")
+        }
+        // The body of the redirect is read to its end, so that the connection can carry the next request.
+        const reader = BodyReader.of(head, this.method)
+        if (reader instanceof Error) {
+            c.abandon()
+            return reader
+        }
+        const drained = await onConnection<Error | null>(c, () => {
+            for (;;) {
+                const piece = reader.next(c)
+                if (piece === null) return null
+                if (piece instanceof Error) return piece
+            }
+        })
+        if (this.aborted) return null
+        this.release(c, drained === null && head.keepAlive && reader.reusable)
+        this.conn = null
+        if (target.protocol !== "http:" && target.protocol !== "https:")
+            return new Error("URL scheme must be a HTTP(S) scheme")
+        if (target.username !== "" || target.password !== "") return new Error("redirect URL includes credentials")
+        const status = head.status
+        if ((status === 307 || status === 308) && !this.replayable)
+            return new Error("cannot follow a redirect with a body that is a stream")
+        if (
+            ((status === 301 || status === 302) && this.method === "POST") ||
+            (status === 303 && this.method !== "GET" && this.method !== "HEAD")
+        ) {
+            this.method = "GET"
+            this.stream = null
+            this.source = null
+            for (const name of bodyFields) this.headers.delete(name)
+        }
+        if (target.origin !== this.url.origin) {
+            this.headers.delete("authorization")
+            this.headers.delete("proxy-authorization")
+            this.headers.delete("cookie")
+        }
+        this.redirects++
+        this.url = target
+        this.urls.push(withoutFragment(target))
+        return null
+    }
+
+    /** Settles the promise with the response of `head`, its body read from the connection as it is pulled. */
+    private respond(head: ResponseHead): void {
+        const c = this.conn!
+        const reader = BodyReader.of(head, this.method)
+        if (reader instanceof Error) {
+            this.fail(reader)
+            return
+        }
+        const keep = head.keepAlive && reader.reusable
+        const headers = new ImmutableHeaders()
+        for (const [name, value] of head.fields) headers.append(name, value)
+        headers.seal()
+        let stream: ReadableStream<u8[]> | null = null
+        if (nullBodyStatus(head.status) || this.method === "HEAD") {
+            this.finished = true
+            this.release(c, keep)
+        } else if (reader.done) {
+            this.finished = true
+            this.release(c, keep)
+            stream = bytesStream([])
+        } else {
+            stream = new ReadableStream<u8[]>({
+                start: (controller) => {
+                    this.controller = controller
+                },
+                pull: (controller) => this.pull(controller, reader, c, keep),
+                cancel: (reason) => {
+                    if (this.finished) return
+                    this.finished = true
+                    c.abandon()
+                },
+            })
+        }
+        const response = new Response()
+        const parts = responsePartsOf(response)!
+        parts.type = "basic"
+        parts.status = head.status
+        parts.statusText = head.statusText
+        parts.urls = this.urls
+        setFields(response, headers)
+        setStream(response, stream)
+        this.finish(response)
+    }
+
+    /** Reads the next piece of the body into the stream; at the end, closes it and lets the connection go. */
+    private async pull(
+        controller: ReadableStreamDefaultController<u8[]>,
+        reader: BodyReader,
+        c: Connection,
+        keep: bool,
+    ): Promise<void> {
+        if (this.finished) return
+        const piece = await onConnection<string | null | Error>(c, () => reader.next(c))
+        if (this.finished) return
+        if (piece instanceof Error) {
+            this.finished = true
+            c.abandon()
+            controller.error(typeError("terminated", piece))
+            return
+        }
+        if (piece !== null) controller.enqueue(bytesOf(piece))
+        if (reader.done) {
+            this.finished = true
+            this.release(c, keep)
+            controller.close()
+        }
+    }
+}
+
+/**
+ * Fetches a resource, as JavaScript's `fetch`: `await fetch(url, { method,
+ * headers, body, signal, redirect })`. The promise is fulfilled with the
+ * response once its head arrives; with a TypeError "fetch failed" whose
+ * `cause` tells why when the request fails; with the signal's reason when
+ * it aborts.
+ */
+export function fetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response | Error> {
+    const parts = parseRequest(input, init)
+    if (parts instanceof Error) return Promise.resolve<Response | Error>(parts)
+    return new Fetch(parts).start()
+}

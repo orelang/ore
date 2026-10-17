@@ -280,12 +280,14 @@ library (OpenSSL), packed with releases as libLLVM is. In order:
   async generator, whose ticks are not Node's, and the branches of `tee()`
   close a microtask after their source, where Node waits for
   `process.nextTick`).
-- The network: `fetch` with `Request` and `Response` over an HTTP/1.1 client,
-  an HTTP server that takes a handler from `Request` to `Response` (as
-  `Bun.serve` and `Deno.serve`), `WebSocket`, and `https` with TLS. The
-  TLS underneath is done: `ore:tls`, clients and servers on OpenSSL 3 over
-  the network poller, with verification against the system's certificates,
-  SNI, hostname checks and ALPN.
+- The network: `fetch` with `Request` and `Response` over an HTTP/1.1 client
+  (done: keep-alive, chunked bodies both ways, redirects, aborts, bodies
+  streamed with backpressure; no decompression, and `https:` waits for
+  its TLS connector), an HTTP server that takes a handler from `Request`
+  to `Response` (as `Bun.serve` and `Deno.serve`), `WebSocket`, and `https`
+  with TLS. The TLS underneath is done: `ore:tls`, clients and servers on
+  OpenSSL 3 over the network poller, with verification against the
+  system's certificates, SNI, hostname checks and ALPN.
 
 ## Later
 

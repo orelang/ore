@@ -1,0 +1,49 @@
+// node: promises that JavaScript rejects are fulfilled with the Error; this is node's output with them caught
+// Form data as bodies: multipart/form-data with a boundary, written and
+// parsed again, and application/x-www-form-urlencoded.
+
+function show(form: unknown): void {
+    if (form instanceof Error) {
+        console.log(`${form.name}: ${form.message}`)
+        return
+    }
+    if (!(form instanceof FormData)) return
+    for (const [name, value] of form) {
+        if (typeof value === "string") console.log(JSON.stringify(name), JSON.stringify(value))
+        else console.log(JSON.stringify(name), value.name, value.type, value.size)
+    }
+}
+
+const form = new FormData()
+form.append("a", "1\n2")
+form.append('f"q', new Blob(["xyz"]), "n.txt")
+form.append("g", new Blob(["héllo"], { type: "text/x" }))
+form.append("a", "again")
+const response = new Response(form)
+const type = response.headers.get("content-type") ?? ""
+console.log(type.startsWith("multipart/form-data; boundary=----formdata-"))
+const boundary = type.slice(type.indexOf("=") + 1)
+const text = await response.clone().text()
+if (typeof text === "string") console.log(JSON.stringify(text.replaceAll(boundary, "BOUNDARY")))
+show(await response.formData())
+
+// A part with a file name is a file, text/plain unless it says otherwise.
+const raw =
+    '--X\r\nContent-Disposition: form-data; name="f"; filename="a.bin"\r\n\r\nzz\r\n' +
+    '--X\r\nContent-Disposition: form-data; name="t"\r\nContent-Type: text/x\r\n\r\nplain\r\n--X--\r\n'
+show(await new Response(raw, { headers: { "content-type": 'multipart/form-data; boundary="X"' } }).formData())
+show(await new Response("garbage", { headers: { "content-type": "multipart/form-data; boundary=X" } }).formData())
+
+// A query is form data too.
+const query = new Response(
+    new URLSearchParams([
+        ["a", "1"],
+        ["b", "x y"],
+    ]),
+)
+console.log(query.headers.get("content-type"))
+show(await query.formData())
+show(
+    await new Response("c=3&d=%C3%A9", { headers: { "content-type": "application/x-www-form-urlencoded" } }).formData(),
+)
+show(await new Response("x", { headers: { "content-type": "text/plain" } }).formData())

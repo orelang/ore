@@ -5,6 +5,26 @@ before 1.0, a minor version may change the language.
 
 ## Unreleased
 
+- `fetch`, `Request` and `Response`, as in JavaScript, after the Fetch
+  Standard, with an HTTP/1.1 client written in Ore: connections kept alive
+  by origin, bodies of `content-length`, chunked or until the connection
+  closes, both ways, redirects (`follow` up to 20 with the methods
+  rewritten as the standard says, `error`, `manual`), aborts through an
+  `AbortSignal`, and bodies read as streams of `u8[]` pulled from the
+  connection. Bodies are strings, `u8[]`, blobs, `FormData`
+  (`multipart/form-data`), `URLSearchParams` and `ReadableStream<u8[]>`;
+  `bytes()`, `arrayBuffer()`, `text()`, `json<T>()` (typed as
+  `JSON.parse<T>`), `blob()`, `formData()` (multipart and urlencoded) and
+  `clone()` read them; `Response.json()`, `Response.redirect()` and
+  `Response.error()`. Promises do not reject: `fetch` is a
+  `Promise<Response | Error>`, fulfilled with a `TypeError` "fetch failed"
+  whose `cause` says why, as undici rejects, or with the signal's reason.
+  Bodies are not decompressed (`accept-encoding: identity`).
+- A union of an interface and another type in a type alias keeps both,
+  where the alias was resolved before the interface had its members and
+  the union lost one: `type Connect = () => Transport | Error`.
+- The fields without annotations of an instance of a generic class have
+  their types where another module reads them first.
 - `//ore:blocking` on a `declare function`: a C function that may wait (for
   a lock, a condition, I/O or another thread) runs with its thread parked,
   so that the collector scans the thread's stack instead of interrupting the

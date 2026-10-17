@@ -1,0 +1,460 @@
+//ore:internal
+// HTTP/1.1 for `fetch` (fetch.ore): connections to a server, the requests
+// written on them and the responses read from them, as undici does for
+// Node. A connection is a `Transport`, a stream of bytes: TCP for `http:`,
+// and for `https:` the transport that a connector of TLS gives once one is
+// set (`setHttpsConnector`).
+//
+// The reads and writes block, and run in tasks of their own (`inTask`),
+// never on the event loop: the loop hands a connection to one task at a
+// time and gets it back with the result, as a promise. While a task works,
+// the loop is held, as Node's sockets keep a program running. Bytes are
+// carried in strings, which hold any bytes.
+
+import { holdLoop, post, releaseLoop } from "ore:runtime/loop"
+
+declare function shutdown(fd: i32, how: i32): i32
+
+/** SHUT_RDWR, the same on every platform. */
+const shutRdwr: i32 = 2
+
+/** The most bytes read at once. */
+const readSize = 65536
+
+/** The longest head of a response, its status line and fields together. */
+const maxHead = 65536
+
+// ---------------------------------------------------------------------------
+// Transports
+
+/** A connection's stream of bytes: TCP, or TLS over it. */
+export interface Transport {
+    /** Reads what has arrived, up to `max` bytes, waiting for some; "" at the end of the stream. */
+    read(max: int): string | Error
+    /** Writes all of `data`. */
+    write(data: string): Error | null
+    /** Makes a read or a write waiting in another task fail, so that it lets the connection go. */
+    interrupt(): void
+    /** Closes the connection. */
+    close(): void
+}
+
+/** Connects to a port of a host; called in a task, so it may block. */
+export type Connector = (host: string, port: int) => Transport | Error
+
+/** A TCP connection on the sockets of net.ore. */
+class TcpTransport {
+    constructor(private readonly fd: int) {}
+
+    read(max: int): string | Error {
+        return internal.netRead(this.fd, max)
+    }
+
+    write(data: string): Error | null {
+        return internal.netWrite(this.fd, data)
+    }
+
+    interrupt(): void {
+        shutdown(i32(this.fd), shutRdwr)
+    }
+
+    close(): void {
+        internal.netClose(this.fd)
+    }
+}
+
+function tcpConnect(host: string, port: int): Transport | Error {
+    const fd = internal.netConnect(host, port)
+    if (fd instanceof Error) return fd
+    return new TcpTransport(fd)
+}
+
+// TODO(tls): ore:tls sets this once it lands, so that fetch reaches https: URLs.
+let httpsConnector: Connector | null = null
+
+/** Has `https:` URLs reached through `connector`, which wraps a TCP connection in TLS. */
+export function setHttpsConnector(connector: Connector): void {
+    httpsConnector = connector
+}
+
+/** The connector of a URL's scheme, or why there is none. */
+export function connectorOf(protocol: string): Connector | Error {
+    if (protocol === "http:") return tcpConnect
+    if (protocol === "https:") {
+        const tls = httpsConnector
+        if (tls === null) return new Error("https is not supported yet")
+        return tls
+    }
+    return new Error("unknown scheme")
+}
+
+// ---------------------------------------------------------------------------
+// Tasks
+
+/**
+ * Runs `work` in a task of its own, holding the loop until it is done: a
+ * promise of what it returns, fulfilled on the loop.
+ */
+export function inTask<T>(work: () => T): Promise<T> {
+    holdLoop()
+    const { promise, resolve } = Promise.withResolvers<T>()
+    task.spawn(() => {
+        const value = work()
+        post(() => {
+            releaseLoop()
+            resolve(value)
+        })
+    })
+    return promise
+}
+
+// ---------------------------------------------------------------------------
+// Connections
+
+/** A connection to an origin, and the bytes read from it that are not used yet. */
+export class Connection {
+    /** Read and not used yet. */
+    buffer = ""
+    /** Whether it carried a response before: a server may have closed it since. */
+    reused = false
+    /** Whether bytes arrived since it was taken for a request. */
+    received = false
+    /** Whether a task works on it: the loop does not touch it meanwhile. */
+    busy = false
+    /** Whether it is closed, or to be closed once its task is done. */
+    dead = false
+
+    constructor(
+        /** The origin, `http://host:port`: the pool's key. */
+        readonly origin: string,
+        readonly transport: Transport,
+    ) {}
+
+    /** Reads more into the buffer; false at the end of the stream. */
+    fill(): bool | Error {
+        const data = this.transport.read(readSize)
+        if (data instanceof Error) return data
+        if (data.length === 0) return false
+        this.received = true
+        this.buffer = this.buffer.length === 0 ? data : this.buffer + data
+        return true
+    }
+
+    /** Takes the first `n` bytes of the buffer. */
+    take(n: int): string {
+        const out = this.buffer.slice(0, n)
+        this.buffer = this.buffer.slice(n)
+        return out
+    }
+
+    /** A line without its CRLF (or LF), reading as needed; null at the end of the stream. */
+    line(): string | null | Error {
+        for (;;) {
+            const at = this.buffer.indexOf("\n")
+            if (at >= 0) {
+                const text = this.take(at + 1)
+                return text.endsWith("\r\n") ? text.slice(0, at - 1) : text.slice(0, at)
+            }
+            if (this.buffer.length > maxHead) return new Error("line too long")
+            const more = this.fill()
+            if (more instanceof Error) return more
+            if (!more) return null
+        }
+    }
+
+    /** Stops a task working on the connection, from the loop, and closes it once none does. */
+    abandon(): void {
+        if (this.dead) return
+        this.dead = true
+        if (this.busy) this.transport.interrupt()
+        else this.transport.close()
+    }
+}
+
+/** The connections at rest, by origin, kept alive for the next request. Only the loop touches them. */
+const idle = new Map<string, Connection[]>()
+
+/** A connection at rest to `origin`, the last one put back, or null. */
+export function takeConnection(origin: string): Connection | null {
+    const list = idle.get(origin)
+    if (list === null || list.length === 0) return null
+    return list.pop()
+}
+
+/** Puts a connection back to rest, its response read to the end. */
+export function giveConnection(c: Connection): void {
+    if (c.dead) return
+    c.reused = true
+    c.received = false
+    c.buffer = ""
+    const list = idle.get(c.origin)
+    if (list === null) idle.set(c.origin, [c])
+    else list.push(c)
+}
+
+// ---------------------------------------------------------------------------
+// Responses
+
+/** The status line and the fields of a response. */
+export class ResponseHead {
+    constructor(
+        readonly status: int,
+        readonly statusText: string,
+        readonly fields: [string, string][],
+        /** Whether the connection stays open after the response: HTTP/1.1 without `connection: close`. */
+        readonly keepAlive: bool,
+    ) {}
+
+    /** The values of a field joined with `, `, or null. */
+    field(name: string): string | null {
+        let out: string | null = null
+        for (const pair of this.fields) {
+            if (pair[0].toLowerCase() !== name) continue
+            out = out === null ? pair[1] : `${out}, ${pair[1]}`
+        }
+        return out
+    }
+}
+
+/** The symbols a field name may have besides ASCII letters and digits. */
+const tokenSymbols = "!#$%&'*+-.^_`|~"
+
+/** Whether a byte may be in a field name: RFC 9110's `tchar`. */
+function tokenByte(c: u8): bool {
+    if ((c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39)) return true
+    for (let i = 0; i < tokenSymbols.length; i++) if (tokenSymbols[i] === c) return true
+    return false
+}
+
+/** A text without its leading and trailing spaces and tabs. */
+function trimSpace(s: string): string {
+    let start = 0
+    let end = s.length
+    while (start < end && (s[start] === 0x20 || s[start] === 0x09)) start++
+    while (end > start && (s[end - 1] === 0x20 || s[end - 1] === 0x09)) end--
+    return s.slice(start, end)
+}
+
+/** Whether a comma-separated field value has a token, without case. */
+export function hasToken(value: string | null, token: string): bool {
+    if (value === null) return false
+    for (const part of value.split(",")) if (trimSpace(part).toLowerCase() === token) return true
+    return false
+}
+
+/**
+ * Reads the head of a response, after the interim ones (1xx) it skips;
+ * an Error when the connection fails or the response is not HTTP/1.x.
+ */
+export function readHead(c: Connection): ResponseHead | Error {
+    for (;;) {
+        const head = readOneHead(c)
+        if (head instanceof Error) return head
+        // 101 switches protocols, which fetch does not: as undici, a failure.
+        if (head.status === 101) return new Error("switching protocols is not supported")
+        if (head.status >= 100 && head.status < 200) continue
+        return head
+    }
+}
+
+/** The text of the status line's version, code and reason; null when it is not one. */
+function statusOf(line: string): [string, int, string] | null {
+    if (!line.startsWith("HTTP/1.") || line.length < 12 || line[8] !== 0x20) return null
+    let code = 0
+    for (let i = 9; i < 12; i++) {
+        const d = line[i]
+        if (d < 0x30 || d > 0x39) return null
+        code = code * 10 + i64(d - 0x30)
+    }
+    if (line.length > 12 && line[12] !== 0x20) return null
+    return [line.slice(0, 8), code, line.length > 13 ? line.slice(13) : ""]
+}
+
+function readOneHead(c: Connection): ResponseHead | Error {
+    const first = c.line()
+    if (first instanceof Error) return first
+    if (first === null) return new Error("other side closed")
+    const status = statusOf(first)
+    if (status === null) return new Error("invalid status line")
+    const fields: [string, string][] = []
+    let size = first.length
+    for (;;) {
+        const line = c.line()
+        if (line instanceof Error) return line
+        if (line === null) return new Error("other side closed")
+        if (line.length === 0) break
+        size += line.length
+        if (size > maxHead) return new Error("headers overflow")
+        const colon = line.indexOf(":")
+        if (colon <= 0) return new Error("invalid header")
+        const name = line.slice(0, colon)
+        for (let i = 0; i < name.length; i++) if (!tokenByte(name[i])) return new Error("invalid header")
+        const value = trimSpace(line.slice(colon + 1))
+        for (let i = 0; i < value.length; i++)
+            if (value[i] === 0 || value[i] === 0x0d) return new Error("invalid header")
+        fields.push([name, value])
+    }
+    const head = new ResponseHead(status[1], status[2], fields, false)
+    const connection = head.field("connection")
+    const keepAlive = status[0] === "HTTP/1.1" ? !hasToken(connection, "close") : hasToken(connection, "keep-alive")
+    return new ResponseHead(status[1], status[2], fields, keepAlive)
+}
+
+// ---------------------------------------------------------------------------
+// Bodies of responses
+
+/** How a response's body ends. */
+type Framing = "none" | "length" | "chunked" | "close"
+
+/**
+ * Reads the body of a response from its connection, piece by piece: of the
+ * length its `content-length` says, in the chunks of `transfer-encoding:
+ * chunked`, or until the connection closes.
+ */
+export class BodyReader {
+    /** Whether the body was read to its end. */
+    done = false
+    /** The bytes left of a body of known length, or of the current chunk. */
+    private left = 0
+    /** In a chunked body, whether the CRLF after a chunk's data is still to read. */
+    private afterChunk = false
+
+    private constructor(private readonly framing: Framing) {}
+
+    /** Whether the connection can carry another response once the body is read. */
+    get reusable(): bool {
+        return this.framing !== "close"
+    }
+
+    /**
+     * The reader of the body of `head`, the response to a request of
+     * `method`; an Error when its length is invalid.
+     */
+    static of(head: ResponseHead, method: string): BodyReader | Error {
+        const status = head.status
+        if (method === "HEAD" || status === 204 || status === 304) return BodyReader.empty()
+        if (hasToken(head.field("transfer-encoding"), "chunked")) return new BodyReader("chunked")
+        const length = head.field("content-length")
+        if (length !== null) {
+            // Repeated values must agree: "5, 5" is 5.
+            let n = -1
+            for (const part of length.split(",")) {
+                const v = parseLength(trimSpace(part))
+                if (v < 0 || (n >= 0 && v !== n)) return new Error("invalid content-length")
+                n = v
+            }
+            const reader = new BodyReader("length")
+            reader.left = n
+            if (n === 0) reader.done = true
+            return reader
+        }
+        return new BodyReader("close")
+    }
+
+    /** A body of no bytes. */
+    static empty(): BodyReader {
+        const reader = new BodyReader("none")
+        reader.done = true
+        return reader
+    }
+
+    /** The next piece of the body, never empty; null at its end. */
+    next(c: Connection): string | null | Error {
+        if (this.done) return null
+        if (this.framing === "length") {
+            if (c.buffer.length === 0) {
+                const more = c.fill()
+                if (more instanceof Error) return more
+                if (!more) return new Error("other side closed")
+            }
+            const piece = c.take(c.buffer.length < this.left ? c.buffer.length : this.left)
+            this.left -= piece.length
+            if (this.left === 0) this.done = true
+            return piece
+        }
+        if (this.framing === "close") {
+            if (c.buffer.length === 0) {
+                const more = c.fill()
+                if (more instanceof Error) return more
+                if (!more) {
+                    this.done = true
+                    return null
+                }
+            }
+            return c.take(c.buffer.length)
+        }
+        return this.nextChunk(c)
+    }
+
+    private nextChunk(c: Connection): string | null | Error {
+        if (this.left === 0) {
+            if (this.afterChunk) {
+                const end = c.line()
+                if (end instanceof Error) return end
+                if (end === null) return new Error("other side closed")
+                if (end.length !== 0) return new Error("invalid chunk")
+                this.afterChunk = false
+            }
+            const line = c.line()
+            if (line instanceof Error) return line
+            if (line === null) return new Error("other side closed")
+            const semicolon = line.indexOf(";")
+            const size = parseHex(trimSpace(semicolon >= 0 ? line.slice(0, semicolon) : line))
+            if (size < 0) return new Error("invalid chunk size")
+            if (size === 0) {
+                // The trailer fields, up to an empty line, are left out.
+                for (;;) {
+                    const trailer = c.line()
+                    if (trailer instanceof Error) return trailer
+                    if (trailer === null) return new Error("other side closed")
+                    if (trailer.length === 0) break
+                }
+                this.done = true
+                return null
+            }
+            this.left = size
+            this.afterChunk = true
+        }
+        if (c.buffer.length === 0) {
+            const more = c.fill()
+            if (more instanceof Error) return more
+            if (!more) return new Error("other side closed")
+        }
+        const piece = c.take(c.buffer.length < this.left ? c.buffer.length : this.left)
+        this.left -= piece.length
+        return piece
+    }
+}
+
+/** A decimal length, or -1. */
+function parseLength(s: string): int {
+    if (s.length === 0 || s.length > 15) return -1
+    let n = 0
+    for (let i = 0; i < s.length; i++) {
+        const d = s[i]
+        if (d < 0x30 || d > 0x39) return -1
+        n = n * 10 + i64(d - 0x30)
+    }
+    return n
+}
+
+/** A hexadecimal size, or -1. */
+function parseHex(s: string): int {
+    if (s.length === 0 || s.length > 14) return -1
+    let n = 0
+    for (let i = 0; i < s.length; i++) {
+        const d = s[i]
+        let v = 0
+        if (d >= 0x30 && d <= 0x39) v = i64(d - 0x30)
+        else if (d >= 0x61 && d <= 0x66) v = i64(d - 0x61) + 10
+        else if (d >= 0x41 && d <= 0x46) v = i64(d - 0x41) + 10
+        else return -1
+        n = n * 16 + v
+    }
+    return n
+}
+
+/** A chunk of `transfer-encoding: chunked`: its size in hexadecimal, its bytes. */
+export function chunkOf(data: string): string {
+    return `${data.length.toString(16)}\r\n${data}\r\n`
+}

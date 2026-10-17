@@ -1,0 +1,83 @@
+// node: promises that JavaScript rejects are fulfilled with the Error; this is node's output with them caught
+// Request and Response without the network: their fields, bodies of every
+// kind, reading them once, clones, and the statics of Response.
+
+function describe(label: string, value: unknown): void {
+    if (typeof value === "string") console.log(label, JSON.stringify(value))
+    else if (value instanceof Error) console.log(label, `${value.name}: ${value.message}`)
+}
+
+// Fields of a request: the methods of HTTP uppercased, others kept.
+const q = new Request("http://example.com/a?b#frag", { method: "post", body: "héllo" })
+console.log(q.url, q.method, q.mode, q.credentials, q.cache, q.redirect, q.referrer, q.keepalive, q.duplex)
+console.log(q.headers.get("content-type"), q.bodyUsed, q.signal.aborted, q.destination === "")
+console.log(new Request("http://example.com/", { method: "patch", body: "x" }).method)
+console.log(new Request("http://example.com/", { method: "delete" }).method)
+
+// A request takes the body of the one it copies, which is then used.
+const copy = new Request(q, { headers: { "X-Copy": "1" } })
+console.log(q.bodyUsed, copy.bodyUsed, copy.headers.get("x-copy"), copy.headers.get("content-type"))
+describe("copy", await copy.text())
+describe("again", await copy.text())
+console.log(copy.bodyUsed, new Request("http://example.com/").body === null)
+
+// Bodies of every kind, with the media types they imply.
+async function kind(name: string, r: Response): Promise<void> {
+    console.log(name, r.headers.get("content-type"), r.body === null)
+    describe(name, await r.text())
+}
+await kind("string", new Response("text"))
+await kind("bytes", new Response(new TextEncoder().encode("hi")))
+await kind("blob", new Response(new Blob(["blob"], { type: "Text/X" })))
+await kind("params", new Response(new URLSearchParams("a=1&b=%20")))
+await kind("empty", new Response(""))
+const streamed = new Response(
+    new ReadableStream<u8[]>({
+        start(controller) {
+            controller.enqueue(new TextEncoder().encode("str"))
+            controller.enqueue(new TextEncoder().encode("eam"))
+            controller.close()
+        },
+    }),
+)
+describe("stream", await streamed.text())
+
+// The ways to read a body.
+const bytes = await new Response("abc").bytes()
+console.log(bytes instanceof Error ? bytes.message : bytes.length)
+const buffer = await new Response("abcd").arrayBuffer()
+console.log(buffer instanceof Error)
+const blob = await new Response("hé", { headers: { "content-type": "Text/Plain; Charset=UTF-8" } }).blob()
+if (!(blob instanceof Error)) console.log(blob.type, blob.size)
+const value = await new Response('{"a":[1,2]}').json<{ a: int[] }>()
+console.log(value instanceof Error ? value.message : value.a)
+const bad = await new Response("{x").json<{ a: int }>()
+console.log(bad instanceof Error)
+
+// A body is read once; through its stream too.
+const once = new Response("chunk")
+console.log(once.body!.locked, once.bodyUsed)
+const reader = once.body!.getReader()
+const first = await reader.read()
+console.log(first instanceof Error || first.done ? "none" : first.value.length, once.bodyUsed)
+describe("used", await once.text())
+
+// Clones read the same bytes.
+const original = new Response("twice", { status: 201, statusText: "Made", headers: { "x-a": "b" } })
+const clone = original.clone()
+describe("original", await original.text())
+describe("clone", await clone.text())
+console.log(clone.status, clone.statusText, clone.headers.get("x-a"), clone.ok)
+
+// The statics of Response.
+const error = Response.error()
+console.log(error.type, error.status, error.ok, error.body === null, error.url === "", error.redirected)
+const moved = Response.redirect("http://example.com/b", 301)
+console.log(moved.status, moved.headers.get("location"), moved.body === null, moved.type)
+const json = Response.json({ a: 1 }, { status: 201, headers: { "x-a": "b" } })
+console.log(json.status, json.headers.get("content-type"), json.headers.get("x-a"))
+describe("json", await json.text())
+const plain = new Response()
+console.log(plain.status, plain.statusText === "", plain.ok, plain.body === null, plain.type, plain.bodyUsed)
+describe("plain", await plain.text())
+console.log(plain.bodyUsed, new Response(null, { status: 204 }).status)

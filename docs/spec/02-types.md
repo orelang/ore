@@ -1117,8 +1117,9 @@ names and values as a form sends them, each value a string or a `File`.
   { ... } }`: a property for each name, in the order it came first, with
   its value, or an array of its values when it has several.
   `JSON.stringify` writes `{}`, as JavaScript.
-- Differences from JavaScript: no form element to read the entries from;
-  the `multipart/form-data` encoding waits for the bodies of `fetch`.
+- Differences from JavaScript: no form element to read the entries from.
+  As a body of `fetch`, a `FormData` is sent as `multipart/form-data`, and
+  `formData()` reads one back (see [Fetch](#fetch)).
 - `FormData` is a class of the runtime written in Ore
   (`runtime/core/formdata.ore`), a global name as in JavaScript.
 ## Random values and timing
@@ -1450,6 +1451,102 @@ one type: `ReadableStream<R>`, `WritableStream<W>`, `TransformStream<I, O
   written in Ore (`runtime/core/streams.ore`), global names as in
   JavaScript, and so are the interfaces `QueuingStrategy` and
   `ReadableWritablePair`.
+
+## Fetch
+
+```ts
+const response = await fetch("http://localhost:8080/users", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Ore" }),
+})
+if (response instanceof Error) console.log("failed:", response.message)
+else if (response.ok) {
+  const user = await response.json<{ id: int; name: string }>()  // { id: int; name: string } | Error
+  if (!(user instanceof Error)) console.log(user.id)
+}
+```
+
+`fetch`, `Request` and `Response` are JavaScript's, after the Fetch
+Standard, with an HTTP/1.1 client written in Ore on the runtime's sockets,
+as Node's undici.
+
+- Promises do not reject (see [Concurrency](06-concurrency.md#async-functions-and-promises)):
+  `fetch(input, init?)` is a `Promise<Response | Error>`, fulfilled with
+  the response once its head arrives. A request that fails gives a
+  `TypeError` "fetch failed" whose `cause` is what failed (`connect:
+  Connection refused`, `unexpected redirect`, `redirect count exceeded`,
+  `bad port`, `unknown scheme`...), as undici rejects; an invalid URL
+  gives `TypeError: Failed to parse URL from ...`, and an abort the
+  signal's reason. `input` is a URL string, a `URL` or a `Request`.
+- `init` is `{ method, headers, body, signal, redirect, cache, credentials,
+  mode, referrer, referrerPolicy, integrity, keepalive, duplex, priority }`,
+  all optional. `method` is a token, written in uppercase when it is
+  DELETE, GET, HEAD, OPTIONS, POST or PUT in any case, and kept as given
+  otherwise; CONNECT, TRACE and TRACK are refused. `headers` is a
+  `Headers`, `[name, value]` pairs or a record. `redirect` is `"follow"`
+  (up to 20, a 303, or a 301 or 302 of a POST, made a GET without its
+  body, and the credentials left out across origins), `"error"` or
+  `"manual"` (the redirect is the response). `cache`, `credentials`,
+  `mode`, `referrer`, `referrerPolicy`, `integrity`, `keepalive` and
+  `priority` are kept on the request but change nothing: Ore has no HTTP
+  cache, cookies or origin of its own.
+- A body is a string (UTF-8, `text/plain;charset=UTF-8`), a `u8[]`, a
+  `Blob` (of its type), a `FormData` (`multipart/form-data` with a random
+  boundary, files with their names and types), a `URLSearchParams`
+  (`application/x-www-form-urlencoded;charset=UTF-8`) or a
+  `ReadableStream<u8[]>`, which needs `duplex: "half"` as in JavaScript.
+  The type sets `content-type` unless the headers have one. A body of
+  known length is sent with `content-length`, a stream in chunks
+  (`transfer-encoding: chunked`); a GET or HEAD with a body is refused.
+- `Request` and `Response` share the body's members: `body`, a
+  `ReadableStream<u8[]> | null`; `bodyUsed`; `bytes()` and `arrayBuffer()`
+  (`Promise<u8[] | Error>`), `text()` (UTF-8, a byte order mark left out),
+  `json<T>()` (a `Promise<T | Error>`, read as `JSON.parse<T>`, `unknown`
+  without a type argument), `blob()` and `formData()`, which parses
+  `multipart/form-data` and `application/x-www-form-urlencoded` bodies. A
+  body is read once: reading it again, or after its stream was read,
+  gives `TypeError: Body is unusable: Body has already been read`.
+  `headers` is a `Headers`; those of a fetched response, of
+  `Response.error()` and `Response.redirect()` cannot change (`append`,
+  `set` and `delete` panic with `TypeError: immutable`).
+- `new Request(input, init?)` has `method`, `url`, `headers`, `signal` (an
+  `AbortSignal` that follows the one given), `redirect`, `cache`,
+  `credentials`, `mode`, `referrer`, `referrerPolicy`, `integrity`,
+  `keepalive`, `destination` (`""`), `duplex` (`"half"`) and `clone()`. A
+  request made from another takes its body, which is then used.
+- `new Response(body?, { status, statusText, headers }?)` has `status`
+  (200 by default), `ok` (200 to 299), `statusText`, `type` (`"basic"`
+  from `fetch`, `"default"` when made, `"error"`), `url` (the last after
+  redirects, without its fragment), `redirected` and `clone()`, which tees
+  the body. `Response.json(data, init?)` is a response of
+  `JSON.stringify(data)` of type `application/json`,
+  `Response.redirect(url, status?)` one with a `location` (301, 302, 303,
+  307 or 308; 302 by default) and `Response.error()` a network error of
+  status 0.
+- What JavaScript throws at once panics with the same message: an invalid
+  URL, method or body given to `new Request`, a status out of 200 to 599 or
+  an invalid `statusText` given to `new Response`, a body given with a
+  status of none (101, 103, 204, 205, 304), `clone()` of a body read
+  already.
+- Connections are kept alive: one at rest is taken again by the next
+  request to its origin, and once more on a new connection if the server
+  closed it meanwhile. The body of a response is read from the connection
+  as its stream is pulled, so a body that is not read holds its
+  connection; once read to its end, the connection goes back to rest. The
+  reads and writes run in tasks of their own, never blocking the event
+  loop, and a pending `fetch` or body read keeps the program running, as
+  in Node. A signal that aborts settles a pending `fetch` with its reason,
+  errors a body being read, and closes the connection. Names are resolved
+  as `ore:net` resolves them (`getaddrinfo`).
+- Differences from JavaScript: bodies are not decompressed, since Ore has
+  no zlib: requests ask for `accept-encoding: identity`, and a body the
+  server compresses anyway is given as it comes; `user-agent` is `ore`;
+  `console.log` prints a request or a response as an instance of its
+  class; `RequestInit`, `ResponseInit` and `BodyInit` are not global type
+  names. The classes and `fetch` are of the runtime written in Ore
+  (`runtime/core/fetch.ore`, on `runtime/core/http.ore`), global names as
+  in JavaScript.
 
 ## Arrays
 

@@ -1,0 +1,317 @@
+// node: the server is ore:net in tasks; the .out is node's, with the same client and a server on node:net
+// fetch against a server of this program, on raw sockets: methods, fields,
+// bodies of every kind both ways, chunked bodies, redirects, keep-alive,
+// aborts and failures, all without the internet.
+
+import { type Conn, listen } from "ore:net"
+
+/** A connection's bytes, read as the parser needs them. */
+class Reader {
+    buffer = ""
+
+    constructor(readonly conn: Conn) {}
+
+    fill(): bool {
+        const data = this.conn.read()
+        if (data instanceof Error || data.length === 0) return false
+        this.buffer += data
+        return true
+    }
+
+    line(): string | null {
+        for (;;) {
+            const at = this.buffer.indexOf("\r\n")
+            if (at >= 0) {
+                const line = this.buffer.slice(0, at)
+                this.buffer = this.buffer.slice(at + 2)
+                return line
+            }
+            if (!this.fill()) return null
+        }
+    }
+
+    take(n: int): string | null {
+        while (this.buffer.length < n) if (!this.fill()) return null
+        const out = this.buffer.slice(0, n)
+        this.buffer = this.buffer.slice(n)
+        return out
+    }
+}
+
+/** A request as the server read it. */
+class Incoming {
+    fields = new Map<string, string>()
+    body = ""
+
+    constructor(
+        readonly method: string,
+        readonly path: string,
+    ) {}
+}
+
+function readRequest(r: Reader): Incoming | null {
+    const first = r.line()
+    if (first === null || first === "") return null
+    const words = first.split(" ")
+    const request = new Incoming(words[0], words[1])
+    for (;;) {
+        const line = r.line()
+        if (line === null) return null
+        if (line === "") break
+        const colon = line.indexOf(":")
+        request.fields.set(line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim())
+    }
+    if (request.fields.get("transfer-encoding") === "chunked") {
+        for (;;) {
+            const size = Number.parseInt(r.line() ?? "0", 16) ?? 0
+            if (size === 0) {
+                r.line()
+                break
+            }
+            request.body += r.take(size) ?? ""
+            r.line()
+        }
+    } else {
+        request.body = r.take(Number.parseInt(request.fields.get("content-length") ?? "0") ?? 0) ?? ""
+    }
+    return request
+}
+
+function respond(c: Conn, status: string, fields: string[], body: string, head: bool = false): void {
+    const lines = [`HTTP/1.1 ${status}`, ...fields, `content-length: ${body.length}`].join("\r\n")
+    c.write(`${lines}\r\n\r\n${head ? "" : body}`)
+}
+
+/** What the server answers: the route is the path. */
+function serve(c: Conn, request: Incoming): bool {
+    const path = request.path.split("?")[0]
+    if (path === "/echo") {
+        const seen = {
+            method: request.method,
+            type: request.fields.get("content-type") ?? "none",
+            length: request.fields.get("content-length") ?? "none",
+            chunked: request.fields.has("transfer-encoding"),
+            test: request.fields.get("x-test") ?? "none",
+            accept: request.fields.get("accept") ?? "none",
+            body: request.body,
+        }
+        respond(c, "200 OK", ["content-type: application/json"], JSON.stringify(seen), request.method === "HEAD")
+    } else if (path === "/form") {
+        respond(c, "200 OK", [`content-type: ${request.fields.get("content-type") ?? ""}`], request.body)
+    } else if (path === "/chunked") {
+        c.write("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nx-kind: chunks\r\n\r\n")
+        c.write("1\r\na\r\n2;ext=1\r\nbb\r\n")
+        c.write("3\r\nccc\r\n0\r\nx-trailer: 1\r\n\r\n")
+    } else if (path === "/big") {
+        const part = "0123456789abcdef".repeat(4096)
+        c.write("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
+        for (let i = 0; i < 16; i++) c.write(`${part.length.toString(16)}\r\n${part}\r\n`)
+        c.write("0\r\n\r\n")
+    } else if (path.startsWith("/redirect/")) {
+        const n = Number.parseInt(path.slice(10)) ?? 0
+        if (n === 0) respond(c, "200 OK", [], `done ${request.method}`)
+        else respond(c, "302 Found", [`location: /redirect/${n - 1}`], "moved")
+    } else if (path === "/loop") {
+        respond(c, "302 Found", ["location: /loop"], "")
+    } else if (path === "/303") {
+        respond(c, "303 See Other", ["location: /echo"], "")
+    } else if (path === "/307") {
+        respond(c, "307 Temporary Redirect", ["location: /echo"], "")
+    } else if (path === "/json") {
+        respond(c, "200 OK", ["content-type: application/json"], '{"name":"ore","tags":["a","b"]}')
+    } else if (path === "/nothing") {
+        c.write("HTTP/1.1 204 No Content\r\nx-a: 1\r\n\r\n")
+    } else if (path === "/close") {
+        c.write("HTTP/1.1 200 OK\r\nconnection: close\r\n\r\nuntil the end")
+        return false
+    } else if (path === "/hang") {
+        task.sleep(500 * time.millisecond)
+        return false
+    } else if (path === "/stall") {
+        c.write("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nfirst")
+        task.sleep(500 * time.millisecond)
+        return false
+    } else if (path === "/teapot") {
+        respond(c, "418 I'm a teapot", ["x-a: 1", "X-A: 2", "set-cookie: a=1", "set-cookie: b=2"], "short")
+    } else {
+        respond(c, "404 Not Found", [], "")
+    }
+    return true
+}
+
+let connections = 0
+const listener = listen(0)
+if (listener instanceof Error) process.panic(listener.message)
+const port = listener.port
+task.spawn(() => {
+    for (;;) {
+        const conn = listener.accept()
+        if (conn instanceof Error) return
+        connections++
+        task.spawn(() => {
+            using c = conn
+            const r = new Reader(c)
+            for (;;) {
+                const request = readRequest(r)
+                if (request === null || !serve(c, request)) return
+            }
+        })
+    }
+})
+
+function closeServer(): void {
+    if (!(listener instanceof Error)) listener.close()
+}
+
+// ---- client: the same in node
+const base = `http://127.0.0.1:${port}`
+
+function failure(e: unknown): string {
+    if (!(e instanceof Error)) return "not an error"
+    const cause = e.cause
+    return `${e.name}: ${e.message}${cause instanceof Error ? ` (${cause.message})` : ""}`
+}
+
+async function text(r: Response | Error): Promise<string> {
+    if (r instanceof Error) return failure(r)
+    const body = await r.text()
+    return typeof body === "string" ? body : failure(body)
+}
+
+// Fields both ways.
+let r = await fetch(`${base}/echo?q#fragment`, { headers: { "X-Test": "yes", Accept: "text/x" } })
+if (r instanceof Error) process.panic(r.message)
+console.log(r.status, r.ok, r.statusText, r.url === `${base}/echo?q`, r.redirected, r.type)
+console.log(r.headers.get("content-type"), r.bodyUsed)
+console.log(await text(r))
+console.log(r.bodyUsed)
+
+// Statuses, and fields of the same name.
+r = await fetch(`${base}/teapot`)
+if (!(r instanceof Error)) {
+    console.log(r.status, r.statusText, r.ok, r.headers.get("x-a"), r.headers.getSetCookie())
+    console.log(await text(r))
+}
+
+// Bodies of every kind.
+console.log(await text(await fetch(`${base}/echo`, { method: "post", body: "héllo" })))
+console.log(await text(await fetch(`${base}/echo`, { method: "PUT" })))
+console.log(await text(await fetch(`${base}/echo`, { method: "PATCH", body: new TextEncoder().encode("bytes") })))
+console.log(await text(await fetch(`${base}/echo`, { method: "POST", body: new Blob(["blob"], { type: "text/x" }) })))
+const params = new URLSearchParams("a=1&b=x y")
+console.log(await text(await fetch(`${base}/echo`, { method: "POST", body: params })))
+const stream = new ReadableStream<u8[]>({
+    start(controller) {
+        controller.enqueue(new TextEncoder().encode("str"))
+        controller.enqueue(new TextEncoder().encode("eam"))
+        controller.close()
+    },
+})
+console.log(await text(await fetch(`${base}/echo`, { method: "POST", body: stream, duplex: "half" })))
+console.log(await text(await fetch(new Request(`${base}/echo`, { method: "DELETE", headers: { "x-test": "req" } }))))
+
+// Form data, sent and parsed back.
+const form = new FormData()
+form.append("name", "Ore")
+form.append("file", new Blob(["<svg/>"], { type: "image/svg+xml" }), "logo.svg")
+r = await fetch(`${base}/form`, { method: "POST", body: form })
+if (!(r instanceof Error)) {
+    const back = await r.formData()
+    if (back instanceof Error) console.log(failure(back))
+    else {
+        for (const [name, value] of back) {
+            if (typeof value === "string") console.log(name, value)
+            else console.log(name, value.name, value.type, value.size)
+        }
+    }
+}
+
+// A chunked response, and a large one read chunk by chunk.
+r = await fetch(`${base}/chunked`)
+if (!(r instanceof Error)) console.log(r.headers.get("x-kind"), r.headers.has("x-trailer"), await text(r))
+r = await fetch(`${base}/big`)
+if (!(r instanceof Error) && r.body !== null) {
+    let size = 0
+    let chunks = 0
+    for await (const chunk of r.body) {
+        size += chunk.length
+        chunks++
+    }
+    console.log(size, chunks > 1, r.bodyUsed)
+}
+
+// JSON, typed.
+r = await fetch(`${base}/json`)
+if (!(r instanceof Error)) {
+    const value = await r.json<{ name: string; tags: string[] }>()
+    if (value instanceof Error) console.log(failure(value))
+    else console.log(value.name, value.tags)
+}
+
+// Clones of a fetched response read the same bytes.
+r = await fetch(`${base}/json`)
+if (!(r instanceof Error)) {
+    const twin = r.clone()
+    console.log(await text(r), await text(twin))
+}
+
+// No body: HEAD, 204.
+r = await fetch(`${base}/echo`, { method: "HEAD" })
+if (!(r instanceof Error)) console.log(r.status, r.body === null, r.headers.get("content-type"))
+r = await fetch(`${base}/nothing`)
+if (!(r instanceof Error)) console.log(r.status, r.body === null, r.headers.get("x-a"), await text(r))
+
+// Keep-alive: the connection at rest is used again.
+await text(await fetch(`${base}/echo`))
+const before = connections
+for (let i = 0; i < 5; i++) await text(await fetch(`${base}/echo`))
+console.log("new connections", connections - before)
+
+// A body that lasts until the connection closes.
+console.log(await text(await fetch(`${base}/close`)))
+
+// Redirects: followed, by hand, as failures, too many; methods rewritten.
+r = await fetch(`${base}/redirect/3`)
+if (!(r instanceof Error)) console.log(r.status, r.redirected, r.url === `${base}/redirect/0`, await text(r))
+r = await fetch(`${base}/redirect/2`, { redirect: "manual" })
+if (!(r instanceof Error)) console.log(r.status, r.redirected, r.headers.get("location"), await text(r))
+console.log(await text(await fetch(`${base}/redirect/1`, { redirect: "error" })))
+console.log(await text(await fetch(`${base}/loop`)))
+console.log(await text(await fetch(`${base}/303`, { method: "POST", body: "gone" })))
+console.log(await text(await fetch(`${base}/307`, { method: "POST", body: "kept" })))
+console.log(await text(await fetch(`${base}/redirect/1`, { method: "POST", body: "x" })))
+
+// Aborts: before the response, during its body, and before the call.
+const early = new AbortController()
+setTimeout(() => early.abort(), 50)
+console.log(await text(await fetch(`${base}/hang`, { signal: early.signal })))
+const late = new AbortController()
+r = await fetch(`${base}/stall`, { signal: late.signal })
+if (!(r instanceof Error)) {
+    setTimeout(() => late.abort(), 50)
+    console.log(r.status, await text(r))
+}
+const already = new AbortController()
+already.abort()
+console.log(await text(await fetch(`${base}/echo`, { signal: already.signal })))
+console.log(await text(await fetch(`${base}/hang`, { signal: AbortSignal.timeout(50) })))
+
+// Failures: a refused connection, an invalid URL, schemes fetch does not speak.
+const closed = listen(0)
+if (closed instanceof Error) process.panic(closed.message)
+const closedPort = closed.port
+closed.close()
+const refused = await fetch(`http://127.0.0.1:${closedPort}/`)
+console.log(failure(refused).startsWith("TypeError: fetch failed ("))
+console.log(await text(await fetch("nope")))
+console.log(await text(await fetch("ftp://127.0.0.1/")))
+console.log(await text(await fetch(`http://127.0.0.1:1/`)))
+const secure = await fetch(`https://127.0.0.1:${port}/echo`)
+console.log(failure(secure).startsWith("TypeError: fetch failed"))
+
+// A fetch nobody awaits keeps the program running until it is done.
+fetch(`${base}/json`).then(async (late) => {
+    console.log("late", await text(late))
+    closeServer()
+})
+console.log("end of the top-level code")

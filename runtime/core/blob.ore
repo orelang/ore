@@ -51,6 +51,14 @@ function clamp(at: int, size: int): int {
     return at > size ? size : at
 }
 
+/** The bytes of a blob, outside the class: its static block sets it. */
+let bytesOf: (blob: Blob) => u8[] = (_) => []
+
+/** A copy of the bytes of a blob, at once: for the bodies of fetch (fetch.ore). */
+export function blobBytes(blob: Blob): u8[] {
+    return bytesOf(blob)
+}
+
 /**
  * Immutable bytes with a media type, as JavaScript's `Blob`: `new
  * Blob(["héllo", bytes], { type: "text/plain" })`. Its bytes are read with
@@ -62,6 +70,10 @@ export class Blob {
     private start: int
     private stop: int
     private mime: string
+
+    static {
+        bytesOf = (b) => b.data.slice(b.start, b.stop)
+    }
 
     /**
      * The bytes of `blobParts` one after another: a string's UTF-8, bytes

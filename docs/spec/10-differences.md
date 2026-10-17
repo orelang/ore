@@ -74,6 +74,13 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | an invalid header name or value given to `Headers` | throws a `TypeError` | panics with its message: `TypeError: Headers.append: "a b" is an invalid header name.` |
 | a header value with characters above U+00FF | throws a `TypeError` (not a `ByteString`) | kept, as UTF-8 |
 | `new FormData(form, submitter)` | the entries of a form element | does not exist: `new FormData()` starts empty, Ore has no forms |
+| `fetch()` that fails (a refused connection, a redirect it may not follow...) | rejects with a `TypeError` "fetch failed" whose `cause` says why | is fulfilled with that `TypeError`, as an `Error`: `Promise<Response \| Error>` |
+| `fetch()` whose signal aborts | rejects with the signal's reason | is fulfilled with the reason, as an `Error` (an `Error` whose `cause` is the reason when it is none); a body being read errors with it |
+| `text()`, `json()`, `bytes()`, `blob()`, `formData()` of a body read already, or that fails | reject with a `TypeError` | are fulfilled with it: `Promise<string \| Error>`, `json<T>()` a `Promise<T \| Error>` typed as `JSON.parse<T>` |
+| `new Request()` with an invalid URL or method, `new Response()` with a status out of range, `clone()` of a body read already | throws a `TypeError` or `RangeError` | panics with it |
+| the body of a `Request` or `Response`, `arrayBuffer()` | a byte stream of `Uint8Array`s, an `ArrayBuffer` | a `ReadableStream<u8[]>`, `u8[]` |
+| `accept-encoding` of `fetch` | `gzip, deflate` (bodies decompressed) | `identity`: Ore has no zlib, so a body is read as it comes |
+| `user-agent` of `fetch` | `node` | `ore` |
 | `crypto.getRandomValues(array)` | an integer typed array; a `Float64Array` throws `TypeMismatchError` | an array of an integer type (`u8[]`, `i32[]`, `i64[]`, …); floats are a compile error; more than 65536 bytes panics with `QuotaExceededError` |
 | `crypto.randomUUID()` | a UUID of version 4 | `crypto.randomUUIDv4()`, beside `crypto.randomUUIDv7()`; `crypto.subtle` is missing |
 | `performance` | an object (an `EventTarget`) | a namespace: no value, no events; `toJSON()` is `{ timeOrigin }`; Node's `timerify`, `eventLoopUtilization` and `nodeTiming` are missing |
