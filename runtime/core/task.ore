@@ -121,7 +121,10 @@ export class Task {
     /** Whether the task is a fiber of the event loop. */
     fiber = false
 
-    constructor(readonly body: () => void) {}
+    constructor(
+        /** What the task runs; once it has ended, a closure of nothing (see `letGo`). */
+        public body: () => void,
+    ) {}
 
     /** The stack pointer saved while the task is parked. */
     sp(): ptr {
@@ -1012,6 +1015,7 @@ function taskMain(self: ptr): void {
     exitSwitch()
     const t = unsafe.fromAddress<Task>(self)
     t.body()
+    letGo(t)
     if (t.spawned) {
         unsafe.atomicAdd<i64>(s.live, -1)
         const ended = taskEnded
@@ -1025,6 +1029,18 @@ function taskMain(self: ptr): void {
         exitProgram(0)
     }
     endTask()
+}
+
+/**
+ * Lets go of what an ending task references. It may stay referenced for long
+ * from a slot of a run queue that was taken and not written since, as the
+ * workers' blocks are roots; what its closure captured (a build's whole IR,
+ * say) must not stay alive with it.
+ */
+function letGo(t: Task): void {
+    t.body = () => {}
+    t.select = null
+    t.next = null
 }
 
 /** Ends the current task; it never runs again, and its stack is freed. */
@@ -1100,6 +1116,7 @@ export function endFiber(): void {
     const resumer = self.resumer!
     self.resumer = null
     self.state = done
+    letGo(self)
     park(() => enqueueNext(resumer))
 }
 
