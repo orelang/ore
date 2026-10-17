@@ -140,6 +140,7 @@ import {
     genericMethod,
     genericStaticField,
     staticMember,
+    typedField,
     waitingField,
 } from "./classes"
 import {
@@ -1304,7 +1305,7 @@ function memberTarget(c: Checker, node: Node, object: Expr, nameId: Node, name: 
         }
         if (ot.kind === "union") return unionFieldTarget(c, nameId, node, object, ot, name)
         const struct = ot.kind === "struct" ? ot : null
-        const field = struct !== null ? findField(struct, name) : null
+        const field = struct !== null ? typedField(c, struct, name) : null
         if (struct === null || field === null) {
             c.error(nameId, `Property '${name}' does not exist on type '${typeToString(ot)}'.`)
             return null
@@ -2525,7 +2526,7 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
         return typed(callGetter(property, name, value))
     }
     if (type.kind === "struct") {
-        const field = findField(type, name)
+        const field = typedField(c, type, name)
         defineMember(c, nameNode_, type, name)
         if (field !== null) {
             if (!checkAccess(c, type, field.private, name, nameNode_)) return errorOperand

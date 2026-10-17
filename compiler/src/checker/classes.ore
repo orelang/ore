@@ -1177,6 +1177,20 @@ function undeclaredName(c: Checker, node: Node, scope: Scope): string | null {
 }
 
 /**
+ * A field of a class by name. A field without an annotation of an instance
+ * of a generic class has its type once the instance's initializers are
+ * checked, which are checked now when another module reads the field first.
+ */
+export function typedField(c: Checker, type: StructType, name: string): Field | null {
+    const field = findField(type, name)
+    if (field === null || field.type.kind !== "void" || !c.instanceOf.has(type)) return field
+    const info = c.classInfos.get(type.id)
+    if (info === null || info.initsChecked) return field
+    checkFieldInitializers(c, info, info.scope)
+    return findField(type, name)
+}
+
+/**
  * Reports a field used before its type is known: its initializer, which
  * gives it its type, waits for a module variable declared further down.
  */
