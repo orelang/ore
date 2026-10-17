@@ -96,6 +96,7 @@ ends the program (see [Concurrency](06-concurrency.md#async-functions-and-promis
 | `1n < 2`, `1n == 1` | compare the values | compile error: no mixing of bigints and numbers |
 | `BigInt(9007199254740993)` | `9007199254740992n` (the double) | `9007199254740993n` (constants are exact) |
 | `BigInt(x)` of a fraction or bad text, `1n / 0n` | throw | panic (`BigInt(1.5)` of a constant is a compile error) |
+| `decodeURIComponent(s)`, `decodeURI(s)` of malformed escapes | throws a `URIError` | panics with it: `URIError: URI malformed` |
 | `signal.throwIfAborted()` | throws the reason | panics with it (test `signal.aborted` and return `signal.reason` instead) |
 | the reason of `abort()`, `AbortSignal.timeout(ms)` | a `DOMException` named `AbortError`, `TimeoutError` | an `Error` with that name |
 | `new CustomEvent(type)` without `detail` | `detail` is `null` | compile error: `detail` is required (or use `new Event(type)`) |

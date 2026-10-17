@@ -9,9 +9,13 @@
 //
 // Domains are lowercased but not converted to Punycode: a host with
 // characters outside ASCII is kept as it is.
+//
+// Also the global functions `encodeURIComponent`, `encodeURI`,
+// `decodeURIComponent` and `decodeURI`.
 
 import { FormData, formDataPairs } from "ore:runtime/formdata"
 import { type Inspection, begin, end, field, paint, quote } from "ore:runtime/inspect"
+import { decode, decodedValid } from "ore:runtime/unicode"
 
 // ---------------------------------------------------------------------------
 // Bytes and percent-encoding
@@ -975,6 +979,133 @@ function compareUnits(a: int[], b: int[]): int {
     const n = a.length < b.length ? a.length : b.length
     for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i] - b[i]
     return a.length - b.length
+}
+
+// ---------------------------------------------------------------------------
+// encodeURIComponent, encodeURI, decodeURIComponent, decodeURI
+
+const uriMalformed = "URIError: URI malformed"
+
+/** Whether `encodeURIComponent` keeps the ASCII byte `c`: letters, digits and `-_.!~*'()`. */
+function uriUnreserved(c: int): bool {
+    if (isAlpha(c) || isDigit(c)) return true
+    return c === 0x2d || c === 0x5f || c === 0x2e || c === 0x21 || c === 0x7e || c === 0x2a || (c >= 0x27 && c <= 0x29)
+}
+
+/** Whether the ASCII byte `c` is one of `;/?:@&=+$,#`, which `encodeURI` keeps and `decodeURI` leaves encoded. */
+function uriReserved(c: int): bool {
+    if (c === 0x3b || c === 0x2f || c === 0x3f || c === 0x3a || c === 0x40 || c === 0x26) return true
+    return c === 0x3d || c === 0x2b || c === 0x24 || c === 0x2c || c === 0x23
+}
+
+/** The bytes of `s` percent-encoded but the unreserved ones (and with `keepReserved` the reserved ones). */
+function encodeUri(s: string, keepReserved: bool): string {
+    let out = ""
+    let from = 0
+    let i = 0
+    while (i < s.length) {
+        const c = int(s[i])
+        if (c < 0x80) {
+            if (!uriUnreserved(c) && !(keepReserved && uriReserved(c))) {
+                out += s.slice(from, i) + percent(c)
+                from = i + 1
+            }
+            i++
+            continue
+        }
+        // Bytes that are not valid UTF-8 stand for the lone surrogate for which JavaScript throws.
+        const p = unsafe.add(unsafe.stringData(s), i)
+        const r = decode(p, s.length - i)
+        if (!decodedValid(p, r)) process.panic(uriMalformed)
+        out += s.slice(from, i)
+        for (let k = 0; k < (r & 7); k++) out += percent(int(s[i + k]))
+        i += r & 7
+        from = i
+    }
+    return from === 0 ? s : out + s.slice(from)
+}
+
+/** The byte of the `%XX` at `i` in `s`; panics as JavaScript throws when there is none. */
+function escapedByte(s: string, i: int): int {
+    if (i + 2 >= s.length || s[i] !== 0x25 || !isHex(int(s[i + 1])) || !isHex(int(s[i + 2])))
+        process.panic(uriMalformed)
+    return hexValue(int(s[i + 1])) * 16 + hexValue(int(s[i + 2]))
+}
+
+/**
+ * `s` with each `%XX` decoded, a character outside ASCII from the escapes
+ * of its UTF-8 bytes; with `keepReserved`, the escapes of `;/?:@&=+$,#`
+ * stay as they are. Escapes that are not valid UTF-8 panic.
+ */
+function decodeUri(s: string, keepReserved: bool): string {
+    if (s.indexOf("%") < 0) return s
+    const out = unsafe.allocBytes(s.length)
+    let n = 0
+    let i = 0
+    while (i < s.length) {
+        if (s[i] !== 0x25) {
+            unsafe.store<u8>(unsafe.add(out, n), s[i])
+            n++
+            i++
+            continue
+        }
+        const b = escapedByte(s, i)
+        if (b < 0x80) {
+            if (keepReserved && uriReserved(b)) {
+                unsafe.copy(unsafe.add(out, n), unsafe.add(unsafe.stringData(s), i), 3)
+                n += 3
+            } else {
+                unsafe.store<u8>(unsafe.add(out, n), u8(b))
+                n++
+            }
+            i += 3
+            continue
+        }
+        let size = 0
+        if (b >= 0xc0 && b <= 0xdf) size = 2
+        else if (b >= 0xe0 && b <= 0xef) size = 3
+        else if (b >= 0xf0 && b <= 0xf7) size = 4
+        if (size === 0) process.panic(uriMalformed)
+        const start = unsafe.add(out, n)
+        for (let k = 0; k < size; k++) {
+            const next = k === 0 ? b : escapedByte(s, i)
+            if (k > 0 && (next & 0xc0) !== 0x80) process.panic(uriMalformed)
+            unsafe.store<u8>(unsafe.add(out, n), u8(next))
+            n++
+            i += 3
+        }
+        // Overlong forms, surrogates and code points past U+10FFFF.
+        const r = decode(start, size)
+        if (!decodedValid(start, r) || (r & 7) !== size) process.panic(uriMalformed)
+    }
+    return unsafe.makeString(out, n)
+}
+
+/**
+ * The URI component `s` percent-encoded, as JavaScript's: every UTF-8 byte
+ * but those of ASCII letters, digits and `-_.!~*'()` is `%XX`.
+ */
+export function encodeURIComponent(s: string): string {
+    return encodeUri(s, false)
+}
+
+/** The URI `s` percent-encoded as by `encodeURIComponent`, but `;/?:@&=+$,#` are kept. */
+export function encodeURI(s: string): string {
+    return encodeUri(s, true)
+}
+
+/**
+ * Every `%XX` of `s` decoded, as JavaScript's; escapes that are not UTF-8,
+ * or a `%` without two hexadecimal digits, panic with `URIError: URI
+ * malformed`, as JavaScript throws.
+ */
+export function decodeURIComponent(s: string): string {
+    return decodeUri(s, false)
+}
+
+/** `s` decoded as by `decodeURIComponent`, but the escapes of `;/?:@&=+$,#` are kept. */
+export function decodeURI(s: string): string {
+    return decodeUri(s, true)
 }
 
 // ---------------------------------------------------------------------------

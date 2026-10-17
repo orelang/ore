@@ -983,8 +983,19 @@ Standard, whose parser they follow over the UTF-8 bytes of the input:
   take a `Map` or a record; a URL is not formatted by a template literal
   (`` `${u}` ``: use `u.href`); `URL.createObjectURL` and
   `URL.revokeObjectURL` are missing.
+- `encodeURIComponent(s)` percent-encodes every UTF-8 byte of `s` but
+  those of ASCII letters, digits and `-_.!~*'()`; `encodeURI(s)` keeps
+  also `;/?:@&=+$,#`. `decodeURIComponent(s)` decodes every `%XX`, a
+  character outside ASCII from the escapes of its UTF-8 bytes, and
+  `decodeURI(s)` the escapes of all but `;/?:@&=+$,#`. Escapes that are not
+  UTF-8 (`%E6%97`, `%C0%80`, the surrogates `%ED%A0%80`) and a `%` without
+  two hexadecimal digits panic with `URIError: URI malformed`, as
+  JavaScript throws: a string that is not text from a URI is a
+  programmer's error; check it first, or use `URLSearchParams`, which reads
+  invalid escapes as U+FFFD.
 - `URL` and `URLSearchParams` are classes of the runtime written in Ore
-  (`runtime/core/url.ore`), global names as in JavaScript.
+  (`runtime/core/url.ore`), global names as in JavaScript, as the four
+  functions.
 
 ## Blobs
 

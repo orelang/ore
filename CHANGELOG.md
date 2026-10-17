@@ -434,6 +434,10 @@ before 1.0, a minor version may change the language.
   have 40 limbs or more, and `toString()` in decimal divides by a constant.
   `bench/bigint` takes 20% less CPU time; its wall time is mostly
   allocation of the immutable results.
+- The global functions `encodeURIComponent`, `encodeURI`,
+  `decodeURIComponent` and `decodeURI`, as in JavaScript, over the UTF-8
+  bytes of strings. Malformed escapes panic with `URIError: URI malformed`,
+  as JavaScript throws.
 
 ## 0.5.0
 
