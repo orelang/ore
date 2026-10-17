@@ -1,0 +1,35 @@
+// new Headers(init) of a Map, a Set, a generator or another iterable of [name, value] pairs, as in JavaScript.
+
+const fromMap = new Headers(
+    new Map([
+        ["Content-Type", "text/html"],
+        ["X-Count", " 1 "],
+    ]),
+)
+console.log([...fromMap], fromMap.get("x-count"))
+
+const pairs: [string, string][] = [
+    ["Accept", "*/*"],
+    ["accept", "text/plain"],
+]
+console.log([...new Headers(new Set(pairs))])
+
+function* cookies(): Generator<[string, string]> {
+    yield ["Set-Cookie", "a=1"]
+    yield ["Set-Cookie", "b=2"]
+}
+console.log(new Headers(cookies()).getSetCookie())
+
+console.log([...new Headers(fromMap.entries())])
+console.log([...new Headers(new Map<string, string>())])
+
+class Pairs {
+    *[Symbol.iterator](): Iterator<[string, string]> {
+        yield ["Vary", "Origin"]
+    }
+}
+console.log([...new Headers(new Pairs())])
+
+const copy = new Headers(fromMap)
+copy.set("x-count", "2")
+console.log(fromMap.get("x-count"), copy.get("x-count"))

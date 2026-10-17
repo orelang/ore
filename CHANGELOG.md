@@ -449,6 +449,19 @@ before 1.0, a minor version may change the language.
   `decodeURIComponent` and `decodeURI`, as in JavaScript, over the UTF-8
   bytes of strings. Malformed escapes panic with `URIError: URI malformed`,
   as JavaScript throws.
+- `new Headers(init)` takes a `Map<string, string>`, a set, a generator or
+  any other iterable of `[name, value]` pairs, as in JavaScript.
+- `process.pid`, `process.ppid`, `process.argv0`, `process.execPath`,
+  `process.chdir(directory)`, `process.setenv(name, value)` and
+  `process.unsetenv(name)` (Node's `process.env.NAME = value` and `delete
+  process.env.NAME`: `getenv`, `env()` and the programs started see the
+  change), `process.exitCode` (a variable: the status of a normal exit),
+  `process.hrtime.bigint()` and `process.memoryUsage()` (the resident set
+  and the collected heap).
+- The global functions `encodeURIComponent`, `encodeURI`,
+  `decodeURIComponent` and `decodeURI`, as in JavaScript, over the UTF-8
+  bytes of strings. Malformed escapes panic with `URIError: URI malformed`,
+  as JavaScript throws.
 
 ## 0.5.0
 

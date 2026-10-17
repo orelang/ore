@@ -1066,7 +1066,8 @@ header names and values.
 
 - `new Headers(init?)` takes a record of names and values (`{ "Accept":
   "*/*" }`, a `Record<string, string>`), an array of `[name, value]` pairs,
-  or another `Headers` to copy.
+  a `Map<string, string>`, a set, a generator or any other iterable of
+  `[name, value]` pairs, or another `Headers` to copy.
 - Names are compared without case and keep the case they were first given
   in. A name must be a token of HTTP (ASCII letters, digits and
   ``!#$%&'*+-.^_`|~``), and a value loses its leading and trailing tabs,
@@ -1089,8 +1090,7 @@ header names and values.
 - `console.log` prints them as Node does, `Headers { 'Content-Type':
   'text/html' }`: each name in the case it was first given, in the order it
   came first, with its values joined.
-- Differences from JavaScript: the constructor does not take a `Map` or
-  another iterable of pairs; a value is any UTF-8 text without the bytes
+- Differences from JavaScript: a value is any UTF-8 text without the bytes
   above, where JavaScript throws for characters above U+00FF;
   `JSON.stringify` writes the private fields, where JavaScript writes `{}`.
 - `Headers` is a class of the runtime written in Ore

@@ -79,6 +79,7 @@ import {
     findOverloads,
     isNumeric,
     isStringLike,
+    isSubclass,
     jsonProblem,
     ifaceSignatures,
     membersOf,
@@ -1917,7 +1918,33 @@ export function checkNew(c: Checker, node: Node, scope: Scope, expected: Type | 
     const info = c.classInfos.get(type.id)
     if (info !== null && info.abstract) return c.fail(node, `Cannot create an instance of an abstract class '${name}'.`)
     if (info !== null && !checkCtorAccess(c, info, node)) return errorOperand
+    if (args.length === 1 && name === "Headers" && c.sourceOf(symbol!.decl).path === headersModule) {
+        const init = headersInit(c, args[0], type, ctor.type.params[0], scope)
+        if (init === null) return errorOperand
+        return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`, null, [init])
+    }
     return callFunc(c, ctor, args, node, scope, `Constructor of '${name}'`)
+}
+
+/** The runtime's module of `Headers`. */
+const headersModule = "ore:runtime/headers"
+
+/**
+ * The argument of `new Headers(init)`: a map, a set, a generator or another
+ * iterable of `[name, value]` pairs as the array of its values, which the
+ * constructor takes, as JavaScript's takes any iterable; other values (a
+ * record, an array, another `Headers`) as they are.
+ */
+function headersInit(c: Checker, arg: Node, headers: StructType, param: Type, scope: Scope): Operand | null {
+    const operand = checkExpr(c, arg, scope, param)
+    if (operand.k !== "typed") return operand.k === "error" ? null : operand
+    const value = operand.expr
+    const t = value.type
+    const isHeaders = t.kind === "struct" && (sameType(t, headers) || isSubclass(t, headers))
+    const iterable = (t.kind === "map" && !t.dict) || t.kind === "set" || (isProtocolIterable(t) && !isHeaders)
+    if (!iterable) return operand
+    const all = toArray(c, value, arg)
+    return all !== null ? typed(all) : null
 }
 
 /**

@@ -110,8 +110,7 @@ what an `unknown` holds).
   parser (done; no IDNA or Punycode for domains outside ASCII).
 - `Blob` and `File` from MDN, after the W3C File API (done; `stream()` is a
   stream of `u8[]` chunks, not a byte stream).
-- `Headers` from MDN, after the Fetch Standard (done; the constructor
-  takes no `Map` or other iterable of pairs).
+- `Headers` from MDN, after the Fetch Standard (done).
 - `Event`, `CustomEvent`, `EventTarget`, `AbortController` and
   `AbortSignal` from MDN, with the DOM Standard's dispatch (done; targets
   have no parent, listeners are functions).
