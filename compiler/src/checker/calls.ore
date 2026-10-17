@@ -62,6 +62,7 @@ import {
 import {
     type ArrayType,
     type FuncType,
+    type InterfaceType,
     type Method,
     type StructType,
     type Type,
@@ -79,6 +80,7 @@ import {
     isNumeric,
     isStringLike,
     jsonProblem,
+    ifaceSignatures,
     membersOf,
     paramsToString,
     sameType,
@@ -434,6 +436,77 @@ function overloadedCall(
     c.error(node, `No overload of '${name}' takes these arguments. Its signatures: ${signatures.join("; ")}.`)
     for (const func of overloads) {
         const decl = c.funcDecls.get(func)
+        if (decl !== null) c.note(decl, "An overload signature is declared here.")
+    }
+    return errorOperand
+}
+
+/** A call of method `index`, of type `func`, of an interface value, through its table. */
+function ifaceMethodCall(
+    c: Checker,
+    value: Expr,
+    type: InterfaceType,
+    index: int,
+    func: FuncType,
+    what: string,
+    node: Node,
+    scope: Scope,
+): Operand {
+    const args = argsOf(node)
+    const params = func.params
+    let given = args
+    let self = value
+    let operands: (Operand | null)[] = []
+    let locals: BindLocal[] = []
+    if (args.some((arg) => arg.kind === "SpreadElement")) {
+        const expanded = expandArgs(c, args, scope, (i) => (i < params.length ? params[i] : null), value)
+        if (expanded === null) return errorOperand
+        given = expanded.nodes
+        operands = expanded.operands
+        locals = expanded.locals
+        self = expanded.receiver!
+    }
+    if (given.length !== params.length)
+        return c.fail(node, `${what} expects ${params.length} argument(s), got ${given.length}.`)
+    const values: Expr[] = []
+    for (let i = 0; i < given.length; i++) {
+        const o = i < operands.length ? operands[i] : null
+        values.push(c.coerce(o ?? checkExpr(c, given[i], scope, params[i]), params[i], given[i]))
+    }
+    return bindAround(locals, typed(new IfaceCall(func.result, self, index, func, values)))
+}
+
+/**
+ * A call of a method of an interface with overload signatures: the first
+ * signature whose parameters take the arguments, as for a class's.
+ */
+function overloadedIfaceCall(
+    c: Checker,
+    value: Expr,
+    type: InterfaceType,
+    signatures: int[],
+    name: string,
+    node: Node,
+    scope: Scope,
+): Operand {
+    const before = c.diagnostics.length
+    const what = `Method '${type.name}.${name}'`
+    for (const index of signatures) {
+        const m = type.members[index]
+        if (m.k !== "method") continue
+        const call = ifaceMethodCall(c, value, type, index, m.type, what, node, scope)
+        if (call.k === "typed" && c.diagnostics.length === before) return call
+        c.truncateDiagnostics(before)
+    }
+    const list: string[] = []
+    for (const index of signatures) {
+        const t = type.members[index].type
+        if (t.kind === "func") list.push(`(${paramsToString(t)}) => ${typeToString(t.result)}`)
+    }
+    c.error(node, `No overload of '${type.name}.${name}' takes these arguments. Its signatures: ${list.join("; ")}.`)
+    const decls = c.memberDecls.get(type)
+    for (const index of signatures) {
+        const decl = decls === null ? null : decls.get(type.members[index].name)
         if (decl !== null) c.note(decl, "An overload signature is declared here.")
     }
     return errorOperand
@@ -1900,6 +1973,12 @@ function superMethodCall(c: Checker, node: Node, callee: Node, scope: Scope): Op
     if (overloads.length > 0) {
         defineMember(c, nameId, base, name)
         if (!checkAccess(c, base, overloads[0].private, name, nameId)) return errorOperand
+        const abstractOwner = c.abstractMethods.get(overloads[0].func)
+        if (abstractOwner !== null)
+            return c.fail(
+                nameId,
+                `Abstract method '${name}' in class '${abstractOwner.name}' cannot be accessed via super expression.`,
+            )
         const funcs = overloads.map((m) => m.func)
         return overloadedCall(c, `${base.name}.${name}`, funcs, argsOf(node), node, scope, new LocalRef(cls, self))
     }
@@ -2572,7 +2651,9 @@ const mutatingArrayMethods = ["push", "pop", "shift", "unshift", "splice", "sort
  * A method that every class of a union has, with the same type, called on
  * the class the value holds: `(a: Cat | Dog) => a.speak()`. The receiver and
  * the arguments are evaluated once, before the class is tested. Null when
- * a member of the union is not a class with the method.
+ * a member of the union is not a class with the method. A method with
+ * overload signatures has the same signatures in each class, and the call
+ * takes the first that takes the arguments.
  */
 function unionMethodCall(
     c: Checker,
@@ -2585,25 +2666,69 @@ function unionMethodCall(
     const nameId = nameNode(callee)
     const name = nameId.text
     const classes: StructType[] = []
-    const funcs: Func[] = []
+    // The method of each class, or its overload signatures.
+    const signatures: Method[][] = []
     for (const m of union.members) {
         if (m.kind !== "struct" || !m.nominal || genericMethod(c, m, name) !== null) return null
         const found = findMethod(m, name)
-        if (found === null) return null
-        if (!checkAccess(c, m, found.private, name, nameId)) return errorOperand
+        const own: Method[] = found !== null ? [found] : findOverloads(m, name)
+        if (own.length === 0) return null
+        if (!checkAccess(c, m, own[0].private, name, nameId)) return errorOperand
         classes.push(m)
-        funcs.push(found.func)
+        signatures.push(own)
     }
-    const first = funcs[0]
-    for (const f of funcs)
-        if (!sameType(f.type, first.type))
+    const first = signatures[0]
+    for (const own of signatures) {
+        let same = own.length === first.length && own[0].name === first[0].name
+        for (let k = 0; same && k < own.length; k++) same = sameType(own[k].func.type, first[k].func.type)
+        if (!same)
             return c.fail(
                 nameId,
-                `Method '${name}' has different types in the members of '${typeToString(union)}': '${typeToString(first.type)}' and '${typeToString(f.type)}'.`,
+                `Method '${name}' has different types in the members of '${typeToString(union)}': ${signatureList(first)} and ${signatureList(own)}.`,
             )
+    }
     const args = argsOf(node)
     if (args.some((arg) => arg.kind === "SpreadElement"))
         return c.fail(node, `Spread arguments are not supported in a call of '${name}' on a union.`)
+    if (first[0].name === name) return unionCall(c, value, union, classes, signatures, 0, node, nameId, scope)
+    const before = c.diagnostics.length
+    for (let k = 0; k < first.length; k++) {
+        const call = unionCall(c, value, union, classes, signatures, k, node, nameId, scope)
+        if (call.k === "typed" && c.diagnostics.length === before) return call
+        c.truncateDiagnostics(before)
+    }
+    const list: string[] = []
+    for (const m of first) list.push(`(${paramsToString(m.func.type)}) => ${typeToString(m.func.type.result)}`)
+    c.error(node, `No overload of '${name}' takes these arguments. Its signatures: ${list.join("; ")}.`)
+    for (const m of first) {
+        const decl = c.funcDecls.get(m.func)
+        if (decl !== null) c.note(decl, "An overload signature is declared here.")
+    }
+    return errorOperand
+}
+
+/** The types of a method, or of its overload signatures: `'(i64) => i64'`, `'(i64) => i64', '(string) => string'`. */
+function signatureList(methods: Method[]): string {
+    return methods.map((m) => `'${typeToString(m.func.type)}'`).join(", ")
+}
+
+/** A call on a union of classes of signature `k` of the method of each (see `unionMethodCall`). */
+function unionCall(
+    c: Checker,
+    value: Expr,
+    union: UnionType,
+    classes: StructType[],
+    signatures: Method[][],
+    k: int,
+    node: Node,
+    nameId: Node,
+    scope: Scope,
+): Operand {
+    const name = nameId.text
+    const args = argsOf(node)
+    const funcs: Func[] = []
+    for (const own of signatures) funcs.push(own[k].func)
+    const first = funcs[0]
     const params = first.type.params
     const signature = c.signatures.get(first.params)
     const rest = signature !== null && signature.rest
@@ -2636,7 +2761,7 @@ function unionMethodCall(
         defineMember(c, nameId, classes[i], name)
         const call = callFunc(c, funcs[i], args, node, scope, what, narrowConvert(c, ref, classes[i]), operands)
         if (call.k !== "typed") return call
-        dispatch(c, call.expr, name)
+        dispatch(c, call.expr, signatures[i][k].name)
         calls.push(call.expr)
     }
     let chain = calls[calls.length - 1]
@@ -2752,6 +2877,11 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
         if (call !== null) return call
     }
     if (type.kind === "interface") {
+        const signatures = ifaceSignatures(type, name)
+        if (signatures.length > 0) {
+            defineMember(c, nameId, type, name)
+            return overloadedIfaceCall(c, value, type, signatures, name, node, scope)
+        }
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
             if (m.name !== name) continue
@@ -2762,30 +2892,7 @@ export function methodCall(c: Checker, receiver: Expr, node: Node, callee: Node,
             }
             if (m.k === "method") {
                 defineMember(c, nameId, type, name)
-                const params = m.type.params
-                let given = args
-                let self = value
-                let operands: (Operand | null)[] = []
-                let locals: BindLocal[] = []
-                if (args.some((arg) => arg.kind === "SpreadElement")) {
-                    const expanded = expandArgs(c, args, scope, (i) => (i < params.length ? params[i] : null), value)
-                    if (expanded === null) return errorOperand
-                    given = expanded.nodes
-                    operands = expanded.operands
-                    locals = expanded.locals
-                    self = expanded.receiver!
-                }
-                if (given.length !== params.length)
-                    return c.fail(
-                        node,
-                        `Method '${type.name}.${name}' expects ${params.length} argument(s), got ${given.length}.`,
-                    )
-                const values: Expr[] = []
-                for (let i = 0; i < given.length; i++) {
-                    const o = i < operands.length ? operands[i] : null
-                    values.push(c.coerce(o ?? checkExpr(c, given[i], scope, params[i]), params[i], given[i]))
-                }
-                return bindAround(locals, typed(new IfaceCall(m.type.result, self, index, m.type, values)))
+                return ifaceMethodCall(c, value, type, index, m.type, `Method '${type.name}.${name}'`, node, scope)
             }
             if (m.type.kind === "func") return callValue(c, member(c, value, nameId, name), node, scope)
             if (membersOf(m.type).some((t) => t.kind === "func")) return nullableFuncCall(c, value, callee, node, scope)

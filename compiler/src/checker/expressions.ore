@@ -79,6 +79,7 @@ import {
     findMethod,
     inspectHook,
     findOverloads,
+    ifaceSignatures,
     isNumberLiterals,
     isNumeric,
     isSubclass,
@@ -2549,6 +2550,11 @@ export function member(c: Checker, value: Expr, nameNode_: Node, name: string): 
     }
     if (type.kind === "interface") {
         defineMember(c, nameNode_, type, name)
+        if (ifaceSignatures(type, name).length > 0)
+            return c.fail(
+                nameNode_,
+                `Function '${type.name}.${name}' has overload signatures and cannot be used as a value.`,
+            )
         for (let index = 0; index < type.members.length; index++) {
             const m = type.members[index]
             if (m.name !== name) continue

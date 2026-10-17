@@ -392,6 +392,15 @@ before 1.0, a minor version may change the language.
   use before the next collection (as Go's scavenger), not only once half
   of the heap is free, and a build gives back what LLVM freed in glibc's
   arenas (`malloc_trim`). `ORE_GCTRACE` also shows the bytes in spans.
+- Overload signatures in interfaces, `parse(s: string): int` and
+  `parse(parts: string[]): int`: calls through the interface take the first
+  that takes the arguments; a class implements them with its own overload
+  signatures, or with one method that takes each signature's arguments, as
+  an object literal does; interfaces convert to ones with a subset of the
+  signatures, and an interface that extends a class takes its signatures.
+  Abstract methods have overload signatures too, and a method with
+  overload signatures is called on a union of classes that have the same
+  ones. [ORE5066](docs/errors/ORE5066.md) is now about optional methods.
 
 ## 0.5.0
 

@@ -1,0 +1,60 @@
+// Abstract methods with overload signatures, implemented by the subclasses
+// with the same signatures; and calls of a method with overload signatures
+// on a union of classes, which have the same signatures.
+abstract class Shape {
+    abstract scale(by: int): string
+    abstract scale(by: string): string
+
+    describe(): string {
+        return `${this.scale(2)} ${this.scale("x")}`
+    }
+}
+
+class Square extends Shape {
+    constructor(readonly side: int) {
+        super()
+    }
+
+    scale(by: int): string
+    scale(by: string): string
+    scale(by: int | string): string {
+        if (typeof by === "string") return `square/${by}`
+        return `square*${this.side * by}`
+    }
+}
+
+class Circle extends Shape {
+    scale(by: int): string
+    scale(by: string): string
+    scale(by: int | string): string {
+        return `circle:${by}`
+    }
+}
+
+const shapes: Shape[] = [new Square(3), new Circle()]
+for (const s of shapes) console.log(s.scale(10), s.scale("y"), s.describe())
+
+class Cat {
+    speak(times: int): string
+    speak(word: string): string
+    speak(x: int | string): string {
+        return typeof x === "string" ? `cat says ${x}` : "meow ".repeat(x).trim()
+    }
+}
+
+class Dog {
+    speak(times: int): string
+    speak(word: string): string
+    speak(x: int | string): string {
+        return typeof x === "string" ? `dog says ${x}` : "woof ".repeat(x).trim()
+    }
+}
+
+function talk(pet: Cat | Dog): string {
+    return `${pet.speak(2)} / ${pet.speak("hi")}`
+}
+
+console.log(talk(new Cat()))
+console.log(talk(new Dog()))
+const pets: (Cat | Dog)[] = [new Dog(), new Cat()]
+for (const p of pets) console.log(p.speak(1))

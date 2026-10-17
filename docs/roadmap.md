@@ -66,8 +66,8 @@ what an `unknown` holds).
   - `**` and `satisfies` (done), `bigint` with its literals (`10n`),
     operators, conversions and the namespace `BigInt` (done);
   - overloads (several signatures of one function; done for top-level
-    functions and for methods, instance and static; not in interfaces, nor
-    generic);
+    functions, methods, instance, static and abstract, and the methods of
+    interfaces, called on unions of classes too; not generic, nor optional);
   - tagged templates with `TemplateStringsArray` and `String.raw` (done;
     no type arguments on a tag);
   - generic closures, nested generic functions (done: nested declarations

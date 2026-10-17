@@ -150,8 +150,11 @@
   the implementation ([ORE5064](../errors/ORE5064.md)), and generic ones are
   not supported. Such a method cannot be used as a value. Each signature
   implements a method of an interface of its type: this class implements
-  `{ parse(s: string): int }`. Interfaces cannot have overload signatures
-  ([ORE5066](../errors/ORE5066.md)).
+  `{ parse(s: string): int }`. Interfaces have overload signatures too (see
+  [Interfaces](#interfaces)). On a union of classes, a method with overload
+  signatures is called when every class has the same signatures, in the
+  same order: `(a as A | B).parse("1")` takes the first that takes the
+  arguments, then runs the method of the class the value holds.
 - `class C implements I` checks that `C` has the members of `I`; `I` may be
   an instance of a generic interface, `class C implements It<int>`.
 - A `private` constructor is called with `new` only inside the class
@@ -201,7 +204,10 @@
 - `abstract class A` cannot be instantiated with `new`. It may declare
   abstract methods without a body, `abstract area(): f64`, which a class
   that is not abstract must override (directly or through a base class).
-  `super.m(...)` cannot call an abstract method.
+  `super.m(...)` cannot call an abstract method. An abstract method declared
+  more than once has overload signatures, `abstract parse(s: string): int`
+  and `abstract parse(n: int): int`, which the subclasses override with
+  the same signatures, in the same order, and an implementation.
 - The type `this`, in the field, parameter, result and local types of the
   non-static members of a class, is the type of the receiver: inside the
   class it is the class (for a method that overrides another, the class
@@ -314,6 +320,24 @@ on that slot reads the class table.
   method is a closure per instance, created with the object, in a hidden
   field that printing and `Object.keys` leave out; it is called directly
   too (`o.shift("a")`), but cannot be spread into another object.
+- A method of an interface declared more than once has overload
+  signatures, `parse(s: string): int` and `parse(parts: string[]): int`: a
+  call through the interface takes the first that takes its arguments and
+  has its result type, as a class's does, and the method cannot be used as
+  a value. Each signature is a member of its own in the interface table. A
+  class implements them with overload signatures of the same types (in any
+  order, others may follow), or with one method whose parameters take each
+  signature's, and whose result converts to each signature's,
+  `parse(x: string | string[]): int`, as TypeScript allows: the table
+  points, for a signature of another type, to an adapter that converts the
+  arguments and calls the method. An object literal, whose methods cannot
+  have overload signatures, implements them the same way with such a
+  method. An interface converts to one with a subset of the signatures, or
+  with one of them as a method without overload signatures. An
+  interface that extends a class takes its overload signatures. A method of
+  an interface cannot have overload signatures and none, by extending, and
+  optional methods and generic ones cannot have overload signatures
+  ([ORE5066](../errors/ORE5066.md)).
 - Object types (`type P = { ... }`) and interfaces differ on purpose: an
   object type is an exact record, an interface accepts any record or class
   with the members.

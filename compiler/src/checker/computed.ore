@@ -64,7 +64,11 @@ function memberNames(type: Type): string[] | null {
         return names
     }
     if (type.kind === "interface") {
-        for (const m of type.members) names.push(m.name)
+        for (const m of type.members) {
+            // The overload signatures of a method are one member.
+            const name = sourceMethodName(m.name)
+            if (!names.includes(name)) names.push(name)
+        }
         return names
     }
     // Of a union, as in TypeScript: the names that every member has.

@@ -665,15 +665,28 @@ export function findOverloads(t: StructType, name: string): Method[] {
     }
 }
 
+/** The indices of the overload signatures of method `name` of an interface, members `name#i`, in order. */
+export function ifaceSignatures(type: InterfaceType, name: string): int[] {
+    const found: int[] = []
+    for (;;) {
+        const wanted = overloadName(name, found.length)
+        let index = -1
+        for (let i = 0; i < type.members.length; i++) if (index === -1 && type.members[i].name === wanted) index = i
+        if (index === -1) return found
+        found.push(index)
+    }
+}
+
 /**
  * The method of a class that implements method `name` of type `type` of an
- * interface: the method so named, or else its overload signature of that
- * type.
+ * interface, or its overload signature `name#i`: the method so named in the
+ * source, or else its overload signature of that type.
  */
 export function implementingMethod(t: StructType, name: string, type: FuncType): Method | null {
-    const method = findMethod(t, name)
+    const source = sourceMethodName(name)
+    const method = findMethod(t, source)
     if (method !== null) return method
-    for (const m of findOverloads(t, name)) if (sameType(m.func.type, type)) return m
+    for (const m of findOverloads(t, source)) if (sameType(m.func.type, type)) return m
     return null
 }
 

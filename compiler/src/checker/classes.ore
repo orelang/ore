@@ -16,6 +16,7 @@ import {
     Func,
     Itab,
     ItabAccessor,
+    ItabMethod,
     LetStmt,
     Local,
     LocalRef,
@@ -275,6 +276,16 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
 
     // Overload signatures waiting for their implementation, by name (`static name` for static methods).
     const signatures = new Map<string, Node[]>()
+    // Abstract methods declared more than once, by name: their overload signatures, and how many are declared.
+    const abstractCounts = new Map<string, int>()
+    for (const member of members(decl)) {
+        if (member.kind !== "MethodDeclaration") continue
+        const flags = memberModifiers(c, member)
+        const nameAt = member.child("name")
+        const name = nameAt !== null && flags.isAbstract && !flags.isStatic ? c.memberName(nameAt) : null
+        if (name !== null) abstractCounts.set(name, (abstractCounts.get(name) ?? 0) + 1)
+    }
+    const abstractSeen = new Map<string, int>()
     for (const member of members(decl)) {
         if (member.kind === "SemicolonClassElement" || member.kind === "ClassStaticBlockDeclaration") continue
         const flags = memberModifiers(c, member)
@@ -331,6 +342,24 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
         } else if (member.kind === "MethodDeclaration") {
             const name = c.memberName(nameNode(member))
             if (name === null) continue
+            if (flags.isAbstract && (abstractCounts.get(name) ?? 0) > 1) {
+                // The overload signatures of an abstract method, implemented by the subclasses.
+                const index = abstractSeen.get(name) ?? 0
+                if (index < 0) continue
+                abstractSeen.set(name, index + 1)
+                if (
+                    index === 0 &&
+                    (!checkInherited(c, info, name, "method", nameNode(member), flags) ||
+                        !declare(name, member, nameNode(member)))
+                ) {
+                    // Not declared: neither are its other signatures.
+                    abstractSeen.set(name, -1)
+                    continue
+                }
+                const memberScope = inherited.has(name) ? thisScope(scope, rootClass(base!, name), decl) : instanceScope
+                declareAbstractSignature(c, info, member, name, index, flags, memberScope)
+                continue
+            }
             // An abstract method has no overload signatures: they are left without an implementation.
             const sigs = flags.isAbstract ? null : signatures.get(name)
             if (sigs !== null) signatures.delete(name)
@@ -465,13 +494,18 @@ export function declareClassMembers(c: Checker, info: ClassInfo, scope: Scope) {
     }
     if (type.ctor === null) type.ctor = ctorFunc(c, info, [], nameNode(decl))
     if (!info.abstract) {
+        // The overload signatures of a method are one member.
+        const reported = new Map<string, bool>()
         for (const m of type.methods) {
             const owner = c.abstractMethods.get(m.func)
-            if (owner !== null && owner !== type)
+            const name = sourceMethodName(m.name)
+            if (owner !== null && owner !== type && !reported.has(name)) {
+                reported.set(name, true)
                 c.error(
                     nameNode(decl),
-                    `Non-abstract class '${className}' does not implement inherited abstract member '${m.name}' from class '${owner.name}'.`,
+                    `Non-abstract class '${className}' does not implement inherited abstract member '${name}' from class '${owner.name}'.`,
                 )
+            }
         }
     }
     info.members = "done"
@@ -615,6 +649,61 @@ function declareOverloadedMethod(
         if (index === -1) type.methods.push(method)
         else type.methods[index] = method
     }
+}
+
+/**
+ * Overload signature `index` of an abstract method, `abstract parse(s:
+ * string): int` declared again with other parameters: a method named by
+ * `overloadName` that a subclass overrides with its signature of the same
+ * type, as the signatures of any method.
+ */
+function declareAbstractSignature(
+    c: Checker,
+    info: ClassInfo,
+    member: Node,
+    name: string,
+    index: int,
+    flags: MemberFlags,
+    scope: Scope,
+) {
+    const type = info.type
+    const className = type.name!
+    if (!info.abstract) c.error(nameNode(member), "Abstract methods can only appear within an abstract class.")
+    if (body(member) !== null)
+        c.error(nameNode(member), `Method '${name}' cannot have an implementation because it is marked abstract.`)
+    if (typeParameters(member).length > 0) {
+        c.error(nameNode(member), "Generic overload signatures are not supported yet.")
+        return
+    }
+    const func = makeMethod(
+        c,
+        member,
+        info,
+        scope,
+        `${className}.${name}`,
+        `ore_m_${info.cname}_${cIdent(name)}_${index}`,
+    )
+    // Never called: the classes that can be instantiated override it.
+    const message: Expr = new StringLit(types.string, `abstract method ${className}.${name} called`)
+    func.body = new Block([new ExprStmt(new BuiltinCall(types.never, "process.panic", [message]))])
+    c.abstractMethods.set(func, type)
+    if (flags.isProtected) info.protected.set(name, true)
+    const method = new Method(overloadName(name, index), func, flags.isPrivate || flags.isProtected)
+    const base = type.base
+    const plain = base === null ? null : findMethod(type, name)
+    if (base !== null && plain !== null) {
+        if (index === 0) signaturesMismatch(c, name, [plain], base, nameNode(member))
+        return
+    }
+    let at = -1
+    for (let i = 0; i < type.methods.length; i++) if (at === -1 && type.methods[i].name === method.name) at = i
+    if (at === -1) {
+        type.methods.push(method)
+        return
+    }
+    if (!sameType(type.methods[at].func.type, func.type))
+        signaturesMismatch(c, name, findOverloads(type, name), base!, nameNode(member))
+    type.methods[at] = method
 }
 
 /** Reports a method that overrides `inherited`, the method or overload signatures of `base`, with other ones. */
@@ -1778,9 +1867,24 @@ function addMember(
 ) {
     let existing: InterfaceMember | null = null
     for (const m of found) if (existing === null && m.name === member.name) existing = m
-    if (existing === null) {
+    // A method with overload signatures and one without them are the same member of different types.
+    const name = sourceMethodName(member.name)
+    let other: InterfaceMember | null = null
+    for (const m of found)
+        if (
+            other === null &&
+            m.name !== member.name &&
+            sourceMethodName(m.name) === name &&
+            (m.name === name || member.name === name)
+        )
+            other = m
+    if (other !== null) {
+        c.error(node, `Member '${name}' conflicts with an inherited member of a different type.`)
+    } else if (existing === null) {
         found.push(member)
         decls.set(member.name, decl)
+        // The first overload signature is the declaration of the method.
+        if (name !== member.name && !decls.has(name)) decls.set(name, decl)
     } else if (existing.k !== member.k || !sameType(existing.type, member.type)) {
         c.error(node, `Member '${member.name}' conflicts with an inherited member of a different type.`)
     }
@@ -1876,20 +1980,24 @@ function classMembersOf(c: Checker, found: InterfaceMember[], decls: Map<string,
     }
     for (const m of cls.methods) {
         if (m.private) continue
-        if (sourceMethodName(m.name) !== m.name) {
-            // An overload signature, the first of its method.
-            if (m.name.endsWith("#0")) c.error(ref, "Overload signatures are not supported in interfaces yet.")
-            continue
-        }
-        const decl = classDecls !== null ? classDecls.get(m.name) : null
+        // An overload signature `name#i` is one of the interface's, declared where the class declares the method.
+        const decl = classDecls !== null ? classDecls.get(sourceMethodName(m.name)) : null
         addMember(c, found, decls, new InterfaceMethod(m.name, m.func.type), ref, decl ?? ref)
     }
 }
 
 /** Adds the members declared in the body of one declaration of an interface. */
 function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Map<string, Node>, memberScope: Scope) {
-    // The methods declared here: a second signature of one is an overload.
-    const ownMethods = new Map<string, bool>()
+    // The methods declared here, by how many signatures each has: more than one are overload signatures.
+    const signatureCounts = new Map<string, int>()
+    for (const member of members(decl)) {
+        const memberName = member.child("name")
+        if (member.kind !== "MethodSignature" || memberName === null) continue
+        const name = c.memberName(memberName)
+        if (name !== null) signatureCounts.set(name, (signatureCounts.get(name) ?? 0) + 1)
+    }
+    // The signatures of each method seen so far.
+    const ownMethods = new Map<string, int>()
     for (const member of members(decl)) {
         if (member.kind === "GetAccessor" || member.kind === "SetAccessor") {
             const field = c.accessorSignature(member, members(decl), memberScope)
@@ -1933,12 +2041,31 @@ function fillMembers(c: Checker, decl: Node, found: InterfaceMember[], decls: Ma
                 addMember(c, found, decls, field, memberName, member)
             }
         } else if (member.kind === "MethodSignature") {
-            if (ownMethods.has(name)) {
-                c.error(memberName, "Overload signatures are not supported in interfaces yet.")
+            // A method declared more than once has overload signatures, members `name#i` in order.
+            const count = signatureCounts.get(name) ?? 0
+            const index = ownMethods.get(name) ?? 0
+            ownMethods.set(name, index + 1)
+            const typeParams = typeParameters(member)
+            if (count > 1) {
+                if (typeParams.length > 0) {
+                    c.error(nameNode(member), "Generic overload signatures are not supported yet.")
+                    continue
+                }
+                if (question !== null) {
+                    c.error(question, "Overload signatures are not supported for optional methods.")
+                    continue
+                }
+                const params = resolveParams(c, parameters(member), memberScope)
+                const annotation = typeNode(member)
+                const result = annotation !== null ? (c.resolveType(annotation, memberScope) ?? types.void) : types.void
+                const type = new FuncType(
+                    params.map((p) => p.type),
+                    result,
+                )
+                const signature = new InterfaceMethod(overloadName(name, index), type)
+                addMember(c, found, decls, signature, memberName, member)
                 continue
             }
-            ownMethods.set(name, true)
-            const typeParams = typeParameters(member)
             if (typeParams.length > 0) {
                 // `map<U>(f: (x: T) => U): U[]`: its instances are typed per call (see `slots.ore`).
                 if (question !== null) {
@@ -1990,11 +2117,47 @@ export class Conformance {
 export function conformance(c: Checker, from: StructType | InterfaceType, iface: InterfaceType): Conformance {
     const indices: int[] = []
     for (const member of iface.members) {
-        const what = `${member.k === "field" && !member.method ? "property" : "method"} '${member.name}'`
+        const what = `${member.k === "field" && !member.method ? "property" : "method"} '${sourceMethodName(member.name)}'`
         if (from.kind === "interface") {
             let index = -1
             for (let i = 0; i < from.members.length; i++)
                 if (index === -1 && from.members[i].name === member.name) index = i
+            // A method, or an overload signature, is any signature of the other's method of its type.
+            if (member.k === "method" && slotsOf(member) === null) {
+                const exact = index === -1 ? null : from.members[index]
+                if (exact === null || !sameType(exact.type, member.type)) {
+                    let other = -1
+                    for (let i = 0; i < from.members.length; i++) {
+                        const m = from.members[i]
+                        if (
+                            other === -1 &&
+                            m.k === "method" &&
+                            slotsOf(m) === null &&
+                            sourceMethodName(m.name) === sourceMethodName(member.name) &&
+                            sameType(m.type, member.type)
+                        )
+                            other = i
+                    }
+                    if (other !== -1) index = other
+                    else if (index === -1) {
+                        for (let i = 0; i < from.members.length; i++) {
+                            const m = from.members[i]
+                            if (
+                                index === -1 &&
+                                m.k === "method" &&
+                                sourceMethodName(m.name) === sourceMethodName(member.name)
+                            )
+                                index = i
+                        }
+                        if (index !== -1 && sourceMethodName(from.members[index].name) !== from.members[index].name)
+                            return new Conformance(
+                                `${what} has no overload signature of type '${typeToString(member.type)}'`,
+                                null,
+                                member.name,
+                            )
+                    }
+                }
+            }
             const source = index === -1 ? null : from.members[index]
             if (source === null || source.k !== member.k)
                 return new Conformance(`${what} is missing`, null, member.name)
@@ -2067,12 +2230,18 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
             if (count !== wanted)
                 return new Conformance(`${what} has ${count} type parameter(s) instead of ${wanted}`, null, member.name)
         } else {
+            // An overload signature `name#i` is implemented by a method `name`, or one of its signatures.
+            const name = sourceMethodName(member.name)
+            const signature = name !== member.name
             // Of a method with overload signatures, the signature of the member's type.
             const method = implementingMethod(from, member.name, member.type)
             // A field holding a function of the method's type serves as the method (object literals' methods).
-            const field = method === null ? findField(from, member.name) : null
+            const field = method === null ? findField(from, name) : null
             if (field !== null && !field.private && sameType(field.type, member.type)) continue
-            const overloads: Method[] = method === null ? findOverloads(from, member.name) : []
+            // An overload signature may be implemented by a function taking wider parameters, through an adapter.
+            const fieldType = field === null || field.private ? null : field.type
+            if (signature && fieldType !== null && fieldType.kind === "func" && adapts(fieldType, member.type)) continue
+            const overloads: Method[] = method === null ? findOverloads(from, name) : []
             if (overloads.length > 0 && !overloads[0].private)
                 return new Conformance(
                     `${what} has no overload signature of type '${typeToString(member.type)}'`,
@@ -2082,15 +2251,96 @@ export function conformance(c: Checker, from: StructType | InterfaceType, iface:
             if (method === null || method.private) return new Conformance(`${what} is missing`, null, member.name)
             const decl = c.funcDecls.get(method.func)
             if (decl !== null) inferGenerator(c, method.func, decl)
-            if (!sameType(method.func.type, member.type))
-                return new Conformance(
-                    `${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'`,
-                    null,
-                    member.name,
-                )
+            if (sameType(method.func.type, member.type)) continue
+            if (signature && method.name === name && adapts(method.func.type, member.type)) continue
+            return new Conformance(
+                `${what} has type '${typeToString(method.func.type)}' instead of '${typeToString(member.type)}'`,
+                null,
+                member.name,
+            )
         }
     }
     return new Conformance(null, indices)
+}
+
+/**
+ * Whether a function of type `from` serves as one of type `to` through an
+ * adapter, as `(x: string | u8[]) => int` serves as `(s: string) => int`:
+ * as many parameters, each of `to`'s converting to `from`'s, and a result
+ * that converts to `to`'s, or is dropped when that is void.
+ */
+function adapts(from: FuncType, to: FuncType): bool {
+    if (from.rest || to.rest || from.params.length !== to.params.length) return false
+    for (let i = 0; i < to.params.length; i++) if (!widens(to.params[i], from.params[i])) return false
+    if (to.result.kind === "void") return true
+    return from.result.kind !== "void" && widens(from.result, to.result)
+}
+
+/** Whether a value of type `from` is one of `to`, or converts to it as it is: to a union with its members, or `unknown`. */
+function widens(from: Type, to: Type): bool {
+    if (sameType(from, to)) return true
+    if (to.kind === "unknown") return from.kind !== "void" && from.kind !== "never"
+    if (to.kind !== "union") return false
+    const wanted = to.members
+    return membersOf(from).every((m) => wanted.some((w) => sameType(w, m)))
+}
+
+/** Converts a value to a type it widens to (see `widens`). */
+function widen(value: Expr, to: Type): Expr {
+    return sameType(value.type, to) ? value : new Recast(to, value)
+}
+
+/**
+ * The adapter by which a struct implements overload signature `member` of
+ * an interface with a method or a field of a function type taking wider
+ * parameters: a method of the struct of the signature's type that calls it.
+ */
+function signatureAdapter(c: Checker, struct: StructType, member: InterfaceMember): Func | null {
+    if (member.k !== "method") return null
+    const type = member.type
+    const name = sourceMethodName(member.name)
+    if (name === member.name || member.slots !== null) return null
+    const method = implementingMethod(struct, member.name, type)
+    if (method !== null && sameType(method.func.type, type)) return null
+    const field = method === null ? findField(struct, name) : null
+    if (field !== null && sameType(field.type, type)) return null
+    const self = c.newLocal("this", struct, false)
+    const receiver: Expr = new LocalRef(struct, self)
+    const params: Local[] = []
+    for (let i = 0; i < type.params.length; i++) params.push(c.newLocal(`a${i}`, type.params[i], false))
+    let call: Expr
+    let line = 0
+    if (method !== null) {
+        const params_ = method.func.type.params
+        const args: Expr[] = []
+        for (let i = 0; i < params.length; i++) args.push(widen(new LocalRef(params[i].type, params[i]), params_[i]))
+        call = new MethodCall(method.func.type.result, method.func, receiver, args)
+        dispatch(c, call, method.name)
+        line = method.func.line
+    } else {
+        const held = field === null ? null : field.type
+        if (held === null || held.kind !== "func") return null
+        const args: Expr[] = []
+        for (let i = 0; i < params.length; i++)
+            args.push(widen(new LocalRef(params[i].type, params[i]), held.params[i]))
+        call = new CallValue(held.result, new FieldGet(held, receiver, name), args)
+    }
+    const stmt: Stmt = type.result.kind === "void" ? new ExprStmt(call) : new ReturnStmt(widen(call, type.result))
+    const func = new Func(
+        `ore_lambda_${c.nextLambda++}`,
+        name,
+        line,
+        type,
+        params,
+        new Block([stmt]),
+        false,
+        null,
+        false,
+        null,
+        self,
+    )
+    c.module.functions.push(func)
+    return func
 }
 
 /** The interface table of a struct, created once per struct and interface. */
@@ -2104,6 +2354,11 @@ export function itab(c: Checker, struct: StructType, iface: InterfaceType): Itab
             const getter = member.k === "field" && member.method ? optionalMethodGetter(c, struct, member) : null
             if (getter !== null) {
                 table.accessors.push(new ItabAccessor(i, getter, null))
+                continue
+            }
+            const adapter = signatureAdapter(c, struct, member)
+            if (adapter !== null) {
+                table.methods.push(new ItabMethod(i, adapter))
                 continue
             }
             if (member.k !== "field" || findField(struct, member.name) !== null) continue

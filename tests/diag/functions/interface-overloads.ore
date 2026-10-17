@@ -1,0 +1,80 @@
+interface Parser {
+    parse(s: string): int
+    parse(parts: string[]): int
+}
+class Narrow implements Parser {
+    // error: Class 'Narrow' does not implement 'Parser': method 'parse' has type '(string) => i64' instead of '(string[]) => i64'.
+    parse(s: string): int {
+        return 1
+    }
+}
+class Fewer implements Parser {
+    // error: Class 'Fewer' does not implement 'Parser': method 'parse' has no overload signature of type '(string[]) => i64'.
+    parse(s: string): int
+    parse(n: int): int
+    parse(x: string | int): int {
+        return 1
+    }
+}
+function use(p: Parser) {
+    p.parse(true) // error: No overload of 'Parser.parse' takes these arguments. Its signatures: (string) => i64; (string[]) => i64.
+    const f = p.parse // error: Function 'Parser.parse' has overload signatures and cannot be used as a value.
+}
+interface Flags {
+    parse(b: bool): int
+}
+function convert(p: Parser): Flags {
+    return p // error: Type 'Parser' is not assignable to type 'Flags': method 'parse' has no overload signature of type '(bool) => i64'.
+}
+interface Sub extends Parser {
+    parse(b: bool): int // error: Member 'parse' conflicts with an inherited member of a different type.
+}
+interface Optional {
+    f?(x: int): int // error: Overload signatures are not supported for optional methods.
+    f?(x: string): int // error: Overload signatures are not supported for optional methods.
+}
+interface Generic {
+    g<T>(x: T): T // error: Generic overload signatures are not supported yet.
+    g(x: int): int
+}
+abstract class Shape {
+    abstract scale(by: int): string
+    abstract scale(by: string): string
+}
+class Square extends Shape {
+    // error: Non-abstract class 'Square' does not implement inherited abstract member 'scale' from class 'Shape'.
+}
+class Circle extends Shape {
+    // error: Non-abstract class 'Circle' does not implement inherited abstract member 'scale' from class 'Shape'.
+    scale(by: int | string): string {
+        // error: Method 'scale' must have the signatures of the method it overrides in 'Shape': '(i64) => string', '(string) => string'.
+        return "circle"
+    }
+}
+class Plain {
+    abstract f(x: int): int // error: Abstract methods can only appear within an abstract class.
+    abstract f(x: string): int // error: Abstract methods can only appear within an abstract class.
+}
+class Cat {
+    speak(times: int): string
+    speak(word: string): string
+    speak(x: int | string): string {
+        return "meow"
+    }
+}
+class Dog {
+    speak(times: int): string
+    speak(word: string): string
+    speak(x: int | string): string {
+        return "woof"
+    }
+}
+class Robot {
+    speak(times: int): string {
+        return "beep"
+    }
+}
+function talk(pet: Cat | Dog, other: Cat | Robot) {
+    pet.speak(true) // error: No overload of 'speak' takes these arguments. Its signatures: (i64) => string; (string) => string.
+    other.speak(1) // error: Method 'speak' has different types in the members of 'Cat | Robot': '(i64) => string', '(string) => string' and '(i64) => string'.
+}

@@ -58,6 +58,7 @@ import {
     Itab,
     ItabAccessor,
     ItabGeneric,
+    ItabMethod,
     Len,
     LetStmt,
     Local,
@@ -1620,6 +1621,11 @@ class Reader {
                         const funcs: Func[] = []
                         if (names !== "-") for (const name of names.split(",")) funcs.push(this.func(name, c))
                         table.generics.push(new ItabGeneric(index, funcs))
+                    }
+                    while (c.eat(" method ")) {
+                        const index = c.int()
+                        c.expect(" ")
+                        table.methods.push(new ItabMethod(index, this.func(c.word(), c)))
                     }
                     this.next(c)
                     this.itabs.push(table)

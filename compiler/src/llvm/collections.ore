@@ -6,6 +6,7 @@ import {
     type BuiltinCall,
     type ChanOp,
     type Expr,
+    type Func,
     type Itab,
     type ItabAccessor,
     type ItabGeneric,
@@ -19,6 +20,7 @@ import {
     FuncType,
     isStringLike,
     overridden,
+    sourceMethodName,
     types,
     unionRepr,
     type StructType,
@@ -1078,6 +1080,12 @@ export function itab(g: Emitter, t: Itab): string {
             all.push(genericEntry(g, t, generic))
             continue
         }
+        let adapter: Func | null = null
+        for (const x of t.methods) if (x.index === i) adapter = x.func
+        if (adapter !== null) {
+            all.push(`ptr ${globalName(adapter.name)}`)
+            continue
+        }
         if (m.k === "field") {
             const field = findField(t.struct, m.name)
             // A missing optional field: -1.
@@ -1087,7 +1095,7 @@ export function itab(g: Emitter, t: Itab): string {
             const method = implementingMethod(t.struct, m.name, m.type)
             if (method === null) {
                 // A field holding a closure of the method's type: a thunk calls it.
-                all.push(`ptr ${fieldThunk(g, t.struct, m.name, m.type)}`)
+                all.push(`ptr ${fieldThunk(g, t.struct, sourceMethodName(m.name), m.type)}`)
                 continue
             }
             // A method that a subclass overrides is called through the class table of the instance.

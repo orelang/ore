@@ -1,0 +1,112 @@
+// Overload signatures in interfaces: a class implements them with its own
+// signatures, or with one method that takes each signature's arguments; an
+// object literal with such a method; calls through the interface take the
+// first signature that takes the arguments, as calls of a class's do.
+interface Parser {
+    parse(s: string): int
+    parse(parts: string[]): int
+    name(): string
+}
+
+class Signatures implements Parser {
+    parse(s: string): int
+    parse(parts: string[]): int
+    parse(x: string | string[]): int {
+        if (typeof x === "string") return x.length
+        return x.length * 100
+    }
+
+    name(): string {
+        return "signatures"
+    }
+}
+
+class Wide implements Parser {
+    parse(x: string | string[] | int): int {
+        if (typeof x === "string") return x.length + 1
+        if (typeof x === "number") return x
+        return x.length * 1000
+    }
+
+    name(): string {
+        return "wide"
+    }
+}
+
+class Loud extends Wide {
+    override parse(x: string | string[] | int): int {
+        return super.parse(x) * -1
+    }
+
+    override name(): string {
+        return "loud"
+    }
+}
+
+function run(p: Parser): string {
+    const a: int = p.parse("abc")
+    const b: int = p.parse(["x", "y"])
+    return `${p.name()}: ${a} ${b}`
+}
+
+const literal: Parser = {
+    parse(x: string | string[]): int {
+        return typeof x === "string" ? 7 : 8
+    },
+    name(): string {
+        return "literal"
+    },
+}
+
+const parsers: Parser[] = [new Signatures(), new Wide(), new Loud(), literal]
+for (const p of parsers) console.log(run(p))
+
+// An interface with fewer signatures, or one of them as a plain method, converts from it.
+interface Strings {
+    parse(s: string): int
+}
+interface Both {
+    parse(parts: string[]): int
+    parse(s: string): int
+}
+const strings: Strings = new Signatures()
+const both: Both = literal
+const again: Strings = both
+console.log(strings.parse("hello"), both.parse(["a"]), both.parse("a"), again.parse("zz"))
+
+// Results that differ by signature.
+interface Codec {
+    encode(n: int): string
+    encode(s: string): int[]
+}
+class Simple implements Codec {
+    encode(n: int): string
+    encode(s: string): int[]
+    encode(x: int | string): string | int[] {
+        if (typeof x === "number") return `#${x}`
+        const out: int[] = []
+        for (let i = 0; i < x.length; i++) out.push(x.charCodeAt(i)!)
+        return out
+    }
+}
+const codec: Codec = new Simple()
+const text: string = codec.encode(42)
+const codes: int[] = codec.encode("AB")
+console.log(text, codes)
+
+// An interface that extends a class takes its overload signatures.
+class Base {
+    twice(x: int): int
+    twice(x: string): string
+    twice(x: int | string): int | string {
+        return typeof x === "string" ? x + x : x * 2
+    }
+}
+interface Named extends Base {
+    label: string
+}
+class Labeled extends Base implements Named {
+    label = "labeled"
+}
+const named: Named = new Labeled()
+console.log(named.label, named.twice(4), named.twice("ab"))

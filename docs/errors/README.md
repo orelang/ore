@@ -416,7 +416,7 @@ The codes are grouped by the part of the language they concern:
 | [ORE5063](ORE5063.md) | Cannot extend a class '…': its constructor is private. |
 | [ORE5064](ORE5064.md) | Overload signatures must all be public, private or protected, as the implementation. |
 | [ORE5065](ORE5065.md) | Method '…' must have the signatures of the method it overrides in '…': …. |
-| [ORE5066](ORE5066.md) | Overload signatures are not supported in interfaces yet. |
+| [ORE5066](ORE5066.md) | Overload signatures are not supported for optional methods. |
 | [ORE5067](ORE5067.md) | An optional method of an interface cannot be generic. |
 | [ORE5068](ORE5068.md) | Member '…' is a different generic method in each part of the intersection. |
 | [ORE5069](ORE5069.md) | Field '…' is used before its type is known: its initializer uses '…', declared further down. Annotate the field. |
