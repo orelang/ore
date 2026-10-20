@@ -102,11 +102,11 @@ jobs:
       - name: Tests
         # On macOS, a thread waiting on a pthread_rwlock in LLVM can miss its
         # wakeup when the collector's stop signal interrupts it, until the LLVM
-        # calls are blocking (//ore:blocking): the suite runs again, at most
-        # twice, when it hangs there.
+        # calls are blocking (//ore:blocking): the suite compiles one case at a
+        # time there, and runs again, at most twice, when it hangs.
         run: |
           if [ "$(uname -s)" = Darwin ]; then
-            for attempt in 1 2 3; do ORE=dist/ore ci/test.sh && exit 0; done
+            for attempt in 1 2 3; do ORE_TEST_JOBS=1 ORE=dist/ore ci/test.sh --timeout 900 && exit 0; done
             exit 1
           fi
           ORE=dist/ore ci/test.sh
